@@ -1,0 +1,449 @@
+import {
+	Plugin,
+	Notice,
+	TFile,
+	TFolder,
+	normalizePath,
+	TAbstractFile,
+} from "obsidian";
+import { GmailApi } from "./gmail-api";
+import { GmailCrmView, VIEW_TYPE_GMAIL_CRM } from "./contact-view";
+import { GmailCrmSettingTab } from "./settings-tab";
+import { startOAuthCallbackServer } from "./oauth-server";
+import { RelationshipEngine } from "./relationships";
+import { HarperSkill } from "./harper-skill";
+import type { GmailCrmSettings, ContactIndex, Contact } from "./types";
+import { DEFAULT_SETTINGS } from "./types";
+
+export default class GmailCrmPlugin extends Plugin {
+	settings: GmailCrmSettings = DEFAULT_SETTINGS;
+	private gmailApi!: GmailApi;
+	private contactIndex: ContactIndex | null = null;
+	private syncInterval: number | null = null;
+
+	async onload() {
+		await this.loadSettings();
+
+		this.gmailApi = new GmailApi(this.settings, async (patch) => {
+			Object.assign(this.settings, patch);
+			await this.saveSettings();
+		});
+
+		// Register the sidebar view
+		this.registerView(VIEW_TYPE_GMAIL_CRM, (leaf) => {
+			return new GmailCrmView(leaf, (contact) =>
+				this.openContactNote(contact)
+			);
+		});
+
+		// Ribbon icon
+		this.addRibbonIcon("contact", "Gmail CRM", () => {
+			this.activateView();
+		});
+
+		// Command: open view
+		this.addCommand({
+			id: "open-gmail-crm",
+			name: "Open Gmail CRM",
+			callback: () => this.activateView(),
+		});
+
+		// Command: sync
+		this.addCommand({
+			id: "sync-gmail-crm",
+			name: "Sync Gmail contacts",
+			callback: () => this.syncContacts(),
+		});
+
+		// Command: enrich all people
+		this.addCommand({
+			id: "enrich-all-people",
+			name: "Enrich all people (relationships + Harper Skill)",
+			callback: () => this.enrichAllPeople(),
+		});
+
+		// Command: enrich current person
+		this.addCommand({
+			id: "enrich-current-person",
+			name: "Enrich current person (Harper Skill)",
+			checkCallback: (checking) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || !file.path.startsWith(normalizePath(this.settings.peopleFolder))) {
+					return false;
+				}
+				if (!checking) {
+					const name = file.basename.replace(/^p-\s*/, "");
+					this.enrichSinglePerson(name);
+				}
+				return true;
+			},
+		});
+
+		// Command: map relationships only (no AI)
+		this.addCommand({
+			id: "map-relationships",
+			name: "Map relationships only (no AI)",
+			callback: () => this.enrichAllPeople(true),
+		});
+
+		// Settings tab
+		this.addSettingTab(new GmailCrmSettingTab(this.app, this));
+
+		// Load cached index
+		await this.loadContactIndex();
+
+		// Start auto-sync if authenticated
+		if (this.settings.refreshToken) {
+			this.startAutoSync();
+		}
+	}
+
+	onunload() {
+		if (this.syncInterval !== null) {
+			window.clearInterval(this.syncInterval);
+		}
+	}
+
+	async loadSettings() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+		this.gmailApi?.updateSettings(this.settings);
+	}
+
+	async startOAuthFlow() {
+		try {
+			const authUrl = this.gmailApi.getAuthUrl();
+
+			// Start local callback server
+			const codePromise = startOAuthCallbackServer();
+
+			// Open browser
+			window.open(authUrl);
+			new Notice("Opening browser for Gmail authorization...");
+
+			const code = await codePromise;
+			await this.gmailApi.exchangeCode(code);
+			new Notice("Gmail connected successfully!");
+
+			this.startAutoSync();
+			await this.syncContacts();
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Gmail auth failed: ${msg}`);
+		}
+	}
+
+	private startAutoSync() {
+		if (this.syncInterval !== null) {
+			window.clearInterval(this.syncInterval);
+		}
+		this.syncInterval = window.setInterval(
+			() => this.syncContacts(),
+			this.settings.syncIntervalMinutes * 60_000
+		);
+		this.registerInterval(this.syncInterval);
+	}
+
+	async syncContacts() {
+		if (!this.settings.refreshToken) {
+			new Notice("Connect Gmail first in plugin settings.");
+			return;
+		}
+
+		const notice = new Notice("Syncing Gmail contacts...", 0);
+		try {
+			this.contactIndex = await this.gmailApi.buildContactIndex(
+				this.settings.maxResults,
+				(done, total) => {
+					notice.setMessage(`Syncing... ${done}/${total} messages`);
+				}
+			);
+
+			await this.saveContactIndex();
+
+			if (this.settings.createContactNotes) {
+				await this.writeContactNotes();
+			}
+
+			this.refreshView();
+			notice.setMessage(
+				`Synced ${Object.keys(this.contactIndex.contacts).length} contacts`
+			);
+			setTimeout(() => notice.hide(), 3000);
+
+			if (this.settings.enrichOnSync) {
+				await this.enrichAllPeople();
+			}
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Sync failed: ${msg}`);
+		}
+	}
+
+	private async loadContactIndex() {
+		const path = this.getIndexPath();
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFile) {
+			const content = await this.app.vault.read(file);
+			try {
+				this.contactIndex = JSON.parse(content);
+				this.refreshView();
+			} catch {
+				// corrupt index, will re-sync
+			}
+		}
+	}
+
+	private async saveContactIndex() {
+		if (!this.contactIndex) return;
+		const path = this.getIndexPath();
+		const content = JSON.stringify(this.contactIndex, null, 2);
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) {
+			await this.app.vault.modify(existing, content);
+		} else {
+			try {
+				await this.app.vault.create(path, content);
+			} catch {
+				// File may exist but not be indexed yet — try adapter directly
+				await this.app.vault.adapter.write(normalizePath(path), content);
+			}
+		}
+	}
+
+	private getIndexPath(): string {
+		return normalizePath(
+			`${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
+		);
+	}
+
+	private async writeContactNotes() {
+		if (!this.contactIndex) return;
+
+		const folder = normalizePath(this.settings.contactNotesFolder);
+		if (!this.app.vault.getAbstractFileByPath(folder)) {
+			try {
+				await this.app.vault.createFolder(folder);
+			} catch {
+				// folder already exists
+			}
+		}
+
+		// Build lookup of existing people pages by name (case-insensitive)
+		const existingPages = new Map<string, TFile>();
+		const folderObj = this.app.vault.getAbstractFileByPath(folder);
+		if (folderObj instanceof TFolder) {
+			for (const child of folderObj.children) {
+				if (child instanceof TFile && child.extension === "md") {
+					const pageName = child.basename.replace(/^p-\s*/, "").toLowerCase();
+					existingPages.set(pageName, child);
+				}
+			}
+		}
+
+		for (const contact of Object.values(this.contactIndex.contacts)) {
+			const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
+			const notePath = normalizePath(`${folder}/p- ${safeName}.md`);
+
+			// Check if a page already exists for this person
+			const existingFile = existingPages.get(contact.name.toLowerCase());
+
+			const frontmatter = [
+				"---",
+				`email: "${contact.email}"`,
+				`last_contact: ${contact.lastContact.split("T")[0]}`,
+				`first_contact: ${contact.firstContact.split("T")[0]}`,
+				`total_exchanges: ${contact.totalExchanges}`,
+				`sent: ${contact.sentCount}`,
+				`received: ${contact.receivedCount}`,
+				"---",
+			].join("\n");
+
+			const body = [
+				`# ${contact.name}`,
+				"",
+				"## Overview",
+				`- **Email:** ${contact.email}`,
+				`- **Last contact:** ${contact.lastContact.split("T")[0]}`,
+				`- **Total exchanges:** ${contact.totalExchanges} (${contact.sentCount} sent, ${contact.receivedCount} received)`,
+				"",
+				"## Recent Subjects",
+				...contact.subjects.map((s) => `- ${s}`),
+				"",
+				"## Notes",
+				"",
+			].join("\n");
+
+			const content = `${frontmatter}\n\n${body}`;
+
+			if (existingFile) {
+				// Page exists — don't overwrite, just skip
+				// Harper Skill enrichment handles merging Gmail data
+				continue;
+			}
+
+			// Check for p- prefixed path too
+			const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+			if (noteFile instanceof TFile) {
+				continue;
+			}
+
+			// Create new page with p- prefix
+			await this.app.vault.create(notePath, content);
+		}
+	}
+
+	private extractUserNotes(content: string): string {
+		const marker = "## Notes";
+		const idx = content.indexOf(marker);
+		if (idx === -1) return "";
+		const afterMarker = content.slice(idx + marker.length);
+		return afterMarker.trimStart();
+	}
+
+	private async openContactNote(contact: Contact) {
+		const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
+		const notePath = normalizePath(
+			`${this.settings.contactNotesFolder}/${safeName}.md`
+		);
+		const file = this.app.vault.getAbstractFileByPath(notePath);
+		if (file instanceof TFile) {
+			await this.app.workspace.getLeaf().openFile(file);
+		} else {
+			new Notice(`No note found for ${contact.name}. Run sync first.`);
+		}
+	}
+
+	private refreshView() {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM);
+		for (const leaf of leaves) {
+			const view = leaf.view;
+			if (view instanceof GmailCrmView && this.contactIndex) {
+				view.setContactIndex(this.contactIndex);
+			}
+		}
+	}
+
+	async enrichAllPeople(skipAi = false) {
+		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+		const notice = new Notice("Loading people pages...", 0);
+
+		try {
+			const pages = await engine.loadPeoplePages();
+			const count = Object.keys(pages).length;
+			notice.setMessage(`Found ${count} people. Building relationship graph...`);
+
+			const graph = engine.buildGraph(pages, this.contactIndex);
+			const connected = Object.values(graph).filter((edges) => edges.length > 0).length;
+			notice.setMessage(`Graph: ${connected}/${count} connected. Enriching...`);
+
+			let harper: HarperSkill | null = null;
+			if (!skipAi) {
+				if (!this.settings.anthropicApiKey) {
+					notice.hide();
+					new Notice("Set your Anthropic API key in Gmail CRM settings first.");
+					return;
+				}
+				harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
+			}
+
+			let done = 0;
+			for (const [name, page] of Object.entries(pages)) {
+				done++;
+				notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
+
+				const relationships = graph[name] ?? [];
+				const file = this.app.vault.getAbstractFileByPath(page.path);
+				if (!(file instanceof TFile)) continue;
+
+				if (harper) {
+					try {
+						const rewritten = await harper.rewritePersonPage(name, page, relationships, pages);
+						await this.app.vault.modify(file, rewritten);
+					} catch (e: unknown) {
+						const msg = e instanceof Error ? e.message : String(e);
+						console.error(`Harper Skill failed for ${name}: ${msg}`);
+						new Notice(`Failed on ${name}: ${msg}`);
+					}
+				} else {
+					// Map-only mode: append relationship links without rewriting
+					const relLines = relationships.map(
+						(r) => `- [[p- ${r.target}]] — ${r.type.replace(/_/g, " ")}: ${r.context}`
+					);
+					const relSection = relLines.length > 0 ? relLines.join("\n") : "- No mapped relationships yet.";
+					let content = await this.app.vault.read(file);
+					// Strip old relationship section
+					content = content.replace(
+						/\n## Relationships\n[\s\S]*?(?=\n## |\s*$)/,
+						""
+					);
+					content = content.trimEnd() + `\n\n## Relationships\n${relSection}\n`;
+					await this.app.vault.modify(file, content);
+				}
+			}
+
+			notice.setMessage(`Enriched ${count} people pages!`);
+			setTimeout(() => notice.hide(), 3000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Enrichment failed: ${msg}`);
+		}
+	}
+
+	async enrichSinglePerson(name: string) {
+		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+		const notice = new Notice(`Enriching ${name}...`, 0);
+
+		try {
+			const pages = await engine.loadPeoplePages();
+			if (!pages[name]) {
+				notice.hide();
+				new Notice(`Person "${name}" not found in people pages.`);
+				return;
+			}
+
+			const graph = engine.buildGraph(pages, this.contactIndex);
+			const relationships = graph[name] ?? [];
+
+			if (!this.settings.anthropicApiKey) {
+				notice.hide();
+				new Notice("Set your Anthropic API key in Gmail CRM settings first.");
+				return;
+			}
+
+			const harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
+			const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
+
+			const file = this.app.vault.getAbstractFileByPath(pages[name].path);
+			if (file instanceof TFile) {
+				await this.app.vault.modify(file, rewritten);
+			}
+
+			notice.setMessage(`Enriched ${name}!`);
+			setTimeout(() => notice.hide(), 3000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Enrichment failed: ${msg}`);
+		}
+	}
+
+	async activateView() {
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM);
+		if (existing.length > 0) {
+			this.app.workspace.revealLeaf(existing[0]);
+			return;
+		}
+
+		const leaf = this.app.workspace.getRightLeaf(false);
+		if (leaf) {
+			await leaf.setViewState({ type: VIEW_TYPE_GMAIL_CRM, active: true });
+			this.app.workspace.revealLeaf(leaf);
+		}
+	}
+}

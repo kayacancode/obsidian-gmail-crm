@@ -1,0 +1,9 @@
+{
+	"id": "gmail-crm",
+	"name": "Gmail CRM",
+	"version": "0.1.0",
+	"minAppVersion": "1.0.0",
+	"description": "Lightweight CRM layer — pulls Gmail metadata (contacts, last contact date, exchange counts) into your vault.",
+	"author": "Kaya Jones",
+	"isDesktopOnly": true
+}
