@@ -200,6 +200,7 @@ export class GmailApi {
 		direction: "sent" | "received"
 	) {
 		const key = parsed.email.toLowerCase();
+		const domain = parsed.email.split("@")[1]?.toLowerCase() ?? "";
 		if (!contacts[key]) {
 			contacts[key] = {
 				name: parsed.name || parsed.email,
@@ -210,6 +211,8 @@ export class GmailApi {
 				receivedCount: 0,
 				totalExchanges: 0,
 				subjects: [],
+				lastSubject: "",
+				domain,
 			};
 		}
 
@@ -217,7 +220,10 @@ export class GmailApi {
 		if (parsed.name && (!c.name || c.name === c.email)) {
 			c.name = parsed.name;
 		}
-		if (date > c.lastContact) c.lastContact = date;
+		if (date > c.lastContact) {
+			c.lastContact = date;
+			if (subject) c.lastSubject = subject;
+		}
 		if (date < c.firstContact) c.firstContact = date;
 
 		if (direction === "sent") c.sentCount++;

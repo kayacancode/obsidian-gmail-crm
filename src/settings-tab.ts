@@ -173,6 +173,18 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Companies folder")
+			.setDesc("Vault folder for company pages. New companies are auto-created here.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.companiesFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.companiesFolder = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Anthropic API key")
 			.setDesc("Required for Harper Skill AI analysis. Relationship mapping works without it.")
 			.addText((text) => {
@@ -232,6 +244,37 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					.setButtonText("Map Only")
 					.onClick(async () => {
 						await this.plugin.enrichAllPeople(true);
+					})
+			);
+
+		// Staleness & Base section
+		containerEl.createEl("h3", { text: "CRM Base View" });
+		containerEl.createEl("p", {
+			text: "Staleness scoring tracks relationship freshness. The Base view gives you a sortable CRM table of all your contacts with status indicators.",
+			cls: "setting-item-description",
+		});
+
+		new Setting(containerEl)
+			.setName("Update staleness scores")
+			.setDesc("Compute freshness scores and write to frontmatter on all people pages")
+			.addButton((btn) =>
+				btn
+					.setButtonText("Score All")
+					.setCta()
+					.onClick(async () => {
+						await this.plugin.updateStaleness();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Create CRM Base")
+			.setDesc("Generate an Obsidian Base file with CRM table views (sorted by staleness, filterable)")
+			.addButton((btn) =>
+				btn
+					.setButtonText("Create Base")
+					.setCta()
+					.onClick(async () => {
+						await this.plugin.createBase();
 					})
 			);
 	}

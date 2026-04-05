@@ -7,11 +7,14 @@ import {
 	TAbstractFile,
 } from "obsidian";
 import { GmailApi } from "./gmail-api";
-import { GmailCrmView, VIEW_TYPE_GMAIL_CRM } from "./contact-view";
+// Sidebar removed — using Obsidian Base view instead
 import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
+import { computeStaleness } from "./staleness";
+import { FrontmatterManager } from "./frontmatter";
+import { createBaseView } from "./base-view";
 import type { GmailCrmSettings, ContactIndex, Contact } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
@@ -29,23 +32,11 @@ export default class GmailCrmPlugin extends Plugin {
 			await this.saveSettings();
 		});
 
-		// Register the sidebar view
-		this.registerView(VIEW_TYPE_GMAIL_CRM, (leaf) => {
-			return new GmailCrmView(leaf, (contact) =>
-				this.openContactNote(contact)
-			);
-		});
-
-		// Ribbon icon
-		this.addRibbonIcon("contact", "Gmail CRM", () => {
-			this.activateView();
-		});
-
-		// Command: open view
+		// Command: open CRM base
 		this.addCommand({
 			id: "open-gmail-crm",
-			name: "Open Gmail CRM",
-			callback: () => this.activateView(),
+			name: "Open CRM Base",
+			callback: () => this.createBase(),
 		});
 
 		// Command: sync
@@ -84,6 +75,20 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "map-relationships",
 			name: "Map relationships only (no AI)",
 			callback: () => this.enrichAllPeople(true),
+		});
+
+		// Command: update staleness scores
+		this.addCommand({
+			id: "update-staleness",
+			name: "Update staleness scores",
+			callback: () => this.updateStaleness(),
+		});
+
+		// Command: create/update CRM base view
+		this.addCommand({
+			id: "create-base-view",
+			name: "Create CRM Base view",
+			callback: () => this.createBase(),
 		});
 
 		// Settings tab
@@ -168,7 +173,6 @@ export default class GmailCrmPlugin extends Plugin {
 				await this.writeContactNotes();
 			}
 
-			this.refreshView();
 			notice.setMessage(
 				`Synced ${Object.keys(this.contactIndex.contacts).length} contacts`
 			);
@@ -191,8 +195,7 @@ export default class GmailCrmPlugin extends Plugin {
 			const content = await this.app.vault.read(file);
 			try {
 				this.contactIndex = JSON.parse(content);
-				this.refreshView();
-			} catch {
+				} catch {
 				// corrupt index, will re-sync
 			}
 		}
@@ -318,16 +321,6 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	private refreshView() {
-		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM);
-		for (const leaf of leaves) {
-			const view = leaf.view;
-			if (view instanceof GmailCrmView && this.contactIndex) {
-				view.setContactIndex(this.contactIndex);
-			}
-		}
-	}
-
 	async enrichAllPeople(skipAi = false) {
 		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
 		const notice = new Notice("Loading people pages...", 0);
@@ -433,17 +426,58 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	async activateView() {
-		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM);
-		if (existing.length > 0) {
-			this.app.workspace.revealLeaf(existing[0]);
-			return;
-		}
+	async updateStaleness() {
+		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+		const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
+		const notice = new Notice("Computing staleness scores...", 0);
 
-		const leaf = this.app.workspace.getRightLeaf(false);
-		if (leaf) {
-			await leaf.setViewState({ type: VIEW_TYPE_GMAIL_CRM, active: true });
-			this.app.workspace.revealLeaf(leaf);
+		try {
+			const pages = await engine.loadPeoplePages();
+			const count = Object.keys(pages).length;
+			const graph = engine.buildGraph(pages, this.contactIndex);
+
+			let done = 0;
+			let staleCount = 0;
+			for (const [name, page] of Object.entries(pages)) {
+				done++;
+				const relationships = graph[name] ?? [];
+				const staleness = computeStaleness(page, relationships);
+
+				if (staleness.label === "stale" || staleness.label === "dormant") {
+					staleCount++;
+				}
+
+				const file = this.app.vault.getAbstractFileByPath(page.path);
+				if (file instanceof TFile) {
+					await fm.updateFrontmatter(file, page, staleness, relationships);
+				}
+
+				if (done % 20 === 0) {
+					notice.setMessage(`Scoring ${done}/${count}...`);
+				}
+			}
+
+			notice.setMessage(`Scored ${count} contacts — ${staleCount} going stale`);
+			setTimeout(() => notice.hide(), 4000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Staleness update failed: ${msg}`);
+		}
+	}
+
+	async createBase() {
+		try {
+			const basePath = await createBaseView(this.app.vault, this.settings.peopleFolder);
+			new Notice(`CRM Base created at ${basePath}`);
+			// Open it
+			const file = this.app.vault.getAbstractFileByPath(basePath);
+			if (file instanceof TFile) {
+				await this.app.workspace.getLeaf().openFile(file);
+			}
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Failed to create Base: ${msg}`);
 		}
 	}
 }

@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => GmailCrmPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/gmail-api.ts
 var import_obsidian = require("obsidian");
@@ -181,7 +181,9 @@ var GmailApi = class {
     }
   }
   upsertContact(contacts, parsed, date, subject, direction) {
+    var _a, _b;
     const key = parsed.email.toLowerCase();
+    const domain = (_b = (_a = parsed.email.split("@")[1]) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
     if (!contacts[key]) {
       contacts[key] = {
         name: parsed.name || parsed.email,
@@ -191,14 +193,19 @@ var GmailApi = class {
         sentCount: 0,
         receivedCount: 0,
         totalExchanges: 0,
-        subjects: []
+        subjects: [],
+        lastSubject: "",
+        domain
       };
     }
     const c = contacts[key];
     if (parsed.name && (!c.name || c.name === c.email)) {
       c.name = parsed.name;
     }
-    if (date > c.lastContact) c.lastContact = date;
+    if (date > c.lastContact) {
+      c.lastContact = date;
+      if (subject) c.lastSubject = subject;
+    }
     if (date < c.firstContact) c.firstContact = date;
     if (direction === "sent") c.sentCount++;
     else c.receivedCount++;
@@ -222,152 +229,9 @@ var GmailApi = class {
   }
 };
 
-// src/contact-view.ts
-var import_obsidian2 = require("obsidian");
-var VIEW_TYPE_GMAIL_CRM = "gmail-crm-view";
-var GmailCrmView = class extends import_obsidian2.ItemView {
-  constructor(leaf, onContactClick) {
-    super(leaf);
-    this.contactIndex = null;
-    this.sortBy = "lastContact";
-    this.filterText = "";
-    this.onContactClick = onContactClick;
-  }
-  getViewType() {
-    return VIEW_TYPE_GMAIL_CRM;
-  }
-  getDisplayText() {
-    return "Gmail CRM";
-  }
-  getIcon() {
-    return "contact";
-  }
-  setContactIndex(index) {
-    this.contactIndex = index;
-    this.render();
-  }
-  async onOpen() {
-    this.render();
-  }
-  render() {
-    const container = this.containerEl.children[1];
-    container.empty();
-    container.addClass("gmail-crm-container");
-    const header = container.createDiv({ cls: "gmail-crm-header" });
-    header.createEl("h4", { text: "Gmail CRM" });
-    if (this.contactIndex) {
-      const meta = header.createDiv({ cls: "gmail-crm-meta" });
-      meta.createSpan({
-        text: `${Object.keys(this.contactIndex.contacts).length} contacts`
-      });
-      meta.createSpan({
-        text: ` \xB7 synced ${this.relativeTime(this.contactIndex.lastSync)}`,
-        cls: "gmail-crm-faded"
-      });
-    }
-    const controls = container.createDiv({ cls: "gmail-crm-controls" });
-    const searchInput = controls.createEl("input", {
-      type: "text",
-      placeholder: "Filter contacts...",
-      cls: "gmail-crm-search"
-    });
-    searchInput.value = this.filterText;
-    searchInput.addEventListener("input", () => {
-      this.filterText = searchInput.value;
-      this.renderList(listEl);
-    });
-    const sortSelect = controls.createEl("select", { cls: "gmail-crm-sort" });
-    const sortOptions = [
-      { value: "lastContact", label: "Recent" },
-      { value: "totalExchanges", label: "Frequency" },
-      { value: "name", label: "Name" }
-    ];
-    for (const opt of sortOptions) {
-      const option = sortSelect.createEl("option", {
-        value: opt.value,
-        text: opt.label
-      });
-      if (opt.value === this.sortBy) option.selected = true;
-    }
-    sortSelect.addEventListener("change", () => {
-      this.sortBy = sortSelect.value;
-      this.renderList(listEl);
-    });
-    const listEl = container.createDiv({ cls: "gmail-crm-list" });
-    if (!this.contactIndex) {
-      listEl.createDiv({
-        cls: "gmail-crm-empty",
-        text: "No contacts synced yet. Open settings to connect Gmail."
-      });
-      return;
-    }
-    this.renderList(listEl);
-  }
-  renderList(listEl) {
-    listEl.empty();
-    if (!this.contactIndex) return;
-    let contacts = Object.values(this.contactIndex.contacts);
-    if (this.filterText) {
-      const q = this.filterText.toLowerCase();
-      contacts = contacts.filter(
-        (c) => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q)
-      );
-    }
-    contacts.sort((a, b) => {
-      switch (this.sortBy) {
-        case "lastContact":
-          return b.lastContact.localeCompare(a.lastContact);
-        case "totalExchanges":
-          return b.totalExchanges - a.totalExchanges;
-        case "name":
-          return a.name.localeCompare(b.name);
-      }
-    });
-    const visible = contacts.slice(0, 200);
-    for (const contact of visible) {
-      const row = listEl.createDiv({ cls: "gmail-crm-row" });
-      row.addEventListener("click", () => this.onContactClick(contact));
-      const avatar = row.createDiv({ cls: "gmail-crm-avatar" });
-      avatar.setText(this.initials(contact.name));
-      const info = row.createDiv({ cls: "gmail-crm-info" });
-      info.createDiv({ cls: "gmail-crm-name", text: contact.name });
-      const stats = info.createDiv({ cls: "gmail-crm-stats" });
-      stats.createSpan({ text: contact.email, cls: "gmail-crm-email" });
-      stats.createSpan({
-        text: ` \xB7 ${contact.totalExchanges} emails`,
-        cls: "gmail-crm-faded"
-      });
-      const dateEl = row.createDiv({ cls: "gmail-crm-date" });
-      dateEl.setText(this.relativeTime(contact.lastContact));
-    }
-    if (contacts.length > 200) {
-      listEl.createDiv({
-        cls: "gmail-crm-faded",
-        text: `+ ${contacts.length - 200} more (use filter)`
-      });
-    }
-  }
-  initials(name) {
-    const parts = name.split(/\s+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-    return name.slice(0, 2).toUpperCase();
-  }
-  relativeTime(iso) {
-    const diff = Date.now() - new Date(iso).getTime();
-    const mins = Math.floor(diff / 6e4);
-    if (mins < 60) return `${mins}m ago`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    if (days < 30) return `${days}d ago`;
-    const months = Math.floor(days / 30);
-    return `${months}mo ago`;
-  }
-};
-
 // src/settings-tab.ts
-var import_obsidian3 = require("obsidian");
-var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
+var import_obsidian2 = require("obsidian");
+var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -381,13 +245,13 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "Create a Google Cloud project with Gmail API enabled. Add an OAuth2 client (Desktop app). Use redirect URI: http://localhost:42813/callback",
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setName("Client ID").setDesc("OAuth2 Client ID from Google Cloud Console").addText(
+    new import_obsidian2.Setting(containerEl).setName("Client ID").setDesc("OAuth2 Client ID from Google Cloud Console").addText(
       (text) => text.setPlaceholder("your-client-id.apps.googleusercontent.com").setValue(this.plugin.settings.clientId).onChange(async (value) => {
         this.plugin.settings.clientId = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Client Secret").setDesc("OAuth2 Client Secret").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("Client Secret").setDesc("OAuth2 Client Secret").addText((text) => {
       text.setPlaceholder("GOCSPX-...").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
         this.plugin.settings.clientSecret = value;
         await this.plugin.saveSettings();
@@ -395,35 +259,35 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       text.inputEl.type = "password";
     });
     const isAuthenticated = !!this.plugin.settings.refreshToken;
-    new import_obsidian3.Setting(containerEl).setName("Connection Status").setDesc(isAuthenticated ? "Connected to Gmail" : "Not connected").addButton(
+    new import_obsidian2.Setting(containerEl).setName("Connection Status").setDesc(isAuthenticated ? "Connected to Gmail" : "Not connected").addButton(
       (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect Gmail").setCta().onClick(async () => {
         if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
-          new import_obsidian3.Notice("Please enter Client ID and Client Secret first.");
+          new import_obsidian2.Notice("Please enter Client ID and Client Secret first.");
           return;
         }
         await this.plugin.startOAuthFlow();
       })
     );
     if (isAuthenticated) {
-      new import_obsidian3.Setting(containerEl).setName("Disconnect").addButton(
+      new import_obsidian2.Setting(containerEl).setName("Disconnect").addButton(
         (btn) => btn.setButtonText("Disconnect Gmail").setWarning().onClick(async () => {
           this.plugin.settings.accessToken = "";
           this.plugin.settings.refreshToken = "";
           this.plugin.settings.tokenExpiry = 0;
           await this.plugin.saveSettings();
-          new import_obsidian3.Notice("Disconnected from Gmail.");
+          new import_obsidian2.Notice("Disconnected from Gmail.");
           this.display();
         })
       );
     }
     containerEl.createEl("h3", { text: "Sync" });
-    new import_obsidian3.Setting(containerEl).setName("Sync interval").setDesc("How often to re-sync Gmail metadata (minutes)").addSlider(
+    new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc("How often to re-sync Gmail metadata (minutes)").addSlider(
       (slider) => slider.setLimits(15, 480, 15).setValue(this.plugin.settings.syncIntervalMinutes).setDynamicTooltip().onChange(async (value) => {
         this.plugin.settings.syncIntervalMinutes = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Max messages to scan").setDesc("Number of recent messages to pull metadata from").addDropdown((dd) => {
+    new import_obsidian2.Setting(containerEl).setName("Max messages to scan").setDesc("Number of recent messages to pull metadata from").addDropdown((dd) => {
       for (const n of [100, 250, 500, 1e3, 2e3]) {
         dd.addOption(String(n), String(n));
       }
@@ -433,19 +297,19 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("Sync now").setDesc("Manually trigger a full sync").addButton(
+    new import_obsidian2.Setting(containerEl).setName("Sync now").setDesc("Manually trigger a full sync").addButton(
       (btn) => btn.setButtonText("Sync").setCta().onClick(async () => {
         await this.plugin.syncContacts();
       })
     );
     containerEl.createEl("h3", { text: "Contact Notes" });
-    new import_obsidian3.Setting(containerEl).setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a People/ folder").addToggle(
+    new import_obsidian2.Setting(containerEl).setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a People/ folder").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.createContactNotes).onChange(async (value) => {
         this.plugin.settings.createContactNotes = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Contact notes folder").setDesc("Vault folder for contact notes").addText(
+    new import_obsidian2.Setting(containerEl).setName("Contact notes folder").setDesc("Vault folder for contact notes").addText(
       (text) => text.setValue(this.plugin.settings.contactNotesFolder).onChange(async (value) => {
         this.plugin.settings.contactNotesFolder = value;
         await this.plugin.saveSettings();
@@ -456,20 +320,26 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper Skill profiles using Claude.",
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (e.g., 'people pages')").addText(
+    new import_obsidian2.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (e.g., 'people pages')").addText(
       (text) => text.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
         this.plugin.settings.peopleFolder = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Anthropic API key").setDesc("Required for Harper Skill AI analysis. Relationship mapping works without it.").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("Companies folder").setDesc("Vault folder for company pages. New companies are auto-created here.").addText(
+      (text) => text.setValue(this.plugin.settings.companiesFolder).onChange(async (value) => {
+        this.plugin.settings.companiesFolder = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Anthropic API key").setDesc("Required for Harper Skill AI analysis. Relationship mapping works without it.").addText((text) => {
       text.setPlaceholder("sk-ant-...").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
         this.plugin.settings.anthropicApiKey = value;
         await this.plugin.saveSettings();
       });
       text.inputEl.type = "password";
     });
-    new import_obsidian3.Setting(containerEl).setName("Model").setDesc("Claude model for analysis").addDropdown((dd) => {
+    new import_obsidian2.Setting(containerEl).setName("Model").setDesc("Claude model for analysis").addDropdown((dd) => {
       dd.addOption("claude-sonnet-4-6", "Sonnet 4.6 (fast)");
       dd.addOption("claude-opus-4-6", "Opus 4.6 (thorough)");
       dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheapest)");
@@ -479,20 +349,35 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("Enrich on sync").setDesc("Automatically run Harper Skill after Gmail sync").addToggle(
+    new import_obsidian2.Setting(containerEl).setName("Enrich on sync").setDesc("Automatically run Harper Skill after Gmail sync").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enrichOnSync).onChange(async (value) => {
         this.plugin.settings.enrichOnSync = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Enrich all people").setDesc("Run relationship mapping + Harper Skill on all people pages").addButton(
+    new import_obsidian2.Setting(containerEl).setName("Enrich all people").setDesc("Run relationship mapping + Harper Skill on all people pages").addButton(
       (btn) => btn.setButtonText("Enrich All").setCta().onClick(async () => {
         await this.plugin.enrichAllPeople();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Map relationships only").setDesc("Build relationship graph without AI analysis (free, instant)").addButton(
+    new import_obsidian2.Setting(containerEl).setName("Map relationships only").setDesc("Build relationship graph without AI analysis (free, instant)").addButton(
       (btn) => btn.setButtonText("Map Only").onClick(async () => {
         await this.plugin.enrichAllPeople(true);
+      })
+    );
+    containerEl.createEl("h3", { text: "CRM Base View" });
+    containerEl.createEl("p", {
+      text: "Staleness scoring tracks relationship freshness. The Base view gives you a sortable CRM table of all your contacts with status indicators.",
+      cls: "setting-item-description"
+    });
+    new import_obsidian2.Setting(containerEl).setName("Update staleness scores").setDesc("Compute freshness scores and write to frontmatter on all people pages").addButton(
+      (btn) => btn.setButtonText("Score All").setCta().onClick(async () => {
+        await this.plugin.updateStaleness();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Create CRM Base").setDesc("Generate an Obsidian Base file with CRM table views (sorted by staleness, filterable)").addButton(
+      (btn) => btn.setButtonText("Create Base").setCta().onClick(async () => {
+        await this.plugin.createBase();
       })
     );
   }
@@ -537,7 +422,7 @@ function startOAuthCallbackServer() {
 }
 
 // src/relationships.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 var RelationshipEngine = class {
   constructor(vault, peopleFolder) {
     this.vault = vault;
@@ -545,12 +430,12 @@ var RelationshipEngine = class {
   }
   async loadPeoplePages() {
     const folder = this.vault.getAbstractFileByPath(
-      (0, import_obsidian4.normalizePath)(this.peopleFolder)
+      (0, import_obsidian3.normalizePath)(this.peopleFolder)
     );
-    if (!(folder instanceof import_obsidian4.TFolder)) return {};
+    if (!(folder instanceof import_obsidian3.TFolder)) return {};
     const pages = {};
     for (const child of folder.children) {
-      if (!(child instanceof import_obsidian4.TFile) || child.extension !== "md") continue;
+      if (!(child instanceof import_obsidian3.TFile) || child.extension !== "md") continue;
       const content = await this.vault.read(child);
       const name = child.basename.replace(/^p-\s*/, "");
       const wikiLinks = [];
@@ -588,7 +473,7 @@ var RelationshipEngine = class {
     return pages;
   }
   buildGraph(pages, contactIndex) {
-    var _a;
+    var _a, _b, _c;
     const graph = {};
     const allNames = new Set(Object.keys(pages));
     for (const name of allNames) {
@@ -673,7 +558,9 @@ var RelationshipEngine = class {
             sentCount: contact.sentCount,
             receivedCount: contact.receivedCount,
             lastContact: contact.lastContact,
-            subjects: (_a = contact.subjects) != null ? _a : []
+            subjects: (_a = contact.subjects) != null ? _a : [],
+            lastSubject: (_b = contact.lastSubject) != null ? _b : "",
+            domain: (_c = contact.domain) != null ? _c : ""
           };
         }
       }
@@ -711,7 +598,7 @@ var RelationshipEngine = class {
 };
 
 // src/harper-skill.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 var HarperSkill = class {
   constructor(apiKey, model) {
@@ -802,7 +689,7 @@ COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merg
 
 ---
 *Harper Skill enriched: ${today}*`;
-    const resp = await (0, import_obsidian5.requestUrl)({
+    const resp = await (0, import_obsidian4.requestUrl)({
       url: ANTHROPIC_API_URL,
       method: "POST",
       headers: {
@@ -821,6 +708,454 @@ COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merg
   }
 };
 
+// src/staleness.ts
+function computeStaleness(page, relationships) {
+  const gmail = page.gmailStats;
+  const now = Date.now();
+  let daysSinceContact = null;
+  let totalExchanges = 0;
+  let sentCount = 0;
+  let receivedCount = 0;
+  if (gmail) {
+    const lastDate = new Date(gmail.lastContact).getTime();
+    daysSinceContact = Math.floor((now - lastDate) / 864e5);
+    totalExchanges = gmail.totalExchanges;
+    sentCount = gmail.sentCount;
+    receivedCount = gmail.receivedCount;
+  } else {
+    const meetingDates = page.meetings.map((m) => new Date(m.date).getTime()).filter((t) => !isNaN(t));
+    if (meetingDates.length > 0) {
+      const latest = Math.max(...meetingDates);
+      daysSinceContact = Math.floor((now - latest) / 864e5);
+    }
+  }
+  const relationshipStrength = computeStrength(totalExchanges, relationships.length);
+  let score;
+  if (daysSinceContact === null) {
+    score = 0;
+  } else if (daysSinceContact <= 7) {
+    score = 100;
+  } else if (daysSinceContact <= 30) {
+    score = 90 - (daysSinceContact - 7) * (20 / 23);
+  } else if (daysSinceContact <= 90) {
+    score = 70 - (daysSinceContact - 30) * (30 / 60);
+  } else if (daysSinceContact <= 180) {
+    score = 40 - (daysSinceContact - 90) * (25 / 90);
+  } else {
+    score = Math.max(0, 15 - (daysSinceContact - 180) * (15 / 180));
+  }
+  if (totalExchanges > 50) score = Math.min(100, score + 10);
+  else if (totalExchanges > 20) score = Math.min(100, score + 5);
+  if (relationships.length > 5) score = Math.min(100, score + 5);
+  score = Math.round(score);
+  const label = scoreToLabel(score);
+  let nudge = null;
+  if (label === "stale" || label === "dormant") {
+    if (relationshipStrength === "strong" || relationshipStrength === "moderate") {
+      nudge = generateNudge(page, daysSinceContact, totalExchanges);
+    } else if (label === "dormant") {
+      nudge = "No recent contact \u2014 consider if re-engagement is worthwhile";
+    }
+  } else if (label === "cooling" && relationshipStrength === "strong") {
+    nudge = generateNudge(page, daysSinceContact, totalExchanges);
+  }
+  return {
+    score,
+    label,
+    daysSinceContact,
+    relationshipStrength,
+    nudge
+  };
+}
+function computeStrength(totalExchanges, edgeCount) {
+  if (totalExchanges === 0 && edgeCount === 0) return "unknown";
+  if (totalExchanges === 0) {
+    if (edgeCount >= 5) return "moderate";
+    if (edgeCount >= 2) return "weak";
+    return "unknown";
+  }
+  if (totalExchanges >= 20) return "strong";
+  if (totalExchanges >= 8) return "moderate";
+  return "weak";
+}
+function scoreToLabel(score) {
+  if (score >= 70) return "active";
+  if (score >= 50) return "warm";
+  if (score >= 30) return "cooling";
+  if (score >= 10) return "stale";
+  return "dormant";
+}
+function generateNudge(page, days, exchanges) {
+  const parts = [];
+  if (days !== null) {
+    if (days > 180) parts.push(`No contact in ${Math.floor(days / 30)} months`);
+    else parts.push(`Last contact ${days} days ago`);
+  }
+  if (exchanges > 20) {
+    parts.push(`previously active (${exchanges} emails)`);
+  }
+  if (page.keyContext) {
+    parts.push(`context: ${page.keyContext}`);
+  } else if (page.role) {
+    parts.push(`role: ${page.role}`);
+  }
+  return parts.join(" \u2014 ") || "Consider re-engaging";
+}
+
+// src/frontmatter.ts
+var import_obsidian5 = require("obsidian");
+var FrontmatterManager = class {
+  constructor(vault, companiesFolder = "Companies") {
+    this.companyIndex = null;
+    this.vault = vault;
+    this.companiesFolder = companiesFolder;
+  }
+  loadCompanyIndex() {
+    if (this.companyIndex) return this.companyIndex;
+    this.companyIndex = /* @__PURE__ */ new Map();
+    const folder = this.vault.getAbstractFileByPath(
+      (0, import_obsidian5.normalizePath)(this.companiesFolder)
+    );
+    if (folder instanceof import_obsidian5.TFolder) {
+      for (const child of folder.children) {
+        if (child instanceof import_obsidian5.TFile && child.extension === "md") {
+          this.companyIndex.set(child.basename.toLowerCase(), child.basename);
+        }
+      }
+    }
+    return this.companyIndex;
+  }
+  matchCompany(rawCompany) {
+    const index = this.loadCompanyIndex();
+    const lower = rawCompany.toLowerCase().trim();
+    if (index.has(lower)) return index.get(lower);
+    const stripped = lower.replace(/\s*(inc\.?|llc|corp\.?|co\.?|ltd\.?)$/i, "").trim();
+    if (index.has(stripped)) return index.get(stripped);
+    for (const [key, name] of index) {
+      if (key.includes(stripped) || stripped.includes(key)) {
+        return name;
+      }
+    }
+    return null;
+  }
+  async resolveCompany(rawCompany) {
+    const matched = this.matchCompany(rawCompany);
+    if (matched) {
+      return `"[[${this.companiesFolder}/${matched}|${matched}]]"`;
+    }
+    const safeName = rawCompany.replace(/[\\/:*?"<>|]/g, "_").trim();
+    const stubPath = (0, import_obsidian5.normalizePath)(`${this.companiesFolder}/${safeName}.md`);
+    const existing = this.vault.getAbstractFileByPath(stubPath);
+    if (!existing) {
+      const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+      const content = [
+        "---",
+        `title: "${safeName}"`,
+        `date: ${today}`,
+        "tags: [company]",
+        "type: company",
+        "status: active",
+        "---",
+        "",
+        `# ${safeName}`,
+        "",
+        "## Company Overview",
+        "",
+        "## People",
+        ""
+      ].join("\n");
+      try {
+        const folder = this.vault.getAbstractFileByPath(
+          (0, import_obsidian5.normalizePath)(this.companiesFolder)
+        );
+        if (!folder) {
+          await this.vault.createFolder((0, import_obsidian5.normalizePath)(this.companiesFolder));
+        }
+        await this.vault.create(stubPath, content);
+      } catch (e) {
+      }
+      this.loadCompanyIndex().set(safeName.toLowerCase(), safeName);
+    }
+    return `"[[${this.companiesFolder}/${safeName}|${safeName}]]"`;
+  }
+  async updateFrontmatter(file, page, staleness, relationships) {
+    var _a;
+    const content = await this.vault.read(file);
+    const crm = {
+      staleness_score: staleness.score,
+      staleness_label: staleness.label,
+      relationship_strength: staleness.relationshipStrength,
+      connections: relationships.length
+    };
+    if (page.email) crm.email = page.email;
+    let rawCompany = null;
+    if (page.role) {
+      const roleParts = page.role.split(/\s+at\s+|\s+@\s+/i);
+      if (roleParts.length === 2) {
+        crm.role = roleParts[0].trim();
+        rawCompany = roleParts[1].trim();
+      } else {
+        crm.role = page.role;
+      }
+    }
+    if (!rawCompany && ((_a = page.gmailStats) == null ? void 0 : _a.domain)) {
+      const d = page.gmailStats.domain;
+      const generic = /* @__PURE__ */ new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "protonmail.com", "me.com", "live.com", "mail.com"]);
+      if (!generic.has(d)) {
+        rawCompany = d.split(".")[0];
+        rawCompany = rawCompany.charAt(0).toUpperCase() + rawCompany.slice(1);
+      }
+    }
+    if (rawCompany) {
+      crm.company = await this.resolveCompany(rawCompany);
+    }
+    if (page.gmailStats) {
+      crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+      crm.total_exchanges = page.gmailStats.totalExchanges;
+      crm.sent = page.gmailStats.sentCount;
+      crm.received = page.gmailStats.receivedCount;
+      if (page.gmailStats.lastSubject) {
+        crm.last_subject = page.gmailStats.lastSubject;
+      }
+      if (page.gmailStats.domain) {
+        crm.domain = page.gmailStats.domain;
+      }
+    }
+    if (staleness.daysSinceContact !== null) {
+      crm.days_since_contact = staleness.daysSinceContact;
+    }
+    if (staleness.nudge) {
+      crm.nudge = staleness.nudge;
+    }
+    const updated = this.mergeFrontmatter(content, crm);
+    if (updated !== content) {
+      await this.vault.modify(file, updated);
+    }
+  }
+  mergeFrontmatter(content, fields) {
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const existingLines = fmMatch[1].split("\n");
+      const existingKeys = /* @__PURE__ */ new Set();
+      const updatedLines = [];
+      for (const line of existingLines) {
+        const keyMatch = line.match(/^(\w[\w_-]*):/);
+        if (keyMatch) {
+          const key = keyMatch[1];
+          existingKeys.add(key);
+          if (key in fields) {
+            const val = fields[key];
+            if (val !== void 0) {
+              updatedLines.push(this.formatField(key, val));
+            } else {
+              updatedLines.push(line);
+            }
+          } else {
+            updatedLines.push(line);
+          }
+        } else {
+          updatedLines.push(line);
+        }
+      }
+      for (const [key, val] of Object.entries(fields)) {
+        if (!existingKeys.has(key) && val !== void 0) {
+          updatedLines.push(this.formatField(key, val));
+        }
+      }
+      const newFm = `---
+${updatedLines.join("\n")}
+---`;
+      return content.replace(/^---\n[\s\S]*?\n---/, newFm);
+    } else {
+      const lines = [];
+      for (const [key, val] of Object.entries(fields)) {
+        if (val !== void 0) {
+          lines.push(this.formatField(key, val));
+        }
+      }
+      return `---
+${lines.join("\n")}
+---
+
+${content}`;
+    }
+  }
+  formatField(key, val) {
+    if (typeof val === "number" || typeof val === "boolean") {
+      return `${key}: ${val}`;
+    }
+    if (val.startsWith('"') && val.endsWith('"')) {
+      return `${key}: ${val}`;
+    }
+    if (val.includes(":") || val.includes("#") || val.includes("'") || val.includes('"') || val.includes("\n") || val.includes("[")) {
+      return `${key}: "${val.replace(/"/g, '\\"')}"`;
+    }
+    return `${key}: ${val}`;
+  }
+};
+
+// src/base-view.ts
+var import_obsidian6 = require("obsidian");
+var BASE_CONTENT = `filters:
+  and:
+    - staleness_label != null
+properties:
+  note.email:
+    displayName: Email
+  note.role:
+    displayName: Role
+  note.company:
+    displayName: Company
+  note.last_contact:
+    displayName: Last Emailed
+  note.total_exchanges:
+    displayName: "# Emails"
+  note.staleness_score:
+    displayName: Freshness
+  note.staleness_label:
+    displayName: Status
+  note.relationship_strength:
+    displayName: Strength
+  note.days_since_contact:
+    displayName: Days Ago
+  note.connections:
+    displayName: Connections
+  note.nudge:
+    displayName: Nudge
+  note.sent:
+    displayName: Sent
+  note.received:
+    displayName: Received
+  note.last_subject:
+    displayName: Last Subject
+  note.domain:
+    displayName: Domain
+views:
+  - type: table
+    name: CRM
+    order:
+      - file.name
+      - company
+      - last_contact
+      - last_subject
+      - total_exchanges
+      - staleness_label
+      - relationship_strength
+      - days_since_contact
+      - nudge
+    sort:
+      - property: days_since_contact
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - last_contact
+      - last_subject
+      - total_exchanges
+      - staleness_label
+      - relationship_strength
+      - days_since_contact
+      - nudge
+    columnSize:
+      file.name: 200
+      company: 160
+      last_subject: 250
+      nudge: 300
+    summaries:
+      total_exchanges: Sum
+  - type: table
+    name: Going Stale
+    order:
+      - file.name
+      - company
+      - last_subject
+      - days_since_contact
+      - total_exchanges
+      - relationship_strength
+      - nudge
+    filters:
+      and:
+        - relationship_strength = "strong" OR relationship_strength = "moderate"
+        - staleness_label = "stale" OR staleness_label = "dormant" OR staleness_label = "cooling"
+    sort:
+      - property: total_exchanges
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - last_subject
+      - days_since_contact
+      - total_exchanges
+      - relationship_strength
+      - nudge
+    columnSize:
+      file.name: 200
+      company: 160
+      last_subject: 250
+      nudge: 350
+  - type: table
+    name: By Company
+    order:
+      - company
+      - file.name
+      - staleness_label
+      - last_contact
+      - total_exchanges
+      - relationship_strength
+    sort:
+      - property: company
+        direction: ASC
+      - property: total_exchanges
+        direction: DESC
+    columns:
+      - company
+      - file.name
+      - staleness_label
+      - last_contact
+      - total_exchanges
+      - relationship_strength
+    columnSize:
+      file.name: 200
+      company: 180
+  - type: table
+    name: Active
+    order:
+      - file.name
+      - company
+      - role
+      - last_contact
+      - total_exchanges
+      - sent
+      - received
+    filters:
+      and:
+        - staleness_label = "active" OR staleness_label = "warm"
+    sort:
+      - property: last_contact
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - role
+      - last_contact
+      - total_exchanges
+      - sent
+      - received
+    columnSize:
+      file.name: 200
+      company: 160
+`;
+async function createBaseView(vault, peopleFolder) {
+  const basePath = (0, import_obsidian6.normalizePath)(`${peopleFolder}/CRM.base`);
+  const existing = vault.getAbstractFileByPath(basePath);
+  if (existing instanceof import_obsidian6.TFile) {
+    await vault.modify(existing, BASE_CONTENT);
+  } else {
+    await vault.create(basePath, BASE_CONTENT);
+  }
+  return basePath;
+}
+
 // src/types.ts
 var DEFAULT_SETTINGS = {
   clientId: "",
@@ -833,13 +1168,14 @@ var DEFAULT_SETTINGS = {
   createContactNotes: false,
   contactNotesFolder: "People pages",
   peopleFolder: "People pages",
+  companiesFolder: "Companies",
   anthropicApiKey: "",
   harperModel: "claude-sonnet-4-6",
   enrichOnSync: false
 };
 
 // src/main.ts
-var GmailCrmPlugin = class extends import_obsidian6.Plugin {
+var GmailCrmPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -852,19 +1188,10 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
       Object.assign(this.settings, patch);
       await this.saveSettings();
     });
-    this.registerView(VIEW_TYPE_GMAIL_CRM, (leaf) => {
-      return new GmailCrmView(
-        leaf,
-        (contact) => this.openContactNote(contact)
-      );
-    });
-    this.addRibbonIcon("contact", "Gmail CRM", () => {
-      this.activateView();
-    });
     this.addCommand({
       id: "open-gmail-crm",
-      name: "Open Gmail CRM",
-      callback: () => this.activateView()
+      name: "Open CRM Base",
+      callback: () => this.createBase()
     });
     this.addCommand({
       id: "sync-gmail-crm",
@@ -881,7 +1208,7 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
       name: "Enrich current person (Harper Skill)",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
-        if (!file || !file.path.startsWith((0, import_obsidian6.normalizePath)(this.settings.peopleFolder))) {
+        if (!file || !file.path.startsWith((0, import_obsidian7.normalizePath)(this.settings.peopleFolder))) {
           return false;
         }
         if (!checking) {
@@ -895,6 +1222,16 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
       id: "map-relationships",
       name: "Map relationships only (no AI)",
       callback: () => this.enrichAllPeople(true)
+    });
+    this.addCommand({
+      id: "update-staleness",
+      name: "Update staleness scores",
+      callback: () => this.updateStaleness()
+    });
+    this.addCommand({
+      id: "create-base-view",
+      name: "Create CRM Base view",
+      callback: () => this.createBase()
     });
     this.addSettingTab(new GmailCrmSettingTab(this.app, this));
     await this.loadContactIndex();
@@ -920,15 +1257,15 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
       const authUrl = this.gmailApi.getAuthUrl();
       const codePromise = startOAuthCallbackServer();
       window.open(authUrl);
-      new import_obsidian6.Notice("Opening browser for Gmail authorization...");
+      new import_obsidian7.Notice("Opening browser for Gmail authorization...");
       const code = await codePromise;
       await this.gmailApi.exchangeCode(code);
-      new import_obsidian6.Notice("Gmail connected successfully!");
+      new import_obsidian7.Notice("Gmail connected successfully!");
       this.startAutoSync();
       await this.syncContacts();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian6.Notice(`Gmail auth failed: ${msg}`);
+      new import_obsidian7.Notice(`Gmail auth failed: ${msg}`);
     }
   }
   startAutoSync() {
@@ -943,10 +1280,10 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
-      new import_obsidian6.Notice("Connect Gmail first in plugin settings.");
+      new import_obsidian7.Notice("Connect Gmail first in plugin settings.");
       return;
     }
-    const notice = new import_obsidian6.Notice("Syncing Gmail contacts...", 0);
+    const notice = new import_obsidian7.Notice("Syncing Gmail contacts...", 0);
     try {
       this.contactIndex = await this.gmailApi.buildContactIndex(
         this.settings.maxResults,
@@ -958,7 +1295,6 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
       if (this.settings.createContactNotes) {
         await this.writeContactNotes();
       }
-      this.refreshView();
       notice.setMessage(
         `Synced ${Object.keys(this.contactIndex.contacts).length} contacts`
       );
@@ -969,17 +1305,16 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian6.Notice(`Sync failed: ${msg}`);
+      new import_obsidian7.Notice(`Sync failed: ${msg}`);
     }
   }
   async loadContactIndex() {
     const path = this.getIndexPath();
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian6.TFile) {
+    if (file instanceof import_obsidian7.TFile) {
       const content = await this.app.vault.read(file);
       try {
         this.contactIndex = JSON.parse(content);
-        this.refreshView();
       } catch (e) {
       }
     }
@@ -989,24 +1324,24 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex, null, 2);
     const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian6.TFile) {
+    if (existing instanceof import_obsidian7.TFile) {
       await this.app.vault.modify(existing, content);
     } else {
       try {
         await this.app.vault.create(path, content);
       } catch (e) {
-        await this.app.vault.adapter.write((0, import_obsidian6.normalizePath)(path), content);
+        await this.app.vault.adapter.write((0, import_obsidian7.normalizePath)(path), content);
       }
     }
   }
   getIndexPath() {
-    return (0, import_obsidian6.normalizePath)(
+    return (0, import_obsidian7.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
     );
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;
-    const folder = (0, import_obsidian6.normalizePath)(this.settings.contactNotesFolder);
+    const folder = (0, import_obsidian7.normalizePath)(this.settings.contactNotesFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
@@ -1015,9 +1350,9 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
     }
     const existingPages = /* @__PURE__ */ new Map();
     const folderObj = this.app.vault.getAbstractFileByPath(folder);
-    if (folderObj instanceof import_obsidian6.TFolder) {
+    if (folderObj instanceof import_obsidian7.TFolder) {
       for (const child of folderObj.children) {
-        if (child instanceof import_obsidian6.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian7.TFile && child.extension === "md") {
           const pageName = child.basename.replace(/^p-\s*/, "").toLowerCase();
           existingPages.set(pageName, child);
         }
@@ -1025,7 +1360,7 @@ var GmailCrmPlugin = class extends import_obsidian6.Plugin {
     }
     for (const contact of Object.values(this.contactIndex.contacts)) {
       const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-      const notePath = (0, import_obsidian6.normalizePath)(`${folder}/p- ${safeName}.md`);
+      const notePath = (0, import_obsidian7.normalizePath)(`${folder}/p- ${safeName}.md`);
       const existingFile = existingPages.get(contact.name.toLowerCase());
       const frontmatter = [
         "---",
@@ -1058,7 +1393,7 @@ ${body}`;
         continue;
       }
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (noteFile instanceof import_obsidian6.TFile) {
+      if (noteFile instanceof import_obsidian7.TFile) {
         continue;
       }
       await this.app.vault.create(notePath, content);
@@ -1073,29 +1408,20 @@ ${body}`;
   }
   async openContactNote(contact) {
     const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-    const notePath = (0, import_obsidian6.normalizePath)(
+    const notePath = (0, import_obsidian7.normalizePath)(
       `${this.settings.contactNotesFolder}/${safeName}.md`
     );
     const file = this.app.vault.getAbstractFileByPath(notePath);
-    if (file instanceof import_obsidian6.TFile) {
+    if (file instanceof import_obsidian7.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     } else {
-      new import_obsidian6.Notice(`No note found for ${contact.name}. Run sync first.`);
-    }
-  }
-  refreshView() {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM);
-    for (const leaf of leaves) {
-      const view = leaf.view;
-      if (view instanceof GmailCrmView && this.contactIndex) {
-        view.setContactIndex(this.contactIndex);
-      }
+      new import_obsidian7.Notice(`No note found for ${contact.name}. Run sync first.`);
     }
   }
   async enrichAllPeople(skipAi = false) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian6.Notice("Loading people pages...", 0);
+    const notice = new import_obsidian7.Notice("Loading people pages...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -1107,7 +1433,7 @@ ${body}`;
       if (!skipAi) {
         if (!this.settings.anthropicApiKey) {
           notice.hide();
-          new import_obsidian6.Notice("Set your Anthropic API key in Gmail CRM settings first.");
+          new import_obsidian7.Notice("Set your Anthropic API key in Gmail CRM settings first.");
           return;
         }
         harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
@@ -1118,7 +1444,7 @@ ${body}`;
         notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
         const relationships = (_a = graph[name]) != null ? _a : [];
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (!(file instanceof import_obsidian6.TFile)) continue;
+        if (!(file instanceof import_obsidian7.TFile)) continue;
         if (harper) {
           try {
             const rewritten = await harper.rewritePersonPage(name, page, relationships, pages);
@@ -1126,7 +1452,7 @@ ${body}`;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error(`Harper Skill failed for ${name}: ${msg}`);
-            new import_obsidian6.Notice(`Failed on ${name}: ${msg}`);
+            new import_obsidian7.Notice(`Failed on ${name}: ${msg}`);
           }
         } else {
           const relLines = relationships.map(
@@ -1151,31 +1477,31 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian6.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian7.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async enrichSinglePerson(name) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian6.Notice(`Enriching ${name}...`, 0);
+    const notice = new import_obsidian7.Notice(`Enriching ${name}...`, 0);
     try {
       const pages = await engine.loadPeoplePages();
       if (!pages[name]) {
         notice.hide();
-        new import_obsidian6.Notice(`Person "${name}" not found in people pages.`);
+        new import_obsidian7.Notice(`Person "${name}" not found in people pages.`);
         return;
       }
       const graph = engine.buildGraph(pages, this.contactIndex);
       const relationships = (_a = graph[name]) != null ? _a : [];
       if (!this.settings.anthropicApiKey) {
         notice.hide();
-        new import_obsidian6.Notice("Set your Anthropic API key in Gmail CRM settings first.");
+        new import_obsidian7.Notice("Set your Anthropic API key in Gmail CRM settings first.");
         return;
       }
       const harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
       const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
       const file = this.app.vault.getAbstractFileByPath(pages[name].path);
-      if (file instanceof import_obsidian6.TFile) {
+      if (file instanceof import_obsidian7.TFile) {
         await this.app.vault.modify(file, rewritten);
       }
       notice.setMessage(`Enriched ${name}!`);
@@ -1183,19 +1509,54 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian6.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian7.Notice(`Enrichment failed: ${msg}`);
     }
   }
-  async activateView() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM);
-    if (existing.length > 0) {
-      this.app.workspace.revealLeaf(existing[0]);
-      return;
+  async updateStaleness() {
+    var _a;
+    const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+    const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
+    const notice = new import_obsidian7.Notice("Computing staleness scores...", 0);
+    try {
+      const pages = await engine.loadPeoplePages();
+      const count = Object.keys(pages).length;
+      const graph = engine.buildGraph(pages, this.contactIndex);
+      let done = 0;
+      let staleCount = 0;
+      for (const [name, page] of Object.entries(pages)) {
+        done++;
+        const relationships = (_a = graph[name]) != null ? _a : [];
+        const staleness = computeStaleness(page, relationships);
+        if (staleness.label === "stale" || staleness.label === "dormant") {
+          staleCount++;
+        }
+        const file = this.app.vault.getAbstractFileByPath(page.path);
+        if (file instanceof import_obsidian7.TFile) {
+          await fm.updateFrontmatter(file, page, staleness, relationships);
+        }
+        if (done % 20 === 0) {
+          notice.setMessage(`Scoring ${done}/${count}...`);
+        }
+      }
+      notice.setMessage(`Scored ${count} contacts \u2014 ${staleCount} going stale`);
+      setTimeout(() => notice.hide(), 4e3);
+    } catch (e) {
+      notice.hide();
+      const msg = e instanceof Error ? e.message : String(e);
+      new import_obsidian7.Notice(`Staleness update failed: ${msg}`);
     }
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (leaf) {
-      await leaf.setViewState({ type: VIEW_TYPE_GMAIL_CRM, active: true });
-      this.app.workspace.revealLeaf(leaf);
+  }
+  async createBase() {
+    try {
+      const basePath = await createBaseView(this.app.vault, this.settings.peopleFolder);
+      new import_obsidian7.Notice(`CRM Base created at ${basePath}`);
+      const file = this.app.vault.getAbstractFileByPath(basePath);
+      if (file instanceof import_obsidian7.TFile) {
+        await this.app.workspace.getLeaf().openFile(file);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new import_obsidian7.Notice(`Failed to create Base: ${msg}`);
     }
   }
 };

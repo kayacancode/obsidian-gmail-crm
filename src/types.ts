@@ -10,6 +10,7 @@ export interface GmailCrmSettings {
 	contactNotesFolder: string;
 	// Harper Skill / Relationship mapping
 	peopleFolder: string;
+	companiesFolder: string;
 	anthropicApiKey: string;
 	harperModel: string;
 	enrichOnSync: boolean;
@@ -26,6 +27,7 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	createContactNotes: false,
 	contactNotesFolder: "People pages",
 	peopleFolder: "People pages",
+	companiesFolder: "Companies",
 	anthropicApiKey: "",
 	harperModel: "claude-sonnet-4-6",
 	enrichOnSync: false,
@@ -40,6 +42,8 @@ export interface Contact {
 	receivedCount: number;
 	totalExchanges: number;
 	subjects: string[]; // last N subject lines
+	lastSubject: string; // most recent subject line
+	domain: string; // email domain (company signal)
 }
 
 export interface ContactIndex {
@@ -96,6 +100,8 @@ export interface GmailStats {
 	receivedCount: number;
 	lastContact: string;
 	subjects: string[];
+	lastSubject: string;
+	domain: string;
 }
 
 export interface Relationship {
