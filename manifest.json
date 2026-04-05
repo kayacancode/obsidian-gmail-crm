@@ -3,7 +3,7 @@
 	"name": "Gmail CRM",
 	"version": "0.1.0",
 	"minAppVersion": "1.0.0",
-	"description": "Lightweight CRM layer — pulls Gmail metadata (contacts, last contact date, exchange counts) into your vault.",
+	"description": "Privacy-first CRM from Gmail metadata with AI relationship intelligence and staleness tracking.",
 	"author": "Kaya Jones",
 	"isDesktopOnly": true
 }
