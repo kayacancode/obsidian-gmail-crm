@@ -48,14 +48,14 @@ export default class GmailCrmPlugin extends Plugin {
 		// Command: enrich all people
 		this.addCommand({
 			id: "enrich-all-people",
-			name: "Enrich all people (relationships + Harper Skill)",
+			name: "Enrich all people (relationships + Harper skill)",
 			callback: () => { void this.enrichAllPeople(); },
 		});
 
 		// Command: enrich current person
 		this.addCommand({
 			id: "enrich-current-person",
-			name: "Enrich current person (Harper Skill)",
+			name: "Enrich current person (Harper skill)",
 			checkCallback: (checking) => {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || !file.path.startsWith(normalizePath(this.settings.peopleFolder))) {
@@ -72,7 +72,7 @@ export default class GmailCrmPlugin extends Plugin {
 		// Command: map relationships only (no AI)
 		this.addCommand({
 			id: "map-relationships",
-			name: "Map relationships only (no AI)",
+			name: "Map relationships only (no ai)",
 			callback: () => { void this.enrichAllPeople(true); },
 		});
 
@@ -153,7 +153,7 @@ export default class GmailCrmPlugin extends Plugin {
 
 	async syncContacts() {
 		if (!this.settings.refreshToken) {
-			new Notice("Connect Gmail first in plugin settings.");
+			new Notice("Connect Gmail first in plugin settings");
 			return;
 		}
 
@@ -284,7 +284,7 @@ export default class GmailCrmPlugin extends Plugin {
 
 			if (existingFile) {
 				// Page exists — don't overwrite, just skip
-				// Harper Skill enrichment handles merging Gmail data
+				// Harper skill enrichment handles merging Gmail data
 				continue;
 			}
 
@@ -358,7 +358,7 @@ export default class GmailCrmPlugin extends Plugin {
 						await this.app.vault.modify(file, rewritten);
 					} catch (e: unknown) {
 						const msg = e instanceof Error ? e.message : String(e);
-						console.error(`Harper Skill failed for ${name}: ${msg}`);
+						console.error(`Harper skill failed for ${name}: ${msg}`);
 						new Notice(`Failed on ${name}: ${msg}`);
 					}
 				} else {

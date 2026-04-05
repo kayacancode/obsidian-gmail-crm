@@ -13,18 +13,18 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl).setName("Gmail CRM settings").setHeading();
+		new Setting(containerEl).setName("General").setHeading();
 
 		// Auth section
-		new Setting(containerEl).setName("Google OAuth").setHeading();
+		new Setting(containerEl).setName("Google oauth").setHeading();
 		containerEl.createEl("p", {
 			text: "Create a Google Cloud project with Gmail API enabled. Add an OAuth2 client (Desktop app). Use redirect URI: http://localhost:42813/callback",
 			cls: "setting-item-description",
 		});
 
 		new Setting(containerEl)
-			.setName("Client ID")
-			.setDesc("OAuth2 client ID from Google Cloud Console")
+			.setName("Client id")
+			.setDesc("OAuth2 client id from Google Cloud Console")
 			.addText((text) =>
 				text
 					.setPlaceholder("your-client-id.apps.googleusercontent.com")
@@ -60,7 +60,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					.setCta()
 					.onClick(async () => {
 						if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
-							new Notice("Please enter Client ID and Client Secret first.");
+							new Notice("Please enter client id and client secret first.");
 							return;
 						}
 						await this.plugin.startOAuthFlow();
@@ -77,7 +77,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 						this.plugin.settings.refreshToken = "";
 						this.plugin.settings.tokenExpiry = 0;
 						await this.plugin.saveSettings();
-						new Notice("Disconnected from Gmail.");
+						new Notice("Disconnected from Gmail");
 						this.display();
 					})
 			);
@@ -153,10 +153,10 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					})
 			);
 
-		// Harper Skill section
-		new Setting(containerEl).setName("Harper Skill analysis").setHeading();
+		// Harper skill section
+		new Setting(containerEl).setName("Harper skill analysis").setHeading();
 		containerEl.createEl("p", {
-			text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper Skill profiles using Claude.",
+			text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper skill profiles using Claude.",
 			cls: "setting-item-description",
 		});
 
@@ -186,7 +186,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Anthropic API key")
-			.setDesc("Required for Harper Skill AI analysis. Relationship mapping works without it.")
+			.setDesc("Required for Harper skill AI analysis. Relationship mapping works without it.")
 			.addText((text) => {
 				text
 					.setPlaceholder("sk-ant-...")
@@ -204,7 +204,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			.addDropdown((dd) => {
 				dd.addOption("claude-sonnet-4-6", "Sonnet 4.6 (fast)");
 				dd.addOption("claude-opus-4-6", "Opus 4.6 (thorough)");
-				dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheapest)");
+				dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheap)");
 				dd.setValue(this.plugin.settings.harperModel);
 				dd.onChange(async (value) => {
 					this.plugin.settings.harperModel = value;
@@ -214,7 +214,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Enrich on sync")
-			.setDesc("Automatically run Harper Skill after Gmail sync")
+			.setDesc("Automatically run Harper skill after Gmail sync")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.enrichOnSync)
@@ -226,7 +226,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Enrich all people")
-			.setDesc("Run relationship mapping + Harper Skill on all people pages")
+			.setDesc("Run relationship mapping + Harper skill on all people pages")
 			.addButton((btn) =>
 				btn
 					.setButtonText("Enrich all")

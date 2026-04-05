@@ -239,13 +239,13 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian2.Setting(containerEl).setName("Gmail CRM settings").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Google OAuth").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("General").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Google oauth").setHeading();
     containerEl.createEl("p", {
       text: "Create a Google Cloud project with Gmail API enabled. Add an OAuth2 client (Desktop app). Use redirect URI: http://localhost:42813/callback",
       cls: "setting-item-description"
     });
-    new import_obsidian2.Setting(containerEl).setName("Client ID").setDesc("OAuth2 client ID from Google Cloud Console").addText(
+    new import_obsidian2.Setting(containerEl).setName("Client id").setDesc("OAuth2 client id from Google Cloud Console").addText(
       (text) => text.setPlaceholder("your-client-id.apps.googleusercontent.com").setValue(this.plugin.settings.clientId).onChange(async (value) => {
         this.plugin.settings.clientId = value;
         await this.plugin.saveSettings();
@@ -262,7 +262,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Connection status").setDesc(isAuthenticated ? "Connected to Gmail" : "Not connected").addButton(
       (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect gmail").setCta().onClick(async () => {
         if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
-          new import_obsidian2.Notice("Please enter Client ID and Client Secret first.");
+          new import_obsidian2.Notice("Please enter client id and client secret first.");
           return;
         }
         await this.plugin.startOAuthFlow();
@@ -275,7 +275,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
           this.plugin.settings.refreshToken = "";
           this.plugin.settings.tokenExpiry = 0;
           await this.plugin.saveSettings();
-          new import_obsidian2.Notice("Disconnected from Gmail.");
+          new import_obsidian2.Notice("Disconnected from Gmail");
           this.display();
         })
       );
@@ -315,9 +315,9 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Harper Skill analysis").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Harper skill analysis").setHeading();
     containerEl.createEl("p", {
-      text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper Skill profiles using Claude.",
+      text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper skill profiles using Claude.",
       cls: "setting-item-description"
     });
     new import_obsidian2.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (e.g., 'people pages')").addText(
@@ -332,7 +332,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Anthropic API key").setDesc("Required for Harper Skill AI analysis. Relationship mapping works without it.").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("Anthropic API key").setDesc("Required for Harper skill AI analysis. Relationship mapping works without it.").addText((text) => {
       text.setPlaceholder("sk-ant-...").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
         this.plugin.settings.anthropicApiKey = value;
         await this.plugin.saveSettings();
@@ -342,20 +342,20 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Model").setDesc("Claude model for analysis").addDropdown((dd) => {
       dd.addOption("claude-sonnet-4-6", "Sonnet 4.6 (fast)");
       dd.addOption("claude-opus-4-6", "Opus 4.6 (thorough)");
-      dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheapest)");
+      dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheap)");
       dd.setValue(this.plugin.settings.harperModel);
       dd.onChange(async (value) => {
         this.plugin.settings.harperModel = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Enrich on sync").setDesc("Automatically run Harper Skill after Gmail sync").addToggle(
+    new import_obsidian2.Setting(containerEl).setName("Enrich on sync").setDesc("Automatically run Harper skill after Gmail sync").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enrichOnSync).onChange(async (value) => {
         this.plugin.settings.enrichOnSync = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Enrich all people").setDesc("Run relationship mapping + Harper Skill on all people pages").addButton(
+    new import_obsidian2.Setting(containerEl).setName("Enrich all people").setDesc("Run relationship mapping + Harper skill on all people pages").addButton(
       (btn) => btn.setButtonText("Enrich all").setCta().onClick(async () => {
         await this.plugin.enrichAllPeople();
       })
@@ -1200,14 +1200,14 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     });
     this.addCommand({
       id: "enrich-all-people",
-      name: "Enrich all people (relationships + Harper Skill)",
+      name: "Enrich all people (relationships + Harper skill)",
       callback: () => {
         void this.enrichAllPeople();
       }
     });
     this.addCommand({
       id: "enrich-current-person",
-      name: "Enrich current person (Harper Skill)",
+      name: "Enrich current person (Harper skill)",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         if (!file || !file.path.startsWith((0, import_obsidian7.normalizePath)(this.settings.peopleFolder))) {
@@ -1222,7 +1222,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     });
     this.addCommand({
       id: "map-relationships",
-      name: "Map relationships only (no AI)",
+      name: "Map relationships only (no ai)",
       callback: () => {
         void this.enrichAllPeople(true);
       }
@@ -1290,7 +1290,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
-      new import_obsidian7.Notice("Connect Gmail first in plugin settings.");
+      new import_obsidian7.Notice("Connect Gmail first in plugin settings");
       return;
     }
     const notice = new import_obsidian7.Notice("Syncing Gmail contacts...", 0);
@@ -1461,7 +1461,7 @@ ${body}`;
             await this.app.vault.modify(file, rewritten);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            console.error(`Harper Skill failed for ${name}: ${msg}`);
+            console.error(`Harper skill failed for ${name}: ${msg}`);
             new import_obsidian7.Notice(`Failed on ${name}: ${msg}`);
           }
         } else {

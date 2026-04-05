@@ -1,7 +1,6 @@
 import { TFile, TFolder, Vault, normalizePath } from "obsidian";
 import type {
 	PersonPage,
-	Relationship,
 	RelationshipGraph,
 	ContactIndex,
 } from "./types";
