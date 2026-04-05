@@ -13,10 +13,10 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Gmail CRM Settings" });
+		new Setting(containerEl).setName("Gmail CRM settings").setHeading();
 
 		// Auth section
-		containerEl.createEl("h3", { text: "Google OAuth" });
+		new Setting(containerEl).setName("Google OAuth").setHeading();
 		containerEl.createEl("p", {
 			text: "Create a Google Cloud project with Gmail API enabled. Add an OAuth2 client (Desktop app). Use redirect URI: http://localhost:42813/callback",
 			cls: "setting-item-description",
@@ -24,7 +24,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Client ID")
-			.setDesc("OAuth2 Client ID from Google Cloud Console")
+			.setDesc("OAuth2 client ID from Google Cloud Console")
 			.addText((text) =>
 				text
 					.setPlaceholder("your-client-id.apps.googleusercontent.com")
@@ -36,8 +36,8 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Client Secret")
-			.setDesc("OAuth2 Client Secret")
+			.setName("Client secret")
+			.setDesc("OAuth2 client secret")
 			.addText((text) => {
 				text
 					.setPlaceholder("GOCSPX-...")
@@ -52,11 +52,11 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		const isAuthenticated = !!this.plugin.settings.refreshToken;
 
 		new Setting(containerEl)
-			.setName("Connection Status")
+			.setName("Connection status")
 			.setDesc(isAuthenticated ? "Connected to Gmail" : "Not connected")
 			.addButton((btn) =>
 				btn
-					.setButtonText(isAuthenticated ? "Reconnect" : "Connect Gmail")
+					.setButtonText(isAuthenticated ? "Reconnect" : "Connect gmail")
 					.setCta()
 					.onClick(async () => {
 						if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
@@ -70,7 +70,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		if (isAuthenticated) {
 			new Setting(containerEl).setName("Disconnect").addButton((btn) =>
 				btn
-					.setButtonText("Disconnect Gmail")
+					.setButtonText("Disconnect gmail")
 					.setWarning()
 					.onClick(async () => {
 						this.plugin.settings.accessToken = "";
@@ -84,7 +84,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		}
 
 		// Sync section
-		containerEl.createEl("h3", { text: "Sync" });
+		new Setting(containerEl).setName("Sync").setHeading();
 
 		new Setting(containerEl)
 			.setName("Sync interval")
@@ -127,11 +127,11 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 
 		// Notes section
-		containerEl.createEl("h3", { text: "Contact Notes" });
+		new Setting(containerEl).setName("Contact notes").setHeading();
 
 		new Setting(containerEl)
 			.setName("Create contact notes")
-			.setDesc("Auto-create a vault note for each contact in a People/ folder")
+			.setDesc("Auto-create a vault note for each contact in a people/ folder")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.createContactNotes)
@@ -154,7 +154,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 
 		// Harper Skill section
-		containerEl.createEl("h3", { text: "Harper Skill Analysis" });
+		new Setting(containerEl).setName("Harper Skill analysis").setHeading();
 		containerEl.createEl("p", {
 			text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper Skill profiles using Claude.",
 			cls: "setting-item-description",
@@ -229,7 +229,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			.setDesc("Run relationship mapping + Harper Skill on all people pages")
 			.addButton((btn) =>
 				btn
-					.setButtonText("Enrich All")
+					.setButtonText("Enrich all")
 					.setCta()
 					.onClick(async () => {
 						await this.plugin.enrichAllPeople();
@@ -241,14 +241,14 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			.setDesc("Build relationship graph without AI analysis (free, instant)")
 			.addButton((btn) =>
 				btn
-					.setButtonText("Map Only")
+					.setButtonText("Map only")
 					.onClick(async () => {
 						await this.plugin.enrichAllPeople(true);
 					})
 			);
 
 		// Staleness & Base section
-		containerEl.createEl("h3", { text: "CRM Base View" });
+		new Setting(containerEl).setName("CRM base view").setHeading();
 		containerEl.createEl("p", {
 			text: "Staleness scoring tracks relationship freshness. The Base view gives you a sortable CRM table of all your contacts with status indicators.",
 			cls: "setting-item-description",
@@ -259,7 +259,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			.setDesc("Compute freshness scores and write to frontmatter on all people pages")
 			.addButton((btn) =>
 				btn
-					.setButtonText("Score All")
+					.setButtonText("Score all")
 					.setCta()
 					.onClick(async () => {
 						await this.plugin.updateStaleness();
@@ -267,11 +267,11 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Create CRM Base")
-			.setDesc("Generate an Obsidian Base file with CRM table views (sorted by staleness, filterable)")
+			.setName("Create CRM base")
+			.setDesc("Generate an Obsidian base file with CRM table views (sorted by staleness, filterable)")
 			.addButton((btn) =>
 				btn
-					.setButtonText("Create Base")
+					.setButtonText("Create base")
 					.setCta()
 					.onClick(async () => {
 						await this.plugin.createBase();

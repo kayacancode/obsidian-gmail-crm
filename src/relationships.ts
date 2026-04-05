@@ -4,7 +4,6 @@ import type {
 	Relationship,
 	RelationshipGraph,
 	ContactIndex,
-	GmailStats,
 } from "./types";
 
 export class RelationshipEngine {

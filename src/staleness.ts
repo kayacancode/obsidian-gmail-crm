@@ -1,4 +1,4 @@
-import type { PersonPage, Relationship, GmailStats } from "./types";
+import type { PersonPage, Relationship } from "./types";
 
 export interface StalenessScore {
 	score: number; // 0-100, 100 = very fresh, 0 = completely stale
@@ -18,15 +18,11 @@ export function computeStaleness(
 	// If no Gmail data, try to extract last contact from page content
 	let daysSinceContact: number | null = null;
 	let totalExchanges = 0;
-	let sentCount = 0;
-	let receivedCount = 0;
 
 	if (gmail) {
 		const lastDate = new Date(gmail.lastContact).getTime();
 		daysSinceContact = Math.floor((now - lastDate) / 86_400_000);
 		totalExchanges = gmail.totalExchanges;
-		sentCount = gmail.sentCount;
-		receivedCount = gmail.receivedCount;
 	} else {
 		// Try meeting dates as fallback
 		const meetingDates = page.meetings

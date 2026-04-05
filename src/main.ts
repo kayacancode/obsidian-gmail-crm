@@ -4,7 +4,6 @@ import {
 	TFile,
 	TFolder,
 	normalizePath,
-	TAbstractFile,
 } from "obsidian";
 import { GmailApi } from "./gmail-api";
 // Sidebar removed — using Obsidian Base view instead
@@ -34,23 +33,23 @@ export default class GmailCrmPlugin extends Plugin {
 
 		// Command: open CRM base
 		this.addCommand({
-			id: "open-gmail-crm",
-			name: "Open CRM Base",
-			callback: () => this.createBase(),
+			id: "open",
+			name: "Open CRM base",
+			callback: () => { void this.createBase(); },
 		});
 
 		// Command: sync
 		this.addCommand({
-			id: "sync-gmail-crm",
+			id: "sync",
 			name: "Sync Gmail contacts",
-			callback: () => this.syncContacts(),
+			callback: () => { void this.syncContacts(); },
 		});
 
 		// Command: enrich all people
 		this.addCommand({
 			id: "enrich-all-people",
 			name: "Enrich all people (relationships + Harper Skill)",
-			callback: () => this.enrichAllPeople(),
+			callback: () => { void this.enrichAllPeople(); },
 		});
 
 		// Command: enrich current person
@@ -64,7 +63,7 @@ export default class GmailCrmPlugin extends Plugin {
 				}
 				if (!checking) {
 					const name = file.basename.replace(/^p-\s*/, "");
-					this.enrichSinglePerson(name);
+					void this.enrichSinglePerson(name);
 				}
 				return true;
 			},
@@ -74,21 +73,21 @@ export default class GmailCrmPlugin extends Plugin {
 		this.addCommand({
 			id: "map-relationships",
 			name: "Map relationships only (no AI)",
-			callback: () => this.enrichAllPeople(true),
+			callback: () => { void this.enrichAllPeople(true); },
 		});
 
 		// Command: update staleness scores
 		this.addCommand({
 			id: "update-staleness",
 			name: "Update staleness scores",
-			callback: () => this.updateStaleness(),
+			callback: () => { void this.updateStaleness(); },
 		});
 
 		// Command: create/update CRM base view
 		this.addCommand({
 			id: "create-base-view",
-			name: "Create CRM Base view",
-			callback: () => this.createBase(),
+			name: "Create CRM base view",
+			callback: () => { void this.createBase(); },
 		});
 
 		// Settings tab
@@ -146,7 +145,7 @@ export default class GmailCrmPlugin extends Plugin {
 			window.clearInterval(this.syncInterval);
 		}
 		this.syncInterval = window.setInterval(
-			() => this.syncContacts(),
+			() => { void this.syncContacts(); },
 			this.settings.syncIntervalMinutes * 60_000
 		);
 		this.registerInterval(this.syncInterval);

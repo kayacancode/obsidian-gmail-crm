@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import type { PersonPage, Relationship, RelationshipGraph } from "./types";
+import type { PersonPage, Relationship } from "./types";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 

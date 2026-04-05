@@ -239,19 +239,19 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Gmail CRM Settings" });
-    containerEl.createEl("h3", { text: "Google OAuth" });
+    new import_obsidian2.Setting(containerEl).setName("Gmail CRM settings").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Google OAuth").setHeading();
     containerEl.createEl("p", {
       text: "Create a Google Cloud project with Gmail API enabled. Add an OAuth2 client (Desktop app). Use redirect URI: http://localhost:42813/callback",
       cls: "setting-item-description"
     });
-    new import_obsidian2.Setting(containerEl).setName("Client ID").setDesc("OAuth2 Client ID from Google Cloud Console").addText(
+    new import_obsidian2.Setting(containerEl).setName("Client ID").setDesc("OAuth2 client ID from Google Cloud Console").addText(
       (text) => text.setPlaceholder("your-client-id.apps.googleusercontent.com").setValue(this.plugin.settings.clientId).onChange(async (value) => {
         this.plugin.settings.clientId = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Client Secret").setDesc("OAuth2 Client Secret").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("Client secret").setDesc("OAuth2 client secret").addText((text) => {
       text.setPlaceholder("GOCSPX-...").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
         this.plugin.settings.clientSecret = value;
         await this.plugin.saveSettings();
@@ -259,8 +259,8 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       text.inputEl.type = "password";
     });
     const isAuthenticated = !!this.plugin.settings.refreshToken;
-    new import_obsidian2.Setting(containerEl).setName("Connection Status").setDesc(isAuthenticated ? "Connected to Gmail" : "Not connected").addButton(
-      (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect Gmail").setCta().onClick(async () => {
+    new import_obsidian2.Setting(containerEl).setName("Connection status").setDesc(isAuthenticated ? "Connected to Gmail" : "Not connected").addButton(
+      (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect gmail").setCta().onClick(async () => {
         if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
           new import_obsidian2.Notice("Please enter Client ID and Client Secret first.");
           return;
@@ -270,7 +270,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
     );
     if (isAuthenticated) {
       new import_obsidian2.Setting(containerEl).setName("Disconnect").addButton(
-        (btn) => btn.setButtonText("Disconnect Gmail").setWarning().onClick(async () => {
+        (btn) => btn.setButtonText("Disconnect gmail").setWarning().onClick(async () => {
           this.plugin.settings.accessToken = "";
           this.plugin.settings.refreshToken = "";
           this.plugin.settings.tokenExpiry = 0;
@@ -280,7 +280,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         })
       );
     }
-    containerEl.createEl("h3", { text: "Sync" });
+    new import_obsidian2.Setting(containerEl).setName("Sync").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc("How often to re-sync Gmail metadata (minutes)").addSlider(
       (slider) => slider.setLimits(15, 480, 15).setValue(this.plugin.settings.syncIntervalMinutes).setDynamicTooltip().onChange(async (value) => {
         this.plugin.settings.syncIntervalMinutes = value;
@@ -302,8 +302,8 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.syncContacts();
       })
     );
-    containerEl.createEl("h3", { text: "Contact Notes" });
-    new import_obsidian2.Setting(containerEl).setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a People/ folder").addToggle(
+    new import_obsidian2.Setting(containerEl).setName("Contact notes").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a people/ folder").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.createContactNotes).onChange(async (value) => {
         this.plugin.settings.createContactNotes = value;
         await this.plugin.saveSettings();
@@ -315,7 +315,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    containerEl.createEl("h3", { text: "Harper Skill Analysis" });
+    new import_obsidian2.Setting(containerEl).setName("Harper Skill analysis").setHeading();
     containerEl.createEl("p", {
       text: "Relationship mapping and AI-powered people enrichment. Scans your people pages, builds a relationship graph, and generates Harper Skill profiles using Claude.",
       cls: "setting-item-description"
@@ -356,27 +356,27 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Enrich all people").setDesc("Run relationship mapping + Harper Skill on all people pages").addButton(
-      (btn) => btn.setButtonText("Enrich All").setCta().onClick(async () => {
+      (btn) => btn.setButtonText("Enrich all").setCta().onClick(async () => {
         await this.plugin.enrichAllPeople();
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Map relationships only").setDesc("Build relationship graph without AI analysis (free, instant)").addButton(
-      (btn) => btn.setButtonText("Map Only").onClick(async () => {
+      (btn) => btn.setButtonText("Map only").onClick(async () => {
         await this.plugin.enrichAllPeople(true);
       })
     );
-    containerEl.createEl("h3", { text: "CRM Base View" });
+    new import_obsidian2.Setting(containerEl).setName("CRM base view").setHeading();
     containerEl.createEl("p", {
       text: "Staleness scoring tracks relationship freshness. The Base view gives you a sortable CRM table of all your contacts with status indicators.",
       cls: "setting-item-description"
     });
     new import_obsidian2.Setting(containerEl).setName("Update staleness scores").setDesc("Compute freshness scores and write to frontmatter on all people pages").addButton(
-      (btn) => btn.setButtonText("Score All").setCta().onClick(async () => {
+      (btn) => btn.setButtonText("Score all").setCta().onClick(async () => {
         await this.plugin.updateStaleness();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Create CRM Base").setDesc("Generate an Obsidian Base file with CRM table views (sorted by staleness, filterable)").addButton(
-      (btn) => btn.setButtonText("Create Base").setCta().onClick(async () => {
+    new import_obsidian2.Setting(containerEl).setName("Create CRM base").setDesc("Generate an Obsidian base file with CRM table views (sorted by staleness, filterable)").addButton(
+      (btn) => btn.setButtonText("Create base").setCta().onClick(async () => {
         await this.plugin.createBase();
       })
     );
@@ -714,14 +714,10 @@ function computeStaleness(page, relationships) {
   const now = Date.now();
   let daysSinceContact = null;
   let totalExchanges = 0;
-  let sentCount = 0;
-  let receivedCount = 0;
   if (gmail) {
     const lastDate = new Date(gmail.lastContact).getTime();
     daysSinceContact = Math.floor((now - lastDate) / 864e5);
     totalExchanges = gmail.totalExchanges;
-    sentCount = gmail.sentCount;
-    receivedCount = gmail.receivedCount;
   } else {
     const meetingDates = page.meetings.map((m) => new Date(m.date).getTime()).filter((t) => !isNaN(t));
     if (meetingDates.length > 0) {
@@ -1189,19 +1185,25 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       await this.saveSettings();
     });
     this.addCommand({
-      id: "open-gmail-crm",
-      name: "Open CRM Base",
-      callback: () => this.createBase()
+      id: "open",
+      name: "Open CRM base",
+      callback: () => {
+        void this.createBase();
+      }
     });
     this.addCommand({
-      id: "sync-gmail-crm",
+      id: "sync",
       name: "Sync Gmail contacts",
-      callback: () => this.syncContacts()
+      callback: () => {
+        void this.syncContacts();
+      }
     });
     this.addCommand({
       id: "enrich-all-people",
       name: "Enrich all people (relationships + Harper Skill)",
-      callback: () => this.enrichAllPeople()
+      callback: () => {
+        void this.enrichAllPeople();
+      }
     });
     this.addCommand({
       id: "enrich-current-person",
@@ -1213,7 +1215,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
         }
         if (!checking) {
           const name = file.basename.replace(/^p-\s*/, "");
-          this.enrichSinglePerson(name);
+          void this.enrichSinglePerson(name);
         }
         return true;
       }
@@ -1221,17 +1223,23 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     this.addCommand({
       id: "map-relationships",
       name: "Map relationships only (no AI)",
-      callback: () => this.enrichAllPeople(true)
+      callback: () => {
+        void this.enrichAllPeople(true);
+      }
     });
     this.addCommand({
       id: "update-staleness",
       name: "Update staleness scores",
-      callback: () => this.updateStaleness()
+      callback: () => {
+        void this.updateStaleness();
+      }
     });
     this.addCommand({
       id: "create-base-view",
-      name: "Create CRM Base view",
-      callback: () => this.createBase()
+      name: "Create CRM base view",
+      callback: () => {
+        void this.createBase();
+      }
     });
     this.addSettingTab(new GmailCrmSettingTab(this.app, this));
     await this.loadContactIndex();
@@ -1273,7 +1281,9 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       window.clearInterval(this.syncInterval);
     }
     this.syncInterval = window.setInterval(
-      () => this.syncContacts(),
+      () => {
+        void this.syncContacts();
+      },
       this.settings.syncIntervalMinutes * 6e4
     );
     this.registerInterval(this.syncInterval);

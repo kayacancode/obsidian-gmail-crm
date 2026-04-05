@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, WorkspaceLeaf } from "obsidian";
 import type { ContactIndex, Contact } from "./types";
 
 export const VIEW_TYPE_GMAIL_CRM = "gmail-crm-view";
@@ -33,8 +33,9 @@ export class GmailCrmView extends ItemView {
 		this.render();
 	}
 
-	async onOpen() {
+	onOpen(): Promise<void> {
 		this.render();
+		return Promise.resolve();
 	}
 
 	private render() {
