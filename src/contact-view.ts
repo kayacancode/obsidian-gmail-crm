@@ -21,7 +21,7 @@ export class GmailCrmView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return "Gmail CRM";
+		return "Contacts";
 	}
 
 	getIcon(): string {
@@ -45,7 +45,7 @@ export class GmailCrmView extends ItemView {
 
 		// Header
 		const header = container.createDiv({ cls: "gmail-crm-header" });
-		header.createEl("h4", { text: "Gmail CRM" });
+		header.createEl("h4", { text: "Contacts" });
 
 		if (this.contactIndex) {
 			const meta = header.createDiv({ cls: "gmail-crm-meta" });

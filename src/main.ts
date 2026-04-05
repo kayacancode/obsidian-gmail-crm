@@ -34,28 +34,28 @@ export default class GmailCrmPlugin extends Plugin {
 		// Command: open CRM base
 		this.addCommand({
 			id: "open",
-			name: "Open CRM base",
+			name: "Open contact base",
 			callback: () => { void this.createBase(); },
 		});
 
 		// Command: sync
 		this.addCommand({
 			id: "sync",
-			name: "Sync Gmail contacts",
+			name: "Sync contacts",
 			callback: () => { void this.syncContacts(); },
 		});
 
 		// Command: enrich all people
 		this.addCommand({
 			id: "enrich-all-people",
-			name: "Enrich all people (relationships + Harper skill)",
+			name: "Enrich all people",
 			callback: () => { void this.enrichAllPeople(); },
 		});
 
 		// Command: enrich current person
 		this.addCommand({
 			id: "enrich-current-person",
-			name: "Enrich current person (Harper skill)",
+			name: "Enrich current person",
 			checkCallback: (checking) => {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || !file.path.startsWith(normalizePath(this.settings.peopleFolder))) {
@@ -72,7 +72,7 @@ export default class GmailCrmPlugin extends Plugin {
 		// Command: map relationships only (no AI)
 		this.addCommand({
 			id: "map-relationships",
-			name: "Map relationships only (no ai)",
+			name: "Map relationships only (no AI)",
 			callback: () => { void this.enrichAllPeople(true); },
 		});
 
@@ -86,7 +86,7 @@ export default class GmailCrmPlugin extends Plugin {
 		// Command: create/update CRM base view
 		this.addCommand({
 			id: "create-base-view",
-			name: "Create CRM base view",
+			name: "Create contact base view",
 			callback: () => { void this.createBase(); },
 		});
 
@@ -126,7 +126,7 @@ export default class GmailCrmPlugin extends Plugin {
 
 			// Open browser
 			window.open(authUrl);
-			new Notice("Opening browser for Gmail authorization...");
+			new Notice("Opening browser for authorization...");
 
 			const code = await codePromise;
 			await this.gmailApi.exchangeCode(code);
@@ -153,11 +153,11 @@ export default class GmailCrmPlugin extends Plugin {
 
 	async syncContacts() {
 		if (!this.settings.refreshToken) {
-			new Notice("Connect Gmail first in plugin settings");
+			new Notice("Connect your account first in plugin settings");
 			return;
 		}
 
-		const notice = new Notice("Syncing Gmail contacts...", 0);
+		const notice = new Notice("Syncing contacts...", 0);
 		try {
 			this.contactIndex = await this.gmailApi.buildContactIndex(
 				this.settings.maxResults,
@@ -337,7 +337,7 @@ export default class GmailCrmPlugin extends Plugin {
 			if (!skipAi) {
 				if (!this.settings.anthropicApiKey) {
 					notice.hide();
-					new Notice("Set your Anthropic API key in Gmail CRM settings first.");
+					new Notice("Set your API key in plugin settings first.");
 					return;
 				}
 				harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
@@ -404,7 +404,7 @@ export default class GmailCrmPlugin extends Plugin {
 
 			if (!this.settings.anthropicApiKey) {
 				notice.hide();
-				new Notice("Set your Anthropic API key in Gmail CRM settings first.");
+				new Notice("Set your API key in plugin settings first.");
 				return;
 			}
 
