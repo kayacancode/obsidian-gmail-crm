@@ -101,28 +101,38 @@ var GmailApi = class {
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async apiRequest(options) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
     try {
       return await (0, import_obsidian.requestUrl)(options);
     } catch (e) {
-      const status = (_a = e == null ? void 0 : e.status) != null ? _a : "unknown";
-      const body = (_c = (_b = e == null ? void 0 : e.response) != null ? _b : e == null ? void 0 : e.text) != null ? _c : "";
+      const err = e;
+      const status = (_b = (_a = err == null ? void 0 : err.status) != null ? _a : err == null ? void 0 : err.code) != null ? _b : "unknown";
+      const body = (_g = (_f = (_e = (_d = (_c = err == null ? void 0 : err.response) != null ? _c : err == null ? void 0 : err.text) != null ? _d : err == null ? void 0 : err.body) != null ? _e : err == null ? void 0 : err.responseText) != null ? _f : err == null ? void 0 : err.message) != null ? _g : "";
       const url = typeof options === "string" ? options : options.url;
       console.error(`[Gmail CRM] API request failed`, {
         url,
         status,
-        response: body,
-        error: e
+        body,
+        errorKeys: Object.keys(err != null ? err : {}),
+        fullError: err
       });
-      let detail = `Request failed, status ${status}`;
-      if (body) {
+      let detail = "";
+      if (body && typeof body === "string" && body.length > 0) {
         try {
-          const parsed = typeof body === "string" ? JSON.parse(body) : body;
-          const msg = (_f = (_e = (_d = parsed == null ? void 0 : parsed.error) == null ? void 0 : _d.message) != null ? _e : parsed == null ? void 0 : parsed.error_description) != null ? _f : JSON.stringify(parsed);
-          detail = `Status ${status}: ${msg}`;
+          const parsed = JSON.parse(body);
+          detail = (_l = (_k = (_i = (_h = parsed == null ? void 0 : parsed.error) == null ? void 0 : _h.message) != null ? _i : parsed == null ? void 0 : parsed.error_description) != null ? _k : (_j = parsed == null ? void 0 : parsed.error) == null ? void 0 : _j.status) != null ? _l : JSON.stringify(parsed).slice(0, 300);
         } catch (e2) {
-          detail = `Status ${status}: ${typeof body === "string" ? body.slice(0, 200) : String(body)}`;
+          detail = body.slice(0, 300);
         }
+      }
+      if (!detail) {
+        const hints = {
+          401: "Token expired or invalid. Try disconnecting and reconnecting.",
+          403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
+          404: "Endpoint not found. The Gmail API may not be enabled.",
+          429: "Rate limited by Google. Wait a few minutes and try again."
+        };
+        detail = (_m = hints[status]) != null ? _m : `HTTP ${status}`;
       }
       throw new Error(detail);
     }

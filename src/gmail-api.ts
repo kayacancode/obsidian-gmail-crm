@@ -89,25 +89,44 @@ export class GmailApi {
 		try {
 			return await requestUrl(options);
 		} catch (e: unknown) {
-			const status = (e as any)?.status ?? "unknown";
-			const body = (e as any)?.response ?? (e as any)?.text ?? "";
+			const err = e as Record<string, any>;
+			const status = err?.status ?? err?.code ?? "unknown";
+			// Obsidian's requestUrl puts the response in various places
+			const body = err?.response ?? err?.text ?? err?.body
+				?? err?.responseText ?? err?.message ?? "";
 			const url = typeof options === "string" ? options : options.url;
+
+			// Log everything we can find on the error object
 			console.error(`[Gmail CRM] API request failed`, {
-				url,
-				status,
-				response: body,
-				error: e,
+				url, status, body,
+				errorKeys: Object.keys(err ?? {}),
+				fullError: err,
 			});
-			let detail = `Request failed, status ${status}`;
-			if (body) {
+
+			let detail = "";
+			if (body && typeof body === "string" && body.length > 0) {
 				try {
-					const parsed = typeof body === "string" ? JSON.parse(body) : body;
-					const msg = parsed?.error?.message ?? parsed?.error_description ?? JSON.stringify(parsed);
-					detail = `Status ${status}: ${msg}`;
+					const parsed = JSON.parse(body);
+					detail = parsed?.error?.message
+						?? parsed?.error_description
+						?? parsed?.error?.status
+						?? JSON.stringify(parsed).slice(0, 300);
 				} catch {
-					detail = `Status ${status}: ${typeof body === "string" ? body.slice(0, 200) : String(body)}`;
+					detail = body.slice(0, 300);
 				}
 			}
+
+			if (!detail) {
+				// Provide helpful context for common status codes
+				const hints: Record<number, string> = {
+					401: "Token expired or invalid. Try disconnecting and reconnecting.",
+					403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
+					404: "Endpoint not found. The Gmail API may not be enabled.",
+					429: "Rate limited by Google. Wait a few minutes and try again.",
+				};
+				detail = hints[status as number] ?? `HTTP ${status}`;
+			}
+
 			throw new Error(detail);
 		}
 	}
