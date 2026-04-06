@@ -62,7 +62,7 @@ var GmailApi = class {
   }
   async exchangeCode(code) {
     var _a;
-    const resp = await (0, import_obsidian.requestUrl)({
+    const resp = await this.apiRequest({
       url: GOOGLE_TOKEN_URL,
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -82,7 +82,7 @@ var GmailApi = class {
     });
   }
   async refreshAccessToken() {
-    const resp = await (0, import_obsidian.requestUrl)({
+    const resp = await this.apiRequest({
       url: GOOGLE_TOKEN_URL,
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -99,6 +99,34 @@ var GmailApi = class {
       tokenExpiry: Date.now() + data.expires_in * 1e3
     });
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async apiRequest(options) {
+    var _a, _b, _c, _d, _e, _f;
+    try {
+      return await (0, import_obsidian.requestUrl)(options);
+    } catch (e) {
+      const status = (_a = e == null ? void 0 : e.status) != null ? _a : "unknown";
+      const body = (_c = (_b = e == null ? void 0 : e.response) != null ? _b : e == null ? void 0 : e.text) != null ? _c : "";
+      const url = typeof options === "string" ? options : options.url;
+      console.error(`[Gmail CRM] API request failed`, {
+        url,
+        status,
+        response: body,
+        error: e
+      });
+      let detail = `Request failed, status ${status}`;
+      if (body) {
+        try {
+          const parsed = typeof body === "string" ? JSON.parse(body) : body;
+          const msg = (_f = (_e = (_d = parsed == null ? void 0 : parsed.error) == null ? void 0 : _d.message) != null ? _e : parsed == null ? void 0 : parsed.error_description) != null ? _f : JSON.stringify(parsed);
+          detail = `Status ${status}: ${msg}`;
+        } catch (e2) {
+          detail = `Status ${status}: ${typeof body === "string" ? body.slice(0, 200) : String(body)}`;
+        }
+      }
+      throw new Error(detail);
+    }
+  }
   async getHeaders() {
     if (Date.now() >= this.settings.tokenExpiry - 6e4) {
       await this.refreshAccessToken();
@@ -107,7 +135,7 @@ var GmailApi = class {
   }
   async getUserEmail() {
     const headers = await this.getHeaders();
-    const resp = await (0, import_obsidian.requestUrl)({
+    const resp = await this.apiRequest({
       url: `${GMAIL_API_BASE}/profile`,
       headers
     });
@@ -122,7 +150,7 @@ var GmailApi = class {
         maxResults: String(Math.min(100, maxResults - allMessages.length))
       });
       if (pageToken) params.set("pageToken", pageToken);
-      const resp = await (0, import_obsidian.requestUrl)({
+      const resp = await this.apiRequest({
         url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
         headers
       });
@@ -136,7 +164,7 @@ var GmailApi = class {
   }
   async fetchMessageMetadata(messageId) {
     const headers = await this.getHeaders();
-    const resp = await (0, import_obsidian.requestUrl)({
+    const resp = await this.apiRequest({
       url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
       headers
     });

@@ -43,7 +43,7 @@ export class GmailApi {
 	}
 
 	async exchangeCode(code: string): Promise<void> {
-		const resp = await requestUrl({
+		const resp = await this.apiRequest({
 			url: GOOGLE_TOKEN_URL,
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -65,7 +65,7 @@ export class GmailApi {
 	}
 
 	private async refreshAccessToken(): Promise<void> {
-		const resp = await requestUrl({
+		const resp = await this.apiRequest({
 			url: GOOGLE_TOKEN_URL,
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -84,6 +84,34 @@ export class GmailApi {
 		});
 	}
 
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private async apiRequest(options: Parameters<typeof requestUrl>[0]): Promise<any> {
+		try {
+			return await requestUrl(options);
+		} catch (e: unknown) {
+			const status = (e as any)?.status ?? "unknown";
+			const body = (e as any)?.response ?? (e as any)?.text ?? "";
+			const url = typeof options === "string" ? options : options.url;
+			console.error(`[Gmail CRM] API request failed`, {
+				url,
+				status,
+				response: body,
+				error: e,
+			});
+			let detail = `Request failed, status ${status}`;
+			if (body) {
+				try {
+					const parsed = typeof body === "string" ? JSON.parse(body) : body;
+					const msg = parsed?.error?.message ?? parsed?.error_description ?? JSON.stringify(parsed);
+					detail = `Status ${status}: ${msg}`;
+				} catch {
+					detail = `Status ${status}: ${typeof body === "string" ? body.slice(0, 200) : String(body)}`;
+				}
+			}
+			throw new Error(detail);
+		}
+	}
+
 	private async getHeaders(): Promise<Record<string, string>> {
 		if (Date.now() >= this.settings.tokenExpiry - 60_000) {
 			await this.refreshAccessToken();
@@ -93,7 +121,7 @@ export class GmailApi {
 
 	async getUserEmail(): Promise<string> {
 		const headers = await this.getHeaders();
-		const resp = await requestUrl({
+		const resp = await this.apiRequest({
 			url: `${GMAIL_API_BASE}/profile`,
 			headers,
 		});
@@ -113,7 +141,7 @@ export class GmailApi {
 			});
 			if (pageToken) params.set("pageToken", pageToken);
 
-			const resp = await requestUrl({
+			const resp = await this.apiRequest({
 				url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
 				headers,
 			});
@@ -131,7 +159,7 @@ export class GmailApi {
 
 	async fetchMessageMetadata(messageId: string): Promise<GmailMessageMetadata> {
 		const headers = await this.getHeaders();
-		const resp = await requestUrl({
+		const resp = await this.apiRequest({
 			url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
 			headers,
 		});
