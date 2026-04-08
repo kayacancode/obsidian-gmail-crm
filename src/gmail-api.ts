@@ -86,49 +86,58 @@ export class GmailApi {
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private async apiRequest(options: Parameters<typeof requestUrl>[0]): Promise<any> {
+		const url = typeof options === "string" ? options : options.url;
+		// Pass throw: false so we can read the actual response body on errors.
+		// Otherwise Obsidian throws a generic "Request failed, status N" with
+		// no body, hiding the real error message from Google.
+		const reqOptions = typeof options === "string"
+			? { url: options, throw: false }
+			: { ...options, throw: false };
+
+		let resp: Awaited<ReturnType<typeof requestUrl>>;
 		try {
-			return await requestUrl(options);
+			resp = await requestUrl(reqOptions);
 		} catch (e: unknown) {
 			const err = e as Record<string, any>;
-			const status = err?.status ?? err?.code ?? "unknown";
-			// Obsidian's requestUrl puts the response in various places
-			const body = err?.response ?? err?.text ?? err?.body
-				?? err?.responseText ?? err?.message ?? "";
-			const url = typeof options === "string" ? options : options.url;
-
-			// Log everything we can find on the error object
-			console.error(`[Gmail CRM] API request failed`, {
-				url, status, body,
-				errorKeys: Object.keys(err ?? {}),
-				fullError: err,
-			});
-
-			let detail = "";
-			if (body && typeof body === "string" && body.length > 0) {
-				try {
-					const parsed = JSON.parse(body);
-					detail = parsed?.error?.message
-						?? parsed?.error_description
-						?? parsed?.error?.status
-						?? JSON.stringify(parsed).slice(0, 300);
-				} catch {
-					detail = body.slice(0, 300);
-				}
-			}
-
-			if (!detail) {
-				// Provide helpful context for common status codes
-				const hints: Record<number, string> = {
-					401: "Token expired or invalid. Try disconnecting and reconnecting.",
-					403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
-					404: "Endpoint not found. The Gmail API may not be enabled.",
-					429: "Rate limited by Google. Wait a few minutes and try again.",
-				};
-				detail = hints[status as number] ?? `HTTP ${status}`;
-			}
-
-			throw new Error(detail);
+			console.error(`[Gmail CRM] Network error`, { url, error: err });
+			throw new Error(err?.message ?? "Network request failed");
 		}
+
+		if (resp.status >= 200 && resp.status < 300) {
+			return resp;
+		}
+
+		// Non-2xx: extract the real error from Google's response body
+		const status = resp.status;
+		const rawBody = resp.text ?? "";
+		console.error(`[Gmail CRM] API request failed`, {
+			url, status, body: rawBody, headers: resp.headers,
+		});
+
+		let detail = "";
+		if (rawBody) {
+			try {
+				const parsed = JSON.parse(rawBody);
+				detail = parsed?.error?.message
+					?? parsed?.error_description
+					?? parsed?.error?.status
+					?? JSON.stringify(parsed).slice(0, 300);
+			} catch {
+				detail = rawBody.slice(0, 300);
+			}
+		}
+
+		if (!detail) {
+			const hints: Record<number, string> = {
+				401: "Token expired or invalid. Try disconnecting and reconnecting.",
+				403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
+				404: "Endpoint not found. The Gmail API may not be enabled.",
+				429: "Rate limited by Google. Wait a few minutes and try again.",
+			};
+			detail = hints[status] ?? `HTTP ${status}`;
+		}
+
+		throw new Error(`HTTP ${status}: ${detail}`);
 	}
 
 	private async getHeaders(): Promise<Record<string, string>> {

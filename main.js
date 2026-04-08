@@ -101,41 +101,47 @@ var GmailApi = class {
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async apiRequest(options) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const url = typeof options === "string" ? options : options.url;
+    const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
+    let resp;
     try {
-      return await (0, import_obsidian.requestUrl)(options);
+      resp = await (0, import_obsidian.requestUrl)(reqOptions);
     } catch (e) {
       const err = e;
-      const status = (_b = (_a = err == null ? void 0 : err.status) != null ? _a : err == null ? void 0 : err.code) != null ? _b : "unknown";
-      const body = (_g = (_f = (_e = (_d = (_c = err == null ? void 0 : err.response) != null ? _c : err == null ? void 0 : err.text) != null ? _d : err == null ? void 0 : err.body) != null ? _e : err == null ? void 0 : err.responseText) != null ? _f : err == null ? void 0 : err.message) != null ? _g : "";
-      const url = typeof options === "string" ? options : options.url;
-      console.error(`[Gmail CRM] API request failed`, {
-        url,
-        status,
-        body,
-        errorKeys: Object.keys(err != null ? err : {}),
-        fullError: err
-      });
-      let detail = "";
-      if (body && typeof body === "string" && body.length > 0) {
-        try {
-          const parsed = JSON.parse(body);
-          detail = (_l = (_k = (_i = (_h = parsed == null ? void 0 : parsed.error) == null ? void 0 : _h.message) != null ? _i : parsed == null ? void 0 : parsed.error_description) != null ? _k : (_j = parsed == null ? void 0 : parsed.error) == null ? void 0 : _j.status) != null ? _l : JSON.stringify(parsed).slice(0, 300);
-        } catch (e2) {
-          detail = body.slice(0, 300);
-        }
-      }
-      if (!detail) {
-        const hints = {
-          401: "Token expired or invalid. Try disconnecting and reconnecting.",
-          403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
-          404: "Endpoint not found. The Gmail API may not be enabled.",
-          429: "Rate limited by Google. Wait a few minutes and try again."
-        };
-        detail = (_m = hints[status]) != null ? _m : `HTTP ${status}`;
-      }
-      throw new Error(detail);
+      console.error(`[Gmail CRM] Network error`, { url, error: err });
+      throw new Error((_a = err == null ? void 0 : err.message) != null ? _a : "Network request failed");
     }
+    if (resp.status >= 200 && resp.status < 300) {
+      return resp;
+    }
+    const status = resp.status;
+    const rawBody = (_b = resp.text) != null ? _b : "";
+    console.error(`[Gmail CRM] API request failed`, {
+      url,
+      status,
+      body: rawBody,
+      headers: resp.headers
+    });
+    let detail = "";
+    if (rawBody) {
+      try {
+        const parsed = JSON.parse(rawBody);
+        detail = (_g = (_f = (_d = (_c = parsed == null ? void 0 : parsed.error) == null ? void 0 : _c.message) != null ? _d : parsed == null ? void 0 : parsed.error_description) != null ? _f : (_e = parsed == null ? void 0 : parsed.error) == null ? void 0 : _e.status) != null ? _g : JSON.stringify(parsed).slice(0, 300);
+      } catch (e) {
+        detail = rawBody.slice(0, 300);
+      }
+    }
+    if (!detail) {
+      const hints = {
+        401: "Token expired or invalid. Try disconnecting and reconnecting.",
+        403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
+        404: "Endpoint not found. The Gmail API may not be enabled.",
+        429: "Rate limited by Google. Wait a few minutes and try again."
+      };
+      detail = (_h = hints[status]) != null ? _h : `HTTP ${status}`;
+    }
+    throw new Error(`HTTP ${status}: ${detail}`);
   }
   async getHeaders() {
     if (Date.now() >= this.settings.tokenExpiry - 6e4) {
