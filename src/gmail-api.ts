@@ -14,6 +14,20 @@ const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const SCOPES = "https://www.googleapis.com/auth/gmail.metadata";
 const REDIRECT_URI = "http://localhost:42813/callback";
 
+// Subject-line pattern used to detect calendar invite / RSVP threads.
+// John Borthwick: "single RSVP responses to event invites → weaker relationship"
+const RSVP_SUBJECT_PATTERN =
+	/\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
+
+// Per-thread state accumulated during index build, keyed by contactEmail -> threadId.
+// Not persisted; finalized into Contact counters after all messages are processed.
+type ThreadState = {
+	sent: number;
+	received: number;
+	subject: string;
+	lastDate: string;
+};
+
 export class GmailApi {
 	private settings: GmailCrmSettings;
 	private onSettingsUpdate: (patch: Partial<GmailCrmSettings>) => Promise<void>;
@@ -202,6 +216,10 @@ export class GmailApi {
 		const messageIds = await this.fetchAllMessageIds(maxResults);
 		const contacts: Record<string, Contact> = {};
 
+		// Per-contact, per-thread state used to compute metadata pattern signals
+		// (back-and-forth, thread depth, RSVP-only). Keyed by contactEmail -> threadId.
+		const threadStates = new Map<string, Map<string, ThreadState>>();
+
 		const BATCH_SIZE = 10;
 		for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
 			const batch = messageIds.slice(i, i + BATCH_SIZE);
@@ -210,11 +228,13 @@ export class GmailApi {
 			);
 
 			for (const msg of results) {
-				this.processMessage(msg, userEmail, contacts);
+				this.processMessage(msg, userEmail, contacts, threadStates);
 			}
 
 			onProgress?.(Math.min(i + BATCH_SIZE, messageIds.length), messageIds.length);
 		}
+
+		this.finalizeContactMetrics(contacts, threadStates);
 
 		return {
 			lastSync: new Date().toISOString(),
@@ -226,13 +246,15 @@ export class GmailApi {
 	private processMessage(
 		msg: GmailMessageMetadata,
 		userEmail: string,
-		contacts: Record<string, Contact>
+		contacts: Record<string, Contact>,
+		threadStates: Map<string, Map<string, ThreadState>>
 	) {
 		const headers = msg.payload.headers;
 		const from = this.getHeader(headers, "From");
 		const to = this.getHeader(headers, "To");
 		const subject = this.getHeader(headers, "Subject") ?? "";
 		const date = new Date(parseInt(msg.internalDate)).toISOString();
+		const threadId = msg.threadId;
 
 		const fromParsed = this.parseEmailAddress(from ?? "");
 		const toParsed = this.parseEmailAddress(to ?? "");
@@ -242,17 +264,19 @@ export class GmailApi {
 		const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
 
 		if (isSent && toParsed) {
-			this.upsertContact(contacts, toParsed, date, subject, "sent");
+			this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
 		} else if (!isSent) {
-			this.upsertContact(contacts, fromParsed, date, subject, "received");
+			this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
 		}
 	}
 
 	private upsertContact(
 		contacts: Record<string, Contact>,
+		threadStates: Map<string, Map<string, ThreadState>>,
 		parsed: { name: string; email: string },
 		date: string,
 		subject: string,
+		threadId: string,
 		direction: "sent" | "received"
 	) {
 		const key = parsed.email.toLowerCase();
@@ -288,6 +312,69 @@ export class GmailApi {
 
 		if (subject && c.subjects.length < 5) {
 			c.subjects.push(subject);
+		}
+
+		// Track per-thread state for metadata signal computation
+		let contactThreads = threadStates.get(key);
+		if (!contactThreads) {
+			contactThreads = new Map();
+			threadStates.set(key, contactThreads);
+		}
+		let thread = contactThreads.get(threadId);
+		if (!thread) {
+			thread = { sent: 0, received: 0, subject, lastDate: date };
+			contactThreads.set(threadId, thread);
+		}
+		if (direction === "sent") thread.sent++;
+		else thread.received++;
+		if (date > thread.lastDate) {
+			thread.lastDate = date;
+			if (subject) thread.subject = subject;
+		}
+	}
+
+	// Finalize metadata pattern signals (thread count, back-and-forth, RSVP-only)
+	// into the persisted Contact records. See task #4 — metadata heuristics per
+	// John Borthwick's feedback: focus on patterns, not email content.
+	private finalizeContactMetrics(
+		contacts: Record<string, Contact>,
+		threadStates: Map<string, Map<string, ThreadState>>
+	) {
+		for (const [key, threads] of threadStates) {
+			const contact = contacts[key];
+			if (!contact) continue;
+
+			let maxDepth = 0;
+			let backAndForth = 0;
+			let rsvpOnly = 0;
+			let lastThreadDepth = 0;
+			let latestDate = "";
+
+			for (const state of threads.values()) {
+				const depth = state.sent + state.received;
+				if (depth > maxDepth) maxDepth = depth;
+
+				// Real conversation loop: both sides participated AND >= 3 messages
+				if (state.sent > 0 && state.received > 0 && depth >= 3) {
+					backAndForth++;
+				}
+
+				// Single-message thread with an invite/RSVP subject
+				if (depth === 1 && RSVP_SUBJECT_PATTERN.test(state.subject)) {
+					rsvpOnly++;
+				}
+
+				if (state.lastDate > latestDate) {
+					latestDate = state.lastDate;
+					lastThreadDepth = depth;
+				}
+			}
+
+			contact.threadCount = threads.size;
+			contact.maxThreadDepth = maxDepth;
+			contact.backAndForthThreads = backAndForth;
+			contact.rsvpOnlyThreads = rsvpOnly;
+			contact.lastThreadDepth = lastThreadDepth;
 		}
 	}
 

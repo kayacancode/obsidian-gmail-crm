@@ -161,6 +161,19 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		});
 
 		new Setting(containerEl)
+			.setName("Your name")
+			.setDesc("How you should be referred to on enriched people pages (e.g., 'How Alex knows them'). Leave blank to use 'the vault owner'.")
+			.addText((text) =>
+				text
+					.setPlaceholder("Your full name")
+					.setValue(this.plugin.settings.vaultOwnerName)
+					.onChange(async (value) => {
+						this.plugin.settings.vaultOwnerName = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("People pages folder")
 			.setDesc("Vault folder containing your people notes (e.g., 'people pages')")
 			.addText((text) =>

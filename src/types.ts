@@ -9,6 +9,7 @@ export interface GmailCrmSettings {
 	createContactNotes: boolean;
 	contactNotesFolder: string;
 	// Harper Skill / Relationship mapping
+	vaultOwnerName: string;
 	peopleFolder: string;
 	companiesFolder: string;
 	anthropicApiKey: string;
@@ -26,6 +27,7 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	maxResults: 500,
 	createContactNotes: false,
 	contactNotesFolder: "People pages",
+	vaultOwnerName: "",
 	peopleFolder: "People pages",
 	companiesFolder: "Companies",
 	anthropicApiKey: "",
@@ -44,6 +46,12 @@ export interface Contact {
 	subjects: string[]; // last N subject lines
 	lastSubject: string; // most recent subject line
 	domain: string; // email domain (company signal)
+	// Metadata pattern signals (optional for backward compat with older cached indexes)
+	threadCount?: number; // distinct threads with this contact
+	maxThreadDepth?: number; // longest thread in messages
+	backAndForthThreads?: number; // threads with both directions and >=3 messages
+	rsvpOnlyThreads?: number; // single-message threads matching invite/RSVP pattern
+	lastThreadDepth?: number; // depth of the thread containing the most recent message
 }
 
 export interface ContactIndex {
@@ -66,6 +74,7 @@ export interface GmailMessageHeader {
 
 export interface GmailMessageMetadata {
 	id: string;
+	threadId: string;
 	payload: {
 		headers: GmailMessageHeader[];
 	};
@@ -102,6 +111,12 @@ export interface GmailStats {
 	subjects: string[];
 	lastSubject: string;
 	domain: string;
+	// Metadata pattern signals — surfaced to staleness/depth scoring
+	threadCount?: number;
+	maxThreadDepth?: number;
+	backAndForthThreads?: number;
+	rsvpOnlyThreads?: number;
+	lastThreadDepth?: number;
 }
 
 export interface Relationship {

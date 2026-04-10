@@ -340,7 +340,11 @@ export default class GmailCrmPlugin extends Plugin {
 					new Notice("Set your API key in plugin settings first.");
 					return;
 				}
-				harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
+				harper = new HarperSkill(
+					this.settings.anthropicApiKey,
+					this.settings.harperModel,
+					this.settings.vaultOwnerName
+				);
 			}
 
 			let done = 0;
@@ -408,7 +412,11 @@ export default class GmailCrmPlugin extends Plugin {
 				return;
 			}
 
-			const harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
+			const harper = new HarperSkill(
+				this.settings.anthropicApiKey,
+				this.settings.harperModel,
+				this.settings.vaultOwnerName
+			);
 			const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
 
 			const file = this.app.vault.getAbstractFileByPath(pages[name].path);

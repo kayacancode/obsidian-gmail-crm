@@ -20,6 +20,10 @@ properties:
     displayName: Status
   note.relationship_strength:
     displayName: Strength
+  note.relationship_depth:
+    displayName: Depth
+  note.relationship_recency:
+    displayName: Recency
   note.days_since_contact:
     displayName: Days Ago
   note.connections:
@@ -32,6 +36,12 @@ properties:
     displayName: Received
   note.last_subject:
     displayName: Last Subject
+  note.last_thread_depth:
+    displayName: Thread Msgs
+  note.max_thread_depth:
+    displayName: Deepest Thread
+  note.back_and_forth_threads:
+    displayName: Conversations
   note.domain:
     displayName: Domain
 views:
@@ -42,23 +52,25 @@ views:
       - company
       - last_contact
       - last_subject
+      - last_thread_depth
       - total_exchanges
+      - relationship_depth
+      - relationship_recency
       - staleness_label
-      - relationship_strength
-      - days_since_contact
       - nudge
     sort:
-      - property: days_since_contact
-        direction: DESC
+      - property: relationship_recency
+        direction: ASC
     columns:
       - file.name
       - company
       - last_contact
       - last_subject
+      - last_thread_depth
       - total_exchanges
+      - relationship_depth
+      - relationship_recency
       - staleness_label
-      - relationship_strength
-      - days_since_contact
       - nudge
     columnSize:
       file.name: 200
@@ -74,23 +86,27 @@ views:
       - company
       - last_subject
       - days_since_contact
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
       - total_exchanges
-      - relationship_strength
       - nudge
     filters:
       and:
-        - relationship_strength = "strong" OR relationship_strength = "moderate"
-        - staleness_label = "stale" OR staleness_label = "dormant" OR staleness_label = "cooling"
+        - relationship_depth >= 3
+        - relationship_recency <= 2
     sort:
-      - property: total_exchanges
+      - property: relationship_depth
         direction: DESC
     columns:
       - file.name
       - company
       - last_subject
       - days_since_contact
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
       - total_exchanges
-      - relationship_strength
       - nudge
     columnSize:
       file.name: 200
@@ -105,11 +121,11 @@ views:
       - staleness_label
       - last_contact
       - total_exchanges
-      - relationship_strength
+      - relationship_depth
     sort:
       - property: company
         direction: ASC
-      - property: total_exchanges
+      - property: relationship_depth
         direction: DESC
     columns:
       - company
@@ -117,7 +133,7 @@ views:
       - staleness_label
       - last_contact
       - total_exchanges
-      - relationship_strength
+      - relationship_depth
     columnSize:
       file.name: 200
       company: 180
@@ -129,13 +145,14 @@ views:
       - role
       - last_contact
       - total_exchanges
-      - sent
-      - received
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
     filters:
       and:
-        - staleness_label = "active" OR staleness_label = "warm"
+        - relationship_recency >= 4
     sort:
-      - property: last_contact
+      - property: relationship_depth
         direction: DESC
     columns:
       - file.name
@@ -143,8 +160,9 @@ views:
       - role
       - last_contact
       - total_exchanges
-      - sent
-      - received
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
     columnSize:
       file.name: 200
       company: 160

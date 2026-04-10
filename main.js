@@ -41,6 +41,7 @@ var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 var SCOPES = "https://www.googleapis.com/auth/gmail.metadata";
 var REDIRECT_URI = "http://localhost:42813/callback";
+var RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
 var GmailApi = class {
   constructor(settings, onSettingsUpdate) {
     this.settings = settings;
@@ -190,6 +191,7 @@ var GmailApi = class {
     const userEmail = await this.getUserEmail();
     const messageIds = await this.fetchAllMessageIds(maxResults);
     const contacts = {};
+    const threadStates = /* @__PURE__ */ new Map();
     const BATCH_SIZE = 10;
     for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
       const batch = messageIds.slice(i, i + BATCH_SIZE);
@@ -197,34 +199,36 @@ var GmailApi = class {
         batch.map((m) => this.fetchMessageMetadata(m.id))
       );
       for (const msg of results) {
-        this.processMessage(msg, userEmail, contacts);
+        this.processMessage(msg, userEmail, contacts, threadStates);
       }
       onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, messageIds.length), messageIds.length);
     }
+    this.finalizeContactMetrics(contacts, threadStates);
     return {
       lastSync: (/* @__PURE__ */ new Date()).toISOString(),
       userEmail,
       contacts
     };
   }
-  processMessage(msg, userEmail, contacts) {
+  processMessage(msg, userEmail, contacts, threadStates) {
     var _a;
     const headers = msg.payload.headers;
     const from = this.getHeader(headers, "From");
     const to = this.getHeader(headers, "To");
     const subject = (_a = this.getHeader(headers, "Subject")) != null ? _a : "";
     const date = new Date(parseInt(msg.internalDate)).toISOString();
+    const threadId = msg.threadId;
     const fromParsed = this.parseEmailAddress(from != null ? from : "");
     const toParsed = this.parseEmailAddress(to != null ? to : "");
     if (!fromParsed) return;
     const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
     if (isSent && toParsed) {
-      this.upsertContact(contacts, toParsed, date, subject, "sent");
+      this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
     } else if (!isSent) {
-      this.upsertContact(contacts, fromParsed, date, subject, "received");
+      this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
     }
   }
-  upsertContact(contacts, parsed, date, subject, direction) {
+  upsertContact(contacts, threadStates, parsed, date, subject, threadId, direction) {
     var _a, _b;
     const key = parsed.email.toLowerCase();
     const domain = (_b = (_a = parsed.email.split("@")[1]) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
@@ -256,6 +260,55 @@ var GmailApi = class {
     c.totalExchanges++;
     if (subject && c.subjects.length < 5) {
       c.subjects.push(subject);
+    }
+    let contactThreads = threadStates.get(key);
+    if (!contactThreads) {
+      contactThreads = /* @__PURE__ */ new Map();
+      threadStates.set(key, contactThreads);
+    }
+    let thread = contactThreads.get(threadId);
+    if (!thread) {
+      thread = { sent: 0, received: 0, subject, lastDate: date };
+      contactThreads.set(threadId, thread);
+    }
+    if (direction === "sent") thread.sent++;
+    else thread.received++;
+    if (date > thread.lastDate) {
+      thread.lastDate = date;
+      if (subject) thread.subject = subject;
+    }
+  }
+  // Finalize metadata pattern signals (thread count, back-and-forth, RSVP-only)
+  // into the persisted Contact records. See task #4 — metadata heuristics per
+  // John Borthwick's feedback: focus on patterns, not email content.
+  finalizeContactMetrics(contacts, threadStates) {
+    for (const [key, threads] of threadStates) {
+      const contact = contacts[key];
+      if (!contact) continue;
+      let maxDepth = 0;
+      let backAndForth = 0;
+      let rsvpOnly = 0;
+      let lastThreadDepth = 0;
+      let latestDate = "";
+      for (const state of threads.values()) {
+        const depth = state.sent + state.received;
+        if (depth > maxDepth) maxDepth = depth;
+        if (state.sent > 0 && state.received > 0 && depth >= 3) {
+          backAndForth++;
+        }
+        if (depth === 1 && RSVP_SUBJECT_PATTERN.test(state.subject)) {
+          rsvpOnly++;
+        }
+        if (state.lastDate > latestDate) {
+          latestDate = state.lastDate;
+          lastThreadDepth = depth;
+        }
+      }
+      contact.threadCount = threads.size;
+      contact.maxThreadDepth = maxDepth;
+      contact.backAndForthThreads = backAndForth;
+      contact.rsvpOnlyThreads = rsvpOnly;
+      contact.lastThreadDepth = lastThreadDepth;
     }
   }
   getHeader(headers, name) {
@@ -363,6 +416,12 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       text: "Relationship mapping and AI-powered people enrichment. Scans your people pages and builds a relationship graph.",
       cls: "setting-item-description"
     });
+    new import_obsidian2.Setting(containerEl).setName("Your name").setDesc("How you should be referred to on enriched people pages (e.g., 'How Alex knows them'). Leave blank to use 'the vault owner'.").addText(
+      (text) => text.setPlaceholder("Your full name").setValue(this.plugin.settings.vaultOwnerName).onChange(async (value) => {
+        this.plugin.settings.vaultOwnerName = value;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian2.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (e.g., 'people pages')").addText(
       (text) => text.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
         this.plugin.settings.peopleFolder = value;
@@ -497,7 +556,7 @@ var RelationshipEngine = class {
       while ((match = meetingRegex.exec(content)) !== null) {
         meetings.push({ date: match[1], title: match[2].trim() });
       }
-      const howMatch = content.match(/\*\*How Kaya knows them:\*\*\s*(.+)/);
+      const howMatch = content.match(/\*\*How .+? knows them:\*\*\s*(.+)/);
       const ctxMatch = content.match(/\*\*Key context:\*\*\s*(.+)/);
       pages[name] = {
         name,
@@ -603,7 +662,12 @@ var RelationshipEngine = class {
             lastContact: contact.lastContact,
             subjects: (_a = contact.subjects) != null ? _a : [],
             lastSubject: (_b = contact.lastSubject) != null ? _b : "",
-            domain: (_c = contact.domain) != null ? _c : ""
+            domain: (_c = contact.domain) != null ? _c : "",
+            threadCount: contact.threadCount,
+            maxThreadDepth: contact.maxThreadDepth,
+            backAndForthThreads: contact.backAndForthThreads,
+            rsvpOnlyThreads: contact.rsvpOnlyThreads,
+            lastThreadDepth: contact.lastThreadDepth
           };
         }
       }
@@ -644,9 +708,10 @@ var RelationshipEngine = class {
 var import_obsidian4 = require("obsidian");
 var ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 var HarperSkill = class {
-  constructor(apiKey, model) {
+  constructor(apiKey, model, ownerName) {
     this.apiKey = apiKey;
     this.model = model;
+    this.ownerName = ownerName;
   }
   async rewritePersonPage(name, page, relationships, allPages) {
     var _a, _b, _c;
@@ -675,7 +740,10 @@ var HarperSkill = class {
       ].join("\n");
     }
     const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-    const prompt = `You are Harper Skill \u2014 an AI relationship intelligence analyst. You are rewriting a people page in Kaya Jones's Obsidian vault.
+    const owner = this.ownerName.trim() || "the vault owner";
+    const ownerPossessive = this.ownerName.trim() ? `${this.ownerName.trim()}'s` : "the vault owner's";
+    const ownerPossessiveUpper = ownerPossessive.toUpperCase();
+    const prompt = `You are Harper Skill \u2014 an AI relationship intelligence analyst. You are rewriting a people page in ${ownerPossessive} Obsidian vault.
 
 Your job: take ALL the existing information about this person and produce a comprehensive, well-structured people page. Preserve every fact, meeting, action item, and detail from the original \u2014 lose nothing. Then enrich it with relationship mapping, strategic analysis, and suggested actions.
 
@@ -687,7 +755,7 @@ ${page.content}
 ## MAPPED RELATIONSHIPS (from graph analysis):
 ${relText}
 
-## CONNECTED PEOPLE IN KAYA'S NETWORK:
+## CONNECTED PEOPLE IN ${ownerPossessiveUpper} NETWORK:
 ${connectedText}
 
 ## GMAIL COMMUNICATION STATS:
@@ -704,15 +772,15 @@ Output the complete page in markdown (no code fences). Start with the h1 heading
 ## Overview
 - **Role/Company:** ...
 - **Email:** ...
-- **Connection:** how they connect to Kaya's network
-- **How Kaya knows them:** ...
+- **Connection:** how they connect to ${ownerPossessive} network
+- **How ${owner} knows them:** ...
 - **Key context:** ...
 
 ## Background
 A 2-3 sentence bio synthesized from all available information.
 
 ## Relationship Map
-For each key connection in Kaya's network:
+For each key connection in ${ownerPossessive} network:
 - [[p- Name]] \u2014 connection type, strength signal, thematic link
 
 ## Key Themes & Interests
@@ -728,7 +796,7 @@ Email frequency, engagement level, responsiveness. Use Gmail stats if available.
 COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merge, or remove any meeting. Each meeting should keep its original ### heading, summary, key topics, decisions, and action items.
 
 ## Suggested Actions
-1-3 specific, concrete next steps for Kaya.
+1-3 specific, concrete next steps for ${owner}.
 
 ---
 *Harper Skill enriched: ${today}*`;
@@ -769,6 +837,8 @@ function computeStaleness(page, relationships) {
     }
   }
   const relationshipStrength = computeStrength(totalExchanges, relationships.length);
+  const relationshipRecency = computeRecency(daysSinceContact);
+  const relationshipDepth = computeDepth(gmail, totalExchanges, relationships.length);
   let score;
   if (daysSinceContact === null) {
     score = 0;
@@ -803,8 +873,44 @@ function computeStaleness(page, relationships) {
     label,
     daysSinceContact,
     relationshipStrength,
+    relationshipDepth,
+    relationshipRecency,
     nudge
   };
+}
+function computeRecency(daysSinceContact) {
+  if (daysSinceContact === null) return 1;
+  if (daysSinceContact <= 14) return 5;
+  if (daysSinceContact <= 30) return 4;
+  if (daysSinceContact <= 90) return 3;
+  if (daysSinceContact <= 180) return 2;
+  return 1;
+}
+function computeDepth(gmail, totalExchanges, edgeCount) {
+  var _a, _b, _c, _d;
+  if (!gmail) {
+    if (edgeCount >= 5) return 3;
+    if (edgeCount >= 2) return 2;
+    return 1;
+  }
+  const backAndForth = (_a = gmail.backAndForthThreads) != null ? _a : 0;
+  const maxThread = (_b = gmail.maxThreadDepth) != null ? _b : 0;
+  const rsvpOnly = (_c = gmail.rsvpOnlyThreads) != null ? _c : 0;
+  const threadCount = (_d = gmail.threadCount) != null ? _d : 0;
+  if (threadCount === 0 && totalExchanges > 0) {
+    if (totalExchanges >= 20) return 4;
+    if (totalExchanges >= 8) return 3;
+    if (totalExchanges >= 3) return 2;
+    return 1;
+  }
+  if (backAndForth >= 3 && totalExchanges >= 20 && maxThread >= 5) return 5;
+  if (backAndForth >= 1 && totalExchanges >= 8) return 4;
+  if (totalExchanges >= 8 && maxThread >= 3) return 3;
+  if (totalExchanges >= 3) {
+    if (rsvpOnly > 0 && rsvpOnly >= threadCount / 2) return 1;
+    return 2;
+  }
+  return 1;
 }
 function computeStrength(totalExchanges, edgeCount) {
   if (totalExchanges === 0 && edgeCount === 0) return "unknown";
@@ -924,6 +1030,8 @@ var FrontmatterManager = class {
       staleness_score: staleness.score,
       staleness_label: staleness.label,
       relationship_strength: staleness.relationshipStrength,
+      relationship_depth: staleness.relationshipDepth,
+      relationship_recency: staleness.relationshipRecency,
       connections: relationships.length
     };
     if (page.email) crm.email = page.email;
@@ -958,6 +1066,15 @@ var FrontmatterManager = class {
       }
       if (page.gmailStats.domain) {
         crm.domain = page.gmailStats.domain;
+      }
+      if (page.gmailStats.maxThreadDepth !== void 0) {
+        crm.max_thread_depth = page.gmailStats.maxThreadDepth;
+      }
+      if (page.gmailStats.backAndForthThreads !== void 0) {
+        crm.back_and_forth_threads = page.gmailStats.backAndForthThreads;
+      }
+      if (page.gmailStats.lastThreadDepth !== void 0) {
+        crm.last_thread_depth = page.gmailStats.lastThreadDepth;
       }
     }
     if (staleness.daysSinceContact !== null) {
@@ -1055,6 +1172,10 @@ properties:
     displayName: Status
   note.relationship_strength:
     displayName: Strength
+  note.relationship_depth:
+    displayName: Depth
+  note.relationship_recency:
+    displayName: Recency
   note.days_since_contact:
     displayName: Days Ago
   note.connections:
@@ -1067,6 +1188,12 @@ properties:
     displayName: Received
   note.last_subject:
     displayName: Last Subject
+  note.last_thread_depth:
+    displayName: Thread Msgs
+  note.max_thread_depth:
+    displayName: Deepest Thread
+  note.back_and_forth_threads:
+    displayName: Conversations
   note.domain:
     displayName: Domain
 views:
@@ -1077,23 +1204,25 @@ views:
       - company
       - last_contact
       - last_subject
+      - last_thread_depth
       - total_exchanges
+      - relationship_depth
+      - relationship_recency
       - staleness_label
-      - relationship_strength
-      - days_since_contact
       - nudge
     sort:
-      - property: days_since_contact
-        direction: DESC
+      - property: relationship_recency
+        direction: ASC
     columns:
       - file.name
       - company
       - last_contact
       - last_subject
+      - last_thread_depth
       - total_exchanges
+      - relationship_depth
+      - relationship_recency
       - staleness_label
-      - relationship_strength
-      - days_since_contact
       - nudge
     columnSize:
       file.name: 200
@@ -1109,23 +1238,27 @@ views:
       - company
       - last_subject
       - days_since_contact
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
       - total_exchanges
-      - relationship_strength
       - nudge
     filters:
       and:
-        - relationship_strength = "strong" OR relationship_strength = "moderate"
-        - staleness_label = "stale" OR staleness_label = "dormant" OR staleness_label = "cooling"
+        - relationship_depth >= 3
+        - relationship_recency <= 2
     sort:
-      - property: total_exchanges
+      - property: relationship_depth
         direction: DESC
     columns:
       - file.name
       - company
       - last_subject
       - days_since_contact
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
       - total_exchanges
-      - relationship_strength
       - nudge
     columnSize:
       file.name: 200
@@ -1140,11 +1273,11 @@ views:
       - staleness_label
       - last_contact
       - total_exchanges
-      - relationship_strength
+      - relationship_depth
     sort:
       - property: company
         direction: ASC
-      - property: total_exchanges
+      - property: relationship_depth
         direction: DESC
     columns:
       - company
@@ -1152,7 +1285,7 @@ views:
       - staleness_label
       - last_contact
       - total_exchanges
-      - relationship_strength
+      - relationship_depth
     columnSize:
       file.name: 200
       company: 180
@@ -1164,13 +1297,14 @@ views:
       - role
       - last_contact
       - total_exchanges
-      - sent
-      - received
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
     filters:
       and:
-        - staleness_label = "active" OR staleness_label = "warm"
+        - relationship_recency >= 4
     sort:
-      - property: last_contact
+      - property: relationship_depth
         direction: DESC
     columns:
       - file.name
@@ -1178,8 +1312,9 @@ views:
       - role
       - last_contact
       - total_exchanges
-      - sent
-      - received
+      - relationship_depth
+      - relationship_recency
+      - back_and_forth_threads
     columnSize:
       file.name: 200
       company: 160
@@ -1206,6 +1341,7 @@ var DEFAULT_SETTINGS = {
   maxResults: 500,
   createContactNotes: false,
   contactNotesFolder: "People pages",
+  vaultOwnerName: "",
   peopleFolder: "People pages",
   companiesFolder: "Companies",
   anthropicApiKey: "",
@@ -1489,7 +1625,11 @@ ${body}`;
           new import_obsidian7.Notice("Set your API key in plugin settings first.");
           return;
         }
-        harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
+        harper = new HarperSkill(
+          this.settings.anthropicApiKey,
+          this.settings.harperModel,
+          this.settings.vaultOwnerName
+        );
       }
       let done = 0;
       for (const [name, page] of Object.entries(pages)) {
@@ -1551,7 +1691,11 @@ ${relSection}
         new import_obsidian7.Notice("Set your API key in plugin settings first.");
         return;
       }
-      const harper = new HarperSkill(this.settings.anthropicApiKey, this.settings.harperModel);
+      const harper = new HarperSkill(
+        this.settings.anthropicApiKey,
+        this.settings.harperModel,
+        this.settings.vaultOwnerName
+      );
       const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
       const file = this.app.vault.getAbstractFileByPath(pages[name].path);
       if (file instanceof import_obsidian7.TFile) {

@@ -6,10 +6,12 @@ const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 export class HarperSkill {
 	private apiKey: string;
 	private model: string;
+	private ownerName: string;
 
-	constructor(apiKey: string, model: string) {
+	constructor(apiKey: string, model: string, ownerName: string) {
 		this.apiKey = apiKey;
 		this.model = model;
+		this.ownerName = ownerName;
 	}
 
 	async rewritePersonPage(
@@ -50,7 +52,13 @@ export class HarperSkill {
 
 		const today = new Date().toISOString().split("T")[0];
 
-		const prompt = `You are Harper Skill — an AI relationship intelligence analyst. You are rewriting a people page in Kaya Jones's Obsidian vault.
+		const owner = this.ownerName.trim() || "the vault owner";
+		const ownerPossessive = this.ownerName.trim()
+			? `${this.ownerName.trim()}'s`
+			: "the vault owner's";
+		const ownerPossessiveUpper = ownerPossessive.toUpperCase();
+
+		const prompt = `You are Harper Skill — an AI relationship intelligence analyst. You are rewriting a people page in ${ownerPossessive} Obsidian vault.
 
 Your job: take ALL the existing information about this person and produce a comprehensive, well-structured people page. Preserve every fact, meeting, action item, and detail from the original — lose nothing. Then enrich it with relationship mapping, strategic analysis, and suggested actions.
 
@@ -62,7 +70,7 @@ ${page.content}
 ## MAPPED RELATIONSHIPS (from graph analysis):
 ${relText}
 
-## CONNECTED PEOPLE IN KAYA'S NETWORK:
+## CONNECTED PEOPLE IN ${ownerPossessiveUpper} NETWORK:
 ${connectedText}
 
 ## GMAIL COMMUNICATION STATS:
@@ -79,15 +87,15 @@ Output the complete page in markdown (no code fences). Start with the h1 heading
 ## Overview
 - **Role/Company:** ...
 - **Email:** ...
-- **Connection:** how they connect to Kaya's network
-- **How Kaya knows them:** ...
+- **Connection:** how they connect to ${ownerPossessive} network
+- **How ${owner} knows them:** ...
 - **Key context:** ...
 
 ## Background
 A 2-3 sentence bio synthesized from all available information.
 
 ## Relationship Map
-For each key connection in Kaya's network:
+For each key connection in ${ownerPossessive} network:
 - [[p- Name]] — connection type, strength signal, thematic link
 
 ## Key Themes & Interests
@@ -103,7 +111,7 @@ Email frequency, engagement level, responsiveness. Use Gmail stats if available.
 COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merge, or remove any meeting. Each meeting should keep its original ### heading, summary, key topics, decisions, and action items.
 
 ## Suggested Actions
-1-3 specific, concrete next steps for Kaya.
+1-3 specific, concrete next steps for ${owner}.
 
 ---
 *Harper Skill enriched: ${today}*`;

@@ -54,8 +54,8 @@ export class RelationshipEngine {
 				meetings.push({ date: match[1], title: match[2].trim() });
 			}
 
-			// How known
-			const howMatch = content.match(/\*\*How Kaya knows them:\*\*\s*(.+)/);
+			// How known — match "How <owner name> knows them:" for any owner
+			const howMatch = content.match(/\*\*How .+? knows them:\*\*\s*(.+)/);
 
 			// Key context
 			const ctxMatch = content.match(/\*\*Key context:\*\*\s*(.+)/);
@@ -182,6 +182,11 @@ export class RelationshipEngine {
 						subjects: contact.subjects ?? [],
 						lastSubject: contact.lastSubject ?? "",
 						domain: contact.domain ?? "",
+						threadCount: contact.threadCount,
+						maxThreadDepth: contact.maxThreadDepth,
+						backAndForthThreads: contact.backAndForthThreads,
+						rsvpOnlyThreads: contact.rsvpOnlyThreads,
+						lastThreadDepth: contact.lastThreadDepth,
 					};
 				}
 			}

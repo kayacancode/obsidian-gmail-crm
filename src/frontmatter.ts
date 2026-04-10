@@ -14,10 +14,15 @@ export interface CrmFrontmatter {
 	staleness_score?: number;
 	staleness_label?: string;
 	relationship_strength?: string;
+	relationship_depth?: number; // 1–5
+	relationship_recency?: number; // 1–5
 	days_since_contact?: number;
 	nudge?: string;
 	connections?: number;
 	last_subject?: string;
+	last_thread_depth?: number;
+	max_thread_depth?: number;
+	back_and_forth_threads?: number;
 	domain?: string;
 	harper_enriched?: string;
 }
@@ -134,6 +139,8 @@ export class FrontmatterManager {
 			staleness_score: staleness.score,
 			staleness_label: staleness.label,
 			relationship_strength: staleness.relationshipStrength,
+			relationship_depth: staleness.relationshipDepth,
+			relationship_recency: staleness.relationshipRecency,
 			connections: relationships.length,
 		};
 
@@ -176,6 +183,15 @@ export class FrontmatterManager {
 			}
 			if (page.gmailStats.domain) {
 				crm.domain = page.gmailStats.domain;
+			}
+			if (page.gmailStats.maxThreadDepth !== undefined) {
+				crm.max_thread_depth = page.gmailStats.maxThreadDepth;
+			}
+			if (page.gmailStats.backAndForthThreads !== undefined) {
+				crm.back_and_forth_threads = page.gmailStats.backAndForthThreads;
+			}
+			if (page.gmailStats.lastThreadDepth !== undefined) {
+				crm.last_thread_depth = page.gmailStats.lastThreadDepth;
 			}
 		}
 

@@ -5,6 +5,11 @@ export interface StalenessScore {
 	label: "active" | "warm" | "cooling" | "stale" | "dormant";
 	daysSinceContact: number | null;
 	relationshipStrength: "strong" | "moderate" | "weak" | "unknown";
+	// 1–5 numerical scores per John Borthwick's feedback. These complement the
+	// existing string-based `relationshipStrength` and `label` fields rather than
+	// replacing them.
+	relationshipDepth: number; // 1–5, driven by email metadata patterns
+	relationshipRecency: number; // 1–5, driven by days since last contact
 	nudge: string | null; // suggested re-engagement reason, null if not stale
 }
 
@@ -36,6 +41,10 @@ export function computeStaleness(
 
 	// Relationship strength from email volume + relationship edges
 	const relationshipStrength = computeStrength(totalExchanges, relationships.length);
+
+	// 1–5 numerical scores (John Borthwick's feedback)
+	const relationshipRecency = computeRecency(daysSinceContact);
+	const relationshipDepth = computeDepth(gmail, totalExchanges, relationships.length);
 
 	// Staleness score (0-100)
 	let score: number;
@@ -81,8 +90,68 @@ export function computeStaleness(
 		label,
 		daysSinceContact,
 		relationshipStrength,
+		relationshipDepth,
+		relationshipRecency,
 		nudge,
 	};
+}
+
+// Relationship recency on a 1–5 scale. Buckets are aligned with the existing
+// staleness labels so "active/warm" corresponds to 4–5 and "stale/dormant"
+// corresponds to 1–2.
+function computeRecency(daysSinceContact: number | null): number {
+	if (daysSinceContact === null) return 1;
+	if (daysSinceContact <= 14) return 5;
+	if (daysSinceContact <= 30) return 4;
+	if (daysSinceContact <= 90) return 3;
+	if (daysSinceContact <= 180) return 2;
+	return 1;
+}
+
+// Relationship depth on a 1–5 scale, driven by metadata patterns per John:
+//   "personal back-and-forth replies → stronger; single RSVP responses → weaker;
+//    reply frequency and thread depth as key strength signals"
+// Prefers metadata signals when Gmail data is available; falls back to the
+// existing volume-based heuristic when no thread metadata is present (e.g.,
+// cached indexes built before task #4 landed).
+function computeDepth(
+	gmail: PersonPage["gmailStats"],
+	totalExchanges: number,
+	edgeCount: number
+): number {
+	if (!gmail) {
+		// No Gmail data — fall back to relationship-graph edges alone
+		if (edgeCount >= 5) return 3;
+		if (edgeCount >= 2) return 2;
+		return 1;
+	}
+
+	const backAndForth = gmail.backAndForthThreads ?? 0;
+	const maxThread = gmail.maxThreadDepth ?? 0;
+	const rsvpOnly = gmail.rsvpOnlyThreads ?? 0;
+	const threadCount = gmail.threadCount ?? 0;
+
+	// If we have no thread metadata at all, fall back to the volume heuristic
+	// used before metadata tracking existed.
+	if (threadCount === 0 && totalExchanges > 0) {
+		if (totalExchanges >= 20) return 4;
+		if (totalExchanges >= 8) return 3;
+		if (totalExchanges >= 3) return 2;
+		return 1;
+	}
+
+	// Real conversations with many messages → deepest relationship
+	if (backAndForth >= 3 && totalExchanges >= 20 && maxThread >= 5) return 5;
+	// Some real conversations and solid volume
+	if (backAndForth >= 1 && totalExchanges >= 8) return 4;
+	// Moderate volume with at least one multi-message thread
+	if (totalExchanges >= 8 && maxThread >= 3) return 3;
+	// Some exchanges but mostly shallow — drop a notch if most are RSVPs
+	if (totalExchanges >= 3) {
+		if (rsvpOnly > 0 && rsvpOnly >= threadCount / 2) return 1;
+		return 2;
+	}
+	return 1;
 }
 
 function computeStrength(
