@@ -880,9 +880,14 @@ function computeStaleness(page, relationships) {
 }
 function computeRecency(daysSinceContact) {
   if (daysSinceContact === null) return 1;
-  if (daysSinceContact <= 14) return 5;
-  if (daysSinceContact <= 30) return 4;
-  if (daysSinceContact <= 90) return 3;
+  if (daysSinceContact <= 2) return 10;
+  if (daysSinceContact <= 7) return 9;
+  if (daysSinceContact <= 14) return 8;
+  if (daysSinceContact <= 21) return 7;
+  if (daysSinceContact <= 30) return 6;
+  if (daysSinceContact <= 60) return 5;
+  if (daysSinceContact <= 90) return 4;
+  if (daysSinceContact <= 120) return 3;
   if (daysSinceContact <= 180) return 2;
   return 1;
 }
@@ -1246,7 +1251,7 @@ views:
     filters:
       and:
         - relationship_depth >= 3
-        - relationship_recency <= 2
+        - relationship_recency <= 4
     sort:
       - property: relationship_depth
         direction: DESC
@@ -1302,7 +1307,7 @@ views:
       - back_and_forth_threads
     filters:
       and:
-        - relationship_recency >= 4
+        - relationship_recency >= 7
     sort:
       - property: relationship_depth
         direction: DESC

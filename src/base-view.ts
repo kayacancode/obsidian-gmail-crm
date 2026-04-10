@@ -94,7 +94,7 @@ views:
     filters:
       and:
         - relationship_depth >= 3
-        - relationship_recency <= 2
+        - relationship_recency <= 4
     sort:
       - property: relationship_depth
         direction: DESC
@@ -150,7 +150,7 @@ views:
       - back_and_forth_threads
     filters:
       and:
-        - relationship_recency >= 4
+        - relationship_recency >= 7
     sort:
       - property: relationship_depth
         direction: DESC

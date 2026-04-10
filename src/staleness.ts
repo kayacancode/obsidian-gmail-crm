@@ -5,11 +5,11 @@ export interface StalenessScore {
 	label: "active" | "warm" | "cooling" | "stale" | "dormant";
 	daysSinceContact: number | null;
 	relationshipStrength: "strong" | "moderate" | "weak" | "unknown";
-	// 1–5 numerical scores per John Borthwick's feedback. These complement the
+	// Numerical scores per John Borthwick's feedback. These complement the
 	// existing string-based `relationshipStrength` and `label` fields rather than
 	// replacing them.
 	relationshipDepth: number; // 1–5, driven by email metadata patterns
-	relationshipRecency: number; // 1–5, driven by days since last contact
+	relationshipRecency: number; // 1–10, driven by days since last contact
 	nudge: string | null; // suggested re-engagement reason, null if not stale
 }
 
@@ -96,14 +96,18 @@ export function computeStaleness(
 	};
 }
 
-// Relationship recency on a 1–5 scale. Buckets are aligned with the existing
-// staleness labels so "active/warm" corresponds to 4–5 and "stale/dormant"
-// corresponds to 1–2.
+// Relationship recency on a 1–10 scale for finer granularity.
+//   10 = today/yesterday, 1 = over a year ago or no data
 function computeRecency(daysSinceContact: number | null): number {
 	if (daysSinceContact === null) return 1;
-	if (daysSinceContact <= 14) return 5;
-	if (daysSinceContact <= 30) return 4;
-	if (daysSinceContact <= 90) return 3;
+	if (daysSinceContact <= 2) return 10;
+	if (daysSinceContact <= 7) return 9;
+	if (daysSinceContact <= 14) return 8;
+	if (daysSinceContact <= 21) return 7;
+	if (daysSinceContact <= 30) return 6;
+	if (daysSinceContact <= 60) return 5;
+	if (daysSinceContact <= 90) return 4;
+	if (daysSinceContact <= 120) return 3;
 	if (daysSinceContact <= 180) return 2;
 	return 1;
 }
