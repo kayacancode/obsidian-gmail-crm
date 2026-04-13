@@ -116,13 +116,25 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Sync now")
-			.setDesc("Manually trigger a full sync")
+			.setDesc("Incremental sync — only fetches new messages since last sync")
 			.addButton((btn) =>
 				btn
 					.setButtonText("Sync")
 					.setCta()
 					.onClick(async () => {
 						await this.plugin.syncContacts();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Full re-sync")
+			.setDesc("Clear local cache and re-fetch all messages from Gmail")
+			.addButton((btn) =>
+				btn
+					.setButtonText("Full re-sync")
+					.setWarning()
+					.onClick(async () => {
+						await this.plugin.fullResync();
 					})
 			);
 

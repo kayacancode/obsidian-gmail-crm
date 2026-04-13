@@ -60,6 +60,13 @@ export interface ContactIndex {
 	contacts: Record<string, Contact>; // keyed by email
 }
 
+// Local cache of already-processed message IDs to avoid re-fetching metadata.
+// Stored in message-cache.json alongside contact-index.json.
+export interface MessageCache {
+	processedIds: string[]; // message IDs we've already fetched & processed
+	lastSync: string;       // ISO date of last sync (used for after: query)
+}
+
 export interface GmailTokenResponse {
 	access_token: string;
 	refresh_token?: string;
@@ -108,6 +115,7 @@ export interface GmailStats {
 	sentCount: number;
 	receivedCount: number;
 	lastContact: string;
+	firstContact?: string;
 	subjects: string[];
 	lastSubject: string;
 	domain: string;

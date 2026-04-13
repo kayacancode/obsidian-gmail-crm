@@ -24,6 +24,9 @@ export interface CrmFrontmatter {
 	max_thread_depth?: number;
 	back_and_forth_threads?: number;
 	domain?: string;
+	strength_score?: number;
+	momentum_score?: number;
+	quadrant?: string;
 	harper_enriched?: string;
 }
 
@@ -141,6 +144,9 @@ export class FrontmatterManager {
 			relationship_strength: staleness.relationshipStrength,
 			relationship_depth: staleness.relationshipDepth,
 			relationship_recency: staleness.relationshipRecency,
+			strength_score: staleness.strengthScore,
+			momentum_score: staleness.momentumScore,
+			quadrant: staleness.quadrant,
 			connections: relationships.length,
 		};
 

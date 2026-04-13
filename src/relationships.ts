@@ -179,6 +179,7 @@ export class RelationshipEngine {
 						sentCount: contact.sentCount,
 						receivedCount: contact.receivedCount,
 						lastContact: contact.lastContact,
+						firstContact: contact.firstContact,
 						subjects: contact.subjects ?? [],
 						lastSubject: contact.lastSubject ?? "",
 						domain: contact.domain ?? "",

@@ -14,13 +14,14 @@ import { HarperSkill } from "./harper-skill";
 import { computeStaleness } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
-import type { GmailCrmSettings, ContactIndex, Contact } from "./types";
+import type { GmailCrmSettings, ContactIndex, Contact, MessageCache } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
 export default class GmailCrmPlugin extends Plugin {
 	settings: GmailCrmSettings = DEFAULT_SETTINGS;
 	private gmailApi!: GmailApi;
 	private contactIndex: ContactIndex | null = null;
+	private messageCache: MessageCache | null = null;
 	private syncInterval: number | null = null;
 
 	async onload() {
@@ -38,11 +39,18 @@ export default class GmailCrmPlugin extends Plugin {
 			callback: () => { void this.createBase(); },
 		});
 
-		// Command: sync
+		// Command: sync (incremental)
 		this.addCommand({
 			id: "sync",
 			name: "Sync contacts",
 			callback: () => { void this.syncContacts(); },
+		});
+
+		// Command: full re-sync (clears cache)
+		this.addCommand({
+			id: "full-sync",
+			name: "Full re-sync (clear cache)",
+			callback: () => { void this.fullResync(); },
 		});
 
 		// Command: enrich all people
@@ -93,8 +101,9 @@ export default class GmailCrmPlugin extends Plugin {
 		// Settings tab
 		this.addSettingTab(new GmailCrmSettingTab(this.app, this));
 
-		// Load cached index
+		// Load cached index and message cache
 		await this.loadContactIndex();
+		await this.loadMessageCache();
 
 		// Start auto-sync if authenticated
 		if (this.settings.refreshToken) {
@@ -159,22 +168,35 @@ export default class GmailCrmPlugin extends Plugin {
 
 		const notice = new Notice("Syncing contacts...", 0);
 		try {
-			this.contactIndex = await this.gmailApi.buildContactIndex(
+			const isIncremental = !!(this.contactIndex && this.messageCache);
+			const result = await this.gmailApi.buildContactIndex(
 				this.settings.maxResults,
 				(done, total) => {
-					notice.setMessage(`Syncing... ${done}/${total} messages`);
-				}
+					const prefix = isIncremental ? "Incremental sync" : "Full sync";
+					notice.setMessage(`${prefix}... ${done}/${total} new messages`);
+				},
+				this.contactIndex,
+				this.messageCache
 			);
 
+			this.contactIndex = result.index;
+			this.messageCache = result.cache;
+
 			await this.saveContactIndex();
+			await this.saveMessageCache();
 
 			if (this.settings.createContactNotes) {
 				await this.writeContactNotes();
 			}
 
-			notice.setMessage(
-				`Synced ${Object.keys(this.contactIndex.contacts).length} contacts`
-			);
+			const contactCount = Object.keys(this.contactIndex.contacts).length;
+			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
+
+			// Auto-update staleness scores and Base view after sync
+			await this.updateStaleness();
+			await this.refreshBaseView();
+
+			notice.setMessage(`Synced ${contactCount} contacts — scores updated`);
 			setTimeout(() => notice.hide(), 3000);
 
 			if (this.settings.enrichOnSync) {
@@ -185,6 +207,13 @@ export default class GmailCrmPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Sync failed: ${msg}`);
 		}
+	}
+
+	async fullResync() {
+		this.messageCache = null;
+		this.contactIndex = null;
+		new Notice("Cache cleared — running full re-sync...");
+		await this.syncContacts();
 	}
 
 	private async loadContactIndex() {
@@ -221,6 +250,41 @@ export default class GmailCrmPlugin extends Plugin {
 		return normalizePath(
 			`${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
 		);
+	}
+
+	private getCachePath(): string {
+		return normalizePath(
+			`${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
+		);
+	}
+
+	private async loadMessageCache() {
+		const path = this.getCachePath();
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFile) {
+			const content = await this.app.vault.read(file);
+			try {
+				this.messageCache = JSON.parse(content);
+			} catch {
+				// corrupt cache, will do full sync
+			}
+		}
+	}
+
+	private async saveMessageCache() {
+		if (!this.messageCache) return;
+		const path = this.getCachePath();
+		const content = JSON.stringify(this.messageCache);
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) {
+			await this.app.vault.modify(existing, content);
+		} else {
+			try {
+				await this.app.vault.create(path, content);
+			} catch {
+				await this.app.vault.adapter.write(normalizePath(path), content);
+			}
+		}
 	}
 
 	private async writeContactNotes() {
@@ -485,6 +549,14 @@ export default class GmailCrmPlugin extends Plugin {
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Failed to create Base: ${msg}`);
+		}
+	}
+
+	private async refreshBaseView() {
+		try {
+			await createBaseView(this.app.vault, this.settings.peopleFolder);
+		} catch {
+			// Non-critical — Base file may not exist yet
 		}
 	}
 }

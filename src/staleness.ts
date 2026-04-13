@@ -11,6 +11,10 @@ export interface StalenessScore {
 	relationshipDepth: number; // 1–5, driven by email metadata patterns
 	relationshipRecency: number; // 1–10, driven by days since last contact
 	nudge: string | null; // suggested re-engagement reason, null if not stale
+	// Composite axes per John's framework
+	strengthScore: number; // 0–100, composite of depth × volume × initiation balance × time span
+	momentumScore: number; // 0–100, exponential recency decay + activity trend
+	quadrant: "nurture" | "re-engage" | "developing" | "deprioritize";
 }
 
 export function computeStaleness(
@@ -85,6 +89,11 @@ export function computeStaleness(
 		nudge = generateNudge(page, daysSinceContact, totalExchanges);
 	}
 
+	// Composite axes per John's framework
+	const strengthScore = computeStrengthScore(gmail, totalExchanges, relationships.length);
+	const momentumScore = computeMomentumScore(gmail, daysSinceContact);
+	const quadrant = assignQuadrant(strengthScore, momentumScore);
+
 	return {
 		score,
 		label,
@@ -93,6 +102,9 @@ export function computeStaleness(
 		relationshipDepth,
 		relationshipRecency,
 		nudge,
+		strengthScore,
+		momentumScore,
+		quadrant,
 	};
 }
 
@@ -181,6 +193,100 @@ function scoreToLabel(score: number): StalenessScore["label"] {
 	if (score >= 30) return "cooling";
 	if (score >= 10) return "stale";
 	return "dormant";
+}
+
+// Composite Strength axis: depth × volume × initiation balance × time span
+// Returns 0–100. Per John: "Relationship Strength = depth × volume × consistency × time span"
+function computeStrengthScore(
+	gmail: PersonPage["gmailStats"],
+	totalExchanges: number,
+	edgeCount: number
+): number {
+	if (!gmail && totalExchanges === 0) return 0;
+
+	// Volume component (0–25): log-scaled email count
+	const volumeScore = Math.min(25, Math.log2(totalExchanges + 1) * 4);
+
+	// Depth component (0–25): back-and-forth threads + max thread depth
+	let depthScore = 0;
+	if (gmail) {
+		const baf = gmail.backAndForthThreads ?? 0;
+		const maxThread = gmail.maxThreadDepth ?? 0;
+		depthScore = Math.min(15, baf * 3) + Math.min(10, maxThread * 2);
+	} else {
+		depthScore = Math.min(10, edgeCount * 2);
+	}
+
+	// Initiation balance (0–25): how balanced is the sent/received ratio?
+	// Perfect balance (50/50) = 25, completely one-sided = 5
+	let initiationScore = 5;
+	if (gmail && totalExchanges > 0) {
+		const ratio = Math.min(gmail.sentCount, gmail.receivedCount) /
+			Math.max(gmail.sentCount, gmail.receivedCount, 1);
+		initiationScore = 5 + ratio * 20; // 5–25
+	}
+
+	// Time span (0–25): how long you've been in contact
+	let spanScore = 0;
+	if (gmail && gmail.firstContact) {
+		const first = new Date(gmail.firstContact).getTime();
+		const last = new Date(gmail.lastContact).getTime();
+		const spanDays = Math.max(0, (last - first) / 86_400_000);
+		spanScore = Math.min(25, (spanDays / 365) * 12.5); // ~2 years = max
+	}
+
+	return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore));
+}
+
+// Composite Momentum axis: exponential recency decay + activity trend
+// Returns 0–100. Per John: "recent activity trend, response times, thread trajectory"
+function computeMomentumScore(
+	gmail: PersonPage["gmailStats"],
+	daysSinceContact: number | null
+): number {
+	if (daysSinceContact === null) return 0;
+
+	// Exponential decay component (0–60): score = e^(-λ * days)
+	// λ = 0.02 → half-life ~35 days
+	const lambda = 0.02;
+	const decayScore = Math.exp(-lambda * daysSinceContact) * 60;
+
+	// Activity trend component (0–40): recent thread depth as momentum signal
+	let trendScore = 0;
+	if (gmail) {
+		const lastDepth = gmail.lastThreadDepth ?? 0;
+		const maxDepth = gmail.maxThreadDepth ?? 0;
+
+		// If the most recent thread is deep, momentum is high
+		trendScore += Math.min(20, lastDepth * 4);
+
+		// If they have many back-and-forth threads, there's sustained momentum
+		const baf = gmail.backAndForthThreads ?? 0;
+		trendScore += Math.min(20, baf * 4);
+	}
+
+	return Math.round(Math.min(100, decayScore + trendScore));
+}
+
+// Assign quadrant based on the two axes:
+//   strong & active   → nurture
+//   strong & dormant  → re-engage
+//   weak & active     → developing
+//   weak & dormant    → deprioritize
+function assignQuadrant(
+	strengthScore: number,
+	momentumScore: number
+): "nurture" | "re-engage" | "developing" | "deprioritize" {
+	const strongThreshold = 40;
+	const activeThreshold = 30;
+
+	const isStrong = strengthScore >= strongThreshold;
+	const isActive = momentumScore >= activeThreshold;
+
+	if (isStrong && isActive) return "nurture";
+	if (isStrong && !isActive) return "re-engage";
+	if (!isStrong && isActive) return "developing";
+	return "deprioritize";
 }
 
 function generateNudge(

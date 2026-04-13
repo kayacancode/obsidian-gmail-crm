@@ -6,6 +6,7 @@ import type {
 	GmailListResponse,
 	Contact,
 	ContactIndex,
+	MessageCache,
 } from "./types";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -171,7 +172,8 @@ export class GmailApi {
 	}
 
 	async fetchAllMessageIds(
-		maxResults: number
+		maxResults: number,
+		afterDate?: string
 	): Promise<{ id: string; threadId: string }[]> {
 		const headers = await this.getHeaders();
 		const allMessages: { id: string; threadId: string }[] = [];
@@ -181,6 +183,12 @@ export class GmailApi {
 			const params = new URLSearchParams({
 				maxResults: String(Math.min(100, maxResults - allMessages.length)),
 			});
+			if (afterDate) {
+				// Gmail q=after: uses YYYY/MM/DD format
+				const d = new Date(afterDate);
+				const q = `after:${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+				params.set("q", q);
+			}
 			if (pageToken) params.set("pageToken", pageToken);
 
 			const resp = await this.apiRequest({
@@ -210,19 +218,45 @@ export class GmailApi {
 
 	async buildContactIndex(
 		maxResults: number,
-		onProgress?: (done: number, total: number) => void
-	): Promise<ContactIndex> {
+		onProgress?: (done: number, total: number) => void,
+		existingIndex?: ContactIndex | null,
+		messageCache?: MessageCache | null
+	): Promise<{ index: ContactIndex; cache: MessageCache }> {
 		const userEmail = await this.getUserEmail();
-		const messageIds = await this.fetchAllMessageIds(maxResults);
-		const contacts: Record<string, Contact> = {};
+
+		// Incremental sync: if we have a cache, only list messages since last sync
+		const afterDate = messageCache?.lastSync ?? undefined;
+		const cachedIds = new Set(messageCache?.processedIds ?? []);
+
+		const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
+
+		// Filter out messages we've already processed
+		const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
+
+		// Start from existing contacts or empty
+		const contacts: Record<string, Contact> = existingIndex
+			? JSON.parse(JSON.stringify(existingIndex.contacts))
+			: {};
 
 		// Per-contact, per-thread state used to compute metadata pattern signals
 		// (back-and-forth, thread depth, RSVP-only). Keyed by contactEmail -> threadId.
 		const threadStates = new Map<string, Map<string, ThreadState>>();
 
+		// Rebuild thread states from existing contacts so finalize works correctly
+		// (thread-level metrics are recomputed from all messages each full sync,
+		// but for incremental we need to carry forward existing metrics)
+		if (existingIndex && newMessageIds.length > 0) {
+			for (const [key, c] of Object.entries(contacts)) {
+				// We can't fully reconstruct thread states from aggregate Contact data,
+				// so on incremental syncs the thread-level metrics are approximate.
+				// A full re-sync (clear cache) will recompute them exactly.
+				threadStates.set(key, new Map());
+			}
+		}
+
 		const BATCH_SIZE = 10;
-		for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
-			const batch = messageIds.slice(i, i + BATCH_SIZE);
+		for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
+			const batch = newMessageIds.slice(i, i + BATCH_SIZE);
 			const results = await Promise.all(
 				batch.map((m) => this.fetchMessageMetadata(m.id))
 			);
@@ -231,15 +265,31 @@ export class GmailApi {
 				this.processMessage(msg, userEmail, contacts, threadStates);
 			}
 
-			onProgress?.(Math.min(i + BATCH_SIZE, messageIds.length), messageIds.length);
+			onProgress?.(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
 		}
 
-		this.finalizeContactMetrics(contacts, threadStates);
+		// Only recompute thread metrics if we processed new messages
+		if (newMessageIds.length > 0) {
+			this.finalizeContactMetrics(contacts, threadStates);
+		}
+
+		// Update cache with all known IDs
+		for (const m of allMessageIds) {
+			cachedIds.add(m.id);
+		}
+
+		const updatedCache: MessageCache = {
+			processedIds: Array.from(cachedIds),
+			lastSync: new Date().toISOString(),
+		};
 
 		return {
-			lastSync: new Date().toISOString(),
-			userEmail,
-			contacts,
+			index: {
+				lastSync: new Date().toISOString(),
+				userEmail,
+				contacts,
+			},
+			cache: updatedCache,
 		};
 	}
 

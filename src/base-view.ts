@@ -44,6 +44,12 @@ properties:
     displayName: Conversations
   note.domain:
     displayName: Domain
+  note.strength_score:
+    displayName: Strength
+  note.momentum_score:
+    displayName: Momentum
+  note.quadrant:
+    displayName: Quadrant
 views:
   - type: table
     name: CRM
@@ -57,10 +63,11 @@ views:
       - relationship_depth
       - relationship_recency
       - staleness_label
+      - quadrant
       - nudge
     sort:
-      - property: relationship_recency
-        direction: ASC
+      - property: strength_score
+        direction: DESC
     columns:
       - file.name
       - company
@@ -68,9 +75,9 @@ views:
       - last_subject
       - last_thread_depth
       - total_exchanges
-      - relationship_depth
-      - relationship_recency
-      - staleness_label
+      - strength_score
+      - momentum_score
+      - quadrant
       - nudge
     columnSize:
       file.name: 200
@@ -80,31 +87,30 @@ views:
     summaries:
       total_exchanges: Sum
   - type: table
-    name: Going Stale
+    name: Re-engage
     order:
       - file.name
       - company
       - last_subject
       - days_since_contact
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
     filters:
       and:
-        - relationship_depth >= 3
-        - relationship_recency <= 4
+        - quadrant = re-engage
     sort:
-      - property: relationship_depth
+      - property: strength_score
         direction: DESC
     columns:
       - file.name
       - company
       - last_subject
       - days_since_contact
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
@@ -138,21 +144,21 @@ views:
       file.name: 200
       company: 180
   - type: table
-    name: Active
+    name: Nurture
     order:
       - file.name
       - company
       - role
       - last_contact
       - total_exchanges
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
     filters:
       and:
-        - relationship_recency >= 7
+        - quadrant = nurture
     sort:
-      - property: relationship_depth
+      - property: strength_score
         direction: DESC
     columns:
       - file.name
@@ -160,9 +166,35 @@ views:
       - role
       - last_contact
       - total_exchanges
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
+    columnSize:
+      file.name: 200
+      company: 160
+  - type: table
+    name: Developing
+    order:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
+      - quadrant
+    filters:
+      and:
+        - quadrant = developing
+    sort:
+      - property: momentum_score
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
     columnSize:
       file.name: 200
       company: 160

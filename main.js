@@ -158,7 +158,7 @@ var GmailApi = class {
     });
     return resp.json.emailAddress;
   }
-  async fetchAllMessageIds(maxResults) {
+  async fetchAllMessageIds(maxResults, afterDate) {
     const headers = await this.getHeaders();
     const allMessages = [];
     let pageToken;
@@ -166,6 +166,11 @@ var GmailApi = class {
       const params = new URLSearchParams({
         maxResults: String(Math.min(100, maxResults - allMessages.length))
       });
+      if (afterDate) {
+        const d = new Date(afterDate);
+        const q = `after:${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+        params.set("q", q);
+      }
       if (pageToken) params.set("pageToken", pageToken);
       const resp = await this.apiRequest({
         url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
@@ -187,27 +192,48 @@ var GmailApi = class {
     });
     return resp.json;
   }
-  async buildContactIndex(maxResults, onProgress) {
+  async buildContactIndex(maxResults, onProgress, existingIndex, messageCache) {
+    var _a, _b;
     const userEmail = await this.getUserEmail();
-    const messageIds = await this.fetchAllMessageIds(maxResults);
-    const contacts = {};
+    const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
+    const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
+    const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
+    const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
+    const contacts = existingIndex ? JSON.parse(JSON.stringify(existingIndex.contacts)) : {};
     const threadStates = /* @__PURE__ */ new Map();
+    if (existingIndex && newMessageIds.length > 0) {
+      for (const [key, c] of Object.entries(contacts)) {
+        threadStates.set(key, /* @__PURE__ */ new Map());
+      }
+    }
     const BATCH_SIZE = 10;
-    for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
-      const batch = messageIds.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
+      const batch = newMessageIds.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
         batch.map((m) => this.fetchMessageMetadata(m.id))
       );
       for (const msg of results) {
         this.processMessage(msg, userEmail, contacts, threadStates);
       }
-      onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, messageIds.length), messageIds.length);
+      onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
     }
-    this.finalizeContactMetrics(contacts, threadStates);
+    if (newMessageIds.length > 0) {
+      this.finalizeContactMetrics(contacts, threadStates);
+    }
+    for (const m of allMessageIds) {
+      cachedIds.add(m.id);
+    }
+    const updatedCache = {
+      processedIds: Array.from(cachedIds),
+      lastSync: (/* @__PURE__ */ new Date()).toISOString()
+    };
     return {
-      lastSync: (/* @__PURE__ */ new Date()).toISOString(),
-      userEmail,
-      contacts
+      index: {
+        lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+        userEmail,
+        contacts
+      },
+      cache: updatedCache
     };
   }
   processMessage(msg, userEmail, contacts, threadStates) {
@@ -393,9 +419,14 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Sync now").setDesc("Manually trigger a full sync").addButton(
+    new import_obsidian2.Setting(containerEl).setName("Sync now").setDesc("Incremental sync \u2014 only fetches new messages since last sync").addButton(
       (btn) => btn.setButtonText("Sync").setCta().onClick(async () => {
         await this.plugin.syncContacts();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Full re-sync").setDesc("Clear local cache and re-fetch all messages from Gmail").addButton(
+      (btn) => btn.setButtonText("Full re-sync").setWarning().onClick(async () => {
+        await this.plugin.fullResync();
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Contact notes").setHeading();
@@ -660,6 +691,7 @@ var RelationshipEngine = class {
             sentCount: contact.sentCount,
             receivedCount: contact.receivedCount,
             lastContact: contact.lastContact,
+            firstContact: contact.firstContact,
             subjects: (_a = contact.subjects) != null ? _a : [],
             lastSubject: (_b = contact.lastSubject) != null ? _b : "",
             domain: (_c = contact.domain) != null ? _c : "",
@@ -868,6 +900,9 @@ function computeStaleness(page, relationships) {
   } else if (label === "cooling" && relationshipStrength === "strong") {
     nudge = generateNudge(page, daysSinceContact, totalExchanges);
   }
+  const strengthScore = computeStrengthScore(gmail, totalExchanges, relationships.length);
+  const momentumScore = computeMomentumScore(gmail, daysSinceContact);
+  const quadrant = assignQuadrant(strengthScore, momentumScore);
   return {
     score,
     label,
@@ -875,7 +910,10 @@ function computeStaleness(page, relationships) {
     relationshipStrength,
     relationshipDepth,
     relationshipRecency,
-    nudge
+    nudge,
+    strengthScore,
+    momentumScore,
+    quadrant
   };
 }
 function computeRecency(daysSinceContact) {
@@ -934,6 +972,57 @@ function scoreToLabel(score) {
   if (score >= 30) return "cooling";
   if (score >= 10) return "stale";
   return "dormant";
+}
+function computeStrengthScore(gmail, totalExchanges, edgeCount) {
+  var _a, _b;
+  if (!gmail && totalExchanges === 0) return 0;
+  const volumeScore = Math.min(25, Math.log2(totalExchanges + 1) * 4);
+  let depthScore = 0;
+  if (gmail) {
+    const baf = (_a = gmail.backAndForthThreads) != null ? _a : 0;
+    const maxThread = (_b = gmail.maxThreadDepth) != null ? _b : 0;
+    depthScore = Math.min(15, baf * 3) + Math.min(10, maxThread * 2);
+  } else {
+    depthScore = Math.min(10, edgeCount * 2);
+  }
+  let initiationScore = 5;
+  if (gmail && totalExchanges > 0) {
+    const ratio = Math.min(gmail.sentCount, gmail.receivedCount) / Math.max(gmail.sentCount, gmail.receivedCount, 1);
+    initiationScore = 5 + ratio * 20;
+  }
+  let spanScore = 0;
+  if (gmail && gmail.firstContact) {
+    const first = new Date(gmail.firstContact).getTime();
+    const last = new Date(gmail.lastContact).getTime();
+    const spanDays = Math.max(0, (last - first) / 864e5);
+    spanScore = Math.min(25, spanDays / 365 * 12.5);
+  }
+  return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore));
+}
+function computeMomentumScore(gmail, daysSinceContact) {
+  var _a, _b, _c;
+  if (daysSinceContact === null) return 0;
+  const lambda = 0.02;
+  const decayScore = Math.exp(-lambda * daysSinceContact) * 60;
+  let trendScore = 0;
+  if (gmail) {
+    const lastDepth = (_a = gmail.lastThreadDepth) != null ? _a : 0;
+    const maxDepth = (_b = gmail.maxThreadDepth) != null ? _b : 0;
+    trendScore += Math.min(20, lastDepth * 4);
+    const baf = (_c = gmail.backAndForthThreads) != null ? _c : 0;
+    trendScore += Math.min(20, baf * 4);
+  }
+  return Math.round(Math.min(100, decayScore + trendScore));
+}
+function assignQuadrant(strengthScore, momentumScore) {
+  const strongThreshold = 40;
+  const activeThreshold = 30;
+  const isStrong = strengthScore >= strongThreshold;
+  const isActive = momentumScore >= activeThreshold;
+  if (isStrong && isActive) return "nurture";
+  if (isStrong && !isActive) return "re-engage";
+  if (!isStrong && isActive) return "developing";
+  return "deprioritize";
 }
 function generateNudge(page, days, exchanges) {
   const parts = [];
@@ -1037,6 +1126,9 @@ var FrontmatterManager = class {
       relationship_strength: staleness.relationshipStrength,
       relationship_depth: staleness.relationshipDepth,
       relationship_recency: staleness.relationshipRecency,
+      strength_score: staleness.strengthScore,
+      momentum_score: staleness.momentumScore,
+      quadrant: staleness.quadrant,
       connections: relationships.length
     };
     if (page.email) crm.email = page.email;
@@ -1201,6 +1293,12 @@ properties:
     displayName: Conversations
   note.domain:
     displayName: Domain
+  note.strength_score:
+    displayName: Strength
+  note.momentum_score:
+    displayName: Momentum
+  note.quadrant:
+    displayName: Quadrant
 views:
   - type: table
     name: CRM
@@ -1214,10 +1312,11 @@ views:
       - relationship_depth
       - relationship_recency
       - staleness_label
+      - quadrant
       - nudge
     sort:
-      - property: relationship_recency
-        direction: ASC
+      - property: strength_score
+        direction: DESC
     columns:
       - file.name
       - company
@@ -1225,9 +1324,9 @@ views:
       - last_subject
       - last_thread_depth
       - total_exchanges
-      - relationship_depth
-      - relationship_recency
-      - staleness_label
+      - strength_score
+      - momentum_score
+      - quadrant
       - nudge
     columnSize:
       file.name: 200
@@ -1237,31 +1336,30 @@ views:
     summaries:
       total_exchanges: Sum
   - type: table
-    name: Going Stale
+    name: Re-engage
     order:
       - file.name
       - company
       - last_subject
       - days_since_contact
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
     filters:
       and:
-        - relationship_depth >= 3
-        - relationship_recency <= 4
+        - quadrant = re-engage
     sort:
-      - property: relationship_depth
+      - property: strength_score
         direction: DESC
     columns:
       - file.name
       - company
       - last_subject
       - days_since_contact
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
@@ -1295,21 +1393,21 @@ views:
       file.name: 200
       company: 180
   - type: table
-    name: Active
+    name: Nurture
     order:
       - file.name
       - company
       - role
       - last_contact
       - total_exchanges
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
     filters:
       and:
-        - relationship_recency >= 7
+        - quadrant = nurture
     sort:
-      - property: relationship_depth
+      - property: strength_score
         direction: DESC
     columns:
       - file.name
@@ -1317,9 +1415,35 @@ views:
       - role
       - last_contact
       - total_exchanges
-      - relationship_depth
-      - relationship_recency
+      - strength_score
+      - momentum_score
       - back_and_forth_threads
+    columnSize:
+      file.name: 200
+      company: 160
+  - type: table
+    name: Developing
+    order:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
+      - quadrant
+    filters:
+      and:
+        - quadrant = developing
+    sort:
+      - property: momentum_score
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
     columnSize:
       file.name: 200
       company: 160
@@ -1360,6 +1484,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.contactIndex = null;
+    this.messageCache = null;
     this.syncInterval = null;
   }
   async onload() {
@@ -1380,6 +1505,13 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       name: "Sync contacts",
       callback: () => {
         void this.syncContacts();
+      }
+    });
+    this.addCommand({
+      id: "full-sync",
+      name: "Full re-sync (clear cache)",
+      callback: () => {
+        void this.fullResync();
       }
     });
     this.addCommand({
@@ -1427,6 +1559,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     });
     this.addSettingTab(new GmailCrmSettingTab(this.app, this));
     await this.loadContactIndex();
+    await this.loadMessageCache();
     if (this.settings.refreshToken) {
       this.startAutoSync();
     }
@@ -1479,19 +1612,28 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     }
     const notice = new import_obsidian7.Notice("Syncing contacts...", 0);
     try {
-      this.contactIndex = await this.gmailApi.buildContactIndex(
+      const isIncremental = !!(this.contactIndex && this.messageCache);
+      const result = await this.gmailApi.buildContactIndex(
         this.settings.maxResults,
         (done, total) => {
-          notice.setMessage(`Syncing... ${done}/${total} messages`);
-        }
+          const prefix = isIncremental ? "Incremental sync" : "Full sync";
+          notice.setMessage(`${prefix}... ${done}/${total} new messages`);
+        },
+        this.contactIndex,
+        this.messageCache
       );
+      this.contactIndex = result.index;
+      this.messageCache = result.cache;
       await this.saveContactIndex();
+      await this.saveMessageCache();
       if (this.settings.createContactNotes) {
         await this.writeContactNotes();
       }
-      notice.setMessage(
-        `Synced ${Object.keys(this.contactIndex.contacts).length} contacts`
-      );
+      const contactCount = Object.keys(this.contactIndex.contacts).length;
+      notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
+      await this.updateStaleness();
+      await this.refreshBaseView();
+      notice.setMessage(`Synced ${contactCount} contacts \u2014 scores updated`);
       setTimeout(() => notice.hide(), 3e3);
       if (this.settings.enrichOnSync) {
         await this.enrichAllPeople();
@@ -1501,6 +1643,12 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       const msg = e instanceof Error ? e.message : String(e);
       new import_obsidian7.Notice(`Sync failed: ${msg}`);
     }
+  }
+  async fullResync() {
+    this.messageCache = null;
+    this.contactIndex = null;
+    new import_obsidian7.Notice("Cache cleared \u2014 running full re-sync...");
+    await this.syncContacts();
   }
   async loadContactIndex() {
     const path = this.getIndexPath();
@@ -1532,6 +1680,37 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     return (0, import_obsidian7.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
     );
+  }
+  getCachePath() {
+    return (0, import_obsidian7.normalizePath)(
+      `${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
+    );
+  }
+  async loadMessageCache() {
+    const path = this.getCachePath();
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (file instanceof import_obsidian7.TFile) {
+      const content = await this.app.vault.read(file);
+      try {
+        this.messageCache = JSON.parse(content);
+      } catch (e) {
+      }
+    }
+  }
+  async saveMessageCache() {
+    if (!this.messageCache) return;
+    const path = this.getCachePath();
+    const content = JSON.stringify(this.messageCache);
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof import_obsidian7.TFile) {
+      await this.app.vault.modify(existing, content);
+    } else {
+      try {
+        await this.app.vault.create(path, content);
+      } catch (e) {
+        await this.app.vault.adapter.write((0, import_obsidian7.normalizePath)(path), content);
+      }
+    }
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;
@@ -1759,6 +1938,12 @@ ${relSection}
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       new import_obsidian7.Notice(`Failed to create Base: ${msg}`);
+    }
+  }
+  async refreshBaseView() {
+    try {
+      await createBaseView(this.app.vault, this.settings.peopleFolder);
+    } catch (e) {
     }
   }
 };
