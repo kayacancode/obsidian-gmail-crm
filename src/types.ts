@@ -15,6 +15,7 @@ export interface GmailCrmSettings {
 	anthropicApiKey: string;
 	harperModel: string;
 	enrichOnSync: boolean;
+	blockedDomains: string; // comma-separated domains to exclude
 }
 
 export const DEFAULT_SETTINGS: GmailCrmSettings = {
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	anthropicApiKey: "",
 	harperModel: "claude-sonnet-4-6",
 	enrichOnSync: false,
+	blockedDomains: "",
 };
 
 export interface Contact {

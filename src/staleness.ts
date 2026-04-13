@@ -94,6 +94,31 @@ export function computeStaleness(
 	const momentumScore = computeMomentumScore(gmail, daysSinceContact);
 	const quadrant = assignQuadrant(strengthScore, momentumScore);
 
+	console.log(`[Gmail CRM] Scoring: ${page.name}`, {
+		// Raw inputs
+		totalExchanges,
+		sent: gmail?.sentCount ?? 0,
+		received: gmail?.receivedCount ?? 0,
+		daysSinceContact,
+		edgeCount: relationships.length,
+		// Metadata signals
+		threadCount: gmail?.threadCount ?? 0,
+		backAndForthThreads: gmail?.backAndForthThreads ?? 0,
+		maxThreadDepth: gmail?.maxThreadDepth ?? 0,
+		lastThreadDepth: gmail?.lastThreadDepth ?? 0,
+		rsvpOnlyThreads: gmail?.rsvpOnlyThreads ?? 0,
+		firstContact: gmail?.firstContact ?? "n/a",
+		lastContact: gmail?.lastContact ?? "n/a",
+		// Computed scores
+		staleness: score,
+		label,
+		depth: relationshipDepth,
+		recency: relationshipRecency,
+		strengthScore,
+		momentumScore,
+		quadrant,
+	});
+
 	return {
 		score,
 		label,

@@ -83,6 +83,22 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 		}
 
+		// Filtering section
+		new Setting(containerEl).setName("Filtering").setHeading();
+
+		new Setting(containerEl)
+			.setName("Blocked domains")
+			.setDesc("Comma-separated domains to exclude (e.g. substack.com, readwise.io). Common services like noreply senders are auto-filtered.")
+			.addTextArea((text) =>
+				text
+					.setPlaceholder("substack.com, readwise.io, beehiiv.com")
+					.setValue(this.plugin.settings.blockedDomains)
+					.onChange(async (value) => {
+						this.plugin.settings.blockedDomains = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// Sync section
 		new Setting(containerEl).setName("Sync").setHeading();
 

@@ -20,6 +20,45 @@ const REDIRECT_URI = "http://localhost:42813/callback";
 const RSVP_SUBJECT_PATTERN =
 	/\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
 
+// Auto-filter: email address patterns that indicate automated/service senders
+const AUTOMATED_EMAIL_PATTERN =
+	/^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
+
+// Auto-filter: domains known to be service/software/newsletter senders
+const AUTOMATED_DOMAINS = new Set([
+	// Cloud / SaaS
+	"dropbox.com", "dropboxmail.com", "google.com", "accounts.google.com",
+	"docs.google.com", "amazonses.com", "amazonaws.com", "aws.amazon.com",
+	"microsoft.com", "sharepointonline.com",
+	// Dev tools
+	"github.com", "gitlab.com", "bitbucket.org", "vercel.com", "netlify.com",
+	"heroku.com", "circleci.com", "travis-ci.com",
+	// Newsletters / content
+	"substack.com", "substackmail.com", "readwise.io", "medium.com",
+	"mailchimp.com", "sendgrid.net", "sendgrid.com", "mailgun.org",
+	"mandrillapp.com", "constantcontact.com", "hubspot.com", "hubspotmail.com",
+	// Productivity / signing
+	"dropboxsign.com", "hellosign.com", "docusign.net", "docusign.com",
+	"pandadoc.com", "adobesign.com",
+	// Social
+	"facebookmail.com", "linkedin.com", "twitter.com", "x.com",
+	"instagrammail.com", "tiktok.com",
+	// Payments / commerce
+	"paypal.com", "stripe.com", "squareup.com", "shopify.com",
+	"intuit.com", "quickbooks.intuit.com",
+	// Scheduling / calendar
+	"calendly.com", "savvycal.com", "cal.com",
+	// Project management
+	"notion.so", "asana.com", "trello.com", "monday.com",
+	"clickup.com", "jira.atlassian.com", "atlassian.com", "atlassian.net",
+	// Design
+	"figma.com", "canva.com",
+	// Other common services
+	"zoom.us", "loom.com", "slack.com", "slackbot.com",
+	"intercom.io", "intercom-mail.com", "zendesk.com",
+	"eventbrite.com", "meetup.com",
+]);
+
 // Per-thread state accumulated during index build, keyed by contactEmail -> threadId.
 // Not persisted; finalized into Contact counters after all messages are processed.
 type ThreadState = {
@@ -273,6 +312,33 @@ export class GmailApi {
 			this.finalizeContactMetrics(contacts, threadStates);
 		}
 
+		console.log(`[Gmail CRM] Sync complete`, {
+			mode: afterDate ? "incremental" : "full",
+			afterDate: afterDate ?? "n/a",
+			totalListed: allMessageIds.length,
+			alreadyCached: allMessageIds.length - newMessageIds.length,
+			newProcessed: newMessageIds.length,
+			totalContacts: Object.keys(contacts).length,
+		});
+
+		// Log metadata summary for top contacts
+		const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
+		for (const c of sorted.slice(0, 20)) {
+			console.log(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
+				exchanges: c.totalExchanges,
+				sent: c.sentCount,
+				received: c.receivedCount,
+				threads: c.threadCount ?? 0,
+				backAndForth: c.backAndForthThreads ?? 0,
+				maxDepth: c.maxThreadDepth ?? 0,
+				lastDepth: c.lastThreadDepth ?? 0,
+				rsvpOnly: c.rsvpOnlyThreads ?? 0,
+				firstContact: c.firstContact,
+				lastContact: c.lastContact,
+				domain: c.domain,
+			});
+		}
+
 		// Update cache with all known IDs
 		for (const m of allMessageIds) {
 			cachedIds.add(m.id);
@@ -314,10 +380,43 @@ export class GmailApi {
 		const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
 
 		if (isSent && toParsed) {
+			if (this.isFiltered(toParsed.email)) {
+				console.debug(`[Gmail CRM] Filtered out: ${toParsed.email}`);
+				return;
+			}
 			this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
 		} else if (!isSent) {
+			if (this.isFiltered(fromParsed.email)) {
+				console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
+				return;
+			}
 			this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
 		}
+	}
+
+	private isFiltered(email: string): boolean {
+		const lower = email.toLowerCase();
+		const domain = lower.split("@")[1] ?? "";
+
+		// Auto-filter: noreply patterns
+		if (AUTOMATED_EMAIL_PATTERN.test(lower)) return true;
+
+		// Auto-filter: known service domains
+		if (AUTOMATED_DOMAINS.has(domain)) return true;
+
+		// User blocklist from settings
+		if (this.blockedDomains.has(domain)) return true;
+
+		return false;
+	}
+
+	private get blockedDomains(): Set<string> {
+		const raw = this.settings.blockedDomains ?? "";
+		return new Set(
+			raw.split(",")
+				.map((d) => d.trim().toLowerCase())
+				.filter(Boolean)
+		);
 	}
 
 	private upsertContact(

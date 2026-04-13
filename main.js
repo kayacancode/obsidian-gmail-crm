@@ -42,6 +42,89 @@ var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 var SCOPES = "https://www.googleapis.com/auth/gmail.metadata";
 var REDIRECT_URI = "http://localhost:42813/callback";
 var RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
+var AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
+var AUTOMATED_DOMAINS = /* @__PURE__ */ new Set([
+  // Cloud / SaaS
+  "dropbox.com",
+  "dropboxmail.com",
+  "google.com",
+  "accounts.google.com",
+  "docs.google.com",
+  "amazonses.com",
+  "amazonaws.com",
+  "aws.amazon.com",
+  "microsoft.com",
+  "sharepointonline.com",
+  // Dev tools
+  "github.com",
+  "gitlab.com",
+  "bitbucket.org",
+  "vercel.com",
+  "netlify.com",
+  "heroku.com",
+  "circleci.com",
+  "travis-ci.com",
+  // Newsletters / content
+  "substack.com",
+  "substackmail.com",
+  "readwise.io",
+  "medium.com",
+  "mailchimp.com",
+  "sendgrid.net",
+  "sendgrid.com",
+  "mailgun.org",
+  "mandrillapp.com",
+  "constantcontact.com",
+  "hubspot.com",
+  "hubspotmail.com",
+  // Productivity / signing
+  "dropboxsign.com",
+  "hellosign.com",
+  "docusign.net",
+  "docusign.com",
+  "pandadoc.com",
+  "adobesign.com",
+  // Social
+  "facebookmail.com",
+  "linkedin.com",
+  "twitter.com",
+  "x.com",
+  "instagrammail.com",
+  "tiktok.com",
+  // Payments / commerce
+  "paypal.com",
+  "stripe.com",
+  "squareup.com",
+  "shopify.com",
+  "intuit.com",
+  "quickbooks.intuit.com",
+  // Scheduling / calendar
+  "calendly.com",
+  "savvycal.com",
+  "cal.com",
+  // Project management
+  "notion.so",
+  "asana.com",
+  "trello.com",
+  "monday.com",
+  "clickup.com",
+  "jira.atlassian.com",
+  "atlassian.com",
+  "atlassian.net",
+  // Design
+  "figma.com",
+  "canva.com",
+  // Other common services
+  "zoom.us",
+  "loom.com",
+  "slack.com",
+  "slackbot.com",
+  "intercom.io",
+  "intercom-mail.com",
+  "zendesk.com",
+  "eventbrite.com",
+  "meetup.com"
+]);
 var GmailApi = class {
   constructor(settings, onSettingsUpdate) {
     this.settings = settings;
@@ -193,7 +276,7 @@ var GmailApi = class {
     return resp.json;
   }
   async buildContactIndex(maxResults, onProgress, existingIndex, messageCache) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g;
     const userEmail = await this.getUserEmail();
     const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
     const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
@@ -219,6 +302,30 @@ var GmailApi = class {
     }
     if (newMessageIds.length > 0) {
       this.finalizeContactMetrics(contacts, threadStates);
+    }
+    console.log(`[Gmail CRM] Sync complete`, {
+      mode: afterDate ? "incremental" : "full",
+      afterDate: afterDate != null ? afterDate : "n/a",
+      totalListed: allMessageIds.length,
+      alreadyCached: allMessageIds.length - newMessageIds.length,
+      newProcessed: newMessageIds.length,
+      totalContacts: Object.keys(contacts).length
+    });
+    const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
+    for (const c of sorted.slice(0, 20)) {
+      console.log(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
+        exchanges: c.totalExchanges,
+        sent: c.sentCount,
+        received: c.receivedCount,
+        threads: (_c = c.threadCount) != null ? _c : 0,
+        backAndForth: (_d = c.backAndForthThreads) != null ? _d : 0,
+        maxDepth: (_e = c.maxThreadDepth) != null ? _e : 0,
+        lastDepth: (_f = c.lastThreadDepth) != null ? _f : 0,
+        rsvpOnly: (_g = c.rsvpOnlyThreads) != null ? _g : 0,
+        firstContact: c.firstContact,
+        lastContact: c.lastContact,
+        domain: c.domain
+      });
     }
     for (const m of allMessageIds) {
       cachedIds.add(m.id);
@@ -249,10 +356,34 @@ var GmailApi = class {
     if (!fromParsed) return;
     const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
     if (isSent && toParsed) {
+      if (this.isFiltered(toParsed.email)) {
+        console.debug(`[Gmail CRM] Filtered out: ${toParsed.email}`);
+        return;
+      }
       this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
     } else if (!isSent) {
+      if (this.isFiltered(fromParsed.email)) {
+        console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
+        return;
+      }
       this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
     }
+  }
+  isFiltered(email) {
+    var _a;
+    const lower = email.toLowerCase();
+    const domain = (_a = lower.split("@")[1]) != null ? _a : "";
+    if (AUTOMATED_EMAIL_PATTERN.test(lower)) return true;
+    if (AUTOMATED_DOMAINS.has(domain)) return true;
+    if (this.blockedDomains.has(domain)) return true;
+    return false;
+  }
+  get blockedDomains() {
+    var _a;
+    const raw = (_a = this.settings.blockedDomains) != null ? _a : "";
+    return new Set(
+      raw.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean)
+    );
   }
   upsertContact(contacts, threadStates, parsed, date, subject, threadId, direction) {
     var _a, _b;
@@ -402,6 +533,13 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         })
       );
     }
+    new import_obsidian2.Setting(containerEl).setName("Filtering").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Blocked domains").setDesc("Comma-separated domains to exclude (e.g. substack.com, readwise.io). Common services like noreply senders are auto-filtered.").addTextArea(
+      (text) => text.setPlaceholder("substack.com, readwise.io, beehiiv.com").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
+        this.plugin.settings.blockedDomains = value;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian2.Setting(containerEl).setName("Sync").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc("How often to re-sync metadata (minutes)").addSlider(
       (slider) => slider.setLimits(15, 480, 15).setValue(this.plugin.settings.syncIntervalMinutes).setDynamicTooltip().onChange(async (value) => {
@@ -853,6 +991,7 @@ COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merg
 
 // src/staleness.ts
 function computeStaleness(page, relationships) {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i;
   const gmail = page.gmailStats;
   const now = Date.now();
   let daysSinceContact = null;
@@ -903,6 +1042,30 @@ function computeStaleness(page, relationships) {
   const strengthScore = computeStrengthScore(gmail, totalExchanges, relationships.length);
   const momentumScore = computeMomentumScore(gmail, daysSinceContact);
   const quadrant = assignQuadrant(strengthScore, momentumScore);
+  console.log(`[Gmail CRM] Scoring: ${page.name}`, {
+    // Raw inputs
+    totalExchanges,
+    sent: (_a = gmail == null ? void 0 : gmail.sentCount) != null ? _a : 0,
+    received: (_b = gmail == null ? void 0 : gmail.receivedCount) != null ? _b : 0,
+    daysSinceContact,
+    edgeCount: relationships.length,
+    // Metadata signals
+    threadCount: (_c = gmail == null ? void 0 : gmail.threadCount) != null ? _c : 0,
+    backAndForthThreads: (_d = gmail == null ? void 0 : gmail.backAndForthThreads) != null ? _d : 0,
+    maxThreadDepth: (_e = gmail == null ? void 0 : gmail.maxThreadDepth) != null ? _e : 0,
+    lastThreadDepth: (_f = gmail == null ? void 0 : gmail.lastThreadDepth) != null ? _f : 0,
+    rsvpOnlyThreads: (_g = gmail == null ? void 0 : gmail.rsvpOnlyThreads) != null ? _g : 0,
+    firstContact: (_h = gmail == null ? void 0 : gmail.firstContact) != null ? _h : "n/a",
+    lastContact: (_i = gmail == null ? void 0 : gmail.lastContact) != null ? _i : "n/a",
+    // Computed scores
+    staleness: score,
+    label,
+    depth: relationshipDepth,
+    recency: relationshipRecency,
+    strengthScore,
+    momentumScore,
+    quadrant
+  });
   return {
     score,
     label,
@@ -1475,7 +1638,8 @@ var DEFAULT_SETTINGS = {
   companiesFolder: "Companies",
   anthropicApiKey: "",
   harperModel: "claude-sonnet-4-6",
-  enrichOnSync: false
+  enrichOnSync: false,
+  blockedDomains: ""
 };
 
 // src/main.ts
