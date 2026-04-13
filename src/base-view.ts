@@ -201,11 +201,6 @@ views:
 `;
 
 export async function createBaseView(vault: Vault, peopleFolder: string): Promise<string> {
-	const folderPath = normalizePath(peopleFolder);
-	if (!vault.getAbstractFileByPath(folderPath)) {
-		await vault.createFolder(folderPath);
-	}
-
 	const basePath = normalizePath(`${peopleFolder}/CRM.base`);
 	const existing = vault.getAbstractFileByPath(basePath);
 	if (existing instanceof TFile) {
