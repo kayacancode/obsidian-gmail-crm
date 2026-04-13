@@ -1612,6 +1612,10 @@ views:
       company: 160
 `;
 async function createBaseView(vault, peopleFolder) {
+  const folderPath = (0, import_obsidian6.normalizePath)(peopleFolder);
+  if (!vault.getAbstractFileByPath(folderPath)) {
+    await vault.createFolder(folderPath);
+  }
   const basePath = (0, import_obsidian6.normalizePath)(`${peopleFolder}/CRM.base`);
   const existing = vault.getAbstractFileByPath(basePath);
   if (existing instanceof import_obsidian6.TFile) {
