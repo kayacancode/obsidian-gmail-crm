@@ -120,7 +120,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			.setName("Max messages to scan")
 			.setDesc("Number of recent messages to pull metadata from")
 			.addDropdown((dd) => {
-				for (const n of [100, 250, 500, 1000, 2000]) {
+				for (const n of [100, 250, 500, 1000, 2000, 5000, 10000]) {
 					dd.addOption(String(n), String(n));
 				}
 				dd.setValue(String(this.plugin.settings.maxResults));

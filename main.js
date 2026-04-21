@@ -548,7 +548,7 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Max messages to scan").setDesc("Number of recent messages to pull metadata from").addDropdown((dd) => {
-      for (const n of [100, 250, 500, 1e3, 2e3]) {
+      for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4]) {
         dd.addOption(String(n), String(n));
       }
       dd.setValue(String(this.plugin.settings.maxResults));

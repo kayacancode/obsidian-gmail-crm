@@ -1,7 +1,7 @@
 {
 	"id": "gmail-crm",
 	"name": "Gmail CRM",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"minAppVersion": "1.0.0",
 	"description": "Privacy-first CRM from Gmail metadata with AI relationship intelligence and staleness tracking.",
 	"author": "Kaya Jones",
