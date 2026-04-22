@@ -1494,22 +1494,30 @@ var FrontmatterManager = class {
       const existingLines = fmMatch[1].split("\n");
       const existingKeys = /* @__PURE__ */ new Set();
       const updatedLines = [];
+      let skipContinuation = false;
       for (const line of existingLines) {
         const keyMatch = line.match(/^(\w[\w_-]*):/);
         if (keyMatch) {
+          skipContinuation = false;
           const key = keyMatch[1];
           existingKeys.add(key);
           if (key in fields) {
             const val = fields[key];
             if (val !== void 0) {
               updatedLines.push(this.formatField(key, val));
+              if (Array.isArray(val)) {
+                skipContinuation = true;
+              }
             } else {
               updatedLines.push(line);
             }
           } else {
             updatedLines.push(line);
           }
+        } else if (skipContinuation && (line.match(/^\s+-\s/) || line.match(/^\s+/))) {
+          continue;
         } else {
+          skipContinuation = false;
           updatedLines.push(line);
         }
       }
@@ -1537,6 +1545,12 @@ ${content}`;
     }
   }
   formatField(key, val) {
+    if (Array.isArray(val)) {
+      if (val.length === 0) return `${key}: []`;
+      const items = val.map((v) => `  - "${v.replace(/"/g, '\\"')}"`);
+      return `${key}:
+${items.join("\n")}`;
+    }
     if (typeof val === "number" || typeof val === "boolean") {
       return `${key}: ${val}`;
     }

@@ -20,6 +20,7 @@ export interface CrmFrontmatter {
 	nudge?: string;
 	connections?: number;
 	last_subject?: string;
+	recent_subjects?: string[];
 	last_thread_depth?: number;
 	max_thread_depth?: number;
 	back_and_forth_threads?: number;
@@ -225,23 +226,33 @@ export class FrontmatterManager {
 			const existingLines = fmMatch[1].split("\n");
 			const existingKeys = new Set<string>();
 			const updatedLines: string[] = [];
+			let skipContinuation = false;
 
 			for (const line of existingLines) {
 				const keyMatch = line.match(/^(\w[\w_-]*):/);
 				if (keyMatch) {
+					skipContinuation = false;
 					const key = keyMatch[1];
 					existingKeys.add(key);
 					if (key in fields) {
 						const val = fields[key as keyof CrmFrontmatter];
 						if (val !== undefined) {
 							updatedLines.push(this.formatField(key, val));
+							// If the new value is multi-line (array), skip old continuation lines
+							if (Array.isArray(val)) {
+								skipContinuation = true;
+							}
 						} else {
 							updatedLines.push(line);
 						}
 					} else {
 						updatedLines.push(line);
 					}
+				} else if (skipContinuation && (line.match(/^\s+-\s/) || line.match(/^\s+/))) {
+					// Skip old YAML list/continuation lines for replaced keys
+					continue;
 				} else {
+					skipContinuation = false;
 					updatedLines.push(line);
 				}
 			}
@@ -265,7 +276,12 @@ export class FrontmatterManager {
 		}
 	}
 
-	private formatField(key: string, val: string | number | boolean): string {
+	private formatField(key: string, val: string | number | boolean | string[]): string {
+		if (Array.isArray(val)) {
+			if (val.length === 0) return `${key}: []`;
+			const items = val.map((v) => `  - "${v.replace(/"/g, '\\"')}"`);
+			return `${key}:\n${items.join("\n")}`;
+		}
 		if (typeof val === "number" || typeof val === "boolean") {
 			return `${key}: ${val}`;
 		}
