@@ -359,7 +359,11 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 
 			// Create new page with p- prefix
-			await this.app.vault.create(notePath, content);
+			try {
+				await this.app.vault.create(notePath, content);
+			} catch {
+				// File already exists (case-insensitive match or race condition)
+			}
 		}
 	}
 

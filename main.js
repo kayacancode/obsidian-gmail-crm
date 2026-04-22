@@ -1771,7 +1771,11 @@ async function createBaseView(vault, peopleFolder) {
   if (existing instanceof import_obsidian6.TFile) {
     await vault.modify(existing, BASE_CONTENT);
   } else {
-    await vault.create(basePath, BASE_CONTENT);
+    try {
+      await vault.create(basePath, BASE_CONTENT);
+    } catch (e) {
+      await vault.adapter.write(basePath, BASE_CONTENT);
+    }
   }
   return basePath;
 }
@@ -2087,7 +2091,10 @@ ${body}`;
       if (noteFile instanceof import_obsidian7.TFile) {
         continue;
       }
-      await this.app.vault.create(notePath, content);
+      try {
+        await this.app.vault.create(notePath, content);
+      } catch (e) {
+      }
     }
   }
   extractUserNotes(content) {

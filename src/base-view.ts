@@ -206,7 +206,12 @@ export async function createBaseView(vault: Vault, peopleFolder: string): Promis
 	if (existing instanceof TFile) {
 		await vault.modify(existing, BASE_CONTENT);
 	} else {
-		await vault.create(basePath, BASE_CONTENT);
+		try {
+			await vault.create(basePath, BASE_CONTENT);
+		} catch {
+			// File already exists but wasn't indexed yet
+			await vault.adapter.write(basePath, BASE_CONTENT);
+		}
 	}
 	return basePath;
 }
