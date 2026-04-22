@@ -20,7 +20,6 @@ export interface CrmFrontmatter {
 	nudge?: string;
 	connections?: number;
 	last_subject?: string;
-	recent_subjects?: string[];
 	last_thread_depth?: number;
 	max_thread_depth?: number;
 	back_and_forth_threads?: number;
@@ -187,9 +186,6 @@ export class FrontmatterManager {
 			crm.received = page.gmailStats.receivedCount;
 			if (page.gmailStats.lastSubject) {
 				crm.last_subject = page.gmailStats.lastSubject;
-			}
-			if (page.gmailStats.subjects && page.gmailStats.subjects.length > 0) {
-				crm.recent_subjects = page.gmailStats.subjects;
 			}
 			if (page.gmailStats.domain) {
 				crm.domain = page.gmailStats.domain;
