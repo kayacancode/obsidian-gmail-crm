@@ -415,7 +415,7 @@ var GmailApi = class {
     if (direction === "sent") c.sentCount++;
     else c.receivedCount++;
     c.totalExchanges++;
-    if (subject && c.subjects.length < 5) {
+    if (subject && c.subjects.length < 10) {
       c.subjects.push(subject);
     }
     let contactThreads = threadStates.get(key);
@@ -715,7 +715,25 @@ var RelationshipEngine = class {
       while ((match = linkRegex.exec(content)) !== null) {
         wikiLinks.push(match[1].trim());
       }
-      const emailMatch = content.match(/\*\*Email:\*\*\s*(\S+@\S+)/);
+      const emailMatch = content.match(/\*\*Email:\*\*\s*(.+)/);
+      const emails = [];
+      if (emailMatch) {
+        const raw = emailMatch[1].trim();
+        for (const token of raw.split(/[,\s|]+/)) {
+          const cleaned = token.replace(/[<>]/g, "").trim().toLowerCase();
+          if (cleaned.includes("@")) emails.push(cleaned);
+        }
+      }
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const yamlEmails = fmMatch[1].match(/emails:\s*\n((?:\s+-\s+\S+@\S+\n?)+)/);
+        if (yamlEmails) {
+          for (const line of yamlEmails[1].split("\n")) {
+            const em = line.replace(/^\s*-\s*/, "").trim().toLowerCase();
+            if (em.includes("@") && !emails.includes(em)) emails.push(em);
+          }
+        }
+      }
       const roleMatch = content.match(/\*\*Role\/Company:\*\*\s*(.+)/);
       const introMatch = content.match(
         /(?:introduced by|via|through)\s+(?:\[\[p-\s*)?([A-Z][a-z]+ [A-Z][a-z]+)/i
@@ -732,7 +750,8 @@ var RelationshipEngine = class {
         path: child.path,
         content,
         wikiLinks,
-        email: emailMatch ? emailMatch[1] : null,
+        email: emails.length > 0 ? emails[0] : null,
+        emails,
         role: roleMatch ? roleMatch[1].trim() : null,
         introducer: introMatch ? introMatch[1].trim() : null,
         meetings,
@@ -744,7 +763,7 @@ var RelationshipEngine = class {
     return pages;
   }
   buildGraph(pages, contactIndex) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
     const graph = {};
     const allNames = new Set(Object.keys(pages));
     for (const name of allNames) {
@@ -817,22 +836,57 @@ var RelationshipEngine = class {
     if (contactIndex) {
       const emailToName = {};
       for (const [name, page] of Object.entries(pages)) {
-        if (page.email) {
+        for (const em of page.emails) {
+          emailToName[em] = name;
+        }
+        if (page.emails.length === 0 && page.email) {
           emailToName[page.email.toLowerCase()] = name;
         }
       }
+      const nameToPage = {};
+      for (const name of Object.keys(pages)) {
+        nameToPage[this.normalizeName(name)] = name;
+      }
       for (const [email, contact] of Object.entries(contactIndex.contacts)) {
-        const name = emailToName[email];
-        if (name && pages[name]) {
-          pages[name].gmailStats = {
+        let pageName = emailToName[email];
+        if (!pageName && contact.name) {
+          pageName = nameToPage[this.normalizeName(contact.name)];
+        }
+        if (!pageName || !pages[pageName]) continue;
+        const existing = pages[pageName].gmailStats;
+        if (existing) {
+          existing.totalExchanges += contact.totalExchanges;
+          existing.sentCount += contact.sentCount;
+          existing.receivedCount += contact.receivedCount;
+          if (contact.lastContact > existing.lastContact) {
+            existing.lastContact = contact.lastContact;
+            if (contact.lastSubject) existing.lastSubject = contact.lastSubject;
+          }
+          if (contact.firstContact && (!existing.firstContact || contact.firstContact < existing.firstContact)) {
+            existing.firstContact = contact.firstContact;
+          }
+          for (const s of (_a = contact.subjects) != null ? _a : []) {
+            if (existing.subjects.length < 10 && !existing.subjects.includes(s)) {
+              existing.subjects.push(s);
+            }
+          }
+          existing.threadCount = ((_b = existing.threadCount) != null ? _b : 0) + ((_c = contact.threadCount) != null ? _c : 0);
+          existing.maxThreadDepth = Math.max((_d = existing.maxThreadDepth) != null ? _d : 0, (_e = contact.maxThreadDepth) != null ? _e : 0);
+          existing.backAndForthThreads = ((_f = existing.backAndForthThreads) != null ? _f : 0) + ((_g = contact.backAndForthThreads) != null ? _g : 0);
+          existing.rsvpOnlyThreads = ((_h = existing.rsvpOnlyThreads) != null ? _h : 0) + ((_i = contact.rsvpOnlyThreads) != null ? _i : 0);
+          if (contact.lastThreadDepth !== void 0) {
+            existing.lastThreadDepth = Math.max((_j = existing.lastThreadDepth) != null ? _j : 0, contact.lastThreadDepth);
+          }
+        } else {
+          pages[pageName].gmailStats = {
             totalExchanges: contact.totalExchanges,
             sentCount: contact.sentCount,
             receivedCount: contact.receivedCount,
             lastContact: contact.lastContact,
             firstContact: contact.firstContact,
-            subjects: (_a = contact.subjects) != null ? _a : [],
-            lastSubject: (_b = contact.lastSubject) != null ? _b : "",
-            domain: (_c = contact.domain) != null ? _c : "",
+            subjects: (_k = contact.subjects) != null ? _k : [],
+            lastSubject: (_l = contact.lastSubject) != null ? _l : "",
+            domain: (_m = contact.domain) != null ? _m : "",
             threadCount: contact.threadCount,
             maxThreadDepth: contact.maxThreadDepth,
             backAndForthThreads: contact.backAndForthThreads,
@@ -852,6 +906,75 @@ var RelationshipEngine = class {
       });
     }
     return graph;
+  }
+  /**
+   * Normalize a name for fuzzy matching: lowercased, common nicknames mapped,
+   * so "Jonathan Chin" and "Jon Chin" produce the same key.
+   */
+  normalizeName(name) {
+    var _a;
+    const NICKNAMES = {
+      jon: "jonathan",
+      john: "jonathan",
+      johnny: "jonathan",
+      mike: "michael",
+      mikey: "michael",
+      rob: "robert",
+      bob: "robert",
+      bobby: "robert",
+      will: "william",
+      bill: "william",
+      billy: "william",
+      dan: "daniel",
+      danny: "daniel",
+      dave: "david",
+      chris: "christopher",
+      matt: "matthew",
+      tom: "thomas",
+      tommy: "thomas",
+      jim: "james",
+      jimmy: "james",
+      jamie: "james",
+      joe: "joseph",
+      joey: "joseph",
+      ben: "benjamin",
+      benny: "benjamin",
+      sam: "samuel",
+      sammy: "samuel",
+      alex: "alexander",
+      nick: "nicholas",
+      rick: "richard",
+      dick: "richard",
+      rich: "richard",
+      steve: "steven",
+      stephen: "steven",
+      ed: "edward",
+      eddie: "edward",
+      tony: "anthony",
+      charlie: "charles",
+      chuck: "charles",
+      pat: "patrick",
+      greg: "gregory",
+      jeff: "jeffrey",
+      kate: "katherine",
+      kathy: "katherine",
+      kat: "katherine",
+      liz: "elizabeth",
+      beth: "elizabeth",
+      betty: "elizabeth",
+      jen: "jennifer",
+      jenny: "jennifer",
+      meg: "margaret",
+      maggie: "margaret",
+      peggy: "margaret",
+      sue: "susan",
+      susie: "susan"
+    };
+    const parts = name.toLowerCase().trim().split(/\s+/);
+    if (parts.length > 0) {
+      parts[0] = (_a = NICKNAMES[parts[0]]) != null ? _a : parts[0];
+    }
+    return parts.join(" ");
   }
   fuzzyMatch(query, candidates) {
     const q = query.toLowerCase();
@@ -1323,6 +1446,9 @@ var FrontmatterManager = class {
       crm.received = page.gmailStats.receivedCount;
       if (page.gmailStats.lastSubject) {
         crm.last_subject = page.gmailStats.lastSubject;
+      }
+      if (page.gmailStats.subjects && page.gmailStats.subjects.length > 0) {
+        crm.recent_subjects = page.gmailStats.subjects;
       }
       if (page.gmailStats.domain) {
         crm.domain = page.gmailStats.domain;

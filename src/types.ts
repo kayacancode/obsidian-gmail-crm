@@ -104,6 +104,7 @@ export interface PersonPage {
 	content: string;
 	wikiLinks: string[];
 	email: string | null;
+	emails: string[];
 	role: string | null;
 	introducer: string | null;
 	meetings: { date: string; title: string }[];

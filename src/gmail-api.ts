@@ -459,7 +459,7 @@ export class GmailApi {
 		else c.receivedCount++;
 		c.totalExchanges++;
 
-		if (subject && c.subjects.length < 5) {
+		if (subject && c.subjects.length < 10) {
 			c.subjects.push(subject);
 		}
 

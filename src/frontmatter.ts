@@ -187,6 +187,9 @@ export class FrontmatterManager {
 			if (page.gmailStats.lastSubject) {
 				crm.last_subject = page.gmailStats.lastSubject;
 			}
+			if (page.gmailStats.subjects && page.gmailStats.subjects.length > 0) {
+				crm.recent_subjects = page.gmailStats.subjects;
+			}
 			if (page.gmailStats.domain) {
 				crm.domain = page.gmailStats.domain;
 			}
