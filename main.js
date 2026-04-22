@@ -1461,6 +1461,9 @@ var FrontmatterManager = class {
       if (page.gmailStats.lastSubject) {
         crm.last_subject = page.gmailStats.lastSubject;
       }
+      if (page.gmailStats.subjects && page.gmailStats.subjects.length > 0) {
+        crm.recent_subjects = page.gmailStats.subjects;
+      }
       if (page.gmailStats.domain) {
         crm.domain = page.gmailStats.domain;
       }
@@ -1599,6 +1602,8 @@ properties:
     displayName: Received
   note.last_subject:
     displayName: Last Subject
+  note.recent_subjects:
+    displayName: Recent Subjects
   note.last_thread_depth:
     displayName: Thread Msgs
   note.max_thread_depth:
@@ -1620,7 +1625,7 @@ views:
       - file.name
       - company
       - last_contact
-      - last_subject
+      - recent_subjects
       - last_thread_depth
       - total_exchanges
       - relationship_depth
@@ -1635,7 +1640,7 @@ views:
       - file.name
       - company
       - last_contact
-      - last_subject
+      - recent_subjects
       - last_thread_depth
       - total_exchanges
       - strength_score
@@ -1645,7 +1650,7 @@ views:
     columnSize:
       file.name: 200
       company: 160
-      last_subject: 250
+      recent_subjects: 350
       nudge: 300
     summaries:
       total_exchanges: Sum
@@ -1654,7 +1659,7 @@ views:
     order:
       - file.name
       - company
-      - last_subject
+      - recent_subjects
       - days_since_contact
       - strength_score
       - momentum_score
@@ -1670,7 +1675,7 @@ views:
     columns:
       - file.name
       - company
-      - last_subject
+      - recent_subjects
       - days_since_contact
       - strength_score
       - momentum_score
@@ -1680,7 +1685,7 @@ views:
     columnSize:
       file.name: 200
       company: 160
-      last_subject: 250
+      recent_subjects: 350
       nudge: 350
   - type: table
     name: By Company
