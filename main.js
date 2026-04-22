@@ -184,8 +184,8 @@ var GmailApi = class {
     });
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async apiRequest(options) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+  async apiRequest(options, retries = 3) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     const url = typeof options === "string" ? options : options.url;
     const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
     let resp;
@@ -199,8 +199,15 @@ var GmailApi = class {
     if (resp.status >= 200 && resp.status < 300) {
       return resp;
     }
+    const isRateLimit = resp.status === 429 || resp.status === 403 && ((_b = resp.text) != null ? _b : "").includes("rateLimitExceeded");
+    if (isRateLimit && retries > 0) {
+      const backoff = (4 - retries) * 2e3;
+      console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff}ms (${retries} retries left)`);
+      await this.sleep(backoff);
+      return this.apiRequest(options, retries - 1);
+    }
     const status = resp.status;
-    const rawBody = (_b = resp.text) != null ? _b : "";
+    const rawBody = (_c = resp.text) != null ? _c : "";
     console.error(`[Gmail CRM] API request failed`, {
       url,
       status,
@@ -211,7 +218,7 @@ var GmailApi = class {
     if (rawBody) {
       try {
         const parsed = JSON.parse(rawBody);
-        detail = (_g = (_f = (_d = (_c = parsed == null ? void 0 : parsed.error) == null ? void 0 : _c.message) != null ? _d : parsed == null ? void 0 : parsed.error_description) != null ? _f : (_e = parsed == null ? void 0 : parsed.error) == null ? void 0 : _e.status) != null ? _g : JSON.stringify(parsed).slice(0, 300);
+        detail = (_h = (_g = (_e = (_d = parsed == null ? void 0 : parsed.error) == null ? void 0 : _d.message) != null ? _e : parsed == null ? void 0 : parsed.error_description) != null ? _g : (_f = parsed == null ? void 0 : parsed.error) == null ? void 0 : _f.status) != null ? _h : JSON.stringify(parsed).slice(0, 300);
       } catch (e) {
         detail = rawBody.slice(0, 300);
       }
@@ -223,9 +230,12 @@ var GmailApi = class {
         404: "Endpoint not found. The Gmail API may not be enabled.",
         429: "Rate limited by Google. Wait a few minutes and try again."
       };
-      detail = (_h = hints[status]) != null ? _h : `HTTP ${status}`;
+      detail = (_i = hints[status]) != null ? _i : `HTTP ${status}`;
     }
     throw new Error(`HTTP ${status}: ${detail}`);
+  }
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
   async getHeaders() {
     if (Date.now() >= this.settings.tokenExpiry - 6e4) {
@@ -290,6 +300,7 @@ var GmailApi = class {
       }
     }
     const BATCH_SIZE = 10;
+    const BATCH_DELAY_MS = 100;
     for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
       const batch = newMessageIds.slice(i, i + BATCH_SIZE);
       const results = await Promise.all(
@@ -299,6 +310,9 @@ var GmailApi = class {
         this.processMessage(msg, userEmail, contacts, threadStates);
       }
       onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
+      if (i + BATCH_SIZE < newMessageIds.length) {
+        await this.sleep(BATCH_DELAY_MS);
+      }
     }
     if (newMessageIds.length > 0) {
       this.finalizeContactMetrics(contacts, threadStates);

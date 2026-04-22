@@ -139,7 +139,7 @@ export class GmailApi {
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async apiRequest(options: Parameters<typeof requestUrl>[0]): Promise<any> {
+	private async apiRequest(options: Parameters<typeof requestUrl>[0], retries = 3): Promise<any> {
 		const url = typeof options === "string" ? options : options.url;
 		// Pass throw: false so we can read the actual response body on errors.
 		// Otherwise Obsidian throws a generic "Request failed, status N" with
@@ -159,6 +159,16 @@ export class GmailApi {
 
 		if (resp.status >= 200 && resp.status < 300) {
 			return resp;
+		}
+
+		// Retry on rate limit (429) or quota exceeded (403 with rateLimitExceeded)
+		const isRateLimit = resp.status === 429 ||
+			(resp.status === 403 && (resp.text ?? "").includes("rateLimitExceeded"));
+		if (isRateLimit && retries > 0) {
+			const backoff = (4 - retries) * 2000; // 2s, 4s, 6s
+			console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff}ms (${retries} retries left)`);
+			await this.sleep(backoff);
+			return this.apiRequest(options, retries - 1);
 		}
 
 		// Non-2xx: extract the real error from Google's response body
@@ -192,6 +202,10 @@ export class GmailApi {
 		}
 
 		throw new Error(`HTTP ${status}: ${detail}`);
+	}
+
+	private sleep(ms: number): Promise<void> {
+		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
 
 	private async getHeaders(): Promise<Record<string, string>> {
@@ -294,6 +308,7 @@ export class GmailApi {
 		}
 
 		const BATCH_SIZE = 10;
+		const BATCH_DELAY_MS = 100; // throttle to stay under Gmail quota
 		for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
 			const batch = newMessageIds.slice(i, i + BATCH_SIZE);
 			const results = await Promise.all(
@@ -305,6 +320,11 @@ export class GmailApi {
 			}
 
 			onProgress?.(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
+
+			// Small delay between batches to avoid hitting rate limits
+			if (i + BATCH_SIZE < newMessageIds.length) {
+				await this.sleep(BATCH_DELAY_MS);
+			}
 		}
 
 		// Only recompute thread metrics if we processed new messages
