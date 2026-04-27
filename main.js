@@ -1178,7 +1178,8 @@ function computeStaleness(page, relationships) {
   }
   const strengthScore = computeStrengthScore(gmail, totalExchanges, relationships.length);
   const momentumScore = computeMomentumScore(gmail, daysSinceContact);
-  const quadrant = assignQuadrant(strengthScore, momentumScore);
+  const quadrant = assignQuadrant(strengthScore, momentumScore, gmail);
+  const combinedScore = Math.round((strengthScore + momentumScore) / 2);
   console.log(`[Gmail CRM] Scoring: ${page.name}`, {
     // Raw inputs
     totalExchanges,
@@ -1201,6 +1202,7 @@ function computeStaleness(page, relationships) {
     recency: relationshipRecency,
     strengthScore,
     momentumScore,
+    combinedScore,
     quadrant
   });
   return {
@@ -1213,6 +1215,7 @@ function computeStaleness(page, relationships) {
     nudge,
     strengthScore,
     momentumScore,
+    combinedScore,
     quadrant
   };
 }
@@ -1281,7 +1284,7 @@ function computeStrengthScore(gmail, totalExchanges, edgeCount) {
   if (gmail) {
     const baf = (_a = gmail.backAndForthThreads) != null ? _a : 0;
     const maxThread = (_b = gmail.maxThreadDepth) != null ? _b : 0;
-    depthScore = Math.min(15, baf * 3) + Math.min(10, maxThread * 2);
+    depthScore = Math.min(20, baf * 5) + Math.min(10, maxThread * 2);
   } else {
     depthScore = Math.min(10, edgeCount * 2);
   }
@@ -1314,11 +1317,19 @@ function computeMomentumScore(gmail, daysSinceContact) {
   }
   return Math.round(Math.min(100, decayScore + trendScore));
 }
-function assignQuadrant(strengthScore, momentumScore) {
+function assignQuadrant(strengthScore, momentumScore, gmail) {
+  var _a, _b;
   const strongThreshold = 40;
   const activeThreshold = 30;
-  const isStrong = strengthScore >= strongThreshold;
+  let isStrong = strengthScore >= strongThreshold;
   const isActive = momentumScore >= activeThreshold;
+  if (!isStrong && gmail) {
+    const baf = (_a = gmail.backAndForthThreads) != null ? _a : 0;
+    const sent = (_b = gmail.sentCount) != null ? _b : 0;
+    if (baf >= 1 && sent >= 2) {
+      isStrong = true;
+    }
+  }
   if (isStrong && isActive) return "nurture";
   if (isStrong && !isActive) return "re-engage";
   if (!isStrong && isActive) return "developing";
@@ -1428,6 +1439,7 @@ var FrontmatterManager = class {
       relationship_recency: staleness.relationshipRecency,
       strength_score: staleness.strengthScore,
       momentum_score: staleness.momentumScore,
+      combined_score: staleness.combinedScore,
       quadrant: staleness.quadrant,
       connections: relationships.length
     };
@@ -1618,6 +1630,8 @@ properties:
     displayName: Momentum
   note.quadrant:
     displayName: Quadrant
+  note.combined_score:
+    displayName: Score
 views:
   - type: table
     name: CRM
@@ -1632,9 +1646,10 @@ views:
       - relationship_recency
       - staleness_label
       - quadrant
+      - combined_score
       - nudge
     sort:
-      - property: strength_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -1646,6 +1661,7 @@ views:
       - strength_score
       - momentum_score
       - quadrant
+      - combined_score
       - nudge
     columnSize:
       file.name: 200
@@ -1663,6 +1679,7 @@ views:
       - days_since_contact
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
@@ -1670,7 +1687,7 @@ views:
       and:
         - quadrant = re-engage
     sort:
-      - property: strength_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -1679,6 +1696,7 @@ views:
       - days_since_contact
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
@@ -1721,12 +1739,13 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
     filters:
       and:
         - quadrant = nurture
     sort:
-      - property: strength_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -1736,6 +1755,7 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
     columnSize:
       file.name: 200
@@ -1749,12 +1769,13 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
       - quadrant
     filters:
       and:
         - quadrant = developing
     sort:
-      - property: momentum_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -1763,9 +1784,39 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
     columnSize:
       file.name: 200
       company: 160
+  - type: table
+    name: Quadrants
+    order:
+      - quadrant
+      - file.name
+      - company
+      - combined_score
+      - strength_score
+      - momentum_score
+      - last_contact
+      - back_and_forth_threads
+    sort:
+      - property: quadrant
+        direction: ASC
+      - property: combined_score
+        direction: DESC
+    columns:
+      - quadrant
+      - file.name
+      - company
+      - combined_score
+      - strength_score
+      - momentum_score
+      - last_contact
+      - back_and_forth_threads
+    columnSize:
+      file.name: 200
+      company: 160
+      quadrant: 130
 `;
 async function createBaseView(vault, peopleFolder) {
   const basePath = (0, import_obsidian6.normalizePath)(`${peopleFolder}/CRM.base`);

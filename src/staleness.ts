@@ -14,6 +14,7 @@ export interface StalenessScore {
 	// Composite axes per John's framework
 	strengthScore: number; // 0–100, composite of depth × volume × initiation balance × time span
 	momentumScore: number; // 0–100, exponential recency decay + activity trend
+	combinedScore: number; // 0–100, mean of strength + momentum for single-column sorting
 	quadrant: "nurture" | "re-engage" | "developing" | "deprioritize";
 }
 
@@ -92,7 +93,9 @@ export function computeStaleness(
 	// Composite axes per John's framework
 	const strengthScore = computeStrengthScore(gmail, totalExchanges, relationships.length);
 	const momentumScore = computeMomentumScore(gmail, daysSinceContact);
-	const quadrant = assignQuadrant(strengthScore, momentumScore);
+	const quadrant = assignQuadrant(strengthScore, momentumScore, gmail);
+	// Single sortable score combining both axes (John's "one number under the words").
+	const combinedScore = Math.round((strengthScore + momentumScore) / 2);
 
 	console.log(`[Gmail CRM] Scoring: ${page.name}`, {
 		// Raw inputs
@@ -116,6 +119,7 @@ export function computeStaleness(
 		recency: relationshipRecency,
 		strengthScore,
 		momentumScore,
+		combinedScore,
 		quadrant,
 	});
 
@@ -129,6 +133,7 @@ export function computeStaleness(
 		nudge,
 		strengthScore,
 		momentumScore,
+		combinedScore,
 		quadrant,
 	};
 }
@@ -232,12 +237,13 @@ function computeStrengthScore(
 	// Volume component (0–25): log-scaled email count
 	const volumeScore = Math.min(25, Math.log2(totalExchanges + 1) * 4);
 
-	// Depth component (0–25): back-and-forth threads + max thread depth
+	// Depth component (0–30): back-and-forth threads weigh heaviest because real
+	// two-way conversation is the strongest hard-number signal of a real relationship.
 	let depthScore = 0;
 	if (gmail) {
 		const baf = gmail.backAndForthThreads ?? 0;
 		const maxThread = gmail.maxThreadDepth ?? 0;
-		depthScore = Math.min(15, baf * 3) + Math.min(10, maxThread * 2);
+		depthScore = Math.min(20, baf * 5) + Math.min(10, maxThread * 2);
 	} else {
 		depthScore = Math.min(10, edgeCount * 2);
 	}
@@ -300,13 +306,25 @@ function computeMomentumScore(
 //   weak & dormant    → deprioritize
 function assignQuadrant(
 	strengthScore: number,
-	momentumScore: number
+	momentumScore: number,
+	gmail: PersonPage["gmailStats"]
 ): "nurture" | "re-engage" | "developing" | "deprioritize" {
 	const strongThreshold = 40;
 	const activeThreshold = 30;
 
-	const isStrong = strengthScore >= strongThreshold;
+	let isStrong = strengthScore >= strongThreshold;
 	const isActive = momentumScore >= activeThreshold;
+
+	// Hard-number override: a real two-way conversation (Kaya replied AND received
+	// replies) never qualifies for deprioritize. Subject content/scoring nuance
+	// is a fallback to the raw response counts, not a substitute.
+	if (!isStrong && gmail) {
+		const baf = gmail.backAndForthThreads ?? 0;
+		const sent = gmail.sentCount ?? 0;
+		if (baf >= 1 && sent >= 2) {
+			isStrong = true;
+		}
+	}
 
 	if (isStrong && isActive) return "nurture";
 	if (isStrong && !isActive) return "re-engage";

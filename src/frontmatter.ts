@@ -27,6 +27,7 @@ export interface CrmFrontmatter {
 	domain?: string;
 	strength_score?: number;
 	momentum_score?: number;
+	combined_score?: number;
 	quadrant?: string;
 	harper_enriched?: string;
 }
@@ -147,6 +148,7 @@ export class FrontmatterManager {
 			relationship_recency: staleness.relationshipRecency,
 			strength_score: staleness.strengthScore,
 			momentum_score: staleness.momentumScore,
+			combined_score: staleness.combinedScore,
 			quadrant: staleness.quadrant,
 			connections: relationships.length,
 		};

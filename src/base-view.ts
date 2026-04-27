@@ -52,6 +52,8 @@ properties:
     displayName: Momentum
   note.quadrant:
     displayName: Quadrant
+  note.combined_score:
+    displayName: Score
 views:
   - type: table
     name: CRM
@@ -66,9 +68,10 @@ views:
       - relationship_recency
       - staleness_label
       - quadrant
+      - combined_score
       - nudge
     sort:
-      - property: strength_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -80,6 +83,7 @@ views:
       - strength_score
       - momentum_score
       - quadrant
+      - combined_score
       - nudge
     columnSize:
       file.name: 200
@@ -97,6 +101,7 @@ views:
       - days_since_contact
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
@@ -104,7 +109,7 @@ views:
       and:
         - quadrant = re-engage
     sort:
-      - property: strength_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -113,6 +118,7 @@ views:
       - days_since_contact
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
       - total_exchanges
       - nudge
@@ -155,12 +161,13 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
     filters:
       and:
         - quadrant = nurture
     sort:
-      - property: strength_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -170,6 +177,7 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
       - back_and_forth_threads
     columnSize:
       file.name: 200
@@ -183,12 +191,13 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
       - quadrant
     filters:
       and:
         - quadrant = developing
     sort:
-      - property: momentum_score
+      - property: combined_score
         direction: DESC
     columns:
       - file.name
@@ -197,9 +206,39 @@ views:
       - total_exchanges
       - strength_score
       - momentum_score
+      - combined_score
     columnSize:
       file.name: 200
       company: 160
+  - type: table
+    name: Quadrants
+    order:
+      - quadrant
+      - file.name
+      - company
+      - combined_score
+      - strength_score
+      - momentum_score
+      - last_contact
+      - back_and_forth_threads
+    sort:
+      - property: quadrant
+        direction: ASC
+      - property: combined_score
+        direction: DESC
+    columns:
+      - quadrant
+      - file.name
+      - company
+      - combined_score
+      - strength_score
+      - momentum_score
+      - last_contact
+      - back_and_forth_threads
+    columnSize:
+      file.name: 200
+      company: 160
+      quadrant: 130
 `;
 
 export async function createBaseView(vault: Vault, peopleFolder: string): Promise<string> {
