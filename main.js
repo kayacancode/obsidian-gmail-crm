@@ -2183,29 +2183,18 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
   }
   async loadContactIndex() {
     const path = this.getIndexPath();
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian8.TFile) {
-      const content = await this.app.vault.read(file);
-      try {
-        this.contactIndex = JSON.parse(content);
-      } catch (e) {
-      }
+    try {
+      if (!await this.app.vault.adapter.exists(path)) return;
+      const content = await this.app.vault.adapter.read(path);
+      this.contactIndex = JSON.parse(content);
+    } catch (e) {
     }
   }
   async saveContactIndex() {
     if (!this.contactIndex) return;
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex, null, 2);
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian8.TFile) {
-      await this.app.vault.modify(existing, content);
-    } else {
-      try {
-        await this.app.vault.create(path, content);
-      } catch (e) {
-        await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
-      }
-    }
+    await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
   }
   getIndexPath() {
     return (0, import_obsidian8.normalizePath)(
@@ -2219,29 +2208,18 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
   }
   async loadMessageCache() {
     const path = this.getCachePath();
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian8.TFile) {
-      const content = await this.app.vault.read(file);
-      try {
-        this.messageCache = JSON.parse(content);
-      } catch (e) {
-      }
+    try {
+      if (!await this.app.vault.adapter.exists(path)) return;
+      const content = await this.app.vault.adapter.read(path);
+      this.messageCache = JSON.parse(content);
+    } catch (e) {
     }
   }
   async saveMessageCache() {
     if (!this.messageCache) return;
     const path = this.getCachePath();
     const content = JSON.stringify(this.messageCache);
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian8.TFile) {
-      await this.app.vault.modify(existing, content);
-    } else {
-      try {
-        await this.app.vault.create(path, content);
-      } catch (e) {
-        await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
-      }
-    }
+    await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;

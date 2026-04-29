@@ -220,14 +220,14 @@ export default class GmailCrmPlugin extends Plugin {
 
 	private async loadContactIndex() {
 		const path = this.getIndexPath();
-		const file = this.app.vault.getAbstractFileByPath(path);
-		if (file instanceof TFile) {
-			const content = await this.app.vault.read(file);
-			try {
-				this.contactIndex = JSON.parse(content);
-				} catch {
-				// corrupt index, will re-sync
-			}
+		// Plugin data lives under .obsidian/plugins/... which is outside the vault
+		// index — getAbstractFileByPath returns null. Use the adapter directly.
+		try {
+			if (!(await this.app.vault.adapter.exists(path))) return;
+			const content = await this.app.vault.adapter.read(path);
+			this.contactIndex = JSON.parse(content);
+		} catch {
+			// missing or corrupt — will be rebuilt on next sync
 		}
 	}
 
@@ -235,17 +235,7 @@ export default class GmailCrmPlugin extends Plugin {
 		if (!this.contactIndex) return;
 		const path = this.getIndexPath();
 		const content = JSON.stringify(this.contactIndex, null, 2);
-		const existing = this.app.vault.getAbstractFileByPath(path);
-		if (existing instanceof TFile) {
-			await this.app.vault.modify(existing, content);
-		} else {
-			try {
-				await this.app.vault.create(path, content);
-			} catch {
-				// File may exist but not be indexed yet — try adapter directly
-				await this.app.vault.adapter.write(normalizePath(path), content);
-			}
-		}
+		await this.app.vault.adapter.write(normalizePath(path), content);
 	}
 
 	private getIndexPath(): string {
@@ -262,14 +252,12 @@ export default class GmailCrmPlugin extends Plugin {
 
 	private async loadMessageCache() {
 		const path = this.getCachePath();
-		const file = this.app.vault.getAbstractFileByPath(path);
-		if (file instanceof TFile) {
-			const content = await this.app.vault.read(file);
-			try {
-				this.messageCache = JSON.parse(content);
-			} catch {
-				// corrupt cache, will do full sync
-			}
+		try {
+			if (!(await this.app.vault.adapter.exists(path))) return;
+			const content = await this.app.vault.adapter.read(path);
+			this.messageCache = JSON.parse(content);
+		} catch {
+			// missing or corrupt — will do a full sync
 		}
 	}
 
@@ -277,16 +265,7 @@ export default class GmailCrmPlugin extends Plugin {
 		if (!this.messageCache) return;
 		const path = this.getCachePath();
 		const content = JSON.stringify(this.messageCache);
-		const existing = this.app.vault.getAbstractFileByPath(path);
-		if (existing instanceof TFile) {
-			await this.app.vault.modify(existing, content);
-		} else {
-			try {
-				await this.app.vault.create(path, content);
-			} catch {
-				await this.app.vault.adapter.write(normalizePath(path), content);
-			}
-		}
+		await this.app.vault.adapter.write(normalizePath(path), content);
 	}
 
 	private async writeContactNotes() {
