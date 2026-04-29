@@ -206,11 +206,23 @@ export class RelationshipEngine {
 
 			// Also match contacts by normalized name when no email match exists
 			const nameToPage: Record<string, string> = {};
+			const lastNameToPage: Record<string, string[]> = {};
 			for (const name of Object.keys(pages)) {
-				nameToPage[this.normalizeName(name)] = name;
+				const normalized = this.normalizeName(name);
+				nameToPage[normalized] = name;
+				const parts = normalized.split(/\s+/);
+				if (parts.length >= 2) {
+					const last = parts[parts.length - 1];
+					(lastNameToPage[last] ??= []).push(name);
+				}
 			}
 
+			let matched = 0;
+			let attempted = 0;
+			const unmatchedSamples: string[] = [];
+
 			for (const [email, contact] of Object.entries(contactIndex.contacts)) {
+				attempted++;
 				let pageName = emailToName[email];
 
 				// Fuzzy name match: "Jonathan Chin" matches page "Jon Chin"
@@ -218,7 +230,34 @@ export class RelationshipEngine {
 					pageName = nameToPage[this.normalizeName(contact.name)];
 				}
 
-				if (!pageName || !pages[pageName]) continue;
+				// Last-name-only match when only one page has that last name
+				if (!pageName && contact.name) {
+					const parts = this.normalizeName(contact.name).split(/\s+/);
+					if (parts.length >= 2) {
+						const last = parts[parts.length - 1];
+						const candidates = lastNameToPage[last];
+						if (candidates && candidates.length === 1) {
+							pageName = candidates[0];
+						}
+					}
+				}
+
+				// Email local-part match: "alex.smith@foo.com" → page "Alex Smith"
+				if (!pageName) {
+					const local = email.split("@")[0]?.replace(/[._-]+/g, " ").trim();
+					if (local) {
+						const candidate = nameToPage[this.normalizeName(local)];
+						if (candidate) pageName = candidate;
+					}
+				}
+
+				if (!pageName || !pages[pageName]) {
+					if (unmatchedSamples.length < 5) {
+						unmatchedSamples.push(`${contact.name || "(no name)"} <${email}>`);
+					}
+					continue;
+				}
+				matched++;
 
 				const existing = pages[pageName].gmailStats;
 				if (existing) {
@@ -264,6 +303,11 @@ export class RelationshipEngine {
 					};
 				}
 			}
+
+			console.log(`[Gmail CRM] Page-to-contact match: ${matched}/${attempted}`, {
+				totalPages: Object.keys(pages).length,
+				unmatchedSample: unmatchedSamples,
+			});
 		}
 
 		// Deduplicate

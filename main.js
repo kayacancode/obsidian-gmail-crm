@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => GmailCrmPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/gmail-api.ts
 var import_obsidian = require("obsidian");
@@ -668,6 +668,11 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.createBase();
       })
     );
+    new import_obsidian2.Setting(containerEl).setName("Create quadrant view").setDesc("Generate a 2\xD72 quadrant map (Quadrants.md) showing all contacts grouped by nurture / re-engage / developing / deprioritize").addButton(
+      (btn) => btn.setButtonText("Create quadrants").setCta().onClick(async () => {
+        await this.plugin.createQuadrantView();
+      })
+    );
   }
 };
 
@@ -785,7 +790,7 @@ var RelationshipEngine = class {
     return pages;
   }
   buildGraph(pages, contactIndex) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
     const graph = {};
     const allNames = new Set(Object.keys(pages));
     for (const name of allNames) {
@@ -866,15 +871,49 @@ var RelationshipEngine = class {
         }
       }
       const nameToPage = {};
+      const lastNameToPage = {};
       for (const name of Object.keys(pages)) {
-        nameToPage[this.normalizeName(name)] = name;
+        const normalized = this.normalizeName(name);
+        nameToPage[normalized] = name;
+        const parts = normalized.split(/\s+/);
+        if (parts.length >= 2) {
+          const last = parts[parts.length - 1];
+          ((_a = lastNameToPage[last]) != null ? _a : lastNameToPage[last] = []).push(name);
+        }
       }
+      let matched = 0;
+      let attempted = 0;
+      const unmatchedSamples = [];
       for (const [email, contact] of Object.entries(contactIndex.contacts)) {
+        attempted++;
         let pageName = emailToName[email];
         if (!pageName && contact.name) {
           pageName = nameToPage[this.normalizeName(contact.name)];
         }
-        if (!pageName || !pages[pageName]) continue;
+        if (!pageName && contact.name) {
+          const parts = this.normalizeName(contact.name).split(/\s+/);
+          if (parts.length >= 2) {
+            const last = parts[parts.length - 1];
+            const candidates = lastNameToPage[last];
+            if (candidates && candidates.length === 1) {
+              pageName = candidates[0];
+            }
+          }
+        }
+        if (!pageName) {
+          const local = (_b = email.split("@")[0]) == null ? void 0 : _b.replace(/[._-]+/g, " ").trim();
+          if (local) {
+            const candidate = nameToPage[this.normalizeName(local)];
+            if (candidate) pageName = candidate;
+          }
+        }
+        if (!pageName || !pages[pageName]) {
+          if (unmatchedSamples.length < 5) {
+            unmatchedSamples.push(`${contact.name || "(no name)"} <${email}>`);
+          }
+          continue;
+        }
+        matched++;
         const existing = pages[pageName].gmailStats;
         if (existing) {
           existing.totalExchanges += contact.totalExchanges;
@@ -887,17 +926,17 @@ var RelationshipEngine = class {
           if (contact.firstContact && (!existing.firstContact || contact.firstContact < existing.firstContact)) {
             existing.firstContact = contact.firstContact;
           }
-          for (const s of (_a = contact.subjects) != null ? _a : []) {
+          for (const s of (_c = contact.subjects) != null ? _c : []) {
             if (existing.subjects.length < 10 && !existing.subjects.includes(s)) {
               existing.subjects.push(s);
             }
           }
-          existing.threadCount = ((_b = existing.threadCount) != null ? _b : 0) + ((_c = contact.threadCount) != null ? _c : 0);
-          existing.maxThreadDepth = Math.max((_d = existing.maxThreadDepth) != null ? _d : 0, (_e = contact.maxThreadDepth) != null ? _e : 0);
-          existing.backAndForthThreads = ((_f = existing.backAndForthThreads) != null ? _f : 0) + ((_g = contact.backAndForthThreads) != null ? _g : 0);
-          existing.rsvpOnlyThreads = ((_h = existing.rsvpOnlyThreads) != null ? _h : 0) + ((_i = contact.rsvpOnlyThreads) != null ? _i : 0);
+          existing.threadCount = ((_d = existing.threadCount) != null ? _d : 0) + ((_e = contact.threadCount) != null ? _e : 0);
+          existing.maxThreadDepth = Math.max((_f = existing.maxThreadDepth) != null ? _f : 0, (_g = contact.maxThreadDepth) != null ? _g : 0);
+          existing.backAndForthThreads = ((_h = existing.backAndForthThreads) != null ? _h : 0) + ((_i = contact.backAndForthThreads) != null ? _i : 0);
+          existing.rsvpOnlyThreads = ((_j = existing.rsvpOnlyThreads) != null ? _j : 0) + ((_k = contact.rsvpOnlyThreads) != null ? _k : 0);
           if (contact.lastThreadDepth !== void 0) {
-            existing.lastThreadDepth = Math.max((_j = existing.lastThreadDepth) != null ? _j : 0, contact.lastThreadDepth);
+            existing.lastThreadDepth = Math.max((_l = existing.lastThreadDepth) != null ? _l : 0, contact.lastThreadDepth);
           }
         } else {
           pages[pageName].gmailStats = {
@@ -906,9 +945,9 @@ var RelationshipEngine = class {
             receivedCount: contact.receivedCount,
             lastContact: contact.lastContact,
             firstContact: contact.firstContact,
-            subjects: (_k = contact.subjects) != null ? _k : [],
-            lastSubject: (_l = contact.lastSubject) != null ? _l : "",
-            domain: (_m = contact.domain) != null ? _m : "",
+            subjects: (_m = contact.subjects) != null ? _m : [],
+            lastSubject: (_n = contact.lastSubject) != null ? _n : "",
+            domain: (_o = contact.domain) != null ? _o : "",
             threadCount: contact.threadCount,
             maxThreadDepth: contact.maxThreadDepth,
             backAndForthThreads: contact.backAndForthThreads,
@@ -917,6 +956,10 @@ var RelationshipEngine = class {
           };
         }
       }
+      console.log(`[Gmail CRM] Page-to-contact match: ${matched}/${attempted}`, {
+        totalPages: Object.keys(pages).length,
+        unmatchedSample: unmatchedSamples
+      });
     }
     for (const name of Object.keys(graph)) {
       const seen = /* @__PURE__ */ new Set();
@@ -1841,6 +1884,110 @@ async function createBaseView(vault, peopleFolder) {
   return basePath;
 }
 
+// src/quadrant-view.ts
+var import_obsidian7 = require("obsidian");
+var QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize"];
+var QUADRANT_LABELS = {
+  nurture: { title: "NURTURE", subtitle: "strong + active" },
+  "re-engage": { title: "RE-ENGAGE", subtitle: "strong + dormant" },
+  developing: { title: "DEVELOPING", subtitle: "weak + active" },
+  deprioritize: { title: "DEPRIORITIZE", subtitle: "weak + dormant" }
+};
+async function writeQuadrantView(vault, peopleFolder) {
+  var _a, _b, _c;
+  const folder = vault.getAbstractFileByPath((0, import_obsidian7.normalizePath)(peopleFolder));
+  if (!(folder instanceof import_obsidian7.TFolder)) {
+    throw new Error(`People folder not found: ${peopleFolder}`);
+  }
+  const buckets = {
+    nurture: [],
+    "re-engage": [],
+    developing: [],
+    deprioritize: []
+  };
+  for (const child of folder.children) {
+    if (!(child instanceof import_obsidian7.TFile) || child.extension !== "md") continue;
+    const content = await vault.read(child);
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+    const yaml = fmMatch[1];
+    const quadrant = readField(yaml, "quadrant");
+    if (!quadrant || !buckets[quadrant]) continue;
+    buckets[quadrant].push({
+      name: child.basename,
+      combinedScore: (_a = readNumber(yaml, "combined_score")) != null ? _a : 0,
+      strengthScore: (_b = readNumber(yaml, "strength_score")) != null ? _b : 0,
+      momentumScore: (_c = readNumber(yaml, "momentum_score")) != null ? _c : 0,
+      quadrant
+    });
+  }
+  for (const q of QUADRANT_ORDER) {
+    buckets[q].sort((a, b) => b.combinedScore - a.combinedScore);
+  }
+  const html = renderGrid(buckets, peopleFolder);
+  const path = (0, import_obsidian7.normalizePath)(`${peopleFolder}/Quadrants.md`);
+  const existing = vault.getAbstractFileByPath(path);
+  if (existing instanceof import_obsidian7.TFile) {
+    await vault.modify(existing, html);
+  } else {
+    try {
+      await vault.create(path, html);
+    } catch (e) {
+      await vault.adapter.write(path, html);
+    }
+  }
+  return path;
+}
+function readField(yaml, key) {
+  const re = new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m");
+  const m = yaml.match(re);
+  if (!m) return null;
+  return m[1].replace(/^["']|["']$/g, "").trim();
+}
+function readNumber(yaml, key) {
+  const v = readField(yaml, key);
+  if (v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function renderGrid(buckets, peopleFolder) {
+  const cell = (q) => {
+    const rows = buckets[q];
+    const items = rows.slice(0, 50).map(
+      (r) => `<li><a class="internal-link" href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md" data-href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md">${escapeHtml(r.name)}</a> <span class="gmail-crm-q-score">${r.combinedScore}</span></li>`
+    ).join("");
+    const overflow = rows.length > 50 ? `<div class="gmail-crm-q-overflow">+${rows.length - 50} more</div>` : "";
+    const label = QUADRANT_LABELS[q];
+    return `<div class="gmail-crm-q gmail-crm-q-${q}">
+  <div class="gmail-crm-q-header">
+    <h3>${label.title}</h3>
+    <span class="gmail-crm-q-sub">${label.subtitle}</span>
+    <span class="gmail-crm-q-count">${rows.length}</span>
+  </div>
+  <ul class="gmail-crm-q-list">${items}</ul>
+  ${overflow}
+</div>`;
+  };
+  return `# Quadrants
+
+<div class="gmail-crm-q-grid">
+  <div class="gmail-crm-q-axis-y-top">ACTIVE</div>
+  <div class="gmail-crm-q-axis-y-bottom">DORMANT</div>
+  <div class="gmail-crm-q-axis-x-left">STRONG</div>
+  <div class="gmail-crm-q-axis-x-right">WEAK</div>
+${cell("nurture")}
+${cell("developing")}
+${cell("re-engage")}
+${cell("deprioritize")}
+</div>
+
+> Sorted by combined score within each quadrant. Top 50 per cell.
+`;
+}
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // src/types.ts
 var DEFAULT_SETTINGS = {
   clientId: "",
@@ -1862,7 +2009,7 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/main.ts
-var GmailCrmPlugin = class extends import_obsidian7.Plugin {
+var GmailCrmPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -1909,7 +2056,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       name: "Enrich current person",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
-        if (!file || !file.path.startsWith((0, import_obsidian7.normalizePath)(this.settings.peopleFolder))) {
+        if (!file || !file.path.startsWith((0, import_obsidian8.normalizePath)(this.settings.peopleFolder))) {
           return false;
         }
         if (!checking) {
@@ -1965,15 +2112,15 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       const authUrl = this.gmailApi.getAuthUrl();
       const codePromise = startOAuthCallbackServer();
       window.open(authUrl);
-      new import_obsidian7.Notice("Opening browser for authorization...");
+      new import_obsidian8.Notice("Opening browser for authorization...");
       const code = await codePromise;
       await this.gmailApi.exchangeCode(code);
-      new import_obsidian7.Notice("Gmail connected successfully!");
+      new import_obsidian8.Notice("Gmail connected successfully!");
       this.startAutoSync();
       await this.syncContacts();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian7.Notice(`Gmail auth failed: ${msg}`);
+      new import_obsidian8.Notice(`Gmail auth failed: ${msg}`);
     }
   }
   startAutoSync() {
@@ -1990,10 +2137,10 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
-      new import_obsidian7.Notice("Connect your account first in plugin settings");
+      new import_obsidian8.Notice("Connect your account first in plugin settings");
       return;
     }
-    const notice = new import_obsidian7.Notice("Syncing contacts...", 0);
+    const notice = new import_obsidian8.Notice("Syncing contacts...", 0);
     try {
       const isIncremental = !!(this.contactIndex && this.messageCache);
       const result = await this.gmailApi.buildContactIndex(
@@ -2016,6 +2163,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
       notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
       await this.updateStaleness();
       await this.refreshBaseView();
+      await this.refreshQuadrantView();
       notice.setMessage(`Synced ${contactCount} contacts \u2014 scores updated`);
       setTimeout(() => notice.hide(), 3e3);
       if (this.settings.enrichOnSync) {
@@ -2024,19 +2172,19 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian7.Notice(`Sync failed: ${msg}`);
+      new import_obsidian8.Notice(`Sync failed: ${msg}`);
     }
   }
   async fullResync() {
     this.messageCache = null;
     this.contactIndex = null;
-    new import_obsidian7.Notice("Cache cleared \u2014 running full re-sync...");
+    new import_obsidian8.Notice("Cache cleared \u2014 running full re-sync...");
     await this.syncContacts();
   }
   async loadContactIndex() {
     const path = this.getIndexPath();
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian7.TFile) {
+    if (file instanceof import_obsidian8.TFile) {
       const content = await this.app.vault.read(file);
       try {
         this.contactIndex = JSON.parse(content);
@@ -2049,30 +2197,30 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex, null, 2);
     const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian7.TFile) {
+    if (existing instanceof import_obsidian8.TFile) {
       await this.app.vault.modify(existing, content);
     } else {
       try {
         await this.app.vault.create(path, content);
       } catch (e) {
-        await this.app.vault.adapter.write((0, import_obsidian7.normalizePath)(path), content);
+        await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
       }
     }
   }
   getIndexPath() {
-    return (0, import_obsidian7.normalizePath)(
+    return (0, import_obsidian8.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
     );
   }
   getCachePath() {
-    return (0, import_obsidian7.normalizePath)(
+    return (0, import_obsidian8.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
     );
   }
   async loadMessageCache() {
     const path = this.getCachePath();
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian7.TFile) {
+    if (file instanceof import_obsidian8.TFile) {
       const content = await this.app.vault.read(file);
       try {
         this.messageCache = JSON.parse(content);
@@ -2085,19 +2233,19 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     const path = this.getCachePath();
     const content = JSON.stringify(this.messageCache);
     const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof import_obsidian7.TFile) {
+    if (existing instanceof import_obsidian8.TFile) {
       await this.app.vault.modify(existing, content);
     } else {
       try {
         await this.app.vault.create(path, content);
       } catch (e) {
-        await this.app.vault.adapter.write((0, import_obsidian7.normalizePath)(path), content);
+        await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
       }
     }
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;
-    const folder = (0, import_obsidian7.normalizePath)(this.settings.contactNotesFolder);
+    const folder = (0, import_obsidian8.normalizePath)(this.settings.contactNotesFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
@@ -2106,9 +2254,9 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     }
     const existingPages = /* @__PURE__ */ new Map();
     const folderObj = this.app.vault.getAbstractFileByPath(folder);
-    if (folderObj instanceof import_obsidian7.TFolder) {
+    if (folderObj instanceof import_obsidian8.TFolder) {
       for (const child of folderObj.children) {
-        if (child instanceof import_obsidian7.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian8.TFile && child.extension === "md") {
           const pageName = child.basename.replace(/^p-\s*/, "").toLowerCase();
           existingPages.set(pageName, child);
         }
@@ -2116,7 +2264,7 @@ var GmailCrmPlugin = class extends import_obsidian7.Plugin {
     }
     for (const contact of Object.values(this.contactIndex.contacts)) {
       const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-      const notePath = (0, import_obsidian7.normalizePath)(`${folder}/p- ${safeName}.md`);
+      const notePath = (0, import_obsidian8.normalizePath)(`${folder}/p- ${safeName}.md`);
       const existingFile = existingPages.get(contact.name.toLowerCase());
       const frontmatter = [
         "---",
@@ -2149,7 +2297,7 @@ ${body}`;
         continue;
       }
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (noteFile instanceof import_obsidian7.TFile) {
+      if (noteFile instanceof import_obsidian8.TFile) {
         continue;
       }
       try {
@@ -2167,20 +2315,20 @@ ${body}`;
   }
   async openContactNote(contact) {
     const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-    const notePath = (0, import_obsidian7.normalizePath)(
+    const notePath = (0, import_obsidian8.normalizePath)(
       `${this.settings.contactNotesFolder}/${safeName}.md`
     );
     const file = this.app.vault.getAbstractFileByPath(notePath);
-    if (file instanceof import_obsidian7.TFile) {
+    if (file instanceof import_obsidian8.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     } else {
-      new import_obsidian7.Notice(`No note found for ${contact.name}. Run sync first.`);
+      new import_obsidian8.Notice(`No note found for ${contact.name}. Run sync first.`);
     }
   }
   async enrichAllPeople(skipAi = false) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian7.Notice("Loading people pages...", 0);
+    const notice = new import_obsidian8.Notice("Loading people pages...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -2192,7 +2340,7 @@ ${body}`;
       if (!skipAi) {
         if (!this.settings.anthropicApiKey) {
           notice.hide();
-          new import_obsidian7.Notice("Set your API key in plugin settings first.");
+          new import_obsidian8.Notice("Set your API key in plugin settings first.");
           return;
         }
         harper = new HarperSkill(
@@ -2207,7 +2355,7 @@ ${body}`;
         notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
         const relationships = (_a = graph[name]) != null ? _a : [];
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (!(file instanceof import_obsidian7.TFile)) continue;
+        if (!(file instanceof import_obsidian8.TFile)) continue;
         if (harper) {
           try {
             const rewritten = await harper.rewritePersonPage(name, page, relationships, pages);
@@ -2215,7 +2363,7 @@ ${body}`;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error(`Harper skill failed for ${name}: ${msg}`);
-            new import_obsidian7.Notice(`Failed on ${name}: ${msg}`);
+            new import_obsidian8.Notice(`Failed on ${name}: ${msg}`);
           }
         } else {
           const relLines = relationships.map(
@@ -2240,25 +2388,25 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian7.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian8.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async enrichSinglePerson(name) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian7.Notice(`Enriching ${name}...`, 0);
+    const notice = new import_obsidian8.Notice(`Enriching ${name}...`, 0);
     try {
       const pages = await engine.loadPeoplePages();
       if (!pages[name]) {
         notice.hide();
-        new import_obsidian7.Notice(`Person "${name}" not found in people pages.`);
+        new import_obsidian8.Notice(`Person "${name}" not found in people pages.`);
         return;
       }
       const graph = engine.buildGraph(pages, this.contactIndex);
       const relationships = (_a = graph[name]) != null ? _a : [];
       if (!this.settings.anthropicApiKey) {
         notice.hide();
-        new import_obsidian7.Notice("Set your API key in plugin settings first.");
+        new import_obsidian8.Notice("Set your API key in plugin settings first.");
         return;
       }
       const harper = new HarperSkill(
@@ -2268,7 +2416,7 @@ ${relSection}
       );
       const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
       const file = this.app.vault.getAbstractFileByPath(pages[name].path);
-      if (file instanceof import_obsidian7.TFile) {
+      if (file instanceof import_obsidian8.TFile) {
         await this.app.vault.modify(file, rewritten);
       }
       notice.setMessage(`Enriched ${name}!`);
@@ -2276,14 +2424,14 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian7.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian8.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async updateStaleness() {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
     const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
-    const notice = new import_obsidian7.Notice("Computing staleness scores...", 0);
+    const notice = new import_obsidian8.Notice("Computing staleness scores...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -2298,7 +2446,7 @@ ${relSection}
           staleCount++;
         }
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (file instanceof import_obsidian7.TFile) {
+        if (file instanceof import_obsidian8.TFile) {
           await fm.updateFrontmatter(file, page, staleness, relationships);
         }
         if (done % 20 === 0) {
@@ -2310,26 +2458,46 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian7.Notice(`Staleness update failed: ${msg}`);
+      new import_obsidian8.Notice(`Staleness update failed: ${msg}`);
     }
   }
   async createBase() {
     try {
       const basePath = await createBaseView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian7.Notice(`CRM Base created at ${basePath}`);
+      new import_obsidian8.Notice(`CRM Base created at ${basePath}`);
       const file = this.app.vault.getAbstractFileByPath(basePath);
-      if (file instanceof import_obsidian7.TFile) {
+      if (file instanceof import_obsidian8.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian7.Notice(`Failed to create Base: ${msg}`);
+      new import_obsidian8.Notice(`Failed to create Base: ${msg}`);
     }
   }
   async refreshBaseView() {
     try {
       await createBaseView(this.app.vault, this.settings.peopleFolder);
     } catch (e) {
+    }
+  }
+  async refreshQuadrantView() {
+    try {
+      await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+    } catch (e) {
+      console.warn("[Gmail CRM] Quadrant view write failed", e);
+    }
+  }
+  async createQuadrantView() {
+    try {
+      const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+      new import_obsidian8.Notice(`Quadrant view written to ${path}`);
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof import_obsidian8.TFile) {
+        await this.app.workspace.getLeaf().openFile(file);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      new import_obsidian8.Notice(`Failed to write quadrant view: ${msg}`);
     }
   }
 };

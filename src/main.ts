@@ -14,6 +14,7 @@ import { HarperSkill } from "./harper-skill";
 import { computeStaleness } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
+import { writeQuadrantView } from "./quadrant-view";
 import type { GmailCrmSettings, ContactIndex, Contact, MessageCache } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
@@ -195,6 +196,7 @@ export default class GmailCrmPlugin extends Plugin {
 			// Auto-update staleness scores and Base view after sync
 			await this.updateStaleness();
 			await this.refreshBaseView();
+			await this.refreshQuadrantView();
 
 			notice.setMessage(`Synced ${contactCount} contacts — scores updated`);
 			setTimeout(() => notice.hide(), 3000);
@@ -561,6 +563,28 @@ export default class GmailCrmPlugin extends Plugin {
 			await createBaseView(this.app.vault, this.settings.peopleFolder);
 		} catch {
 			// Non-critical — Base file may not exist yet
+		}
+	}
+
+	private async refreshQuadrantView() {
+		try {
+			await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+		} catch (e) {
+			console.warn("[Gmail CRM] Quadrant view write failed", e);
+		}
+	}
+
+	async createQuadrantView() {
+		try {
+			const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+			new Notice(`Quadrant view written to ${path}`);
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile) {
+				await this.app.workspace.getLeaf().openFile(file);
+			}
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Failed to write quadrant view: ${msg}`);
 		}
 	}
 }

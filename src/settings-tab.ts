@@ -319,5 +319,17 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 						await this.plugin.createBase();
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("Create quadrant view")
+			.setDesc("Generate a 2×2 quadrant map (Quadrants.md) showing all contacts grouped by nurture / re-engage / developing / deprioritize")
+			.addButton((btn) =>
+				btn
+					.setButtonText("Create quadrants")
+					.setCta()
+					.onClick(async () => {
+						await this.plugin.createQuadrantView();
+					})
+			);
 	}
 }

@@ -107,3 +107,109 @@
 	text-align: center;
 	color: var(--text-muted);
 }
+
+.gmail-crm-q-grid {
+	display: grid;
+	grid-template-columns: 24px 1fr 1fr 24px;
+	grid-template-rows: 24px 1fr 1fr 24px;
+	gap: 8px;
+	min-height: 600px;
+	margin: 16px 0;
+}
+
+.gmail-crm-q-axis-y-top,
+.gmail-crm-q-axis-y-bottom {
+	grid-column: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	writing-mode: vertical-rl;
+	transform: rotate(180deg);
+	font-size: 0.75em;
+	font-weight: 600;
+	color: var(--text-muted);
+	letter-spacing: 0.1em;
+}
+
+.gmail-crm-q-axis-y-top { grid-row: 2; }
+.gmail-crm-q-axis-y-bottom { grid-row: 3; }
+
+.gmail-crm-q-axis-x-left,
+.gmail-crm-q-axis-x-right {
+	grid-row: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 0.75em;
+	font-weight: 600;
+	color: var(--text-muted);
+	letter-spacing: 0.1em;
+}
+
+.gmail-crm-q-axis-x-left { grid-column: 2; }
+.gmail-crm-q-axis-x-right { grid-column: 3; }
+
+.gmail-crm-q {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 12px;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.gmail-crm-q-nurture { grid-column: 2; grid-row: 2; background: rgba(116, 198, 157, 0.12); }
+.gmail-crm-q-developing { grid-column: 3; grid-row: 2; background: rgba(255, 196, 87, 0.12); }
+.gmail-crm-q-re-engage { grid-column: 2; grid-row: 3; background: rgba(108, 162, 220, 0.12); }
+.gmail-crm-q-deprioritize { grid-column: 3; grid-row: 3; background: rgba(180, 180, 180, 0.10); }
+
+.gmail-crm-q-header {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin-bottom: 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	padding-bottom: 6px;
+}
+
+.gmail-crm-q-header h3 {
+	margin: 0;
+	font-size: 1em;
+	letter-spacing: 0.05em;
+}
+
+.gmail-crm-q-sub {
+	font-size: 0.75em;
+	color: var(--text-muted);
+}
+
+.gmail-crm-q-count {
+	margin-left: auto;
+	font-size: 0.8em;
+	color: var(--text-muted);
+}
+
+.gmail-crm-q-list {
+	margin: 0;
+	padding-left: 16px;
+	overflow-y: auto;
+	flex: 1;
+	font-size: 0.85em;
+}
+
+.gmail-crm-q-list li {
+	margin-bottom: 2px;
+}
+
+.gmail-crm-q-score {
+	color: var(--text-muted);
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+}
+
+.gmail-crm-q-overflow {
+	margin-top: 6px;
+	font-size: 0.8em;
+	color: var(--text-muted);
+	text-align: center;
+}
