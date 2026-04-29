@@ -118,11 +118,12 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Max messages to scan")
-			.setDesc("Number of recent messages to pull metadata from")
+			.setDesc("Number of recent messages to pull metadata from. \"All\" pulls your entire mailbox — slow on first run, but incremental syncs after that only fetch new messages.")
 			.addDropdown((dd) => {
-				for (const n of [100, 250, 500, 1000, 2000, 5000, 10000]) {
+				for (const n of [100, 250, 500, 1000, 2000, 5000, 10000, 25000, 50000]) {
 					dd.addOption(String(n), String(n));
 				}
+				dd.addOption("0", "All messages");
 				dd.setValue(String(this.plugin.settings.maxResults));
 				dd.onChange(async (value) => {
 					this.plugin.settings.maxResults = parseInt(value);

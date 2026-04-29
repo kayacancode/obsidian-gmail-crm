@@ -231,10 +231,13 @@ export class GmailApi {
 		const headers = await this.getHeaders();
 		const allMessages: { id: string; threadId: string }[] = [];
 		let pageToken: string | undefined;
+		// maxResults <= 0 means "no cap" — fetch until Gmail runs out of pages.
+		const unlimited = maxResults <= 0;
 
-		while (allMessages.length < maxResults) {
+		while (unlimited || allMessages.length < maxResults) {
+			const remaining = unlimited ? 100 : maxResults - allMessages.length;
 			const params = new URLSearchParams({
-				maxResults: String(Math.min(100, maxResults - allMessages.length)),
+				maxResults: String(Math.min(100, remaining)),
 			});
 			if (afterDate) {
 				// Gmail q=after: uses YYYY/MM/DD format

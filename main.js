@@ -255,9 +255,11 @@ var GmailApi = class {
     const headers = await this.getHeaders();
     const allMessages = [];
     let pageToken;
-    while (allMessages.length < maxResults) {
+    const unlimited = maxResults <= 0;
+    while (unlimited || allMessages.length < maxResults) {
+      const remaining = unlimited ? 100 : maxResults - allMessages.length;
       const params = new URLSearchParams({
-        maxResults: String(Math.min(100, maxResults - allMessages.length))
+        maxResults: String(Math.min(100, remaining))
       });
       if (afterDate) {
         const d = new Date(afterDate);
@@ -561,10 +563,11 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Max messages to scan").setDesc("Number of recent messages to pull metadata from").addDropdown((dd) => {
-      for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4]) {
+    new import_obsidian2.Setting(containerEl).setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "All" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
+      for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4, 25e3, 5e4]) {
         dd.addOption(String(n), String(n));
       }
+      dd.addOption("0", "All messages");
       dd.setValue(String(this.plugin.settings.maxResults));
       dd.onChange(async (value) => {
         this.plugin.settings.maxResults = parseInt(value);
