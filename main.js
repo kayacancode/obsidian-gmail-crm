@@ -750,6 +750,11 @@ var RelationshipEngine = class {
             if (em.includes("@") && !emails.includes(em)) emails.push(em);
           }
         }
+        const yamlEmailScalar = fmMatch[1].match(/^email:\s*(.+?)\s*$/m);
+        if (yamlEmailScalar) {
+          const em = yamlEmailScalar[1].replace(/^["']|["']$/g, "").trim().toLowerCase();
+          if (em.includes("@") && !emails.includes(em)) emails.push(em);
+        }
       }
       const roleMatch = content.match(/\*\*Role\/Company:\*\*\s*(.+)/);
       const introMatch = content.match(

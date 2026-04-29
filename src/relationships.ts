@@ -47,7 +47,9 @@ export class RelationshipEngine {
 					if (cleaned.includes("@")) emails.push(cleaned);
 				}
 			}
-			// Also check YAML frontmatter for emails list
+			// Also check YAML frontmatter for emails list and scalar email field.
+			// Scalar `email:` is what FrontmatterManager writes, so pages without a
+			// `**Email:**` body line still resolve their gmailStats via the YAML.
 			const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
 			if (fmMatch) {
 				const yamlEmails = fmMatch[1].match(/emails:\s*\n((?:\s+-\s+\S+@\S+\n?)+)/);
@@ -56,6 +58,11 @@ export class RelationshipEngine {
 						const em = line.replace(/^\s*-\s*/, "").trim().toLowerCase();
 						if (em.includes("@") && !emails.includes(em)) emails.push(em);
 					}
+				}
+				const yamlEmailScalar = fmMatch[1].match(/^email:\s*(.+?)\s*$/m);
+				if (yamlEmailScalar) {
+					const em = yamlEmailScalar[1].replace(/^["']|["']$/g, "").trim().toLowerCase();
+					if (em.includes("@") && !emails.includes(em)) emails.push(em);
 				}
 			}
 
