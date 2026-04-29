@@ -54,7 +54,9 @@ export async function writeQuadrantView(
 	}
 
 	const html = renderGrid(buckets, peopleFolder);
-	const path = normalizePath(`${peopleFolder}/Quadrants.md`);
+	// Underscore prefix sorts the file ahead of alphabetic siblings (CRM.base, etc.)
+	// so the dashboard sits at the top of the people-pages folder.
+	const path = normalizePath(`${peopleFolder}/_Quadrants.md`);
 	const existing = vault.getAbstractFileByPath(path);
 	if (existing instanceof TFile) {
 		await vault.modify(existing, html);
@@ -65,6 +67,18 @@ export async function writeQuadrantView(
 			await vault.adapter.write(path, html);
 		}
 	}
+
+	// Clean up the old un-prefixed location written by earlier versions.
+	const legacyPath = normalizePath(`${peopleFolder}/Quadrants.md`);
+	const legacy = vault.getAbstractFileByPath(legacyPath);
+	if (legacy instanceof TFile) {
+		try {
+			await vault.delete(legacy);
+		} catch {
+			// non-fatal — user can delete manually
+		}
+	}
+
 	return path;
 }
 

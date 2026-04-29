@@ -729,6 +729,7 @@ var RelationshipEngine = class {
     const pages = {};
     for (const child of folder.children) {
       if (!(child instanceof import_obsidian3.TFile) || child.extension !== "md") continue;
+      if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
       const content = await this.vault.read(child);
       const name = child.basename.replace(/^p-\s*/, "");
       const wikiLinks = [];
@@ -1924,7 +1925,7 @@ async function writeQuadrantView(vault, peopleFolder) {
     buckets[q].sort((a, b) => b.combinedScore - a.combinedScore);
   }
   const html = renderGrid(buckets, peopleFolder);
-  const path = (0, import_obsidian7.normalizePath)(`${peopleFolder}/Quadrants.md`);
+  const path = (0, import_obsidian7.normalizePath)(`${peopleFolder}/_Quadrants.md`);
   const existing = vault.getAbstractFileByPath(path);
   if (existing instanceof import_obsidian7.TFile) {
     await vault.modify(existing, html);
@@ -1933,6 +1934,14 @@ async function writeQuadrantView(vault, peopleFolder) {
       await vault.create(path, html);
     } catch (e) {
       await vault.adapter.write(path, html);
+    }
+  }
+  const legacyPath = (0, import_obsidian7.normalizePath)(`${peopleFolder}/Quadrants.md`);
+  const legacy = vault.getAbstractFileByPath(legacyPath);
+  if (legacy instanceof import_obsidian7.TFile) {
+    try {
+      await vault.delete(legacy);
+    } catch (e) {
     }
   }
   return path;

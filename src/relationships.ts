@@ -24,6 +24,8 @@ export class RelationshipEngine {
 
 		for (const child of folder.children) {
 			if (!(child instanceof TFile) || child.extension !== "md") continue;
+			// Skip plugin-generated dashboard files so they don't get scored as people.
+			if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
 
 			const content = await this.vault.read(child);
 			const name = child.basename.replace(/^p-\s*/, "");
