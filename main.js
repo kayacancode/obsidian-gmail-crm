@@ -1354,17 +1354,16 @@ function computeStrengthScore(gmail, totalExchanges, edgeCount) {
   return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore));
 }
 function computeMomentumScore(gmail, daysSinceContact) {
-  var _a, _b, _c;
+  var _a, _b;
   if (daysSinceContact === null) return 0;
   const lambda = 0.02;
-  const decayScore = Math.exp(-lambda * daysSinceContact) * 60;
+  const decayScore = Math.exp(-lambda * daysSinceContact) * 80;
   let trendScore = 0;
   if (gmail) {
     const lastDepth = (_a = gmail.lastThreadDepth) != null ? _a : 0;
-    const maxDepth = (_b = gmail.maxThreadDepth) != null ? _b : 0;
-    trendScore += Math.min(20, lastDepth * 4);
-    const baf = (_c = gmail.backAndForthThreads) != null ? _c : 0;
-    trendScore += Math.min(20, baf * 4);
+    trendScore += Math.min(10, lastDepth * 2);
+    const baf = (_b = gmail.backAndForthThreads) != null ? _b : 0;
+    trendScore += Math.min(10, baf * 2);
   }
   return Math.round(Math.min(100, decayScore + trendScore));
 }

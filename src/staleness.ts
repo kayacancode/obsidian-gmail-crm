@@ -277,23 +277,23 @@ function computeMomentumScore(
 ): number {
 	if (daysSinceContact === null) return 0;
 
-	// Exponential decay component (0–60): score = e^(-λ * days)
-	// λ = 0.02 → half-life ~35 days
+	// Exponential decay component (0–80): score = e^(-λ * days)
+	// λ = 0.02 → half-life ~35 days. Recency dominates the axis so a strong
+	// past relationship that has gone quiet lands in "dormant" (re-engage),
+	// not "active" — otherwise nobody ever shows up in re-engage.
 	const lambda = 0.02;
-	const decayScore = Math.exp(-lambda * daysSinceContact) * 60;
+	const decayScore = Math.exp(-lambda * daysSinceContact) * 80;
 
-	// Activity trend component (0–40): recent thread depth as momentum signal
+	// Activity trend component (0–20): recent thread depth as a small bonus.
+	// Capped low so trend alone can't push someone past the active threshold;
+	// it should only nudge a borderline-recent contact over the line.
 	let trendScore = 0;
 	if (gmail) {
 		const lastDepth = gmail.lastThreadDepth ?? 0;
-		const maxDepth = gmail.maxThreadDepth ?? 0;
+		trendScore += Math.min(10, lastDepth * 2);
 
-		// If the most recent thread is deep, momentum is high
-		trendScore += Math.min(20, lastDepth * 4);
-
-		// If they have many back-and-forth threads, there's sustained momentum
 		const baf = gmail.backAndForthThreads ?? 0;
-		trendScore += Math.min(20, baf * 4);
+		trendScore += Math.min(10, baf * 2);
 	}
 
 	return Math.round(Math.min(100, decayScore + trendScore));
