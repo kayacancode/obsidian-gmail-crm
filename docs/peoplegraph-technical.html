@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeopleGraph CLI Technical Documentation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f5;
+      --paper: #ffffff;
+      --ink: #18201d;
+      --muted: #5f6b65;
+      --line: #d9ded8;
+      --soft: #eef2ec;
+      --code: #10231d;
+      --accent: #0f6b55;
+      --accent-soft: #dfeee8;
+      --warn: #8f4b19;
+      --warn-soft: #f6e9dd;
+      --blue: #245f93;
+      --blue-soft: #e4eef6;
+      --shadow: 0 18px 42px rgba(30, 42, 35, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfa;
+      overflow-y: auto;
+    }
+
+    .brand {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 28px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    nav {
+      display: grid;
+      gap: 4px;
+    }
+
+    nav a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 14px;
+      text-decoration: none;
+    }
+
+    nav a:hover {
+      background: var(--soft);
+      color: var(--ink);
+    }
+
+    main {
+      min-width: 0;
+      padding: 42px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+      gap: 28px;
+      align-items: stretch;
+      max-width: 1160px;
+      margin: 0 auto 34px;
+    }
+
+    .hero-copy {
+      padding: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-copy h2 {
+      margin: 8px 0 14px;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .hero-copy p {
+      max-width: 720px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .status-panel {
+      display: grid;
+      gap: 14px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fdfefd;
+      box-shadow: var(--shadow);
+    }
+
+    .status-panel h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: #164b3f;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .pill.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .pill.info {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    section {
+      max-width: 1160px;
+      margin: 0 auto 24px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    section h2 {
+      margin: 0 0 14px;
+      font-size: 26px;
+      letter-spacing: 0;
+    }
+
+    section h3 {
+      margin: 24px 0 10px;
+      font-size: 18px;
+    }
+
+    section p {
+      margin: 0 0 14px;
+      color: var(--muted);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .callout {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+    }
+
+    .callout strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      align-items: stretch;
+      margin-top: 16px;
+    }
+
+    .node {
+      min-height: 132px;
+      display: grid;
+      align-content: center;
+      gap: 8px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+    }
+
+    .node b {
+      font-size: 16px;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .flow {
+      position: relative;
+    }
+
+    .flow::after {
+      content: "->";
+      position: absolute;
+      top: 50%;
+      right: -19px;
+      transform: translateY(-50%);
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .flow:last-child::after {
+      display: none;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    th {
+      background: var(--soft);
+      color: var(--ink);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: 8px;
+      background: var(--code);
+      color: #e9f5ef;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: var(--soft);
+      color: #24322d;
+      font-size: 0.93em;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    ul,
+    ol {
+      margin: 0 0 14px 20px;
+      padding: 0;
+      color: var(--muted);
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    .footer {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 4px 0 24px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .shell {
+        display: block;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      main {
+        padding: 24px;
+      }
+
+      .hero,
+      .grid-2,
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      .flow::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 560px) {
+      main {
+        padding: 18px;
+      }
+
+      .hero-copy,
+      .status-panel,
+      section {
+        padding: 20px;
+      }
+
+      nav {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="eyebrow">Technical Documentation</span>
+        <h1>PeopleGraph CLI</h1>
+        <p>Read-only agent query surface for the Obsidian Gmail CRM cache.</p>
+      </div>
+      <nav aria-label="Page navigation">
+        <a href="#overview">Overview</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#commands">Command Surface</a>
+        <a href="#cache">Cache Contract</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#verification">Verification</a>
+        <a href="#next">Next Steps</a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="hero" id="overview">
+        <div class="hero-copy">
+          <span class="eyebrow">V1 Companion Binary</span>
+          <h2>Local relationship graph queries for agents.</h2>
+          <p>
+            PeopleGraph is a Rust CLI that reads the Gmail CRM plugin's local
+            <code>contact-index.json</code> and emits predictable JSON for agents.
+            It does not start Obsidian, call Gmail, send vault data to a network,
+            or mutate plugin data.
+          </p>
+        </div>
+        <div class="status-panel" aria-label="Implementation status">
+          <h3>Current build status</h3>
+          <div class="pill-row">
+            <span class="pill">Rust crate scaffolded</span>
+            <span class="pill">JSON output contract</span>
+            <span class="pill">Read-only cache loading</span>
+            <span class="pill">Cached score snapshots</span>
+            <span class="pill">Edge queries</span>
+            <span class="pill info">Local merge queue</span>
+          </div>
+          <p>
+            Source: <a href="../crates/peoplegraph/src/main.rs">crates/peoplegraph/src/main.rs</a><br>
+            PRD: <a href="./peoplegraph-cli.html">docs/peoplegraph-cli.html</a>
+          </p>
+        </div>
+      </div>
+
+      <section id="architecture">
+        <h2>Architecture</h2>
+        <p>
+          The plugin remains the source of truth. PeopleGraph is a fast, local
+          adapter over the plugin's structured cache.
+        </p>
+        <div class="diagram" aria-label="Architecture flow">
+          <div class="node flow">
+            <b>Obsidian Gmail CRM</b>
+            <span>Gmail metadata sync, contact cache, relationship scoring, people-page updates.</span>
+          </div>
+          <div class="node flow">
+            <b>contact-index.json</b>
+            <span>Local JSON cache under <code>.obsidian/plugins/gmail-crm/</code>.</span>
+          </div>
+          <div class="node">
+            <b>peoplegraph</b>
+            <span>Rust CLI reads the cache and returns JSON primitives for agents.</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="commands">
+        <h2>Command Surface</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Status</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>peoplegraph describe</code></td>
+                <td>Implemented</td>
+                <td>Self-describes commands and output contract for agent introspection.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph version</code></td>
+                <td>Implemented</td>
+                <td>Returns binary name and version.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph find-person &lt;query&gt;</code></td>
+                <td>Implemented</td>
+                <td>Deterministic email and alias match, then name similarity search.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph score &lt;email&gt;</code></td>
+                <td>Implemented</td>
+                <td>Returns depth, recency, combined score, quadrant, and source signals.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph who-knows --company &lt;name&gt;</code></td>
+                <td>Implemented</td>
+                <td>Finds contacts by company/domain and ranks them by combined score.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph get-neighbors &lt;email&gt;</code></td>
+                <td>Implemented</td>
+                <td>Lists relationship edges connected to a contact email.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph get-edges --from &lt;a&gt; --to &lt;b&gt;</code></td>
+                <td>Implemented</td>
+                <td>Returns scored relationship edge records between two emails.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph propose-merge &lt;a&gt; &lt;b&gt;</code></td>
+                <td>Implemented</td>
+                <td>Appends a pending candidate to local <code>merge-queue.json</code>.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Example</h3>
+        <pre><code>peoplegraph --cache /path/to/contact-index.json who-knows --company Disney --format jsonl</code></pre>
+      </section>
+
+      <section id="cache">
+        <h2>Cache Contract</h2>
+        <p>
+          The CLI deserializes the current <code>ContactIndex</code> shape from
+          <a href="../src/types.ts">src/types.ts</a>. Unknown fields are ignored,
+          and optional future fields are accepted when present.
+        </p>
+        <div class="grid-2">
+          <div class="callout">
+            <strong>Cache resolution order</strong>
+            <ol>
+              <li><code>--cache &lt;path&gt;</code></li>
+              <li><code>PEOPLEGRAPH_CACHE</code></li>
+              <li>Nearest <code>.obsidian/plugins/gmail-crm/contact-index.json</code></li>
+              <li>Nearest local <code>contact-index.json</code></li>
+            </ol>
+          </div>
+          <div class="callout">
+            <strong>Score behavior</strong>
+            <p>
+              If cached score fields exist, PeopleGraph returns them as
+              <code>score_source: "cached"</code>. With today's plugin cache, it
+              gets cached values after staleness updates. Older caches still
+              derive estimates from metadata and return
+              <code>score_source: "estimated_from_metadata"</code>.
+            </p>
+          </div>
+        </div>
+        <h3>Stable response envelope</h3>
+        <pre><code>{
+  "ok": true,
+  "command": "find-person",
+  "data": { "matches": [] },
+  "stats": { "matched": 0, "returned": 0, "ms": 0 }
+}</code></pre>
+      </section>
+
+      <section id="implementation">
+        <h2>Implementation Notes</h2>
+        <ul>
+          <li>Language: Rust 2024 edition.</li>
+          <li>CLI parsing: <code>clap</code>.</li>
+          <li>JSON parsing and output: <code>serde</code> and <code>serde_json</code>.</li>
+          <li>Fuzzy name search: <code>strsim::jaro_winkler</code>.</li>
+          <li>Release binary after local build: <code>crates/peoplegraph/target/release/peoplegraph</code>.</li>
+        </ul>
+        <p>
+          The current scoring fallback mirrors the plugin's metadata intent:
+          depth comes from thread depth and back-and-forth counts, recency comes
+          from <code>lastContact</code>, and combined score blends strength with momentum.
+        </p>
+      </section>
+
+      <section id="verification">
+        <h2>Verification</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Check</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>cargo test</code></td>
+                <td>Passing: 3 tests.</td>
+              </tr>
+              <tr>
+                <td><code>cargo clippy -- -D warnings</code></td>
+                <td>Passing.</td>
+              </tr>
+              <tr>
+                <td><code>cargo build --release</code></td>
+                <td>Passing, release binary built.</td>
+              </tr>
+              <tr>
+                <td>Fixture smoke test</td>
+                <td><code>describe</code> and <code>who-knows --company Disney</code> returned valid JSON.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="next">
+        <h2>Next Steps</h2>
+        <ol>
+          <li>Run a full Obsidian sync and staleness update against the real vault cache.</li>
+          <li>Tune fuzzy matching thresholds against the 19k-contact vault.</li>
+          <li>Decide when local <code>merge-queue.json</code> should route to Jon's review UI.</li>
+          <li>Add Botwick skill wiring for the packaged <code>bin/peoplegraph</code> binary.</li>
+          <li>Measure cold-start runtime on the real cache and revisit if it exceeds 100ms.</li>
+        </ol>
+      </section>
+
+      <div class="footer">
+        Generated for the local PeopleGraph V1 implementation in this repository.
+      </div>
+    </main>
+  </div>
+</body>
+</html>

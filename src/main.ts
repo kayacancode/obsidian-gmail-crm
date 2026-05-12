@@ -12,11 +12,20 @@ import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
 import { computeStaleness } from "./staleness";
+import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
 import { writeQuadrantView } from "./quadrant-view";
-import type { GmailCrmSettings, ContactIndex, Contact, MessageCache } from "./types";
-import { DEFAULT_SETTINGS } from "./types";
+import type {
+	GmailCrmSettings,
+	ContactIndex,
+	Contact,
+	MessageCache,
+	ContactEdge,
+	PersonPage,
+	RelationshipGraph,
+} from "./types";
+import { CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS } from "./types";
 
 export default class GmailCrmPlugin extends Plugin {
 	settings: GmailCrmSettings = DEFAULT_SETTINGS;
@@ -225,7 +234,13 @@ export default class GmailCrmPlugin extends Plugin {
 		try {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const content = await this.app.vault.adapter.read(path);
-			this.contactIndex = JSON.parse(content);
+			const parsed = JSON.parse(content) as ContactIndex;
+			this.contactIndex = {
+				...parsed,
+				schemaVersion: parsed.schemaVersion ?? CONTACT_INDEX_SCHEMA_VERSION,
+				contacts: parsed.contacts ?? {},
+				edges: parsed.edges ?? [],
+			};
 		} catch {
 			// missing or corrupt — will be rebuilt on next sync
 		}
@@ -233,6 +248,8 @@ export default class GmailCrmPlugin extends Plugin {
 
 	private async saveContactIndex() {
 		if (!this.contactIndex) return;
+		this.contactIndex.schemaVersion = CONTACT_INDEX_SCHEMA_VERSION;
+		this.contactIndex.edges ??= [];
 		const path = this.getIndexPath();
 		const content = JSON.stringify(this.contactIndex, null, 2);
 		await this.app.vault.adapter.write(normalizePath(path), content);
@@ -491,6 +508,7 @@ export default class GmailCrmPlugin extends Plugin {
 			const pages = await engine.loadPeoplePages();
 			const count = Object.keys(pages).length;
 			const graph = engine.buildGraph(pages, this.contactIndex);
+			const scoreUpdatedAt = new Date().toISOString();
 
 			let done = 0;
 			let staleCount = 0;
@@ -498,6 +516,7 @@ export default class GmailCrmPlugin extends Plugin {
 				done++;
 				const relationships = graph[name] ?? [];
 				const staleness = computeStaleness(page, relationships);
+				this.updateContactScore(page, staleness, scoreUpdatedAt);
 
 				if (staleness.label === "stale" || staleness.label === "dormant") {
 					staleCount++;
@@ -513,6 +532,11 @@ export default class GmailCrmPlugin extends Plugin {
 				}
 			}
 
+			if (this.contactIndex) {
+				this.contactIndex.edges = this.buildContactEdges(pages, graph);
+				await this.saveContactIndex();
+			}
+
 			notice.setMessage(`Scored ${count} contacts — ${staleCount} going stale`);
 			setTimeout(() => notice.hide(), 4000);
 		} catch (e: unknown) {
@@ -520,6 +544,150 @@ export default class GmailCrmPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Staleness update failed: ${msg}`);
 		}
+	}
+
+	private updateContactScore(
+		page: PersonPage,
+		staleness: StalenessScore,
+		updatedAt: string
+	): void {
+		const contact = this.getContactForPage(page);
+		if (!contact) return;
+
+		const roleCompany = this.parseRoleCompany(page.role);
+		if (roleCompany.role) contact.role = roleCompany.role;
+		if (roleCompany.company) {
+			contact.company = roleCompany.company;
+		} else if (!contact.company) {
+			const inferred = this.inferCompanyFromDomain(contact.domain);
+			if (inferred) contact.company = inferred;
+		}
+
+		contact.score = {
+			depth: staleness.relationshipDepth,
+			recency: staleness.relationshipRecency,
+			combined: staleness.combinedScore,
+			quadrant: staleness.quadrant,
+			strength: staleness.strengthScore,
+			momentum: staleness.momentumScore,
+			staleness: staleness.score,
+			label: staleness.label,
+			updatedAt,
+		};
+		// Keep flat score fields for simpler consumers and backward-compatible CLI reads.
+		contact.relationshipDepth = staleness.relationshipDepth;
+		contact.relationshipRecency = staleness.relationshipRecency;
+		contact.combinedScore = staleness.combinedScore;
+		contact.quadrant = staleness.quadrant;
+	}
+
+	private buildContactEdges(
+		pages: Record<string, PersonPage>,
+		graph: RelationshipGraph
+	): ContactEdge[] {
+		const edges = new Map<string, ContactEdge>();
+
+		for (const [sourceName, relationships] of Object.entries(graph)) {
+			const sourcePage = pages[sourceName];
+			if (!sourcePage) continue;
+			const sourceEmail = this.getEmailForPage(sourcePage);
+			if (!sourceEmail) continue;
+
+			for (const relationship of relationships) {
+				const targetPage = pages[relationship.target];
+				if (!targetPage) continue;
+				const targetEmail = this.getEmailForPage(targetPage);
+				if (!targetEmail || targetEmail === sourceEmail) continue;
+
+				const sourceScore = this.getContactByEmail(sourceEmail)?.score?.combined;
+				const targetScore = this.getContactByEmail(targetEmail)?.score?.combined;
+				const scoreParts = [sourceScore, targetScore].filter(
+					(score): score is number => typeof score === "number"
+				);
+				const combinedScore = scoreParts.length > 0
+					? Math.round(scoreParts.reduce((sum, score) => sum + score, 0) / scoreParts.length)
+					: 0;
+				const key = `${sourceEmail}->${targetEmail}:${relationship.type}:${relationship.context}`;
+				edges.set(key, {
+					sourceEmail,
+					sourceName,
+					targetEmail,
+					targetName: relationship.target,
+					type: relationship.type,
+					context: relationship.context,
+					combinedScore,
+					sourceScore,
+					targetScore,
+				});
+			}
+		}
+
+		return Array.from(edges.values()).sort((a, b) => {
+			if (b.combinedScore !== a.combinedScore) {
+				return b.combinedScore - a.combinedScore;
+			}
+			return `${a.sourceName}:${a.targetName}`.localeCompare(`${b.sourceName}:${b.targetName}`);
+		});
+	}
+
+	private getContactForPage(page: PersonPage): Contact | null {
+		const email = this.getEmailForPage(page);
+		if (!email) return null;
+		return this.getContactByEmail(email);
+	}
+
+	private getEmailForPage(page: PersonPage): string | null {
+		const candidates = [...page.emails];
+		if (page.email && !candidates.includes(page.email)) {
+			candidates.unshift(page.email);
+		}
+
+		for (const email of candidates) {
+			const contact = this.getContactByEmail(email);
+			if (contact) return contact.email.toLowerCase();
+		}
+
+		const fallback = candidates.find((email) => email.includes("@"));
+		return fallback ? fallback.toLowerCase() : null;
+	}
+
+	private getContactByEmail(email: string): Contact | null {
+		if (!this.contactIndex) return null;
+		const lower = email.toLowerCase();
+		const direct = this.contactIndex.contacts[lower];
+		if (direct) return direct;
+
+		for (const contact of Object.values(this.contactIndex.contacts)) {
+			if (contact.email.toLowerCase() === lower) return contact;
+			if (contact.aliases?.some((alias) => alias.toLowerCase() === lower)) {
+				return contact;
+			}
+		}
+		return null;
+	}
+
+	private parseRoleCompany(role: string | null): { role: string | null; company: string | null } {
+		if (!role) return { role: null, company: null };
+		const roleParts = role.split(/\s+at\s+|\s+@\s+/i);
+		if (roleParts.length === 2) {
+			return {
+				role: roleParts[0].trim() || null,
+				company: roleParts[1].trim() || null,
+			};
+		}
+		return { role: role.trim() || null, company: null };
+	}
+
+	private inferCompanyFromDomain(domain: string): string | null {
+		if (!domain) return null;
+		const generic = new Set([
+			"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com",
+			"aol.com", "protonmail.com", "me.com", "live.com", "mail.com",
+		]);
+		if (generic.has(domain)) return null;
+		const raw = domain.split(".")[0];
+		if (!raw) return null;
+		return raw.charAt(0).toUpperCase() + raw.slice(1);
 	}
 
 	async createBase() {

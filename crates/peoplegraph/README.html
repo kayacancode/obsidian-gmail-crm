@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeopleGraph CLI Usage</title>
+  <style>
+    :root {
+      --bg: #f7f8f5;
+      --paper: #ffffff;
+      --ink: #18201d;
+      --muted: #5f6b65;
+      --line: #d9ded8;
+      --soft: #eef2ec;
+      --accent: #0f6b55;
+      --code: #10231d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 42px 24px 64px;
+    }
+
+    header,
+    section {
+      margin-bottom: 18px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    h1,
+    h2 {
+      margin: 0 0 12px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: clamp(34px, 6vw, 52px);
+    }
+
+    h2 {
+      font-size: 24px;
+    }
+
+    p,
+    li {
+      color: var(--muted);
+    }
+
+    ul {
+      margin: 0 0 14px 22px;
+      padding: 0;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: var(--soft);
+      color: #24322d;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: 8px;
+      background: var(--code);
+      color: #e9f5ef;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PeopleGraph CLI</h1>
+      <p>Read-only graph queries over the Obsidian Gmail CRM <code>contact-index.json</code> cache.</p>
+    </header>
+
+    <section>
+      <h2>Build</h2>
+      <pre><code>cargo build --release</code></pre>
+    </section>
+
+    <section>
+      <h2>Usage</h2>
+      <p>Pass an explicit cache path, set <code>PEOPLEGRAPH_CACHE</code>, or run from a vault that contains <code>.obsidian/plugins/gmail-crm/contact-index.json</code>.</p>
+      <pre><code>peoplegraph describe
+peoplegraph --cache /path/to/contact-index.json find-person "Maya Rivera"
+peoplegraph --cache /path/to/contact-index.json score maya.rivera@disney.com
+peoplegraph --cache /path/to/contact-index.json who-knows --company Disney
+peoplegraph --cache /path/to/contact-index.json get-neighbors maya.rivera@disney.com
+peoplegraph --cache /path/to/contact-index.json get-edges --from maya.rivera@disney.com --to sam.lee@example.org
+peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
+      <p>All commands emit a stable JSON object on stdout.</p>
+    </section>
+
+    <section>
+      <h2>Packaging</h2>
+      <p>From the repository root:</p>
+      <pre><code>npm run build:peoplegraph
+npm run package:peoplegraph</code></pre>
+      <p>The package step copies the optimized binary to <code>bin/peoplegraph</code>.</p>
+    </section>
+
+    <section>
+      <h2>Related Docs</h2>
+      <ul>
+        <li><a href="../../docs/peoplegraph-cli.html">PeopleGraph PRD</a></li>
+        <li><a href="../../docs/peoplegraph-technical.html">PeopleGraph technical documentation</a></li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

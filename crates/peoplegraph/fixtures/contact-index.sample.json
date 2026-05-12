@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "lastSync": "2026-05-11T12:00:00.000Z",
+  "userEmail": "owner@example.com",
+  "contacts": {
+    "maya.rivera@disney.com": {
+      "name": "Maya Rivera",
+      "email": "maya.rivera@disney.com",
+      "lastContact": "2026-05-01T15:30:00.000Z",
+      "firstContact": "2025-01-15T09:00:00.000Z",
+      "sentCount": 12,
+      "receivedCount": 15,
+      "totalExchanges": 27,
+      "subjects": ["Intro to Disney Streaming", "Follow up"],
+      "lastSubject": "Follow up",
+      "domain": "disney.com",
+      "threadCount": 8,
+      "maxThreadDepth": 6,
+      "backAndForthThreads": 3,
+      "rsvpOnlyThreads": 1,
+      "lastThreadDepth": 4,
+      "aliases": ["maya@disney.com"],
+      "role": "Director",
+      "company": "Disney",
+      "score": {
+        "depth": 5,
+        "recency": 8,
+        "combined": 79,
+        "quadrant": "nurture",
+        "strength": 78,
+        "momentum": 80,
+        "staleness": 72,
+        "label": "active",
+        "updatedAt": "2026-05-11T12:00:00.000Z"
+      }
+    },
+    "sam.lee@example.org": {
+      "name": "Sam Lee",
+      "email": "sam.lee@example.org",
+      "lastContact": "2025-11-20T10:00:00.000Z",
+      "firstContact": "2025-11-01T10:00:00.000Z",
+      "sentCount": 1,
+      "receivedCount": 2,
+      "totalExchanges": 3,
+      "subjects": ["Coffee"],
+      "lastSubject": "Coffee",
+      "domain": "example.org",
+      "threadCount": 1,
+      "maxThreadDepth": 2,
+      "backAndForthThreads": 0,
+      "rsvpOnlyThreads": 0,
+      "lastThreadDepth": 1,
+      "score": {
+        "depth": 2,
+        "recency": 2,
+        "combined": 18,
+        "quadrant": "deprioritize",
+        "strength": 24,
+        "momentum": 12,
+        "staleness": 10,
+        "label": "stale",
+        "updatedAt": "2026-05-11T12:00:00.000Z"
+      }
+    }
+  },
+  "edges": [
+    {
+      "sourceEmail": "maya.rivera@disney.com",
+      "sourceName": "Maya Rivera",
+      "targetEmail": "sam.lee@example.org",
+      "targetName": "Sam Lee",
+      "type": "wiki_link",
+      "context": "Referenced in notes",
+      "combinedScore": 49,
+      "sourceScore": 79,
+      "targetScore": 18
+    }
+  ]
+}

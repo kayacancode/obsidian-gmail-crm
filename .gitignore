@@ -5,3 +5,5 @@ contact-index.json
 data.json
 *.zip
 node_modules/
+target/
+crates/*/target/

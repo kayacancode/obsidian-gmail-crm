@@ -36,6 +36,29 @@ var import_obsidian8 = require("obsidian");
 
 // src/gmail-api.ts
 var import_obsidian = require("obsidian");
+
+// src/types.ts
+var CONTACT_INDEX_SCHEMA_VERSION = 1;
+var DEFAULT_SETTINGS = {
+  clientId: "",
+  clientSecret: "",
+  accessToken: "",
+  refreshToken: "",
+  tokenExpiry: 0,
+  syncIntervalMinutes: 60,
+  maxResults: 500,
+  createContactNotes: false,
+  contactNotesFolder: "People pages",
+  vaultOwnerName: "",
+  peopleFolder: "People pages",
+  companiesFolder: "Companies",
+  anthropicApiKey: "",
+  harperModel: "claude-sonnet-4-6",
+  enrichOnSync: false,
+  blockedDomains: ""
+};
+
+// src/gmail-api.ts
 var GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -288,13 +311,14 @@ var GmailApi = class {
     return resp.json;
   }
   async buildContactIndex(maxResults, onProgress, existingIndex, messageCache) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const userEmail = await this.getUserEmail();
     const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
     const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
     const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
     const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
     const contacts = existingIndex ? JSON.parse(JSON.stringify(existingIndex.contacts)) : {};
+    const edges = (_c = existingIndex == null ? void 0 : existingIndex.edges) != null ? _c : [];
     const threadStates = /* @__PURE__ */ new Map();
     if (existingIndex && newMessageIds.length > 0) {
       for (const [key, c] of Object.entries(contacts)) {
@@ -333,11 +357,11 @@ var GmailApi = class {
         exchanges: c.totalExchanges,
         sent: c.sentCount,
         received: c.receivedCount,
-        threads: (_c = c.threadCount) != null ? _c : 0,
-        backAndForth: (_d = c.backAndForthThreads) != null ? _d : 0,
-        maxDepth: (_e = c.maxThreadDepth) != null ? _e : 0,
-        lastDepth: (_f = c.lastThreadDepth) != null ? _f : 0,
-        rsvpOnly: (_g = c.rsvpOnlyThreads) != null ? _g : 0,
+        threads: (_d = c.threadCount) != null ? _d : 0,
+        backAndForth: (_e = c.backAndForthThreads) != null ? _e : 0,
+        maxDepth: (_f = c.maxThreadDepth) != null ? _f : 0,
+        lastDepth: (_g = c.lastThreadDepth) != null ? _g : 0,
+        rsvpOnly: (_h = c.rsvpOnlyThreads) != null ? _h : 0,
         firstContact: c.firstContact,
         lastContact: c.lastContact,
         domain: c.domain
@@ -352,9 +376,11 @@ var GmailApi = class {
     };
     return {
       index: {
+        schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
         lastSync: (/* @__PURE__ */ new Date()).toISOString(),
         userEmail,
-        contacts
+        contacts,
+        edges
       },
       cache: updatedCache
     };
@@ -915,6 +941,12 @@ var RelationshipEngine = class {
           continue;
         }
         matched++;
+        if (!pages[pageName].emails.includes(email)) {
+          pages[pageName].emails.push(email);
+        }
+        if (!pages[pageName].email) {
+          pages[pageName].email = email;
+        }
         const existing = pages[pageName].gmailStats;
         if (existing) {
           existing.totalExchanges += contact.totalExchanges;
@@ -1551,6 +1583,19 @@ var FrontmatterManager = class {
       await this.vault.modify(file, updated);
     }
   }
+  async setCanonicalLink(file, link) {
+    var _a;
+    const content = await this.vault.read(file);
+    const fields = {
+      canonical_id: link.canonicalId,
+      last_canonical_sync: (_a = link.syncedAt) != null ? _a : (/* @__PURE__ */ new Date()).toISOString()
+    };
+    if (link.aliases && link.aliases.length > 0) fields.aliases = link.aliases;
+    const updated = this.mergeFrontmatter(content, fields);
+    if (updated !== content) {
+      await this.vault.modify(file, updated);
+    }
+  }
   mergeFrontmatter(content, fields) {
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (fmMatch) {
@@ -1996,26 +2041,6 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// src/types.ts
-var DEFAULT_SETTINGS = {
-  clientId: "",
-  clientSecret: "",
-  accessToken: "",
-  refreshToken: "",
-  tokenExpiry: 0,
-  syncIntervalMinutes: 60,
-  maxResults: 500,
-  createContactNotes: false,
-  contactNotesFolder: "People pages",
-  vaultOwnerName: "",
-  peopleFolder: "People pages",
-  companiesFolder: "Companies",
-  anthropicApiKey: "",
-  harperModel: "claude-sonnet-4-6",
-  enrichOnSync: false,
-  blockedDomains: ""
-};
-
 // src/main.ts
 var GmailCrmPlugin = class extends import_obsidian8.Plugin {
   constructor() {
@@ -2190,16 +2215,26 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     await this.syncContacts();
   }
   async loadContactIndex() {
+    var _a, _b, _c;
     const path = this.getIndexPath();
     try {
       if (!await this.app.vault.adapter.exists(path)) return;
       const content = await this.app.vault.adapter.read(path);
-      this.contactIndex = JSON.parse(content);
+      const parsed = JSON.parse(content);
+      this.contactIndex = {
+        ...parsed,
+        schemaVersion: (_a = parsed.schemaVersion) != null ? _a : CONTACT_INDEX_SCHEMA_VERSION,
+        contacts: (_b = parsed.contacts) != null ? _b : {},
+        edges: (_c = parsed.edges) != null ? _c : []
+      };
     } catch (e) {
     }
   }
   async saveContactIndex() {
+    var _a, _b;
     if (!this.contactIndex) return;
+    this.contactIndex.schemaVersion = CONTACT_INDEX_SCHEMA_VERSION;
+    (_b = (_a = this.contactIndex).edges) != null ? _b : _a.edges = [];
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex, null, 2);
     await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
@@ -2422,12 +2457,14 @@ ${relSection}
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
       const graph = engine.buildGraph(pages, this.contactIndex);
+      const scoreUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
       let done = 0;
       let staleCount = 0;
       for (const [name, page] of Object.entries(pages)) {
         done++;
         const relationships = (_a = graph[name]) != null ? _a : [];
         const staleness = computeStaleness(page, relationships);
+        this.updateContactScore(page, staleness, scoreUpdatedAt);
         if (staleness.label === "stale" || staleness.label === "dormant") {
           staleCount++;
         }
@@ -2439,6 +2476,10 @@ ${relSection}
           notice.setMessage(`Scoring ${done}/${count}...`);
         }
       }
+      if (this.contactIndex) {
+        this.contactIndex.edges = this.buildContactEdges(pages, graph);
+        await this.saveContactIndex();
+      }
       notice.setMessage(`Scored ${count} contacts \u2014 ${staleCount} going stale`);
       setTimeout(() => notice.hide(), 4e3);
     } catch (e) {
@@ -2446,6 +2487,134 @@ ${relSection}
       const msg = e instanceof Error ? e.message : String(e);
       new import_obsidian8.Notice(`Staleness update failed: ${msg}`);
     }
+  }
+  updateContactScore(page, staleness, updatedAt) {
+    const contact = this.getContactForPage(page);
+    if (!contact) return;
+    const roleCompany = this.parseRoleCompany(page.role);
+    if (roleCompany.role) contact.role = roleCompany.role;
+    if (roleCompany.company) {
+      contact.company = roleCompany.company;
+    } else if (!contact.company) {
+      const inferred = this.inferCompanyFromDomain(contact.domain);
+      if (inferred) contact.company = inferred;
+    }
+    contact.score = {
+      depth: staleness.relationshipDepth,
+      recency: staleness.relationshipRecency,
+      combined: staleness.combinedScore,
+      quadrant: staleness.quadrant,
+      strength: staleness.strengthScore,
+      momentum: staleness.momentumScore,
+      staleness: staleness.score,
+      label: staleness.label,
+      updatedAt
+    };
+    contact.relationshipDepth = staleness.relationshipDepth;
+    contact.relationshipRecency = staleness.relationshipRecency;
+    contact.combinedScore = staleness.combinedScore;
+    contact.quadrant = staleness.quadrant;
+  }
+  buildContactEdges(pages, graph) {
+    var _a, _b, _c, _d;
+    const edges = /* @__PURE__ */ new Map();
+    for (const [sourceName, relationships] of Object.entries(graph)) {
+      const sourcePage = pages[sourceName];
+      if (!sourcePage) continue;
+      const sourceEmail = this.getEmailForPage(sourcePage);
+      if (!sourceEmail) continue;
+      for (const relationship of relationships) {
+        const targetPage = pages[relationship.target];
+        if (!targetPage) continue;
+        const targetEmail = this.getEmailForPage(targetPage);
+        if (!targetEmail || targetEmail === sourceEmail) continue;
+        const sourceScore = (_b = (_a = this.getContactByEmail(sourceEmail)) == null ? void 0 : _a.score) == null ? void 0 : _b.combined;
+        const targetScore = (_d = (_c = this.getContactByEmail(targetEmail)) == null ? void 0 : _c.score) == null ? void 0 : _d.combined;
+        const scoreParts = [sourceScore, targetScore].filter(
+          (score) => typeof score === "number"
+        );
+        const combinedScore = scoreParts.length > 0 ? Math.round(scoreParts.reduce((sum, score) => sum + score, 0) / scoreParts.length) : 0;
+        const key = `${sourceEmail}->${targetEmail}:${relationship.type}:${relationship.context}`;
+        edges.set(key, {
+          sourceEmail,
+          sourceName,
+          targetEmail,
+          targetName: relationship.target,
+          type: relationship.type,
+          context: relationship.context,
+          combinedScore,
+          sourceScore,
+          targetScore
+        });
+      }
+    }
+    return Array.from(edges.values()).sort((a, b) => {
+      if (b.combinedScore !== a.combinedScore) {
+        return b.combinedScore - a.combinedScore;
+      }
+      return `${a.sourceName}:${a.targetName}`.localeCompare(`${b.sourceName}:${b.targetName}`);
+    });
+  }
+  getContactForPage(page) {
+    const email = this.getEmailForPage(page);
+    if (!email) return null;
+    return this.getContactByEmail(email);
+  }
+  getEmailForPage(page) {
+    const candidates = [...page.emails];
+    if (page.email && !candidates.includes(page.email)) {
+      candidates.unshift(page.email);
+    }
+    for (const email of candidates) {
+      const contact = this.getContactByEmail(email);
+      if (contact) return contact.email.toLowerCase();
+    }
+    const fallback = candidates.find((email) => email.includes("@"));
+    return fallback ? fallback.toLowerCase() : null;
+  }
+  getContactByEmail(email) {
+    var _a;
+    if (!this.contactIndex) return null;
+    const lower = email.toLowerCase();
+    const direct = this.contactIndex.contacts[lower];
+    if (direct) return direct;
+    for (const contact of Object.values(this.contactIndex.contacts)) {
+      if (contact.email.toLowerCase() === lower) return contact;
+      if ((_a = contact.aliases) == null ? void 0 : _a.some((alias) => alias.toLowerCase() === lower)) {
+        return contact;
+      }
+    }
+    return null;
+  }
+  parseRoleCompany(role) {
+    if (!role) return { role: null, company: null };
+    const roleParts = role.split(/\s+at\s+|\s+@\s+/i);
+    if (roleParts.length === 2) {
+      return {
+        role: roleParts[0].trim() || null,
+        company: roleParts[1].trim() || null
+      };
+    }
+    return { role: role.trim() || null, company: null };
+  }
+  inferCompanyFromDomain(domain) {
+    if (!domain) return null;
+    const generic = /* @__PURE__ */ new Set([
+      "gmail.com",
+      "yahoo.com",
+      "hotmail.com",
+      "outlook.com",
+      "icloud.com",
+      "aol.com",
+      "protonmail.com",
+      "me.com",
+      "live.com",
+      "mail.com"
+    ]);
+    if (generic.has(domain)) return null;
+    const raw = domain.split(".")[0];
+    if (!raw) return null;
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
   }
   async createBase() {
     try {

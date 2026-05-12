@@ -18,6 +18,8 @@ export interface GmailCrmSettings {
 	blockedDomains: string; // comma-separated domains to exclude
 }
 
+export const CONTACT_INDEX_SCHEMA_VERSION = 1;
+
 export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	clientId: "",
 	clientSecret: "",
@@ -37,6 +39,18 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	blockedDomains: "",
 };
 
+export interface ContactScore {
+	depth: number;
+	recency: number;
+	combined: number;
+	quadrant: "nurture" | "re-engage" | "developing" | "deprioritize";
+	strength: number;
+	momentum: number;
+	staleness: number;
+	label: "active" | "warm" | "cooling" | "stale" | "dormant";
+	updatedAt: string;
+}
+
 export interface Contact {
 	name: string;
 	email: string;
@@ -54,12 +68,39 @@ export interface Contact {
 	backAndForthThreads?: number; // threads with both directions and >=3 messages
 	rsvpOnlyThreads?: number; // single-message threads matching invite/RSVP pattern
 	lastThreadDepth?: number; // depth of the thread containing the most recent message
+	// Canonical link to Jon Chin's shared contact graph. Populated by the betaworks-sync
+	// command once the API contract is finalized; absent on records that haven't been
+	// reconciled with the shared graph.
+	canonicalId?: string;
+	aliases?: string[]; // alternate emails for the same person
+	lastCanonicalSync?: string; // ISO date of last reconcile with shared graph
+	role?: string;
+	company?: string;
+	score?: ContactScore;
+	relationshipDepth?: number;
+	relationshipRecency?: number;
+	combinedScore?: number;
+	quadrant?: "nurture" | "re-engage" | "developing" | "deprioritize";
+}
+
+export interface ContactEdge {
+	sourceEmail: string;
+	sourceName: string;
+	targetEmail: string;
+	targetName: string;
+	type: Relationship["type"];
+	context: string;
+	combinedScore: number;
+	sourceScore?: number;
+	targetScore?: number;
 }
 
 export interface ContactIndex {
+	schemaVersion: number;
 	lastSync: string;
 	userEmail: string;
 	contacts: Record<string, Contact>; // keyed by email
+	edges: ContactEdge[];
 }
 
 // Local cache of already-processed message IDs to avoid re-fetching metadata.

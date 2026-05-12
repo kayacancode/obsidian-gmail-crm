@@ -260,6 +260,12 @@ export class RelationshipEngine {
 					continue;
 				}
 				matched++;
+				if (!pages[pageName].emails.includes(email)) {
+					pages[pageName].emails.push(email);
+				}
+				if (!pages[pageName].email) {
+					pages[pageName].email = email;
+				}
 
 				const existing = pages[pageName].gmailStats;
 				if (existing) {

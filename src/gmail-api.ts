@@ -8,6 +8,7 @@ import type {
 	ContactIndex,
 	MessageCache,
 } from "./types";
+import { CONTACT_INDEX_SCHEMA_VERSION } from "./types";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -293,6 +294,7 @@ export class GmailApi {
 		const contacts: Record<string, Contact> = existingIndex
 			? JSON.parse(JSON.stringify(existingIndex.contacts))
 			: {};
+		const edges = existingIndex?.edges ?? [];
 
 		// Per-contact, per-thread state used to compute metadata pattern signals
 		// (back-and-forth, thread depth, RSVP-only). Keyed by contactEmail -> threadId.
@@ -374,9 +376,11 @@ export class GmailApi {
 
 		return {
 			index: {
+				schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
 				lastSync: new Date().toISOString(),
 				userEmail,
 				contacts,
+				edges,
 			},
 			cache: updatedCache,
 		};

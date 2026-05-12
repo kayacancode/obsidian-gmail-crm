@@ -1,0 +1,1333 @@
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use strsim::jaro_winkler;
+
+const COMMAND_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Parser, Debug)]
+#[command(name = "peoplegraph")]
+#[command(version = COMMAND_VERSION)]
+#[command(about = "Read-only graph queries over the Obsidian Gmail CRM contact cache")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Json)]
+    format: OutputFormat,
+
+    #[arg(long, global = true)]
+    cache: Option<PathBuf>,
+
+    #[arg(long, global = true)]
+    quiet: bool,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum OutputFormat {
+    Json,
+    Jsonl,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Fuzzy match a person by name, email, or alias.
+    FindPerson(FindPersonArgs),
+    /// Return score fields for one email.
+    Score(EmailArg),
+    /// Return people at a company/domain ranked by relationship score.
+    WhoKnows(WhoKnowsArgs),
+    /// Return neighbors for one email once edge data is present in the cache.
+    GetNeighbors(EmailArg),
+    /// Return the edge between two emails once edge data is present in the cache.
+    GetEdges(GetEdgesArgs),
+    /// Record a merge proposal once the local merge queue is implemented.
+    ProposeMerge(ProposeMergeArgs),
+    /// Describe the command surface for agent introspection.
+    Describe,
+    /// Return binary version information.
+    Version,
+}
+
+#[derive(Args, Debug)]
+struct FindPersonArgs {
+    query: String,
+
+    #[arg(long, default_value_t = 10)]
+    limit: usize,
+}
+
+#[derive(Args, Debug)]
+struct EmailArg {
+    email: String,
+}
+
+#[derive(Args, Debug)]
+struct WhoKnowsArgs {
+    #[arg(long)]
+    company: String,
+
+    #[arg(long, default_value_t = 25)]
+    limit: usize,
+}
+
+#[derive(Args, Debug)]
+struct GetEdgesArgs {
+    #[arg(long)]
+    from: String,
+
+    #[arg(long)]
+    to: String,
+}
+
+#[derive(Args, Debug)]
+struct ProposeMergeArgs {
+    a: String,
+    b: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactIndex {
+    #[serde(default, alias = "schema_version")]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    last_sync: Option<String>,
+    #[serde(default)]
+    user_email: Option<String>,
+    contacts: HashMap<String, Contact>,
+    #[serde(default)]
+    edges: Vec<ContactEdge>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Contact {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    last_contact: Option<String>,
+    #[serde(default)]
+    first_contact: Option<String>,
+    #[serde(default)]
+    sent_count: u32,
+    #[serde(default)]
+    received_count: u32,
+    #[serde(default)]
+    total_exchanges: u32,
+    #[serde(default)]
+    subjects: Vec<String>,
+    #[serde(default)]
+    last_subject: String,
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    thread_count: Option<u32>,
+    #[serde(default)]
+    max_thread_depth: Option<u32>,
+    #[serde(default)]
+    back_and_forth_threads: Option<u32>,
+    #[serde(default)]
+    rsvp_only_threads: Option<u32>,
+    #[serde(default)]
+    last_thread_depth: Option<u32>,
+    #[serde(default)]
+    canonical_id: Option<String>,
+    #[serde(default)]
+    aliases: Vec<String>,
+    #[serde(default)]
+    last_canonical_sync: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    company: Option<String>,
+    #[serde(default)]
+    score: Option<CachedScore>,
+    #[serde(default, alias = "relationship_depth")]
+    relationship_depth: Option<u8>,
+    #[serde(default, alias = "relationship_recency")]
+    relationship_recency: Option<u8>,
+    #[serde(default, alias = "combined_score")]
+    combined_score: Option<u8>,
+    #[serde(default)]
+    quadrant: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedScore {
+    #[serde(default, alias = "relationship_depth")]
+    depth: Option<u8>,
+    #[serde(default, alias = "relationship_recency")]
+    recency: Option<u8>,
+    #[serde(default, alias = "combined_score")]
+    combined: Option<u8>,
+    #[serde(default)]
+    quadrant: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContactEdge {
+    source_email: String,
+    source_name: String,
+    target_email: String,
+    target_name: String,
+    #[serde(rename = "type")]
+    edge_type: String,
+    context: String,
+    #[serde(default)]
+    combined_score: u8,
+    #[serde(default)]
+    source_score: Option<u8>,
+    #[serde(default)]
+    target_score: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeQueue {
+    schema_version: u32,
+    updated_at_unix: u64,
+    candidates: Vec<MergeCandidate>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeCandidate {
+    a_email: String,
+    a_name: String,
+    b_email: String,
+    b_name: String,
+    status: String,
+    proposed_at_unix: u64,
+    source: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Response {
+    ok: bool,
+    command: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stats: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ApiError>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiError {
+    kind: &'static str,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ScoreOut {
+    depth: u8,
+    recency: u8,
+    combined: u8,
+    quadrant: String,
+}
+
+#[derive(Clone, Debug)]
+struct ContactRow {
+    email: String,
+    contact: Contact,
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let start = Instant::now();
+    let command = command_name(&cli.command);
+    let response = run(&cli, command, start);
+    let ok = response.ok;
+
+    if let Err(err) = print_response(&response, &cli.format) {
+        if !cli.quiet {
+            eprintln!("peoplegraph: failed to write JSON response: {err}");
+        }
+        return ExitCode::from(1);
+    }
+
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
+fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
+    match &cli.command {
+        Commands::Describe => ok(
+            command,
+            describe_payload(),
+            json!({ "ms": elapsed_ms(start) }),
+        ),
+        Commands::Version => ok(
+            command,
+            json!({ "name": "peoplegraph", "version": COMMAND_VERSION }),
+            json!({ "ms": elapsed_ms(start) }),
+        ),
+        Commands::FindPerson(args) => with_index(cli, command, start, |index| {
+            find_person(index, &args.query, args.limit, start)
+        }),
+        Commands::Score(args) => with_index(cli, command, start, |index| {
+            score_person(index, &args.email, start)
+        }),
+        Commands::WhoKnows(args) => with_index(cli, command, start, |index| {
+            who_knows(index, &args.company, args.limit, start)
+        }),
+        Commands::GetNeighbors(args) => with_index(cli, command, start, |index| {
+            get_neighbors(index, &args.email, start)
+        }),
+        Commands::GetEdges(args) => with_index(cli, command, start, |index| {
+            get_edges(index, &args.from, &args.to, start)
+        }),
+        Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
+    }
+}
+
+fn with_index<F>(cli: &Cli, command: &'static str, start: Instant, f: F) -> Response
+where
+    F: FnOnce(&ContactIndex) -> Response,
+{
+    let index = match load_index(cli, command, start) {
+        Ok((_cache_path, index)) => index,
+        Err(response) => return *response,
+    };
+
+    f(&index)
+}
+
+fn load_index(
+    cli: &Cli,
+    command: &'static str,
+    start: Instant,
+) -> Result<(PathBuf, ContactIndex), Box<Response>> {
+    let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
+        Ok(path) => path,
+        Err(message) => return Err(Box::new(fail(command, "cache_not_found", message, start))),
+    };
+
+    let content = match fs::read_to_string(&cache_path) {
+        Ok(content) => content,
+        Err(err) => {
+            return Err(Box::new(fail(
+                command,
+                "cache_read_failed",
+                format!("failed to read {}: {err}", cache_path.display()),
+                start,
+            )));
+        }
+    };
+
+    let index = match serde_json::from_str::<ContactIndex>(&content) {
+        Ok(index) => index,
+        Err(err) => {
+            return Err(Box::new(fail(
+                command,
+                "cache_parse_failed",
+                format!("failed to parse {}: {err}", cache_path.display()),
+                start,
+            )));
+        }
+    };
+
+    Ok((cache_path, index))
+}
+
+fn find_person(index: &ContactIndex, query: &str, limit: usize, start: Instant) -> Response {
+    let rows = rows(index);
+    let query_norm = normalize(query);
+    let query_email = query.trim().to_ascii_lowercase();
+    let mut matches: Vec<(f64, ContactRow)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let confidence = match_confidence(&row, &query_norm, &query_email);
+            (confidence >= 0.72).then_some((confidence, row))
+        })
+        .collect();
+
+    matches.sort_by(|(a_conf, a), (b_conf, b)| {
+        b_conf
+            .total_cmp(a_conf)
+            .then_with(|| {
+                infer_score(&b.contact)
+                    .combined
+                    .cmp(&infer_score(&a.contact).combined)
+            })
+            .then_with(|| a.contact.name.cmp(&b.contact.name))
+    });
+
+    let total = matches.len();
+    let limit = limit.max(1);
+    let data_matches: Vec<Value> = matches
+        .into_iter()
+        .take(limit)
+        .map(|(confidence, row)| contact_match_value(&row, confidence))
+        .collect();
+    let returned = data_matches.len();
+
+    ok(
+        "find-person",
+        json!({ "matches": data_matches }),
+        json!({
+            "matched": total,
+            "returned": returned,
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
+    let email_norm = email.trim().to_ascii_lowercase();
+    let Some(row) = find_by_email_or_alias(index, &email_norm) else {
+        return fail(
+            "score",
+            "not_found",
+            format!("no contact found for {email}"),
+            start,
+        );
+    };
+
+    let score = infer_score(&row.contact);
+    ok(
+        "score",
+        json!({
+            "email": &row.email,
+            "name": &row.contact.name,
+            "canonical_id": &row.contact.canonical_id,
+            "score": score,
+            "score_source": score_source(&row.contact),
+            "signals": contact_signals(&row.contact),
+        }),
+        json!({
+            "matched": 1,
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) -> Response {
+    let company_norm = normalize_company(company);
+    let mut people: Vec<ContactRow> = rows(index)
+        .into_iter()
+        .filter(|row| company_matches(&row.contact, &company_norm))
+        .collect();
+
+    people.sort_by(|a, b| {
+        infer_score(&b.contact)
+            .combined
+            .cmp(&infer_score(&a.contact).combined)
+            .then_with(|| b.contact.total_exchanges.cmp(&a.contact.total_exchanges))
+            .then_with(|| a.contact.name.cmp(&b.contact.name))
+    });
+
+    let total = people.len();
+    let limit = limit.max(1);
+    let returned_people: Vec<Value> = people
+        .into_iter()
+        .take(limit)
+        .map(|row| {
+            let score = infer_score(&row.contact);
+            json!({
+                "email": &row.email,
+                "name": &row.contact.name,
+                "role": &row.contact.role,
+                "company": &row.contact.company,
+                "domain": &row.contact.domain,
+                "canonical_id": &row.contact.canonical_id,
+                "score": score,
+                "score_source": score_source(&row.contact),
+                "last_contact": &row.contact.last_contact,
+                "total_exchanges": row.contact.total_exchanges,
+            })
+        })
+        .collect();
+    let returned = returned_people.len();
+
+    ok(
+        "who-knows",
+        json!({
+            "company": company,
+            "people": returned_people,
+            "ranked_by": "combined_score_desc",
+        }),
+        json!({
+            "matched": total,
+            "returned": returned,
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn get_neighbors(index: &ContactIndex, email: &str, start: Instant) -> Response {
+    let email_norm = resolve_email(index, email);
+    let mut neighbors: Vec<Value> = index
+        .edges
+        .iter()
+        .filter_map(|edge| {
+            let source = edge.source_email.to_ascii_lowercase();
+            let target = edge.target_email.to_ascii_lowercase();
+            if source == email_norm {
+                Some(neighbor_value(
+                    index,
+                    edge,
+                    &edge.target_email,
+                    &edge.target_name,
+                    "outgoing",
+                ))
+            } else if target == email_norm {
+                Some(neighbor_value(
+                    index,
+                    edge,
+                    &edge.source_email,
+                    &edge.source_name,
+                    "incoming",
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    neighbors.sort_by(|a, b| {
+        value_u64(b, "edge_score")
+            .cmp(&value_u64(a, "edge_score"))
+            .then_with(|| value_str(a, "name").cmp(&value_str(b, "name")))
+    });
+
+    let matched = neighbors.len();
+    ok(
+        "get-neighbors",
+        json!({
+            "email": email_norm,
+            "neighbors": neighbors,
+        }),
+        json!({
+            "matched": matched,
+            "edge_count": index.edges.len(),
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Response {
+    let from_email = resolve_email(index, from);
+    let to_email = resolve_email(index, to);
+    let mut edges: Vec<&ContactEdge> = index
+        .edges
+        .iter()
+        .filter(|edge| {
+            let source = edge.source_email.to_ascii_lowercase();
+            let target = edge.target_email.to_ascii_lowercase();
+            (source == from_email && target == to_email)
+                || (source == to_email && target == from_email)
+        })
+        .collect();
+
+    edges.sort_by(|a, b| b.combined_score.cmp(&a.combined_score));
+    let matched = edges.len();
+    let edge_values: Vec<Value> = edges.iter().map(|edge| edge_value(edge)).collect();
+
+    ok(
+        "get-edges",
+        json!({
+            "from": person_ref(index, &from_email),
+            "to": person_ref(index, &to_email),
+            "edges": edge_values,
+            "aggregate_score": aggregate_edge_score(&edges),
+        }),
+        json!({
+            "matched": matched,
+            "edge_count": index.edges.len(),
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn propose_merge(
+    cli: &Cli,
+    command: &'static str,
+    args: &ProposeMergeArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let a_email = resolve_email(&index, &args.a);
+    let b_email = resolve_email(&index, &args.b);
+    if a_email == b_email {
+        return fail(
+            command,
+            "invalid_merge",
+            "merge candidates resolve to the same email".to_string(),
+            start,
+        );
+    }
+
+    let queue_path = cache_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("merge-queue.json");
+    let mut queue = read_merge_queue(&queue_path);
+    let now = unix_seconds();
+    let exists = queue
+        .candidates
+        .iter()
+        .any(|candidate| same_pair(&candidate.a_email, &candidate.b_email, &a_email, &b_email));
+
+    if !exists {
+        queue.candidates.push(MergeCandidate {
+            a_email: a_email.clone(),
+            a_name: contact_name(&index, &a_email),
+            b_email: b_email.clone(),
+            b_name: contact_name(&index, &b_email),
+            status: "pending".to_string(),
+            proposed_at_unix: now,
+            source: "peoplegraph".to_string(),
+        });
+    }
+    queue.updated_at_unix = now;
+
+    if let Err(err) = write_merge_queue(&queue_path, &queue) {
+        return fail(
+            command,
+            "queue_write_failed",
+            format!("failed to write {}: {err}", queue_path.display()),
+            start,
+        );
+    }
+
+    ok(
+        command,
+        json!({
+            "queued": !exists,
+            "queue_path": queue_path.display().to_string(),
+            "candidate": {
+                "a": person_ref(&index, &a_email),
+                "b": person_ref(&index, &b_email),
+                "status": "pending"
+            }
+        }),
+        json!({
+            "matched": if exists { 0 } else { 1 },
+            "queue_size": queue.candidates.len(),
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn contact_match_value(row: &ContactRow, confidence: f64) -> Value {
+    let score = infer_score(&row.contact);
+    json!({
+        "email": &row.email,
+        "name": &row.contact.name,
+        "aliases": &row.contact.aliases,
+        "canonical_id": &row.contact.canonical_id,
+        "score": score,
+        "score_source": score_source(&row.contact),
+        "match_confidence": round_confidence(confidence),
+    })
+}
+
+fn neighbor_value(
+    index: &ContactIndex,
+    edge: &ContactEdge,
+    neighbor_email: &str,
+    neighbor_name: &str,
+    direction: &str,
+) -> Value {
+    let email = neighbor_email.to_ascii_lowercase();
+    let row = find_by_email_or_alias(index, &email);
+    let score = row.as_ref().map(|row| infer_score(&row.contact));
+    json!({
+        "email": email,
+        "name": row.as_ref().map(|row| row.contact.name.as_str()).unwrap_or(neighbor_name),
+        "canonical_id": row.as_ref().and_then(|row| row.contact.canonical_id.as_ref()),
+        "score": score,
+        "edge_score": edge.combined_score,
+        "edge": {
+            "type": &edge.edge_type,
+            "context": &edge.context,
+            "direction": direction,
+            "source_email": &edge.source_email,
+            "source_name": &edge.source_name,
+            "target_email": &edge.target_email,
+            "target_name": &edge.target_name,
+            "source_score": &edge.source_score,
+            "target_score": &edge.target_score,
+        }
+    })
+}
+
+fn edge_value(edge: &ContactEdge) -> Value {
+    json!({
+        "source_email": &edge.source_email,
+        "source_name": &edge.source_name,
+        "target_email": &edge.target_email,
+        "target_name": &edge.target_name,
+        "type": &edge.edge_type,
+        "context": &edge.context,
+        "combined_score": edge.combined_score,
+        "source_score": &edge.source_score,
+        "target_score": &edge.target_score,
+    })
+}
+
+fn aggregate_edge_score(edges: &[&ContactEdge]) -> Option<u8> {
+    edges.iter().map(|edge| edge.combined_score).max()
+}
+
+fn person_ref(index: &ContactIndex, email: &str) -> Value {
+    let row = find_by_email_or_alias(index, email);
+    json!({
+        "email": email,
+        "name": row.as_ref().map(|row| row.contact.name.as_str()).unwrap_or(email),
+        "canonical_id": row.as_ref().and_then(|row| row.contact.canonical_id.as_ref()),
+        "score": row.as_ref().map(|row| infer_score(&row.contact)),
+    })
+}
+
+fn resolve_email(index: &ContactIndex, query: &str) -> String {
+    let email = query.trim().to_ascii_lowercase();
+    find_by_email_or_alias(index, &email)
+        .map(|row| row.email)
+        .unwrap_or(email)
+}
+
+fn contact_name(index: &ContactIndex, email: &str) -> String {
+    find_by_email_or_alias(index, email)
+        .map(|row| row.contact.name)
+        .unwrap_or_else(|| email.to_string())
+}
+
+fn read_merge_queue(path: &Path) -> MergeQueue {
+    let candidates = fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<MergeQueue>(&content).ok())
+        .map(|queue| queue.candidates)
+        .unwrap_or_default();
+
+    MergeQueue {
+        schema_version: 1,
+        updated_at_unix: unix_seconds(),
+        candidates,
+    }
+}
+
+fn write_merge_queue(path: &Path, queue: &MergeQueue) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(queue).map_err(|err| err.to_string())?;
+    fs::write(path, content).map_err(|err| err.to_string())
+}
+
+fn same_pair(a1: &str, b1: &str, a2: &str, b2: &str) -> bool {
+    let a1 = a1.to_ascii_lowercase();
+    let b1 = b1.to_ascii_lowercase();
+    let a2 = a2.to_ascii_lowercase();
+    let b2 = b2.to_ascii_lowercase();
+    (a1 == a2 && b1 == b2) || (a1 == b2 && b1 == a2)
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn value_u64(value: &Value, key: &str) -> u64 {
+    value.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn value_str(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn rows(index: &ContactIndex) -> Vec<ContactRow> {
+    index
+        .contacts
+        .iter()
+        .map(|(key, contact)| ContactRow {
+            email: canonical_email(key, contact),
+            contact: contact.clone(),
+        })
+        .collect()
+}
+
+fn canonical_email(key: &str, contact: &Contact) -> String {
+    if contact.email.trim().is_empty() {
+        key.to_ascii_lowercase()
+    } else {
+        contact.email.trim().to_ascii_lowercase()
+    }
+}
+
+fn find_by_email_or_alias(index: &ContactIndex, email: &str) -> Option<ContactRow> {
+    rows(index).into_iter().find(|row| {
+        row.email == email
+            || row.contact.email.trim().eq_ignore_ascii_case(email)
+            || row
+                .contact
+                .aliases
+                .iter()
+                .any(|alias| alias.trim().eq_ignore_ascii_case(email))
+    })
+}
+
+fn match_confidence(row: &ContactRow, query_norm: &str, query_email: &str) -> f64 {
+    if row.email == query_email
+        || row.contact.email.trim().eq_ignore_ascii_case(query_email)
+        || row
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| alias.trim().eq_ignore_ascii_case(query_email))
+    {
+        return 1.0;
+    }
+
+    if row.email.contains(query_email)
+        || row
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| alias.to_ascii_lowercase().contains(query_email))
+    {
+        return 0.96;
+    }
+
+    let name_norm = normalize(&row.contact.name);
+    if !query_norm.is_empty() && name_norm.contains(query_norm) {
+        return 0.93;
+    }
+
+    if !query_norm.is_empty() && query_norm.contains(&name_norm) && name_norm.len() >= 4 {
+        return 0.88;
+    }
+
+    let score = jaro_winkler(&name_norm, query_norm);
+    if score > 0.84 { score } else { 0.0 }
+}
+
+fn infer_score(contact: &Contact) -> ScoreOut {
+    let cached = contact.score.as_ref();
+    let depth = cached
+        .and_then(|score| score.depth)
+        .or(contact.relationship_depth)
+        .unwrap_or_else(|| compute_depth(contact));
+    let recency = cached
+        .and_then(|score| score.recency)
+        .or(contact.relationship_recency)
+        .unwrap_or_else(|| compute_recency(days_since_contact(contact)));
+    let combined = cached
+        .and_then(|score| score.combined)
+        .or(contact.combined_score)
+        .unwrap_or_else(|| compute_combined(contact));
+    let quadrant = cached
+        .and_then(|score| score.quadrant.clone())
+        .or_else(|| contact.quadrant.clone())
+        .unwrap_or_else(|| compute_quadrant(contact));
+
+    ScoreOut {
+        depth: depth.clamp(1, 5),
+        recency: recency.clamp(1, 10),
+        combined: combined.min(100),
+        quadrant,
+    }
+}
+
+fn score_source(contact: &Contact) -> &'static str {
+    let has_cached_score = contact.score.as_ref().is_some_and(|score| {
+        score.depth.is_some() || score.recency.is_some() || score.combined.is_some()
+    });
+    if has_cached_score
+        || contact.relationship_depth.is_some()
+        || contact.relationship_recency.is_some()
+        || contact.combined_score.is_some()
+        || contact.quadrant.is_some()
+    {
+        "cached"
+    } else {
+        "estimated_from_metadata"
+    }
+}
+
+fn compute_depth(contact: &Contact) -> u8 {
+    let total = contact.total_exchanges;
+    let back_and_forth = contact.back_and_forth_threads.unwrap_or(0);
+    let max_thread = contact.max_thread_depth.unwrap_or(0);
+    let rsvp_only = contact.rsvp_only_threads.unwrap_or(0);
+    let thread_count = contact.thread_count.unwrap_or(0);
+
+    if thread_count == 0 && total > 0 {
+        if total >= 20 {
+            return 4;
+        }
+        if total >= 8 {
+            return 3;
+        }
+        if total >= 3 {
+            return 2;
+        }
+        return 1;
+    }
+
+    if back_and_forth >= 3 && total >= 20 && max_thread >= 5 {
+        return 5;
+    }
+    if back_and_forth >= 1 && total >= 8 {
+        return 4;
+    }
+    if total >= 8 && max_thread >= 3 {
+        return 3;
+    }
+    if total >= 3 {
+        if rsvp_only > 0 && rsvp_only >= thread_count / 2 {
+            return 1;
+        }
+        return 2;
+    }
+    1
+}
+
+fn compute_recency(days: Option<i64>) -> u8 {
+    match days {
+        None => 1,
+        Some(days) if days <= 2 => 10,
+        Some(days) if days <= 7 => 9,
+        Some(days) if days <= 14 => 8,
+        Some(days) if days <= 21 => 7,
+        Some(days) if days <= 30 => 6,
+        Some(days) if days <= 60 => 5,
+        Some(days) if days <= 90 => 4,
+        Some(days) if days <= 120 => 3,
+        Some(days) if days <= 180 => 2,
+        Some(_) => 1,
+    }
+}
+
+fn compute_combined(contact: &Contact) -> u8 {
+    ((compute_strength_score(contact) + compute_momentum_score(contact)) / 2).min(100)
+}
+
+fn compute_strength_score(contact: &Contact) -> u8 {
+    let total = contact.total_exchanges as f64;
+    if total == 0.0 {
+        return 0;
+    }
+
+    let volume_score = ((total + 1.0).log2() * 4.0).min(25.0);
+    let depth_score = {
+        let back_and_forth = contact.back_and_forth_threads.unwrap_or(0) as f64;
+        let max_thread = contact.max_thread_depth.unwrap_or(0) as f64;
+        (back_and_forth * 5.0).min(20.0) + (max_thread * 2.0).min(10.0)
+    };
+    let initiation_score = if contact.total_exchanges > 0 {
+        let min_side = contact.sent_count.min(contact.received_count) as f64;
+        let max_side = contact.sent_count.max(contact.received_count).max(1) as f64;
+        5.0 + (min_side / max_side) * 20.0
+    } else {
+        5.0
+    };
+    let span_score = match (&contact.first_contact, &contact.last_contact) {
+        (Some(first), Some(last)) => {
+            let span_days = date_days(last)
+                .zip(date_days(first))
+                .map(|(l, f)| l - f)
+                .unwrap_or(0);
+            ((span_days.max(0) as f64 / 365.0) * 12.5).min(25.0)
+        }
+        _ => 0.0,
+    };
+
+    (volume_score + depth_score + initiation_score + span_score)
+        .round()
+        .clamp(0.0, 100.0) as u8
+}
+
+fn compute_momentum_score(contact: &Contact) -> u8 {
+    let Some(days) = days_since_contact(contact) else {
+        return 0;
+    };
+    let decay_score = (-0.02 * days.max(0) as f64).exp() * 80.0;
+    let trend_score = {
+        let last_depth = contact.last_thread_depth.unwrap_or(0);
+        let back_and_forth = contact.back_and_forth_threads.unwrap_or(0);
+        (last_depth * 2).min(10) + (back_and_forth * 2).min(10)
+    };
+    (decay_score + trend_score as f64).round().clamp(0.0, 100.0) as u8
+}
+
+fn compute_quadrant(contact: &Contact) -> String {
+    let mut is_strong = compute_strength_score(contact) >= 40;
+    let is_active = compute_momentum_score(contact) >= 30;
+    if !is_strong && contact.back_and_forth_threads.unwrap_or(0) >= 1 && contact.sent_count >= 2 {
+        is_strong = true;
+    }
+
+    match (is_strong, is_active) {
+        (true, true) => "nurture",
+        (true, false) => "re-engage",
+        (false, true) => "developing",
+        (false, false) => "deprioritize",
+    }
+    .to_string()
+}
+
+fn days_since_contact(contact: &Contact) -> Option<i64> {
+    let last = contact.last_contact.as_ref()?;
+    let last_days = date_days(last)?;
+    let now_days = current_unix_days();
+    Some(now_days - last_days)
+}
+
+fn date_days(value: &str) -> Option<i64> {
+    let date = value.get(0..10)?;
+    let mut parts = date.split('-');
+    let year = parts.next()?.parse::<i32>().ok()?;
+    let month = parts.next()?.parse::<u32>().ok()?;
+    let day = parts.next()?.parse::<u32>().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day))
+}
+
+fn current_unix_days() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        / 86_400
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = year - i32::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month as i32;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) as i64
+}
+
+fn contact_signals(contact: &Contact) -> Value {
+    json!({
+        "total_exchanges": contact.total_exchanges,
+        "sent": contact.sent_count,
+        "received": contact.received_count,
+        "thread_count": contact.thread_count,
+        "back_and_forth_threads": contact.back_and_forth_threads,
+        "max_thread_depth": contact.max_thread_depth,
+        "last_thread_depth": contact.last_thread_depth,
+        "rsvp_only_threads": contact.rsvp_only_threads,
+        "first_contact": contact.first_contact,
+        "last_contact": contact.last_contact,
+        "domain": contact.domain,
+        "subject_count": contact.subjects.len(),
+        "last_subject": contact.last_subject,
+        "last_canonical_sync": contact.last_canonical_sync,
+    })
+}
+
+fn company_matches(contact: &Contact, company_norm: &str) -> bool {
+    let domain = normalize_company(&contact.domain);
+    let company = contact
+        .company
+        .as_deref()
+        .map(normalize_company)
+        .unwrap_or_default();
+    let role = contact
+        .role
+        .as_deref()
+        .map(normalize_company)
+        .unwrap_or_default();
+
+    [domain.as_str(), company.as_str(), role.as_str()]
+        .iter()
+        .any(|candidate| {
+            !candidate.is_empty()
+                && (candidate == &company_norm
+                    || candidate.contains(company_norm)
+                    || company_norm.contains(*candidate))
+        })
+}
+
+fn normalize_company(value: &str) -> String {
+    normalize(value)
+        .trim_end_matches(" inc")
+        .trim_end_matches(" llc")
+        .trim_end_matches(" corp")
+        .trim_end_matches(" co")
+        .trim_end_matches(" ltd")
+        .trim_end_matches(" com")
+        .trim()
+        .to_string()
+}
+
+fn normalize(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn round_confidence(confidence: f64) -> f64 {
+    (confidence * 100.0).round() / 100.0
+}
+
+fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        return path
+            .exists()
+            .then(|| path.to_path_buf())
+            .ok_or_else(|| format!("cache path does not exist: {}", path.display()));
+    }
+
+    if let Ok(path) = env::var("PEOPLEGRAPH_CACHE") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    let mut dir =
+        env::current_dir().map_err(|err| format!("cannot read current directory: {err}"))?;
+    loop {
+        let candidate = dir.join(".obsidian/plugins/gmail-crm/contact-index.json");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        let local = dir.join("contact-index.json");
+        if local.exists() {
+            return Ok(local);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    Err("no contact-index.json found; pass --cache <path> or set PEOPLEGRAPH_CACHE".to_string())
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::FindPerson(_) => "find-person",
+        Commands::Score(_) => "score",
+        Commands::WhoKnows(_) => "who-knows",
+        Commands::GetNeighbors(_) => "get-neighbors",
+        Commands::GetEdges(_) => "get-edges",
+        Commands::ProposeMerge(_) => "propose-merge",
+        Commands::Describe => "describe",
+        Commands::Version => "version",
+    }
+}
+
+fn describe_payload() -> Value {
+    json!({
+        "name": "peoplegraph",
+        "version": COMMAND_VERSION,
+        "summary": "Read-only graph primitive CLI over Obsidian Gmail CRM contact-index.json",
+        "global_flags": [
+            "--format json|jsonl",
+            "--cache <path>",
+            "--quiet"
+        ],
+        "commands": [
+            {
+                "name": "find-person",
+                "usage": "peoplegraph find-person <query>",
+                "status": "implemented"
+            },
+            {
+                "name": "score",
+                "usage": "peoplegraph score <email>",
+                "status": "implemented"
+            },
+            {
+                "name": "who-knows",
+                "usage": "peoplegraph who-knows --company <name>",
+                "status": "implemented"
+            },
+            {
+                "name": "get-neighbors",
+                "usage": "peoplegraph get-neighbors <email>",
+                "status": "implemented"
+            },
+            {
+                "name": "get-edges",
+                "usage": "peoplegraph get-edges --from <email> --to <email>",
+                "status": "implemented"
+            },
+            {
+                "name": "propose-merge",
+                "usage": "peoplegraph propose-merge <a> <b>",
+                "status": "implemented_local_queue"
+            },
+            {
+                "name": "describe",
+                "usage": "peoplegraph describe",
+                "status": "implemented"
+            },
+            {
+                "name": "version",
+                "usage": "peoplegraph version",
+                "status": "implemented"
+            }
+        ],
+        "output_contract": {
+            "ok": "boolean",
+            "command": "string",
+            "data": "command-specific object on success",
+            "stats": "matched/returned/ms metadata",
+            "error": "kind/message on failure"
+        }
+    })
+}
+
+fn ok(command: &'static str, data: Value, stats: Value) -> Response {
+    Response {
+        ok: true,
+        command,
+        data: Some(data),
+        stats: Some(stats),
+        error: None,
+    }
+}
+
+fn fail(command: &'static str, kind: &'static str, message: String, start: Instant) -> Response {
+    Response {
+        ok: false,
+        command,
+        data: None,
+        stats: Some(json!({ "ms": elapsed_ms(start) })),
+        error: Some(ApiError { kind, message }),
+    }
+}
+
+fn elapsed_ms(start: Instant) -> u128 {
+    start.elapsed().as_millis()
+}
+
+fn print_response(response: &Response, format: &OutputFormat) -> Result<(), serde_json::Error> {
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(response)?);
+        }
+        OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string(response)?);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_iso_date_to_unix_days() {
+        assert_eq!(date_days("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(date_days("1970-01-02"), Some(1));
+    }
+
+    #[test]
+    fn exact_alias_match_is_confident() {
+        let row = ContactRow {
+            email: "kaya@example.com".to_string(),
+            contact: Contact {
+                name: "Kaya Jones".to_string(),
+                email: "kaya@example.com".to_string(),
+                aliases: vec!["kayajones901@gmail.com".to_string()],
+                ..empty_contact()
+            },
+        };
+
+        assert_eq!(
+            match_confidence(
+                &row,
+                &normalize("kayajones901@gmail.com"),
+                "kayajones901@gmail.com"
+            ),
+            1.0
+        );
+    }
+
+    #[test]
+    fn company_match_uses_domain() {
+        let contact = Contact {
+            domain: "disney.com".to_string(),
+            ..empty_contact()
+        };
+        assert!(company_matches(&contact, &normalize_company("Disney")));
+    }
+
+    fn empty_contact() -> Contact {
+        Contact {
+            name: String::new(),
+            email: String::new(),
+            last_contact: None,
+            first_contact: None,
+            sent_count: 0,
+            received_count: 0,
+            total_exchanges: 0,
+            subjects: vec![],
+            last_subject: String::new(),
+            domain: String::new(),
+            thread_count: None,
+            max_thread_depth: None,
+            back_and_forth_threads: None,
+            rsvp_only_threads: None,
+            last_thread_depth: None,
+            canonical_id: None,
+            aliases: vec![],
+            last_canonical_sync: None,
+            role: None,
+            company: None,
+            score: None,
+            relationship_depth: None,
+            relationship_recency: None,
+            combined_score: None,
+            quadrant: None,
+        }
+    }
+}

@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeopleGraph CLI PRD</title>
+  <style>
+    :root {
+      --bg: #f7f8f5;
+      --paper: #ffffff;
+      --ink: #18201d;
+      --muted: #5f6b65;
+      --line: #d9ded8;
+      --soft: #eef2ec;
+      --accent: #0f6b55;
+      --code: #10231d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 42px 24px 64px;
+    }
+
+    header,
+    section {
+      margin-bottom: 22px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    header {
+      padding: 36px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0 0 12px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: clamp(34px, 6vw, 58px);
+    }
+
+    h2 {
+      font-size: 25px;
+    }
+
+    h3 {
+      margin-top: 24px;
+      font-size: 18px;
+    }
+
+    p {
+      margin: 0 0 14px;
+      color: var(--muted);
+    }
+
+    ul,
+    ol {
+      margin: 0 0 14px 22px;
+      padding: 0;
+      color: var(--muted);
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    code {
+      padding: 2px 5px;
+      border-radius: 5px;
+      background: var(--soft);
+      color: #24322d;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: 8px;
+      background: var(--code);
+      color: #e9f5ef;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .pill {
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    th {
+      background: var(--soft);
+      color: var(--ink);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PeopleGraph CLI PRD</h1>
+      <p>A single-binary Rust CLI that exposes the Obsidian Gmail CRM plugin's contact data to agents through stable JSON graph primitives.</p>
+      <div class="meta" aria-label="Document metadata">
+        <span class="pill">Status: Draft v0.1</span>
+        <span class="pill">Owner: Kaya</span>
+        <span class="pill">Updated: 2026-05-11</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>Summary</h2>
+      <p><code>peoplegraph</code> reads the plugin's local <code>contact-index.json</code> cache directly. It does not need the Obsidian runtime, network access, or API keys. Botwick is the primary consumer, but the command surface is general enough for other agents.</p>
+      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, and <code>propose-merge</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, and relationship edges into <code>contact-index.json</code> during staleness updates.</p>
+    </section>
+
+    <section>
+      <h2>Problem</h2>
+      <p>Botwick can read the Obsidian vault, but markdown is a brittle query surface for questions like "who do we know at Disney?" The plugin already computes contacts, scores, dedup signals, and relationship edges. PeopleGraph exposes that structured data in an agent-shaped format.</p>
+    </section>
+
+    <section>
+      <h2>Users And Consumers</h2>
+      <ul>
+        <li><strong>Botwick</strong>: primary OpenClaw agent on the Mac mini.</li>
+        <li><strong>Jordan's Hermes agent</strong>: secondary consumer.</li>
+        <li><strong>Future agents</strong>: any system that needs scored relationship data.</li>
+      </ul>
+      <p>Humans continue using the Obsidian sidebar, Base views, and quadrant views. PeopleGraph is JSON on stdout, with no prompts or color output.</p>
+    </section>
+
+    <section>
+      <h2>Goals</h2>
+      <ol>
+        <li>Implement graph primitives as standalone CLI commands.</li>
+        <li>Emit stable JSON or JSONL for agent parsing.</li>
+        <li>Ship as a single release binary with sub-100ms cold-start target.</li>
+        <li>Read from <code>contact-index.json</code> without mutating plugin contact data.</li>
+        <li>Support <code>who-knows --company X</code> as a compound query.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Non-Goals</h2>
+      <ul>
+        <li>Writing directly to Jon's shared graph endpoint.</li>
+        <li>Replacing the plugin's TypeScript scoring as source of truth.</li>
+        <li>Modifying vault notes.</li>
+        <li>Conversation-content analysis.</li>
+        <li>Replacing human-facing Obsidian UI.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Architecture</h2>
+      <pre><code>Obsidian plugin (TS)
+  Gmail sync -> scoring -> quadrant
+  Writes contact-index.json and message-cache.json
+        |
+        v
+peoplegraph (Rust)
+  Loads contact-index.json on each invocation
+  Emits JSON
+        |
+        v
+Agent consumer, primarily Botwick</code></pre>
+      <p>The Rust binary depends on the JSON shape in <code>src/types.ts</code>. <code>ContactIndex.schemaVersion</code> gives forward-compatibility for future schema changes.</p>
+    </section>
+
+    <section>
+      <h2>CLI Surface</h2>
+      <pre><code>peoplegraph find-person &lt;query&gt;
+peoplegraph get-neighbors &lt;email&gt;
+peoplegraph get-edges --from &lt;a&gt; --to &lt;b&gt;
+peoplegraph score &lt;email&gt;
+peoplegraph who-knows --company &lt;name&gt;
+peoplegraph propose-merge &lt;a&gt; &lt;b&gt;
+peoplegraph describe
+peoplegraph version</code></pre>
+      <p>Global flags: <code>--format json|jsonl</code>, <code>--cache &lt;path&gt;</code>, and <code>--quiet</code>.</p>
+    </section>
+
+    <section>
+      <h2>Output Contract</h2>
+      <pre><code>{
+  "ok": true,
+  "command": "find-person",
+  "data": { "...": "command-specific" },
+  "stats": { "matched": 3, "ms": 12 }
+}</code></pre>
+      <pre><code>{
+  "ok": false,
+  "command": "score",
+  "error": { "kind": "not_found", "message": "..." }
+}</code></pre>
+      <h3>find-person</h3>
+      <pre><code>{
+  "matches": [
+    {
+      "email": "kaya@example.com",
+      "name": "Kaya Jones",
+      "aliases": ["kayajones901@gmail.com"],
+      "canonical_id": null,
+      "score": { "depth": 4, "recency": 9, "combined": 78, "quadrant": "nurture" },
+      "match_confidence": 0.91
+    }
+  ]
+}</code></pre>
+      <h3>who-knows</h3>
+      <pre><code>{
+  "company": "Disney",
+  "people": [
+    { "email": "...", "name": "...", "role": "VP Eng", "score": { "...": "..." } }
+  ],
+  "ranked_by": "combined_score_desc"
+}</code></pre>
+    </section>
+
+    <section>
+      <h2>Identity And Dedup</h2>
+      <ul>
+        <li>Primary key is lowercased email.</li>
+        <li><code>aliases</code> are deterministic match keys.</li>
+        <li>Name matching falls back to Levenshtein-style similarity through <code>strsim</code>.</li>
+        <li><code>propose-merge</code> writes local pending candidates to <code>merge-queue.json</code>.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Distribution</h2>
+      <ul>
+        <li>Build with <code>npm run build:peoplegraph</code>.</li>
+        <li>Package with <code>npm run package:peoplegraph</code>.</li>
+        <li>Packaged binary lives at <code>bin/peoplegraph</code>.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Open Questions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Question</th>
+              <th>Blocker For</th>
+              <th>Resolution Path</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Should <code>score</code> return all score fields or a curated subset?</td>
+              <td>Output contract</td>
+              <td>Pick three: <code>combined</code>, <code>quadrant</code>, <code>recency</code>.</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Threshold for fuzzy match.</td>
+              <td><code>find-person</code> quality</td>
+              <td>Tune against the existing 19k vault.</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Does <code>propose-merge</code> queue locally or call Jon's review UI?</td>
+              <td>Merge UX</td>
+              <td>Local queue implemented for V1.</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Does the plugin write <code>schemaVersion</code>?</td>
+              <td>Forward compatibility</td>
+              <td>Implemented.</td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>Re-read JSON on every call or watch file?</td>
+              <td>Performance</td>
+              <td>Re-read every call; revisit if cold start exceeds 100ms.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Success Criteria</h2>
+      <p>The Disney query runs end-to-end through Botwick to <code>peoplegraph who-knows --company Disney</code>, returning ranked JSON in under a second without loading Obsidian or vault markdown.</p>
+    </section>
+  </main>
+</body>
+</html>

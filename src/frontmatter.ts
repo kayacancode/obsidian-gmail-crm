@@ -30,6 +30,9 @@ export interface CrmFrontmatter {
 	combined_score?: number;
 	quadrant?: string;
 	harper_enriched?: string;
+	canonical_id?: string;
+	aliases?: string[];
+	last_canonical_sync?: string;
 }
 
 export class FrontmatterManager {
@@ -216,6 +219,22 @@ export class FrontmatterManager {
 		}
 
 		const updated = this.mergeFrontmatter(content, crm);
+		if (updated !== content) {
+			await this.vault.modify(file, updated);
+		}
+	}
+
+	async setCanonicalLink(
+		file: TFile,
+		link: { canonicalId: string; aliases?: string[]; syncedAt?: string }
+	): Promise<void> {
+		const content = await this.vault.read(file);
+		const fields: CrmFrontmatter = {
+			canonical_id: link.canonicalId,
+			last_canonical_sync: link.syncedAt ?? new Date().toISOString(),
+		};
+		if (link.aliases && link.aliases.length > 0) fields.aliases = link.aliases;
+		const updated = this.mergeFrontmatter(content, fields);
 		if (updated !== content) {
 			await this.vault.modify(file, updated);
 		}
