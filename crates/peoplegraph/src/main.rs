@@ -447,11 +447,14 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
         .take(limit)
         .map(|row| {
             let score = infer_score(&row.contact);
+            let company = display_company(&row.contact);
+            let company_source = company_source(&row.contact, company.as_deref());
             json!({
                 "email": &row.email,
                 "name": &row.contact.name,
                 "role": &row.contact.role,
-                "company": &row.contact.company,
+                "company": company,
+                "company_source": company_source,
                 "domain": &row.contact.domain,
                 "canonical_id": &row.contact.canonical_id,
                 "score": score,
@@ -887,6 +890,75 @@ fn score_source(contact: &Contact) -> &'static str {
     }
 }
 
+fn display_company(contact: &Contact) -> Option<String> {
+    contact
+        .company
+        .as_deref()
+        .map(str::trim)
+        .filter(|company| !company.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| infer_company_from_domain(&contact.domain))
+}
+
+fn company_source(contact: &Contact, company: Option<&str>) -> &'static str {
+    if contact
+        .company
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|company| !company.is_empty())
+    {
+        "cache"
+    } else if company.is_some() {
+        "domain"
+    } else {
+        "none"
+    }
+}
+
+fn infer_company_from_domain(domain: &str) -> Option<String> {
+    let domain = domain.trim().to_ascii_lowercase();
+    if domain.is_empty() || is_generic_email_domain(&domain) {
+        return None;
+    }
+
+    let raw = domain.split('.').next()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    Some(
+        raw.split(['-', '_'])
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => {
+                        format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
+                    }
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn is_generic_email_domain(domain: &str) -> bool {
+    matches!(
+        domain,
+        "gmail.com"
+            | "yahoo.com"
+            | "hotmail.com"
+            | "outlook.com"
+            | "icloud.com"
+            | "aol.com"
+            | "protonmail.com"
+            | "me.com"
+            | "live.com"
+            | "mail.com"
+    )
+}
+
 fn compute_depth(contact: &Contact) -> u8 {
     let total = contact.total_exchanges;
     let back_and_forth = contact.back_and_forth_threads.unwrap_or(0);
@@ -1146,7 +1218,40 @@ fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
         }
     }
 
+    if let Some(path) = resolve_obsidian_cache_path() {
+        return Ok(path);
+    }
+
     Err("no contact-index.json found; pass --cache <path> or set PEOPLEGRAPH_CACHE".to_string())
+}
+
+fn resolve_obsidian_cache_path() -> Option<PathBuf> {
+    let config_path = obsidian_config_path()?;
+    let content = fs::read_to_string(config_path).ok()?;
+    let config: Value = serde_json::from_str(&content).ok()?;
+    let vaults = config.get("vaults")?.as_object()?;
+    let mut candidates = Vec::new();
+
+    for vault in vaults.values() {
+        if let Some(vault_path) = vault.get("path").and_then(Value::as_str) {
+            let cache_path =
+                Path::new(vault_path).join(".obsidian/plugins/gmail-crm/contact-index.json");
+            if cache_path.exists() {
+                let is_open = vault.get("open").and_then(Value::as_bool).unwrap_or(false);
+                let ts = vault.get("ts").and_then(Value::as_i64).unwrap_or(0);
+                candidates.push((is_open, ts, cache_path));
+            }
+        }
+    }
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    candidates.into_iter().map(|(_, _, path)| path).next()
+}
+
+fn obsidian_config_path() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Library/Application Support/obsidian/obsidian.json"))
 }
 
 fn command_name(command: &Commands) -> &'static str {
@@ -1299,6 +1404,26 @@ mod tests {
             ..empty_contact()
         };
         assert!(company_matches(&contact, &normalize_company("Disney")));
+    }
+
+    #[test]
+    fn display_company_falls_back_to_domain() {
+        let contact = Contact {
+            domain: "betaworks.com".to_string(),
+            ..empty_contact()
+        };
+
+        assert_eq!(display_company(&contact), Some("Betaworks".to_string()));
+    }
+
+    #[test]
+    fn display_company_ignores_generic_email_domain() {
+        let contact = Contact {
+            domain: "gmail.com".to_string(),
+            ..empty_contact()
+        };
+
+        assert_eq!(display_company(&contact), None);
     }
 
     fn empty_contact() -> Contact {

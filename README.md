@@ -59,7 +59,7 @@ A privacy-first CRM that pulls Gmail metadata into your Obsidian vault. No email
 6. Copy the **Client ID** and **Client Secret**
 7. Under **Authorized redirect URIs**, add:
    ```
-   http://localhost:42813/callback
+   http://127.0.0.1:42813/callback
    ```
 
 ### 4. Configure the Plugin

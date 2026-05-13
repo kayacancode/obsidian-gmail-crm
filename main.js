@@ -63,7 +63,7 @@ var GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 var SCOPES = "https://www.googleapis.com/auth/gmail.metadata";
-var REDIRECT_URI = "http://localhost:42813/callback";
+var REDIRECT_URI = "http://127.0.0.1:42813/callback";
 var RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
 var AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
 var AUTOMATED_DOMAINS = /* @__PURE__ */ new Set([
@@ -705,11 +705,13 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
 // src/oauth-server.ts
 var import_http = __toESM(require("http"));
 var PORT = 42813;
+var HOST = "127.0.0.1";
 function startOAuthCallbackServer() {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const server = import_http.default.createServer((req, res) => {
       var _a;
-      const url = new URL((_a = req.url) != null ? _a : "/", `http://localhost:${PORT}`);
+      const url = new URL((_a = req.url) != null ? _a : "/", `http://${HOST}:${PORT}`);
       if (url.pathname === "/callback") {
         const code = url.searchParams.get("code");
         const error = url.searchParams.get("error");
@@ -718,12 +720,14 @@ function startOAuthCallbackServer() {
           res.end(
             "<html><body><h2>Gmail CRM connected!</h2><p>You can close this tab and return to Obsidian.</p></body></html>"
           );
+          settled = true;
           server.close();
           resolve(code);
         } else {
           res.end(
             `<html><body><h2>Authorization failed</h2><p>${error != null ? error : "Unknown error"}</p></body></html>`
           );
+          settled = true;
           server.close();
           reject(new Error(error != null ? error : "OAuth callback error"));
         }
@@ -732,10 +736,19 @@ function startOAuthCallbackServer() {
         res.end();
       }
     });
-    server.listen(PORT, "127.0.0.1");
+    server.once("error", (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+    server.listen(PORT, HOST);
     setTimeout(() => {
-      server.close();
-      reject(new Error("OAuth callback timed out"));
+      if (!settled) {
+        settled = true;
+        server.close();
+        reject(new Error("OAuth callback timed out"));
+      }
     }, 12e4);
   });
 }

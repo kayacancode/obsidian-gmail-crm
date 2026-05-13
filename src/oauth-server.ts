@@ -1,11 +1,13 @@
 import http from "http";
 
 const PORT = 42813;
+const HOST = "127.0.0.1";
 
 export function startOAuthCallbackServer(): Promise<string> {
 	return new Promise((resolve, reject) => {
+		let settled = false;
 		const server = http.createServer((req, res) => {
-			const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+			const url = new URL(req.url ?? "/", `http://${HOST}:${PORT}`);
 
 			if (url.pathname === "/callback") {
 				const code = url.searchParams.get("code");
@@ -16,12 +18,14 @@ export function startOAuthCallbackServer(): Promise<string> {
 					res.end(
 						"<html><body><h2>Gmail CRM connected!</h2><p>You can close this tab and return to Obsidian.</p></body></html>"
 					);
+					settled = true;
 					server.close();
 					resolve(code);
 				} else {
 					res.end(
 						`<html><body><h2>Authorization failed</h2><p>${error ?? "Unknown error"}</p></body></html>`
 					);
+					settled = true;
 					server.close();
 					reject(new Error(error ?? "OAuth callback error"));
 				}
@@ -31,12 +35,22 @@ export function startOAuthCallbackServer(): Promise<string> {
 			}
 		});
 
-		server.listen(PORT, "127.0.0.1");
+		server.once("error", (error) => {
+			if (!settled) {
+				settled = true;
+				reject(error);
+			}
+		});
+
+		server.listen(PORT, HOST);
 
 		// Timeout after 2 minutes
 		setTimeout(() => {
-			server.close();
-			reject(new Error("OAuth callback timed out"));
+			if (!settled) {
+				settled = true;
+				server.close();
+				reject(new Error("OAuth callback timed out"));
+			}
 		}, 120_000);
 	});
 }
