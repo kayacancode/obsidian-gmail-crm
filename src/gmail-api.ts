@@ -564,7 +564,17 @@ export class GmailApi {
 	private parseEmailAddress(
 		raw: string
 	): { name: string; email: string } | null {
-		const match = raw.match(/^(?:"?([^"<]*)"?\s*)?<?([^>]+@[^>]+)>?$/);
+		const trimmed = raw.trim();
+		const bareEmail = trimmed.match(/^([^@\s<>"]+@[^@\s<>"]+)$/);
+		if (bareEmail) {
+			return {
+				name: "",
+				email: bareEmail[1].trim(),
+			};
+		}
+
+		const angleMatch = trimmed.match(/^(?:"?([^"<]*)"?\s*)<([^<>\s]+@[^<>\s]+)>$/);
+		const match = angleMatch ?? trimmed.match(/^"?([^"<]*)"?\s+([^@\s<>"]+@[^@\s<>"]+)$/);
 		if (!match) return null;
 		return {
 			name: (match[1] ?? "").trim(),
