@@ -47,6 +47,8 @@ enum Commands {
     GetNeighbors(EmailArg),
     /// Return the edge between two emails once edge data is present in the cache.
     GetEdges(GetEdgesArgs),
+    /// Suggest duplicate/contact-fragment rows to review for canonical identity cleanup.
+    SuggestDuplicates(SuggestDuplicatesArgs),
     /// Record a merge proposal once the local merge queue is implemented.
     ProposeMerge(ProposeMergeArgs),
     /// Describe the command surface for agent introspection.
@@ -84,6 +86,15 @@ struct GetEdgesArgs {
 
     #[arg(long)]
     to: String,
+}
+
+#[derive(Args, Debug)]
+struct SuggestDuplicatesArgs {
+    #[arg(long, default_value_t = 25)]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0.82)]
+    min_confidence: f64,
 }
 
 #[derive(Args, Debug)]
@@ -244,6 +255,14 @@ struct ContactRow {
     contact: Contact,
 }
 
+#[derive(Clone, Debug)]
+struct DuplicateSuggestion {
+    confidence: f64,
+    primary: ContactRow,
+    duplicate: ContactRow,
+    reasons: Vec<String>,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let start = Instant::now();
@@ -291,6 +310,9 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         }),
         Commands::GetEdges(args) => with_index(cli, command, start, |index| {
             get_edges(index, &args.from, &args.to, start)
+        }),
+        Commands::SuggestDuplicates(args) => with_index(cli, command, start, |index| {
+            suggest_duplicates(index, args.limit, args.min_confidence, start)
         }),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
     }
@@ -578,6 +600,96 @@ fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Resp
     )
 }
 
+fn suggest_duplicates(
+    index: &ContactIndex,
+    limit: usize,
+    min_confidence: f64,
+    start: Instant,
+) -> Response {
+    let min_confidence = min_confidence.clamp(0.0, 1.0);
+    let contact_rows = rows(index);
+    let mut suggestions = Vec::new();
+
+    for (left_index, left) in contact_rows.iter().enumerate() {
+        for right in contact_rows.iter().skip(left_index + 1) {
+            if already_canonicalized_together(left, right) {
+                continue;
+            }
+            if skip_default_duplicate_candidate(left, right) {
+                continue;
+            }
+            if let Some((confidence, reasons)) = duplicate_confidence(left, right)
+                && confidence >= min_confidence
+            {
+                let (primary, duplicate) = primary_duplicate(left, right);
+                suggestions.push(DuplicateSuggestion {
+                    confidence,
+                    primary: primary.clone(),
+                    duplicate: duplicate.clone(),
+                    reasons,
+                });
+            }
+        }
+    }
+
+    suggestions.sort_by(|a, b| {
+        b.confidence
+            .total_cmp(&a.confidence)
+            .then_with(|| {
+                b.primary
+                    .contact
+                    .total_exchanges
+                    .cmp(&a.primary.contact.total_exchanges)
+            })
+            .then_with(|| a.primary.contact.name.cmp(&b.primary.contact.name))
+    });
+
+    let matched = suggestions.len();
+    let limit = limit.max(1);
+    let returned_suggestions: Vec<Value> = suggestions
+        .into_iter()
+        .take(limit)
+        .map(|suggestion| {
+            json!({
+                "confidence": round_confidence(suggestion.confidence),
+                "reasons": suggestion.reasons,
+                "primary": contact_brief(&suggestion.primary),
+                "duplicate": contact_brief(&suggestion.duplicate),
+                "next_command": format!(
+                    "peoplegraph propose-merge {} {}",
+                    suggestion.primary.email,
+                    suggestion.duplicate.email
+                ),
+                "next_action": {
+                    "command": "propose-merge",
+                    "args": [
+                        suggestion.primary.email,
+                        suggestion.duplicate.email
+                    ]
+                },
+            })
+        })
+        .collect();
+    let returned = returned_suggestions.len();
+
+    ok(
+        "suggest-duplicates",
+        json!({
+            "suggestions": returned_suggestions,
+            "min_confidence": round_confidence(min_confidence),
+        }),
+        json!({
+            "matched": matched,
+            "returned": returned,
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
 fn propose_merge(
     cli: &Cli,
     command: &'static str,
@@ -810,6 +922,239 @@ fn find_by_email_or_alias(index: &ContactIndex, email: &str) -> Option<ContactRo
                 .iter()
                 .any(|alias| alias.trim().eq_ignore_ascii_case(email))
     })
+}
+
+fn already_canonicalized_together(left: &ContactRow, right: &ContactRow) -> bool {
+    let left_id = left.contact.canonical_id.as_deref().map(str::trim);
+    let right_id = right.contact.canonical_id.as_deref().map(str::trim);
+    matches!((left_id, right_id), (Some(a), Some(b)) if !a.is_empty() && a == b)
+}
+
+fn duplicate_confidence(left: &ContactRow, right: &ContactRow) -> Option<(f64, Vec<String>)> {
+    if left.email == right.email {
+        return None;
+    }
+
+    let mut confidence: f64 = 0.0;
+    let mut reasons = Vec::new();
+    let same_domain = same_non_generic_domain(left, right);
+    let left_name = normalize(&left.contact.name);
+    let right_name = normalize(&right.contact.name);
+    let left_compact = compact_normalize(&left.contact.name);
+    let right_compact = compact_normalize(&right.contact.name);
+
+    if alias_overlap(left, right) {
+        confidence = confidence.max(0.99);
+        reasons.push("shared_email_or_alias".to_string());
+    }
+
+    if left_name.len() >= 4 && left_name == right_name {
+        confidence = confidence.max(if same_domain { 0.96 } else { 0.9 });
+        reasons.push(if same_domain {
+            "same_name_same_domain"
+        } else {
+            "same_name"
+        }
+        .to_string());
+    }
+
+    if left_compact.len() >= 5 && right_compact.len() >= 5 {
+        let name_similarity = jaro_winkler(&left_compact, &right_compact);
+        if same_domain && name_similarity >= 0.91 {
+            confidence = confidence.max(name_similarity.min(0.95));
+            reasons.push("similar_name_same_domain".to_string());
+        } else if name_similarity >= 0.95 {
+            confidence = confidence.max(0.88);
+            reasons.push("very_similar_name".to_string());
+        }
+
+        if same_domain
+            && (left_compact.starts_with(&right_compact)
+                || right_compact.starts_with(&left_compact))
+        {
+            confidence = confidence.max(0.94);
+            reasons.push("name_prefix_same_domain".to_string());
+        }
+    }
+
+    let left_local = email_local(&left.email);
+    let right_local = email_local(&right.email);
+    if same_domain
+        && ((left_compact.len() >= 5 && right_local.contains(&left_compact))
+            || (right_compact.len() >= 5 && left_local.contains(&right_compact)))
+    {
+        confidence = confidence.max(0.9);
+        reasons.push("name_matches_other_email_local_part".to_string());
+    }
+
+    if same_domain
+        && (is_fragment_row(left) || is_fragment_row(right))
+        && weak_name_prefix_match(&left_compact, &right_compact)
+    {
+        confidence = confidence.max(0.78);
+        reasons.push("short_fragment_same_domain".to_string());
+    }
+
+    if confidence > 0.0 {
+        reasons.sort();
+        reasons.dedup();
+        Some((confidence, reasons))
+    } else {
+        None
+    }
+}
+
+fn alias_overlap(left: &ContactRow, right: &ContactRow) -> bool {
+    let right_email = right.email.as_str();
+    let left_email = left.email.as_str();
+    left.contact
+        .aliases
+        .iter()
+        .any(|alias| alias.trim().eq_ignore_ascii_case(right_email))
+        || right
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| alias.trim().eq_ignore_ascii_case(left_email))
+}
+
+fn skip_default_duplicate_candidate(left: &ContactRow, right: &ContactRow) -> bool {
+    is_service_or_org_row(left) && is_service_or_org_row(right)
+}
+
+fn is_service_or_org_row(row: &ContactRow) -> bool {
+    let local = email_local(&row.email);
+    if local.starts_with("reply+")
+        || local.starts_with("no-reply")
+        || local.starts_with("noreply")
+        || local.contains("notification")
+    {
+        return true;
+    }
+
+    let compact_name = compact_normalize(&row.contact.name);
+    if compact_name.starts_with("norepl") || compact_name.starts_with("noreply") {
+        return true;
+    }
+
+    let local_words = normalize(&local);
+    let service_words = [
+        "apply",
+        "billing",
+        "discover",
+        "events",
+        "express",
+        "hello",
+        "hi",
+        "hey",
+        "invoice",
+        "invite",
+        "mail",
+        "news",
+        "statements",
+        "updates",
+        "workatastartup",
+    ];
+    if service_words
+        .iter()
+        .any(|word| local_words.split_whitespace().any(|part| part == *word))
+    {
+        return true;
+    }
+
+    !looks_like_person_name(&row.contact.name)
+}
+
+fn looks_like_person_name(name: &str) -> bool {
+    let normalized = normalize(name);
+    let parts: Vec<&str> = normalized.split_whitespace().collect();
+    if parts.len() < 2 || parts.len() > 4 {
+        return false;
+    }
+
+    let org_words = [
+        "ai",
+        "airbnb",
+        "anthropic",
+        "combinator",
+        "events",
+        "github",
+        "granola",
+        "incorporated",
+        "labs",
+        "lovable",
+        "newsletter",
+        "region",
+        "startup",
+        "tinkerers",
+        "updates",
+    ];
+    !parts.iter().any(|part| org_words.contains(part))
+}
+
+fn same_non_generic_domain(left: &ContactRow, right: &ContactRow) -> bool {
+    let left_domain = left.contact.domain.trim().to_ascii_lowercase();
+    let right_domain = right.contact.domain.trim().to_ascii_lowercase();
+    !left_domain.is_empty()
+        && left_domain == right_domain
+        && !is_generic_email_domain(&left_domain)
+}
+
+fn weak_name_prefix_match(left: &str, right: &str) -> bool {
+    let shorter_len = left.len().min(right.len());
+    shorter_len >= 3 && (left.starts_with(right) || right.starts_with(left))
+}
+
+fn is_fragment_row(row: &ContactRow) -> bool {
+    let local = email_local(&row.email);
+    local.len() == 1 || compact_normalize(&row.contact.name).len() <= 3
+}
+
+fn primary_duplicate<'a>(
+    left: &'a ContactRow,
+    right: &'a ContactRow,
+) -> (&'a ContactRow, &'a ContactRow) {
+    let left_rank = duplicate_primary_rank(left);
+    let right_rank = duplicate_primary_rank(right);
+    if right_rank > left_rank {
+        (right, left)
+    } else {
+        (left, right)
+    }
+}
+
+fn duplicate_primary_rank(row: &ContactRow) -> (u8, u32, usize, usize) {
+    (
+        u8::from(!is_fragment_row(row)),
+        row.contact.total_exchanges,
+        compact_normalize(&row.contact.name).len(),
+        email_local(&row.email).len(),
+    )
+}
+
+fn contact_brief(row: &ContactRow) -> Value {
+    json!({
+        "email": &row.email,
+        "name": &row.contact.name,
+        "domain": &row.contact.domain,
+        "company": display_company(&row.contact),
+        "canonical_id": &row.contact.canonical_id,
+        "score": infer_score(&row.contact),
+        "score_source": score_source(&row.contact),
+        "last_contact": &row.contact.last_contact,
+        "total_exchanges": row.contact.total_exchanges,
+    })
+}
+
+fn email_local(email: &str) -> String {
+    email.split('@').next().unwrap_or_default().to_ascii_lowercase()
+}
+
+fn compact_normalize(value: &str) -> String {
+    normalize(value)
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
 }
 
 fn match_confidence(row: &ContactRow, query_norm: &str, query_email: &str) -> f64 {
@@ -1261,6 +1606,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::WhoKnows(_) => "who-knows",
         Commands::GetNeighbors(_) => "get-neighbors",
         Commands::GetEdges(_) => "get-edges",
+        Commands::SuggestDuplicates(_) => "suggest-duplicates",
         Commands::ProposeMerge(_) => "propose-merge",
         Commands::Describe => "describe",
         Commands::Version => "version",
@@ -1301,6 +1647,11 @@ fn describe_payload() -> Value {
             {
                 "name": "get-edges",
                 "usage": "peoplegraph get-edges --from <email> --to <email>",
+                "status": "implemented"
+            },
+            {
+                "name": "suggest-duplicates",
+                "usage": "peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82",
                 "status": "implemented"
             },
             {
@@ -1424,6 +1775,88 @@ mod tests {
         };
 
         assert_eq!(display_company(&contact), None);
+    }
+
+    #[test]
+    fn duplicate_confidence_detects_contact_fragment() {
+        let primary = ContactRow {
+            email: "fundaccounting@betaworks.com".to_string(),
+            contact: Contact {
+                name: "Fund Accounting".to_string(),
+                email: "fundaccounting@betaworks.com".to_string(),
+                domain: "betaworks.com".to_string(),
+                total_exchanges: 3,
+                ..empty_contact()
+            },
+        };
+        let fragment = ContactRow {
+            email: "g@betaworks.com".to_string(),
+            contact: Contact {
+                name: "fundaccountin".to_string(),
+                email: "g@betaworks.com".to_string(),
+                domain: "betaworks.com".to_string(),
+                total_exchanges: 1,
+                ..empty_contact()
+            },
+        };
+
+        let (confidence, reasons) = duplicate_confidence(&primary, &fragment).unwrap();
+        assert!(confidence >= 0.82);
+        assert!(reasons.contains(&"similar_name_same_domain".to_string()));
+    }
+
+    #[test]
+    fn duplicate_primary_prefers_non_fragment() {
+        let primary = ContactRow {
+            email: "john@betaworks.com".to_string(),
+            contact: Contact {
+                name: "John Borthwick".to_string(),
+                email: "john@betaworks.com".to_string(),
+                domain: "betaworks.com".to_string(),
+                total_exchanges: 471,
+                ..empty_contact()
+            },
+        };
+        let fragment = ContactRow {
+            email: "n@betaworks.com".to_string(),
+            contact: Contact {
+                name: "joh".to_string(),
+                email: "n@betaworks.com".to_string(),
+                domain: "betaworks.com".to_string(),
+                total_exchanges: 1,
+                ..empty_contact()
+            },
+        };
+
+        let (chosen, duplicate) = primary_duplicate(&fragment, &primary);
+        assert_eq!(chosen.email, "john@betaworks.com");
+        assert_eq!(duplicate.email, "n@betaworks.com");
+    }
+
+    #[test]
+    fn duplicate_scanner_skips_service_account_pairs_by_default() {
+        let left = ContactRow {
+            email: "discover@airbnb.com".to_string(),
+            contact: Contact {
+                name: "Airbnb".to_string(),
+                email: "discover@airbnb.com".to_string(),
+                domain: "airbnb.com".to_string(),
+                total_exchanges: 7,
+                ..empty_contact()
+            },
+        };
+        let right = ContactRow {
+            email: "express@airbnb.com".to_string(),
+            contact: Contact {
+                name: "Airbnb".to_string(),
+                email: "express@airbnb.com".to_string(),
+                domain: "airbnb.com".to_string(),
+                total_exchanges: 57,
+                ..empty_contact()
+            },
+        };
+
+        assert!(skip_default_duplicate_candidate(&left, &right));
     }
 
     fn empty_contact() -> Contact {
