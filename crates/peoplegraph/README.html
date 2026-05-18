@@ -127,6 +127,7 @@ peoplegraph --cache /path/to/contact-index.json get-neighbors maya.rivera@disney
 peoplegraph --cache /path/to/contact-index.json get-edges --from maya.rivera@disney.com --to sam.lee@example.org
 peoplegraph --cache /path/to/contact-index.json suggest-duplicates --limit 25 --min-confidence 0.82
 peoplegraph --cache /path/to/contact-index.json merge-queue --status pending --limit 25
+peoplegraph --cache /path/to/contact-index.json apply-merge maya.rivera@disney.com maya@disney.com
 peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
       <p>All commands emit a stable JSON object on stdout.</p>
     </section>

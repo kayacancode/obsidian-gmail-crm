@@ -51,6 +51,8 @@ enum Commands {
     SuggestDuplicates(SuggestDuplicatesArgs),
     /// Inspect pending merge proposals without modifying the queue.
     MergeQueue(MergeQueueArgs),
+    /// Apply a reviewed merge by writing canonical identity metadata to the cache.
+    ApplyMerge(ApplyMergeArgs),
     /// Record a merge proposal once the local merge queue is implemented.
     ProposeMerge(ProposeMergeArgs),
     /// Describe the command surface for agent introspection.
@@ -106,6 +108,12 @@ struct MergeQueueArgs {
 
     #[arg(long, default_value_t = 25)]
     limit: usize,
+}
+
+#[derive(Args, Debug)]
+struct ApplyMergeArgs {
+    a: String,
+    b: String,
 }
 
 #[derive(Args, Debug)]
@@ -326,6 +334,7 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
             suggest_duplicates(index, args.limit, args.min_confidence, start)
         }),
         Commands::MergeQueue(args) => merge_queue(cli, command, args, start),
+        Commands::ApplyMerge(args) => apply_merge(cli, command, args, start),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
     }
 }
@@ -761,6 +770,94 @@ fn merge_queue(
     )
 }
 
+fn apply_merge(
+    cli: &Cli,
+    command: &'static str,
+    args: &ApplyMergeArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let a_email = resolve_email(&index, &args.a);
+    let b_email = resolve_email(&index, &args.b);
+    if a_email == b_email {
+        return fail(
+            command,
+            "invalid_merge",
+            "merge candidates resolve to the same email".to_string(),
+            start,
+        );
+    }
+
+    let Some(a_key) = contact_key_for_email(&index, &a_email) else {
+        return fail(
+            command,
+            "not_found",
+            format!("no contact found for {a_email}"),
+            start,
+        );
+    };
+    let Some(b_key) = contact_key_for_email(&index, &b_email) else {
+        return fail(
+            command,
+            "not_found",
+            format!("no contact found for {b_email}"),
+            start,
+        );
+    };
+
+    let canonical_id = canonical_id_for_merge(&index, &a_email, &b_email);
+    let aliases = merge_aliases(&index, &a_email, &b_email);
+
+    let mut index_json = match read_json_value(&cache_path) {
+        Ok(value) => value,
+        Err(message) => return fail(command, "cache_read_failed", message, start),
+    };
+    if let Err(message) = apply_canonical_to_contact(&mut index_json, &a_key, &canonical_id, &aliases)
+        .and_then(|_| apply_canonical_to_contact(&mut index_json, &b_key, &canonical_id, &aliases))
+    {
+        return fail(command, "cache_write_failed", message, start);
+    }
+    if let Err(message) = write_json_value(&cache_path, &index_json) {
+        return fail(command, "cache_write_failed", message, start);
+    }
+
+    let queue_path = merge_queue_path(&cache_path);
+    let mut queue = read_merge_queue(&queue_path);
+    let queue_status = mark_merge_applied(&mut queue, &index, &a_email, &b_email);
+    if let Err(message) = write_merge_queue(&queue_path, &queue) {
+        return fail(command, "queue_write_failed", message, start);
+    }
+    let pending_count = queue
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.status.eq_ignore_ascii_case("pending"))
+        .count();
+
+    ok(
+        command,
+        json!({
+            "applied": true,
+            "canonical_id": canonical_id,
+            "aliases": aliases,
+            "queue_path": queue_path.display().to_string(),
+            "queue_status": queue_status,
+            "contacts": {
+                "primary": applied_contact_ref(&index, &a_email, &canonical_id, &aliases),
+                "merged": applied_contact_ref(&index, &b_email, &canonical_id, &aliases),
+            }
+        }),
+        json!({
+            "matched": 1,
+            "queue_size": queue.candidates.len(),
+            "pending": pending_count,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
 fn propose_merge(
     cli: &Cli,
     command: &'static str,
@@ -902,6 +999,22 @@ fn person_ref(index: &ContactIndex, email: &str) -> Value {
     })
 }
 
+fn applied_contact_ref(
+    index: &ContactIndex,
+    email: &str,
+    canonical_id: &str,
+    aliases: &[String],
+) -> Value {
+    let row = find_by_email_or_alias(index, email);
+    json!({
+        "email": email,
+        "name": row.as_ref().map(|row| row.contact.name.as_str()).unwrap_or(email),
+        "canonical_id": canonical_id,
+        "aliases": aliases,
+        "score": row.as_ref().map(|row| infer_score(&row.contact)),
+    })
+}
+
 fn resolve_email(index: &ContactIndex, query: &str) -> String {
     let email = query.trim().to_ascii_lowercase();
     find_by_email_or_alias(index, &email)
@@ -913,6 +1026,109 @@ fn contact_name(index: &ContactIndex, email: &str) -> String {
     find_by_email_or_alias(index, email)
         .map(|row| row.contact.name)
         .unwrap_or_else(|| email.to_string())
+}
+
+fn contact_key_for_email(index: &ContactIndex, email: &str) -> Option<String> {
+    let email = email.trim().to_ascii_lowercase();
+    index.contacts.iter().find_map(|(key, contact)| {
+        let row_email = canonical_email(key, contact);
+        (row_email == email
+            || contact.email.trim().eq_ignore_ascii_case(&email)
+            || contact
+                .aliases
+                .iter()
+                .any(|alias| alias.trim().eq_ignore_ascii_case(&email)))
+        .then(|| key.clone())
+    })
+}
+
+fn canonical_id_for_merge(index: &ContactIndex, a_email: &str, b_email: &str) -> String {
+    [a_email, b_email]
+        .iter()
+        .find_map(|email| {
+            find_by_email_or_alias(index, email)
+                .and_then(|row| row.contact.canonical_id)
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+        })
+        .unwrap_or_else(|| format!("local:{a_email}"))
+}
+
+fn merge_aliases(index: &ContactIndex, a_email: &str, b_email: &str) -> Vec<String> {
+    let mut aliases = Vec::new();
+    push_unique_email(&mut aliases, a_email);
+    push_unique_email(&mut aliases, b_email);
+    for email in [a_email, b_email] {
+        if let Some(row) = find_by_email_or_alias(index, email) {
+            push_unique_email(&mut aliases, &row.email);
+            for alias in row.contact.aliases {
+                push_unique_email(&mut aliases, &alias);
+            }
+        }
+    }
+    aliases
+}
+
+fn push_unique_email(values: &mut Vec<String>, email: &str) {
+    let email = email.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return;
+    }
+    if !values.iter().any(|existing| existing.eq_ignore_ascii_case(&email)) {
+        values.push(email);
+    }
+}
+
+fn read_json_value(path: &Path) -> Result<Value, String> {
+    let content =
+        fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    serde_json::from_str(&content)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))
+}
+
+fn write_json_value(path: &Path, value: &Value) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))
+}
+
+fn apply_canonical_to_contact(
+    index_json: &mut Value,
+    key: &str,
+    canonical_id: &str,
+    aliases: &[String],
+) -> Result<(), String> {
+    let contact = index_json
+        .get_mut("contacts")
+        .and_then(Value::as_object_mut)
+        .and_then(|contacts| contacts.get_mut(key))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("contact not found in JSON cache: {key}"))?;
+
+    contact.insert(
+        "canonicalId".to_string(),
+        Value::String(canonical_id.to_string()),
+    );
+
+    let mut merged_aliases = contact
+        .get("aliases")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for alias in aliases {
+        push_unique_email(&mut merged_aliases, alias);
+    }
+    contact.insert(
+        "aliases".to_string(),
+        Value::Array(merged_aliases.into_iter().map(Value::String).collect()),
+    );
+
+    Ok(())
 }
 
 fn merge_queue_path(cache_path: &Path) -> PathBuf {
@@ -939,6 +1155,35 @@ fn merge_candidate_value(index: &ContactIndex, candidate: &MergeCandidate) -> Va
             ]
         },
     })
+}
+
+fn mark_merge_applied(
+    queue: &mut MergeQueue,
+    index: &ContactIndex,
+    a_email: &str,
+    b_email: &str,
+) -> &'static str {
+    let now = unix_seconds();
+    queue.updated_at_unix = now;
+    if let Some(candidate) = queue
+        .candidates
+        .iter_mut()
+        .find(|candidate| same_pair(&candidate.a_email, &candidate.b_email, a_email, b_email))
+    {
+        candidate.status = "applied".to_string();
+        return "updated_existing";
+    }
+
+    queue.candidates.push(MergeCandidate {
+        a_email: a_email.to_string(),
+        a_name: contact_name(index, a_email),
+        b_email: b_email.to_string(),
+        b_name: contact_name(index, b_email),
+        status: "applied".to_string(),
+        proposed_at_unix: now,
+        source: "peoplegraph".to_string(),
+    });
+    "recorded_direct_apply"
 }
 
 fn read_merge_queue(path: &Path) -> MergeQueue {
@@ -1007,15 +1252,19 @@ fn canonical_email(key: &str, contact: &Contact) -> String {
 }
 
 fn find_by_email_or_alias(index: &ContactIndex, email: &str) -> Option<ContactRow> {
-    rows(index).into_iter().find(|row| {
-        row.email == email
-            || row.contact.email.trim().eq_ignore_ascii_case(email)
-            || row
-                .contact
-                .aliases
-                .iter()
-                .any(|alias| alias.trim().eq_ignore_ascii_case(email))
-    })
+    let contact_rows = rows(index);
+    contact_rows
+        .iter()
+        .find(|row| row.email == email || row.contact.email.trim().eq_ignore_ascii_case(email))
+        .cloned()
+        .or_else(|| {
+            contact_rows.into_iter().find(|row| {
+                row.contact
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.trim().eq_ignore_ascii_case(email))
+            })
+        })
 }
 
 fn already_canonicalized_together(left: &ContactRow, right: &ContactRow) -> bool {
@@ -1702,6 +1951,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::GetEdges(_) => "get-edges",
         Commands::SuggestDuplicates(_) => "suggest-duplicates",
         Commands::MergeQueue(_) => "merge-queue",
+        Commands::ApplyMerge(_) => "apply-merge",
         Commands::ProposeMerge(_) => "propose-merge",
         Commands::Describe => "describe",
         Commands::Version => "version",
@@ -1753,6 +2003,11 @@ fn describe_payload() -> Value {
                 "name": "merge-queue",
                 "usage": "peoplegraph merge-queue --status pending --limit 25",
                 "status": "implemented"
+            },
+            {
+                "name": "apply-merge",
+                "usage": "peoplegraph apply-merge <a> <b>",
+                "status": "implemented_local_cache_write"
             },
             {
                 "name": "propose-merge",
@@ -1846,6 +2101,39 @@ mod tests {
             ),
             1.0
         );
+    }
+
+    #[test]
+    fn exact_email_lookup_beats_alias_lookup() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "primary@example.com".to_string(),
+            Contact {
+                name: "Primary".to_string(),
+                email: "primary@example.com".to_string(),
+                aliases: vec!["alias@example.com".to_string()],
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "alias@example.com".to_string(),
+            Contact {
+                name: "Alias".to_string(),
+                email: "alias@example.com".to_string(),
+                aliases: vec!["primary@example.com".to_string()],
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        let row = find_by_email_or_alias(&index, "primary@example.com").unwrap();
+        assert_eq!(row.contact.name, "Primary");
     }
 
     #[test]
@@ -1965,6 +2253,75 @@ mod tests {
         assert_eq!(
             merge_queue_path(path),
             PathBuf::from("/tmp/vault/.obsidian/plugins/gmail-crm/merge-queue.json")
+        );
+    }
+
+    #[test]
+    fn merge_aliases_includes_both_emails() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "harper@2389.ai".to_string(),
+            Contact {
+                name: "Harper Reed".to_string(),
+                email: "harper@2389.ai".to_string(),
+                aliases: vec!["old@2389.ai".to_string()],
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "harper@nata2.org".to_string(),
+            Contact {
+                name: "Harper Reed".to_string(),
+                email: "harper@nata2.org".to_string(),
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        assert_eq!(
+            merge_aliases(&index, "harper@2389.ai", "harper@nata2.org"),
+            vec![
+                "harper@2389.ai".to_string(),
+                "harper@nata2.org".to_string(),
+                "old@2389.ai".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn canonical_id_defaults_to_local_primary_email() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "a@example.com".to_string(),
+            Contact {
+                email: "a@example.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "b@example.com".to_string(),
+            Contact {
+                email: "b@example.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        assert_eq!(
+            canonical_id_for_merge(&index, "a@example.com", "b@example.com"),
+            "local:a@example.com"
         );
     }
 

@@ -184,7 +184,7 @@
     <section>
       <h2>Summary</h2>
       <p><code>peoplegraph</code> reads the plugin's local <code>contact-index.json</code> cache directly. It does not need the Obsidian runtime, network access, or API keys. Botwick is the primary consumer, but the command surface is general enough for other agents.</p>
-      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, and <code>propose-merge</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, and relationship edges into <code>contact-index.json</code> during staleness updates.</p>
+      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, <code>apply-merge</code>, and <code>propose-merge</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, and relationship edges into <code>contact-index.json</code> during staleness updates.</p>
     </section>
 
     <section>
@@ -249,6 +249,7 @@ peoplegraph score &lt;email&gt;
 peoplegraph who-knows --company &lt;name&gt;
 peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82
 peoplegraph merge-queue --status pending --limit 25
+peoplegraph apply-merge &lt;a&gt; &lt;b&gt;
 peoplegraph propose-merge &lt;a&gt; &lt;b&gt;
 peoplegraph describe
 peoplegraph version</code></pre>
@@ -298,6 +299,7 @@ peoplegraph version</code></pre>
         <li><code>aliases</code> are deterministic match keys.</li>
         <li>Name matching falls back to Levenshtein-style similarity through <code>strsim</code>.</li>
         <li><code>propose-merge</code> writes local pending candidates to <code>merge-queue.json</code>.</li>
+        <li><code>apply-merge</code> writes matching <code>canonicalId</code> and <code>aliases</code> to <code>contact-index.json</code> and marks the queue item applied.</li>
       </ul>
     </section>
 
