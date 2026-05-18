@@ -725,6 +725,13 @@ export default class GmailCrmPlugin extends Plugin {
 				company: roleParts[1].trim() || null,
 			};
 		}
+		const ofMatch = role.match(/^(founder|co[-\s]?founder|owner|principal|partner|managing partner|ceo|cto|cpo|coo|president)\s+of\s+(.+)$/i);
+		if (ofMatch) {
+			return {
+				role: ofMatch[1].trim() || null,
+				company: ofMatch[2].trim() || null,
+			};
+		}
 		return { role: role.trim() || null, company: null };
 	}
 

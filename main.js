@@ -788,26 +788,29 @@ var RelationshipEngine = class {
       }
       const emailMatch = content.match(/\*\*Email:\*\*\s*(.+)/);
       const emails = [];
+      const addEmail = (value) => {
+        const cleaned = value.replace(/[<>]/g, "").replace(/^["']|["']$/g, "").trim().toLowerCase();
+        if (cleaned.includes("@") && !emails.includes(cleaned)) emails.push(cleaned);
+      };
       if (emailMatch) {
         const raw = emailMatch[1].trim();
         for (const token of raw.split(/[,\s|]+/)) {
-          const cleaned = token.replace(/[<>]/g, "").trim().toLowerCase();
-          if (cleaned.includes("@")) emails.push(cleaned);
+          addEmail(token);
         }
       }
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
-        const yamlEmails = fmMatch[1].match(/emails:\s*\n((?:\s+-\s+\S+@\S+\n?)+)/);
-        if (yamlEmails) {
-          for (const line of yamlEmails[1].split("\n")) {
-            const em = line.replace(/^\s*-\s*/, "").trim().toLowerCase();
-            if (em.includes("@") && !emails.includes(em)) emails.push(em);
+        for (const field of ["emails", "aliases"]) {
+          const yamlList = fmMatch[1].match(new RegExp(`${field}:\\s*\\n((?:\\s+-\\s+\\S+@\\S+\\n?)+)`));
+          if (yamlList) {
+            for (const line of yamlList[1].split("\n")) {
+              addEmail(line.replace(/^\s*-\s*/, ""));
+            }
           }
         }
         const yamlEmailScalar = fmMatch[1].match(/^email:\s*(.+?)\s*$/m);
         if (yamlEmailScalar) {
-          const em = yamlEmailScalar[1].replace(/^["']|["']$/g, "").trim().toLowerCase();
-          if (em.includes("@") && !emails.includes(em)) emails.push(em);
+          addEmail(yamlEmailScalar[1]);
         }
       }
       const roleMatch = content.match(/\*\*Role\/Company:\*\*\s*(.+)/);
@@ -839,7 +842,7 @@ var RelationshipEngine = class {
     return pages;
   }
   buildGraph(pages, contactIndex) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p;
     const graph = {};
     const allNames = new Set(Object.keys(pages));
     for (const name of allNames) {
@@ -963,11 +966,13 @@ var RelationshipEngine = class {
           continue;
         }
         matched++;
-        if (!pages[pageName].emails.includes(email)) {
-          pages[pageName].emails.push(email);
+        const profileEmail = this.contactEmail(email, contact);
+        const preferredProfileSource = this.isPreferredProfileContact(pages[pageName], email, contact);
+        if (!pages[pageName].emails.includes(profileEmail)) {
+          pages[pageName].emails.push(profileEmail);
         }
-        if (!pages[pageName].email) {
-          pages[pageName].email = email;
+        if (!pages[pageName].email || preferredProfileSource) {
+          pages[pageName].email = profileEmail;
         }
         const existing = pages[pageName].gmailStats;
         if (existing) {
@@ -993,6 +998,14 @@ var RelationshipEngine = class {
           if (contact.lastThreadDepth !== void 0) {
             existing.lastThreadDepth = Math.max((_l = existing.lastThreadDepth) != null ? _l : 0, contact.lastThreadDepth);
           }
+          if (preferredProfileSource && !existing.profileSourcePreferred) {
+            existing.domain = (_m = contact.domain) != null ? _m : existing.domain;
+            existing.profileEmail = profileEmail;
+            existing.profileSourcePreferred = true;
+          } else if (!existing.domain && contact.domain) {
+            existing.domain = contact.domain;
+            existing.profileEmail = profileEmail;
+          }
         } else {
           pages[pageName].gmailStats = {
             totalExchanges: contact.totalExchanges,
@@ -1000,14 +1013,16 @@ var RelationshipEngine = class {
             receivedCount: contact.receivedCount,
             lastContact: contact.lastContact,
             firstContact: contact.firstContact,
-            subjects: (_m = contact.subjects) != null ? _m : [],
-            lastSubject: (_n = contact.lastSubject) != null ? _n : "",
-            domain: (_o = contact.domain) != null ? _o : "",
+            subjects: (_n = contact.subjects) != null ? _n : [],
+            lastSubject: (_o = contact.lastSubject) != null ? _o : "",
+            domain: (_p = contact.domain) != null ? _p : "",
             threadCount: contact.threadCount,
             maxThreadDepth: contact.maxThreadDepth,
             backAndForthThreads: contact.backAndForthThreads,
             rsvpOnlyThreads: contact.rsvpOnlyThreads,
-            lastThreadDepth: contact.lastThreadDepth
+            lastThreadDepth: contact.lastThreadDepth,
+            profileEmail,
+            profileSourcePreferred: preferredProfileSource
           };
         }
       }
@@ -1026,6 +1041,17 @@ var RelationshipEngine = class {
       });
     }
     return graph;
+  }
+  contactEmail(key, contact) {
+    return (contact.email || key).trim().toLowerCase();
+  }
+  isPreferredProfileContact(page, key, contact) {
+    var _a, _b;
+    const email = this.contactEmail(key, contact);
+    const pageEmail = (_a = page.email) == null ? void 0 : _a.trim().toLowerCase();
+    if (pageEmail && email === pageEmail) return true;
+    const canonicalEmail = (_b = contact.canonicalId) == null ? void 0 : _b.trim().toLowerCase().replace(/^local:/, "");
+    return !!canonicalEmail && email === canonicalEmail;
   }
   /**
    * Normalize a name for fuzzy matching: lowercased, common nicknames mapped,
@@ -1484,7 +1510,7 @@ var FrontmatterManager = class {
     const index = this.loadCompanyIndex();
     const lower = rawCompany.toLowerCase().trim();
     if (index.has(lower)) return index.get(lower);
-    const stripped = lower.replace(/\s*(inc\.?|llc|corp\.?|co\.?|ltd\.?)$/i, "").trim();
+    const stripped = lower.replace(/[,\s]*(inc\.?|llc|corp\.?|co\.?|ltd\.?)$/i, "").trim();
     if (index.has(stripped)) return index.get(stripped);
     for (const [key, name] of index) {
       if (key.includes(stripped) || stripped.includes(key)) {
@@ -1551,13 +1577,9 @@ var FrontmatterManager = class {
     if (page.email) crm.email = page.email;
     let rawCompany = null;
     if (page.role) {
-      const roleParts = page.role.split(/\s+at\s+|\s+@\s+/i);
-      if (roleParts.length === 2) {
-        crm.role = roleParts[0].trim();
-        rawCompany = roleParts[1].trim();
-      } else {
-        crm.role = page.role;
-      }
+      const parsed = this.parseRoleCompany(page.role);
+      crm.role = parsed.role;
+      rawCompany = parsed.company;
     }
     if (!rawCompany && ((_a = page.gmailStats) == null ? void 0 : _a.domain)) {
       const d = page.gmailStats.domain;
@@ -1604,6 +1626,23 @@ var FrontmatterManager = class {
     if (updated !== content) {
       await this.vault.modify(file, updated);
     }
+  }
+  parseRoleCompany(role) {
+    const roleParts = role.split(/\s+at\s+|\s+@\s+/i);
+    if (roleParts.length === 2) {
+      return {
+        role: roleParts[0].trim(),
+        company: roleParts[1].trim()
+      };
+    }
+    const ofMatch = role.match(/^(founder|co[-\s]?founder|owner|principal|partner|managing partner|ceo|cto|cpo|coo|president)\s+of\s+(.+)$/i);
+    if (ofMatch) {
+      return {
+        role: ofMatch[1].trim(),
+        company: ofMatch[2].trim()
+      };
+    }
+    return { role, company: null };
   }
   async setCanonicalLink(file, link) {
     var _a;
@@ -2659,6 +2698,13 @@ ${relSection}
       return {
         role: roleParts[0].trim() || null,
         company: roleParts[1].trim() || null
+      };
+    }
+    const ofMatch = role.match(/^(founder|co[-\s]?founder|owner|principal|partner|managing partner|ceo|cto|cpo|coo|president)\s+of\s+(.+)$/i);
+    if (ofMatch) {
+      return {
+        role: ofMatch[1].trim() || null,
+        company: ofMatch[2].trim() || null
       };
     }
     return { role: role.trim() || null, company: null };

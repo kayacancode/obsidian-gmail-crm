@@ -169,6 +169,8 @@ export interface GmailStats {
 	backAndForthThreads?: number;
 	rsvpOnlyThreads?: number;
 	lastThreadDepth?: number;
+	profileEmail?: string;
+	profileSourcePreferred?: boolean;
 }
 
 export interface Relationship {

@@ -3,6 +3,7 @@ import type {
 	PersonPage,
 	RelationshipGraph,
 	ContactIndex,
+	Contact,
 } from "./types";
 
 export class RelationshipEngine {
@@ -41,12 +42,15 @@ export class RelationshipEngine {
 			// Email(s) — support multiple via comma/space separation or YAML list
 			const emailMatch = content.match(/\*\*Email:\*\*\s*(.+)/);
 			const emails: string[] = [];
+			const addEmail = (value: string) => {
+				const cleaned = value.replace(/[<>]/g, "").replace(/^["']|["']$/g, "").trim().toLowerCase();
+				if (cleaned.includes("@") && !emails.includes(cleaned)) emails.push(cleaned);
+			};
 			if (emailMatch) {
 				// Split on commas, spaces, or pipes and extract valid emails
 				const raw = emailMatch[1].trim();
 				for (const token of raw.split(/[,\s|]+/)) {
-					const cleaned = token.replace(/[<>]/g, "").trim().toLowerCase();
-					if (cleaned.includes("@")) emails.push(cleaned);
+					addEmail(token);
 				}
 			}
 			// Also check YAML frontmatter for emails list and scalar email field.
@@ -54,17 +58,17 @@ export class RelationshipEngine {
 			// `**Email:**` body line still resolve their gmailStats via the YAML.
 			const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
 			if (fmMatch) {
-				const yamlEmails = fmMatch[1].match(/emails:\s*\n((?:\s+-\s+\S+@\S+\n?)+)/);
-				if (yamlEmails) {
-					for (const line of yamlEmails[1].split("\n")) {
-						const em = line.replace(/^\s*-\s*/, "").trim().toLowerCase();
-						if (em.includes("@") && !emails.includes(em)) emails.push(em);
+				for (const field of ["emails", "aliases"]) {
+					const yamlList = fmMatch[1].match(new RegExp(`${field}:\\s*\\n((?:\\s+-\\s+\\S+@\\S+\\n?)+)`));
+					if (yamlList) {
+						for (const line of yamlList[1].split("\n")) {
+							addEmail(line.replace(/^\s*-\s*/, ""));
+						}
 					}
 				}
 				const yamlEmailScalar = fmMatch[1].match(/^email:\s*(.+?)\s*$/m);
 				if (yamlEmailScalar) {
-					const em = yamlEmailScalar[1].replace(/^["']|["']$/g, "").trim().toLowerCase();
-					if (em.includes("@") && !emails.includes(em)) emails.push(em);
+					addEmail(yamlEmailScalar[1]);
 				}
 			}
 
@@ -260,11 +264,13 @@ export class RelationshipEngine {
 					continue;
 				}
 				matched++;
-				if (!pages[pageName].emails.includes(email)) {
-					pages[pageName].emails.push(email);
+				const profileEmail = this.contactEmail(email, contact);
+				const preferredProfileSource = this.isPreferredProfileContact(pages[pageName], email, contact);
+				if (!pages[pageName].emails.includes(profileEmail)) {
+					pages[pageName].emails.push(profileEmail);
 				}
-				if (!pages[pageName].email) {
-					pages[pageName].email = email;
+				if (!pages[pageName].email || preferredProfileSource) {
+					pages[pageName].email = profileEmail;
 				}
 
 				const existing = pages[pageName].gmailStats;
@@ -293,6 +299,14 @@ export class RelationshipEngine {
 					if (contact.lastThreadDepth !== undefined) {
 						existing.lastThreadDepth = Math.max(existing.lastThreadDepth ?? 0, contact.lastThreadDepth);
 					}
+					if (preferredProfileSource && !existing.profileSourcePreferred) {
+						existing.domain = contact.domain ?? existing.domain;
+						existing.profileEmail = profileEmail;
+						existing.profileSourcePreferred = true;
+					} else if (!existing.domain && contact.domain) {
+						existing.domain = contact.domain;
+						existing.profileEmail = profileEmail;
+					}
 				} else {
 					pages[pageName].gmailStats = {
 						totalExchanges: contact.totalExchanges,
@@ -308,6 +322,8 @@ export class RelationshipEngine {
 						backAndForthThreads: contact.backAndForthThreads,
 						rsvpOnlyThreads: contact.rsvpOnlyThreads,
 						lastThreadDepth: contact.lastThreadDepth,
+						profileEmail,
+						profileSourcePreferred: preferredProfileSource,
 					};
 				}
 			}
@@ -330,6 +346,19 @@ export class RelationshipEngine {
 		}
 
 		return graph;
+	}
+
+	private contactEmail(key: string, contact: Contact): string {
+		return (contact.email || key).trim().toLowerCase();
+	}
+
+	private isPreferredProfileContact(page: PersonPage, key: string, contact: Contact): boolean {
+		const email = this.contactEmail(key, contact);
+		const pageEmail = page.email?.trim().toLowerCase();
+		if (pageEmail && email === pageEmail) return true;
+
+		const canonicalEmail = contact.canonicalId?.trim().toLowerCase().replace(/^local:/, "");
+		return !!canonicalEmail && email === canonicalEmail;
 	}
 
 	/**

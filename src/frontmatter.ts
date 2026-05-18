@@ -71,7 +71,7 @@ export class FrontmatterManager {
 
 		// Strip common suffixes for matching
 		const stripped = lower
-			.replace(/\s*(inc\.?|llc|corp\.?|co\.?|ltd\.?)$/i, "")
+			.replace(/[,\s]*(inc\.?|llc|corp\.?|co\.?|ltd\.?)$/i, "")
 			.trim();
 		if (index.has(stripped)) return index.get(stripped)!;
 
@@ -160,13 +160,9 @@ export class FrontmatterManager {
 
 		let rawCompany: string | null = null;
 		if (page.role) {
-			const roleParts = page.role.split(/\s+at\s+|\s+@\s+/i);
-			if (roleParts.length === 2) {
-				crm.role = roleParts[0].trim();
-				rawCompany = roleParts[1].trim();
-			} else {
-				crm.role = page.role;
-			}
+			const parsed = this.parseRoleCompany(page.role);
+			crm.role = parsed.role;
+			rawCompany = parsed.company;
 		}
 
 		// Resolve company to wiki link
@@ -222,6 +218,26 @@ export class FrontmatterManager {
 		if (updated !== content) {
 			await this.vault.modify(file, updated);
 		}
+	}
+
+	private parseRoleCompany(role: string): { role: string; company: string | null } {
+		const roleParts = role.split(/\s+at\s+|\s+@\s+/i);
+		if (roleParts.length === 2) {
+			return {
+				role: roleParts[0].trim(),
+				company: roleParts[1].trim(),
+			};
+		}
+
+		const ofMatch = role.match(/^(founder|co[-\s]?founder|owner|principal|partner|managing partner|ceo|cto|cpo|coo|president)\s+of\s+(.+)$/i);
+		if (ofMatch) {
+			return {
+				role: ofMatch[1].trim(),
+				company: ofMatch[2].trim(),
+			};
+		}
+
+		return { role, company: null };
 	}
 
 	async setCanonicalLink(
