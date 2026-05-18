@@ -49,6 +49,8 @@ enum Commands {
     GetEdges(GetEdgesArgs),
     /// Suggest duplicate/contact-fragment rows to review for canonical identity cleanup.
     SuggestDuplicates(SuggestDuplicatesArgs),
+    /// Inspect pending merge proposals without modifying the queue.
+    MergeQueue(MergeQueueArgs),
     /// Record a merge proposal once the local merge queue is implemented.
     ProposeMerge(ProposeMergeArgs),
     /// Describe the command surface for agent introspection.
@@ -95,6 +97,15 @@ struct SuggestDuplicatesArgs {
 
     #[arg(long, default_value_t = 0.82)]
     min_confidence: f64,
+}
+
+#[derive(Args, Debug)]
+struct MergeQueueArgs {
+    #[arg(long, default_value = "pending")]
+    status: String,
+
+    #[arg(long, default_value_t = 25)]
+    limit: usize,
 }
 
 #[derive(Args, Debug)]
@@ -314,6 +325,7 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::SuggestDuplicates(args) => with_index(cli, command, start, |index| {
             suggest_duplicates(index, args.limit, args.min_confidence, start)
         }),
+        Commands::MergeQueue(args) => merge_queue(cli, command, args, start),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
     }
 }
@@ -690,6 +702,65 @@ fn suggest_duplicates(
     )
 }
 
+fn merge_queue(
+    cli: &Cli,
+    command: &'static str,
+    args: &MergeQueueArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let queue_path = merge_queue_path(&cache_path);
+    let queue = read_merge_queue(&queue_path);
+    let status = args.status.trim().to_ascii_lowercase();
+    let limit = args.limit.max(1);
+    let mut candidates: Vec<&MergeCandidate> = queue
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            status == "all" || candidate.status.trim().eq_ignore_ascii_case(&status)
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| b.proposed_at_unix.cmp(&a.proposed_at_unix));
+    let matched = candidates.len();
+    let returned_candidates: Vec<Value> = candidates
+        .into_iter()
+        .take(limit)
+        .map(|candidate| merge_candidate_value(&index, candidate))
+        .collect();
+    let returned = returned_candidates.len();
+    let pending_count = queue
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.status.eq_ignore_ascii_case("pending"))
+        .count();
+
+    ok(
+        command,
+        json!({
+            "queue_path": queue_path.display().to_string(),
+            "schema_version": queue.schema_version,
+            "updated_at_unix": queue.updated_at_unix,
+            "status_filter": status,
+            "candidates": returned_candidates,
+        }),
+        json!({
+            "queue_size": queue.candidates.len(),
+            "pending": pending_count,
+            "matched": matched,
+            "returned": returned,
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
 fn propose_merge(
     cli: &Cli,
     command: &'static str,
@@ -711,10 +782,7 @@ fn propose_merge(
         );
     }
 
-    let queue_path = cache_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("merge-queue.json");
+    let queue_path = merge_queue_path(&cache_path);
     let mut queue = read_merge_queue(&queue_path);
     let now = unix_seconds();
     let exists = queue
@@ -845,6 +913,32 @@ fn contact_name(index: &ContactIndex, email: &str) -> String {
     find_by_email_or_alias(index, email)
         .map(|row| row.contact.name)
         .unwrap_or_else(|| email.to_string())
+}
+
+fn merge_queue_path(cache_path: &Path) -> PathBuf {
+    cache_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("merge-queue.json")
+}
+
+fn merge_candidate_value(index: &ContactIndex, candidate: &MergeCandidate) -> Value {
+    json!({
+        "a": person_ref(index, &candidate.a_email),
+        "b": person_ref(index, &candidate.b_email),
+        "a_name": &candidate.a_name,
+        "b_name": &candidate.b_name,
+        "status": &candidate.status,
+        "source": &candidate.source,
+        "proposed_at_unix": candidate.proposed_at_unix,
+        "next_action": {
+            "command": "apply-merge",
+            "args": [
+                &candidate.a_email,
+                &candidate.b_email
+            ]
+        },
+    })
 }
 
 fn read_merge_queue(path: &Path) -> MergeQueue {
@@ -1607,6 +1701,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::GetNeighbors(_) => "get-neighbors",
         Commands::GetEdges(_) => "get-edges",
         Commands::SuggestDuplicates(_) => "suggest-duplicates",
+        Commands::MergeQueue(_) => "merge-queue",
         Commands::ProposeMerge(_) => "propose-merge",
         Commands::Describe => "describe",
         Commands::Version => "version",
@@ -1652,6 +1747,11 @@ fn describe_payload() -> Value {
             {
                 "name": "suggest-duplicates",
                 "usage": "peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82",
+                "status": "implemented"
+            },
+            {
+                "name": "merge-queue",
+                "usage": "peoplegraph merge-queue --status pending --limit 25",
                 "status": "implemented"
             },
             {
@@ -1857,6 +1957,15 @@ mod tests {
         };
 
         assert!(skip_default_duplicate_candidate(&left, &right));
+    }
+
+    #[test]
+    fn merge_queue_path_lives_next_to_cache() {
+        let path = Path::new("/tmp/vault/.obsidian/plugins/gmail-crm/contact-index.json");
+        assert_eq!(
+            merge_queue_path(path),
+            PathBuf::from("/tmp/vault/.obsidian/plugins/gmail-crm/merge-queue.json")
+        );
     }
 
     fn empty_contact() -> Contact {
