@@ -128,8 +128,9 @@ peoplegraph --cache /path/to/contact-index.json get-edges --from maya.rivera@dis
 peoplegraph --cache /path/to/contact-index.json suggest-duplicates --limit 25 --min-confidence 0.82
 peoplegraph --cache /path/to/contact-index.json merge-queue --status pending --limit 25
 peoplegraph --cache /path/to/contact-index.json apply-merge maya.rivera@disney.com maya@disney.com
+peoplegraph --cache /path/to/contact-index.json dismiss-merge maya.rivera@disney.com maya@disney.com --reason not_duplicate
 peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
-      <p>All commands emit a stable JSON object on stdout. Query commands are read-only; <code>propose-merge</code> and <code>apply-merge</code> intentionally update local merge metadata.</p>
+      <p>All commands emit a stable JSON object on stdout. Query commands are read-only; <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code> intentionally update local merge metadata.</p>
     </section>
 
     <section>

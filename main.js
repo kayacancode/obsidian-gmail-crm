@@ -2734,6 +2734,7 @@ ${relSection}
     const candidates = (_a = queue.candidates) != null ? _a : [];
     const pending = candidates.filter((candidate) => candidate.status === "pending");
     const applied = candidates.filter((candidate) => candidate.status === "applied");
+    const dismissed = candidates.filter((candidate) => candidate.status === "dismissed");
     const lines = [
       "---",
       "title: Merge Queue",
@@ -2741,6 +2742,7 @@ ${relSection}
       `queue_size: ${candidates.length}`,
       `pending: ${pending.length}`,
       `applied: ${applied.length}`,
+      `dismissed: ${dismissed.length}`,
       `updated: ${(/* @__PURE__ */ new Date()).toISOString()}`,
       "---",
       "",
@@ -2749,6 +2751,7 @@ ${relSection}
       `Queue size: **${candidates.length}**`,
       `Pending: **${pending.length}**`,
       `Applied: **${applied.length}**`,
+      `Dismissed: **${dismissed.length}**`,
       "",
       "## Pending",
       "",
@@ -2757,6 +2760,10 @@ ${relSection}
       "## Applied",
       "",
       ...this.renderMergeCandidates(applied),
+      "",
+      "## Dismissed",
+      "",
+      ...this.renderMergeCandidates(dismissed),
       "",
       "## Source",
       "",
@@ -2784,14 +2791,14 @@ ${relSection}
         await this.app.workspace.getLeaf().openFile(created);
       }
     }
-    new import_obsidian8.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied`);
+    new import_obsidian8.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
   }
   renderMergeCandidates(candidates) {
     var _a, _b;
     if (candidates.length === 0) return ["No merge candidates."];
     const rows = [
-      "| Status | Primary | Merged | Canonical ID | Source |",
-      "| --- | --- | --- | --- | --- |"
+      "| Status | Primary | Merged | Canonical ID | Action | Source |",
+      "| --- | --- | --- | --- | --- | --- |"
     ];
     for (const candidate of candidates) {
       const primary = this.getContactByEmail(candidate.aEmail);
@@ -2802,6 +2809,7 @@ ${relSection}
         this.mergeCandidateCell(candidate.aName, candidate.aEmail),
         this.mergeCandidateCell(candidate.bName, candidate.bEmail),
         canonicalId ? `\`${this.escapeTableCell(canonicalId)}\`` : "",
+        this.mergeCandidateActionCell(candidate),
         this.escapeTableCell(candidate.source)
       ].join(" | ").replace(/^/, "| ").replace(/$/, " |"));
     }
@@ -2812,6 +2820,21 @@ ${relSection}
     const contact = this.getContactByEmail(email);
     const aliases = ((_a = contact == null ? void 0 : contact.aliases) == null ? void 0 : _a.length) ? `<br>Aliases: ${contact.aliases.map((alias) => this.escapeTableCell(alias)).join(", ")}` : "";
     return `${this.escapeTableCell(name || (contact == null ? void 0 : contact.name) || email)}<br><code>${this.escapeTableCell(email)}</code>${aliases}`;
+  }
+  mergeCandidateActionCell(candidate) {
+    const a = this.escapeTableCell(candidate.aEmail);
+    const b = this.escapeTableCell(candidate.bEmail);
+    if (candidate.status === "pending") {
+      return [
+        `Apply: <code>bin/peoplegraph apply-merge ${a} ${b}</code>`,
+        `Dismiss: <code>bin/peoplegraph dismiss-merge ${a} ${b} --reason not_duplicate</code>`
+      ].join("<br>");
+    }
+    if (candidate.status === "dismissed") {
+      const reason = candidate.dismissReason ? `<br>Reason: ${this.escapeTableCell(candidate.dismissReason)}` : "";
+      return `Reopen: <code>bin/peoplegraph propose-merge ${a} ${b}</code>${reason}`;
+    }
+    return "";
   }
   escapeTableCell(value) {
     return value.replace(/\|/g, "\\|").replace(/\n/g, " ");

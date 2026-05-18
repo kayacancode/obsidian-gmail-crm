@@ -41,6 +41,8 @@ type MergeCandidate = {
 	status: string;
 	proposedAtUnix: number;
 	source: string;
+	dismissedAtUnix?: number;
+	dismissReason?: string;
 };
 
 export default class GmailCrmPlugin extends Plugin {
@@ -752,6 +754,7 @@ export default class GmailCrmPlugin extends Plugin {
 		const candidates = queue.candidates ?? [];
 		const pending = candidates.filter((candidate) => candidate.status === "pending");
 		const applied = candidates.filter((candidate) => candidate.status === "applied");
+		const dismissed = candidates.filter((candidate) => candidate.status === "dismissed");
 		const lines = [
 			"---",
 			"title: Merge Queue",
@@ -759,6 +762,7 @@ export default class GmailCrmPlugin extends Plugin {
 			`queue_size: ${candidates.length}`,
 			`pending: ${pending.length}`,
 			`applied: ${applied.length}`,
+			`dismissed: ${dismissed.length}`,
 			`updated: ${new Date().toISOString()}`,
 			"---",
 			"",
@@ -767,6 +771,7 @@ export default class GmailCrmPlugin extends Plugin {
 			`Queue size: **${candidates.length}**`,
 			`Pending: **${pending.length}**`,
 			`Applied: **${applied.length}**`,
+			`Dismissed: **${dismissed.length}**`,
 			"",
 			"## Pending",
 			"",
@@ -775,6 +780,10 @@ export default class GmailCrmPlugin extends Plugin {
 			"## Applied",
 			"",
 			...this.renderMergeCandidates(applied),
+			"",
+			"## Dismissed",
+			"",
+			...this.renderMergeCandidates(dismissed),
 			"",
 			"## Source",
 			"",
@@ -805,15 +814,15 @@ export default class GmailCrmPlugin extends Plugin {
 				await this.app.workspace.getLeaf().openFile(created);
 			}
 		}
-		new Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied`);
+		new Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
 	}
 
 	private renderMergeCandidates(candidates: MergeCandidate[]): string[] {
 		if (candidates.length === 0) return ["No merge candidates."];
 
 		const rows = [
-			"| Status | Primary | Merged | Canonical ID | Source |",
-			"| --- | --- | --- | --- | --- |",
+			"| Status | Primary | Merged | Canonical ID | Action | Source |",
+			"| --- | --- | --- | --- | --- | --- |",
 		];
 
 		for (const candidate of candidates) {
@@ -825,6 +834,7 @@ export default class GmailCrmPlugin extends Plugin {
 				this.mergeCandidateCell(candidate.aName, candidate.aEmail),
 				this.mergeCandidateCell(candidate.bName, candidate.bEmail),
 				canonicalId ? `\`${this.escapeTableCell(canonicalId)}\`` : "",
+				this.mergeCandidateActionCell(candidate),
 				this.escapeTableCell(candidate.source),
 			].join(" | ").replace(/^/, "| ").replace(/$/, " |"));
 		}
@@ -838,6 +848,24 @@ export default class GmailCrmPlugin extends Plugin {
 			? `<br>Aliases: ${contact.aliases.map((alias) => this.escapeTableCell(alias)).join(", ")}`
 			: "";
 		return `${this.escapeTableCell(name || contact?.name || email)}<br><code>${this.escapeTableCell(email)}</code>${aliases}`;
+	}
+
+	private mergeCandidateActionCell(candidate: MergeCandidate): string {
+		const a = this.escapeTableCell(candidate.aEmail);
+		const b = this.escapeTableCell(candidate.bEmail);
+		if (candidate.status === "pending") {
+			return [
+				`Apply: <code>bin/peoplegraph apply-merge ${a} ${b}</code>`,
+				`Dismiss: <code>bin/peoplegraph dismiss-merge ${a} ${b} --reason not_duplicate</code>`,
+			].join("<br>");
+		}
+		if (candidate.status === "dismissed") {
+			const reason = candidate.dismissReason
+				? `<br>Reason: ${this.escapeTableCell(candidate.dismissReason)}`
+				: "";
+			return `Reopen: <code>bin/peoplegraph propose-merge ${a} ${b}</code>${reason}`;
+		}
+		return "";
 	}
 
 	private escapeTableCell(value: string): string {

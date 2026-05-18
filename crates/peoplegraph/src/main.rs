@@ -55,6 +55,8 @@ enum Commands {
     MergeQueue(MergeQueueArgs),
     /// Apply a reviewed merge by writing canonical identity metadata to the cache.
     ApplyMerge(ApplyMergeArgs),
+    /// Dismiss a merge candidate as a false positive.
+    DismissMerge(DismissMergeArgs),
     /// Record a merge proposal once the local merge queue is implemented.
     ProposeMerge(ProposeMergeArgs),
     /// Describe the command surface for agent introspection.
@@ -116,6 +118,15 @@ struct MergeQueueArgs {
 struct ApplyMergeArgs {
     a: String,
     b: String,
+}
+
+#[derive(Args, Debug)]
+struct DismissMergeArgs {
+    a: String,
+    b: String,
+
+    #[arg(long, default_value = "not_duplicate")]
+    reason: String,
 }
 
 #[derive(Args, Debug)]
@@ -242,6 +253,10 @@ struct MergeCandidate {
     status: String,
     proposed_at_unix: u64,
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dismissed_at_unix: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dismiss_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -332,11 +347,10 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::GetEdges(args) => with_index(cli, command, start, |index| {
             get_edges(index, &args.from, &args.to, start)
         }),
-        Commands::SuggestDuplicates(args) => with_index(cli, command, start, |index| {
-            suggest_duplicates(index, args.limit, args.min_confidence, start)
-        }),
+        Commands::SuggestDuplicates(args) => suggest_duplicates(cli, command, args, start),
         Commands::MergeQueue(args) => merge_queue(cli, command, args, start),
         Commands::ApplyMerge(args) => apply_merge(cli, command, args, start),
+        Commands::DismissMerge(args) => dismiss_merge(cli, command, args, start),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
     }
 }
@@ -624,18 +638,29 @@ fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Resp
 }
 
 fn suggest_duplicates(
-    index: &ContactIndex,
-    limit: usize,
-    min_confidence: f64,
+    cli: &Cli,
+    command: &'static str,
+    args: &SuggestDuplicatesArgs,
     start: Instant,
 ) -> Response {
-    let min_confidence = min_confidence.clamp(0.0, 1.0);
-    let contact_rows = rows(index);
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let queue_path = merge_queue_path(&cache_path);
+    let queue = read_merge_queue(&queue_path);
+    let min_confidence = args.min_confidence.clamp(0.0, 1.0);
+    let contact_rows = rows(&index);
     let mut suggestions = Vec::new();
+    let mut skipped_queue = 0;
 
     for (left_index, left) in contact_rows.iter().enumerate() {
         for right in contact_rows.iter().skip(left_index + 1) {
             if already_canonicalized_together(left, right) {
+                continue;
+            }
+            if queue_pair_status(&queue, &left.email, &right.email).is_some() {
+                skipped_queue += 1;
                 continue;
             }
             if skip_default_duplicate_candidate(left, right) {
@@ -668,7 +693,7 @@ fn suggest_duplicates(
     });
 
     let matched = suggestions.len();
-    let limit = limit.max(1);
+    let limit = args.limit.max(1);
     let returned_suggestions: Vec<Value> = suggestions
         .into_iter()
         .take(limit)
@@ -683,6 +708,11 @@ fn suggest_duplicates(
                     suggestion.primary.email,
                     suggestion.duplicate.email
                 ),
+                "dismiss_command": format!(
+                    "peoplegraph dismiss-merge {} {} --reason not_duplicate",
+                    suggestion.primary.email,
+                    suggestion.duplicate.email
+                ),
                 "next_action": {
                     "command": "propose-merge",
                     "args": [
@@ -690,6 +720,23 @@ fn suggest_duplicates(
                         suggestion.duplicate.email
                     ]
                 },
+                "review_actions": [
+                    {
+                        "command": "propose-merge",
+                        "args": [
+                            suggestion.primary.email,
+                            suggestion.duplicate.email
+                        ]
+                    },
+                    {
+                        "command": "dismiss-merge",
+                        "args": [
+                            suggestion.primary.email,
+                            suggestion.duplicate.email
+                        ],
+                        "reason": "not_duplicate"
+                    }
+                ],
             })
         })
         .collect();
@@ -700,10 +747,13 @@ fn suggest_duplicates(
         json!({
             "suggestions": returned_suggestions,
             "min_confidence": round_confidence(min_confidence),
+            "queue_path": queue_path.display().to_string(),
         }),
         json!({
             "matched": matched,
             "returned": returned,
+            "skipped_existing_queue": skipped_queue,
+            "queue_size": queue.candidates.len(),
             "contact_count": index.contacts.len(),
             "schema_version": index.schema_version,
             "last_sync": &index.last_sync,
@@ -748,6 +798,16 @@ fn merge_queue(
         .iter()
         .filter(|candidate| candidate.status.eq_ignore_ascii_case("pending"))
         .count();
+    let applied_count = queue
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.status.eq_ignore_ascii_case("applied"))
+        .count();
+    let dismissed_count = queue
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.status.eq_ignore_ascii_case("dismissed"))
+        .count();
 
     ok(
         command,
@@ -761,6 +821,8 @@ fn merge_queue(
         json!({
             "queue_size": queue.candidates.len(),
             "pending": pending_count,
+            "applied": applied_count,
+            "dismissed": dismissed_count,
             "matched": matched,
             "returned": returned,
             "contact_count": index.contacts.len(),
@@ -875,6 +937,76 @@ fn apply_merge(
     )
 }
 
+fn dismiss_merge(
+    cli: &Cli,
+    command: &'static str,
+    args: &DismissMergeArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let a_email = resolve_email(&index, &args.a);
+    let b_email = resolve_email(&index, &args.b);
+    if a_email == b_email {
+        return fail(
+            command,
+            "invalid_merge",
+            "merge candidates resolve to the same email".to_string(),
+            start,
+        );
+    }
+
+    let queue_path = merge_queue_path(&cache_path);
+    let mut queue = read_merge_queue(&queue_path);
+    let dismissed_at = unix_seconds();
+    let reason = args.reason.trim();
+    let reason = if reason.is_empty() {
+        "not_duplicate"
+    } else {
+        reason
+    };
+    let queue_status =
+        mark_merge_dismissed(&mut queue, &index, &a_email, &b_email, reason, dismissed_at);
+    if let Err(message) = write_merge_queue(&queue_path, &queue) {
+        return fail(command, "queue_write_failed", message, start);
+    }
+    let pending_count = queue
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.status.eq_ignore_ascii_case("pending"))
+        .count();
+    let dismissed_count = queue
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.status.eq_ignore_ascii_case("dismissed"))
+        .count();
+
+    ok(
+        command,
+        json!({
+            "dismissed": true,
+            "reason": reason,
+            "dismissed_at_unix": dismissed_at,
+            "queue_path": queue_path.display().to_string(),
+            "queue_status": queue_status,
+            "candidate": {
+                "a": person_ref(&index, &a_email),
+                "b": person_ref(&index, &b_email),
+                "status": "dismissed"
+            }
+        }),
+        json!({
+            "matched": 1,
+            "queue_size": queue.candidates.len(),
+            "pending": pending_count,
+            "dismissed": dismissed_count,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
 fn propose_merge(
     cli: &Cli,
     command: &'static str,
@@ -899,12 +1031,25 @@ fn propose_merge(
     let queue_path = merge_queue_path(&cache_path);
     let mut queue = read_merge_queue(&queue_path);
     let now = unix_seconds();
-    let exists = queue
+    let mut queue_status = "queued";
+    let mut queued = true;
+    if let Some(candidate) = queue
         .candidates
-        .iter()
-        .any(|candidate| same_pair(&candidate.a_email, &candidate.b_email, &a_email, &b_email));
-
-    if !exists {
+        .iter_mut()
+        .find(|candidate| same_pair(&candidate.a_email, &candidate.b_email, &a_email, &b_email))
+    {
+        if candidate.status.eq_ignore_ascii_case("dismissed") {
+            candidate.status = "pending".to_string();
+            candidate.dismissed_at_unix = None;
+            candidate.dismiss_reason = None;
+            candidate.proposed_at_unix = now;
+            candidate.source = "peoplegraph".to_string();
+            queue_status = "reopened_dismissed";
+        } else {
+            queued = false;
+            queue_status = "already_queued";
+        }
+    } else {
         queue.candidates.push(MergeCandidate {
             a_email: a_email.clone(),
             a_name: contact_name(&index, &a_email),
@@ -913,6 +1058,8 @@ fn propose_merge(
             status: "pending".to_string(),
             proposed_at_unix: now,
             source: "peoplegraph".to_string(),
+            dismissed_at_unix: None,
+            dismiss_reason: None,
         });
     }
     queue.updated_at_unix = now;
@@ -929,7 +1076,8 @@ fn propose_merge(
     ok(
         command,
         json!({
-            "queued": !exists,
+            "queued": queued,
+            "queue_status": queue_status,
             "queue_path": queue_path.display().to_string(),
             "candidate": {
                 "a": person_ref(&index, &a_email),
@@ -938,7 +1086,7 @@ fn propose_merge(
             }
         }),
         json!({
-            "matched": if exists { 0 } else { 1 },
+            "matched": if queued { 1 } else { 0 },
             "queue_size": queue.candidates.len(),
             "ms": elapsed_ms(start)
         }),
@@ -1175,6 +1323,7 @@ fn merge_queue_path(cache_path: &Path) -> PathBuf {
 }
 
 fn merge_candidate_value(index: &ContactIndex, candidate: &MergeCandidate) -> Value {
+    let next_actions = merge_candidate_actions(candidate);
     json!({
         "a": person_ref(index, &candidate.a_email),
         "b": person_ref(index, &candidate.b_email),
@@ -1183,14 +1332,33 @@ fn merge_candidate_value(index: &ContactIndex, candidate: &MergeCandidate) -> Va
         "status": &candidate.status,
         "source": &candidate.source,
         "proposed_at_unix": candidate.proposed_at_unix,
-        "next_action": {
-            "command": "apply-merge",
-            "args": [
-                &candidate.a_email,
-                &candidate.b_email
-            ]
-        },
+        "dismissed_at_unix": candidate.dismissed_at_unix,
+        "dismiss_reason": &candidate.dismiss_reason,
+        "next_actions": next_actions,
+        "next_action": next_actions.first(),
     })
+}
+
+fn merge_candidate_actions(candidate: &MergeCandidate) -> Vec<Value> {
+    let status = candidate.status.trim().to_ascii_lowercase();
+    match status.as_str() {
+        "pending" => vec![
+            json!({
+                "command": "apply-merge",
+                "args": [&candidate.a_email, &candidate.b_email],
+            }),
+            json!({
+                "command": "dismiss-merge",
+                "args": [&candidate.a_email, &candidate.b_email],
+                "reason": "not_duplicate",
+            }),
+        ],
+        "dismissed" => vec![json!({
+            "command": "propose-merge",
+            "args": [&candidate.a_email, &candidate.b_email],
+        })],
+        _ => Vec::new(),
+    }
 }
 
 fn mark_merge_applied(
@@ -1207,6 +1375,8 @@ fn mark_merge_applied(
         .find(|candidate| same_pair(&candidate.a_email, &candidate.b_email, a_email, b_email))
     {
         candidate.status = "applied".to_string();
+        candidate.dismissed_at_unix = None;
+        candidate.dismiss_reason = None;
         return "updated_existing";
     }
 
@@ -1218,8 +1388,44 @@ fn mark_merge_applied(
         status: "applied".to_string(),
         proposed_at_unix: now,
         source: "peoplegraph".to_string(),
+        dismissed_at_unix: None,
+        dismiss_reason: None,
     });
     "recorded_direct_apply"
+}
+
+fn mark_merge_dismissed(
+    queue: &mut MergeQueue,
+    index: &ContactIndex,
+    a_email: &str,
+    b_email: &str,
+    reason: &str,
+    dismissed_at: u64,
+) -> &'static str {
+    queue.updated_at_unix = dismissed_at;
+    if let Some(candidate) = queue
+        .candidates
+        .iter_mut()
+        .find(|candidate| same_pair(&candidate.a_email, &candidate.b_email, a_email, b_email))
+    {
+        candidate.status = "dismissed".to_string();
+        candidate.dismissed_at_unix = Some(dismissed_at);
+        candidate.dismiss_reason = Some(reason.to_string());
+        return "updated_existing";
+    }
+
+    queue.candidates.push(MergeCandidate {
+        a_email: a_email.to_string(),
+        a_name: contact_name(index, a_email),
+        b_email: b_email.to_string(),
+        b_name: contact_name(index, b_email),
+        status: "dismissed".to_string(),
+        proposed_at_unix: dismissed_at,
+        source: "peoplegraph".to_string(),
+        dismissed_at_unix: Some(dismissed_at),
+        dismiss_reason: Some(reason.to_string()),
+    });
+    "recorded_direct_dismiss"
 }
 
 fn read_merge_queue(path: &Path) -> MergeQueue {
@@ -1239,6 +1445,14 @@ fn read_merge_queue(path: &Path) -> MergeQueue {
 fn write_merge_queue(path: &Path, queue: &MergeQueue) -> Result<(), String> {
     let content = serde_json::to_string_pretty(queue).map_err(|err| err.to_string())?;
     fs::write(path, content).map_err(|err| err.to_string())
+}
+
+fn queue_pair_status<'a>(queue: &'a MergeQueue, a_email: &str, b_email: &str) -> Option<&'a str> {
+    queue
+        .candidates
+        .iter()
+        .find(|candidate| same_pair(&candidate.a_email, &candidate.b_email, a_email, b_email))
+        .map(|candidate| candidate.status.as_str())
 }
 
 fn same_pair(a1: &str, b1: &str, a2: &str, b2: &str) -> bool {
@@ -2020,6 +2234,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::SuggestDuplicates(_) => "suggest-duplicates",
         Commands::MergeQueue(_) => "merge-queue",
         Commands::ApplyMerge(_) => "apply-merge",
+        Commands::DismissMerge(_) => "dismiss-merge",
         Commands::ProposeMerge(_) => "propose-merge",
         Commands::Describe => "describe",
         Commands::Version => "version",
@@ -2076,6 +2291,11 @@ fn describe_payload() -> Value {
                 "name": "apply-merge",
                 "usage": "peoplegraph apply-merge <a> <b>",
                 "status": "implemented_local_cache_write"
+            },
+            {
+                "name": "dismiss-merge",
+                "usage": "peoplegraph dismiss-merge <a> <b> --reason not_duplicate",
+                "status": "implemented_local_queue"
             },
             {
                 "name": "propose-merge",
@@ -2366,6 +2586,30 @@ mod tests {
         assert_eq!(
             merge_queue_path(path),
             PathBuf::from("/tmp/vault/.obsidian/plugins/gmail-crm/merge-queue.json")
+        );
+    }
+
+    #[test]
+    fn queue_pair_status_matches_reversed_pairs() {
+        let queue = MergeQueue {
+            schema_version: 1,
+            updated_at_unix: 0,
+            candidates: vec![MergeCandidate {
+                a_email: "a@example.com".to_string(),
+                a_name: "A".to_string(),
+                b_email: "b@example.com".to_string(),
+                b_name: "B".to_string(),
+                status: "dismissed".to_string(),
+                proposed_at_unix: 0,
+                source: "peoplegraph".to_string(),
+                dismissed_at_unix: Some(1),
+                dismiss_reason: Some("not_duplicate".to_string()),
+            }],
+        };
+
+        assert_eq!(
+            queue_pair_status(&queue, "b@example.com", "a@example.com"),
+            Some("dismissed")
         );
     }
 
