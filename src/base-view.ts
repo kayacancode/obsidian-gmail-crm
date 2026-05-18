@@ -10,6 +10,12 @@ properties:
     displayName: Role
   note.company:
     displayName: Company
+  note.canonical_id:
+    displayName: Canonical ID
+  note.aliases:
+    displayName: Aliases
+  note.last_canonical_sync:
+    displayName: Canonical Sync
   note.last_contact:
     displayName: Last Emailed
   note.total_exchanges:
@@ -60,6 +66,8 @@ views:
     order:
       - file.name
       - company
+      - canonical_id
+      - aliases
       - last_contact
       - recent_subjects
       - last_thread_depth
@@ -76,6 +84,8 @@ views:
     columns:
       - file.name
       - company
+      - canonical_id
+      - aliases
       - last_contact
       - recent_subjects
       - last_thread_depth
@@ -88,6 +98,8 @@ views:
     columnSize:
       file.name: 200
       company: 160
+      canonical_id: 220
+      aliases: 260
       recent_subjects: 350
       nudge: 300
     summaries:

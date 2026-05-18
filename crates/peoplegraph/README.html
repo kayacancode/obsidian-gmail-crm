@@ -108,7 +108,7 @@
   <main>
     <header>
       <h1>PeopleGraph CLI</h1>
-      <p>Read-only graph queries over the Obsidian Gmail CRM <code>contact-index.json</code> cache.</p>
+      <p>Graph queries and explicit merge-review writes over the Obsidian Gmail CRM <code>contact-index.json</code> cache.</p>
     </header>
 
     <section>
@@ -129,7 +129,7 @@ peoplegraph --cache /path/to/contact-index.json suggest-duplicates --limit 25 --
 peoplegraph --cache /path/to/contact-index.json merge-queue --status pending --limit 25
 peoplegraph --cache /path/to/contact-index.json apply-merge maya.rivera@disney.com maya@disney.com
 peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
-      <p>All commands emit a stable JSON object on stdout.</p>
+      <p>All commands emit a stable JSON object on stdout. Query commands are read-only; <code>propose-merge</code> and <code>apply-merge</code> intentionally update local merge metadata.</p>
     </section>
 
     <section>

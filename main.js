@@ -1706,6 +1706,12 @@ properties:
     displayName: Role
   note.company:
     displayName: Company
+  note.canonical_id:
+    displayName: Canonical ID
+  note.aliases:
+    displayName: Aliases
+  note.last_canonical_sync:
+    displayName: Canonical Sync
   note.last_contact:
     displayName: Last Emailed
   note.total_exchanges:
@@ -1756,6 +1762,8 @@ views:
     order:
       - file.name
       - company
+      - canonical_id
+      - aliases
       - last_contact
       - recent_subjects
       - last_thread_depth
@@ -1772,6 +1780,8 @@ views:
     columns:
       - file.name
       - company
+      - canonical_id
+      - aliases
       - last_contact
       - recent_subjects
       - last_thread_depth
@@ -1784,6 +1794,8 @@ views:
     columnSize:
       file.name: 200
       company: 160
+      canonical_id: 220
+      aliases: 260
       recent_subjects: 350
       nudge: 300
     summaries:
@@ -2136,6 +2148,13 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
       }
     });
     this.addCommand({
+      id: "review-merge-queue",
+      name: "Review merge queue",
+      callback: () => {
+        void this.reviewMergeQueue();
+      }
+    });
+    this.addCommand({
       id: "create-base-view",
       name: "Create contact base view",
       callback: () => {
@@ -2270,6 +2289,23 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     return (0, import_obsidian8.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
     );
+  }
+  getMergeQueuePath() {
+    return (0, import_obsidian8.normalizePath)(
+      `${this.app.vault.configDir}/plugins/gmail-crm/merge-queue.json`
+    );
+  }
+  async loadMergeQueue() {
+    const path = this.getMergeQueuePath();
+    try {
+      if (!await this.app.vault.adapter.exists(path)) {
+        return { schemaVersion: 1, candidates: [] };
+      }
+      const content = await this.app.vault.adapter.read(path);
+      return JSON.parse(content);
+    } catch (e) {
+      return { schemaVersion: 1, candidates: [] };
+    }
   }
   async loadMessageCache() {
     const path = this.getCachePath();
@@ -2493,6 +2529,14 @@ ${relSection}
         const file = this.app.vault.getAbstractFileByPath(page.path);
         if (file instanceof import_obsidian8.TFile) {
           await fm.updateFrontmatter(file, page, staleness, relationships);
+          const contact = this.getContactForPage(page);
+          if (contact == null ? void 0 : contact.canonicalId) {
+            await fm.setCanonicalLink(file, {
+              canonicalId: contact.canonicalId,
+              aliases: contact.aliases,
+              syncedAt: contact.lastCanonicalSync
+            });
+          }
         }
         if (done % 20 === 0) {
           notice.setMessage(`Scoring ${done}/${count}...`);
@@ -2637,6 +2681,94 @@ ${relSection}
     const raw = domain.split(".")[0];
     if (!raw) return null;
     return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+  async reviewMergeQueue() {
+    var _a;
+    const queue = await this.loadMergeQueue();
+    const candidates = (_a = queue.candidates) != null ? _a : [];
+    const pending = candidates.filter((candidate) => candidate.status === "pending");
+    const applied = candidates.filter((candidate) => candidate.status === "applied");
+    const lines = [
+      "---",
+      "title: Merge Queue",
+      "type: crm_merge_queue",
+      `queue_size: ${candidates.length}`,
+      `pending: ${pending.length}`,
+      `applied: ${applied.length}`,
+      `updated: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+      "---",
+      "",
+      "# Merge Queue",
+      "",
+      `Queue size: **${candidates.length}**`,
+      `Pending: **${pending.length}**`,
+      `Applied: **${applied.length}**`,
+      "",
+      "## Pending",
+      "",
+      ...this.renderMergeCandidates(pending),
+      "",
+      "## Applied",
+      "",
+      ...this.renderMergeCandidates(applied),
+      "",
+      "## Source",
+      "",
+      `Cache: \`${this.getIndexPath()}\``,
+      `Queue: \`${this.getMergeQueuePath()}\``,
+      ""
+    ];
+    const folder = (0, import_obsidian8.normalizePath)(this.settings.peopleFolder);
+    if (!this.app.vault.getAbstractFileByPath(folder)) {
+      try {
+        await this.app.vault.createFolder(folder);
+      } catch (e) {
+      }
+    }
+    const path = (0, import_obsidian8.normalizePath)(`${folder}/_Merge Queue.md`);
+    const content = lines.join("\n");
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (file instanceof import_obsidian8.TFile) {
+      await this.app.vault.modify(file, content);
+      await this.app.workspace.getLeaf().openFile(file);
+    } else {
+      await this.app.vault.create(path, content);
+      const created = this.app.vault.getAbstractFileByPath(path);
+      if (created instanceof import_obsidian8.TFile) {
+        await this.app.workspace.getLeaf().openFile(created);
+      }
+    }
+    new import_obsidian8.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied`);
+  }
+  renderMergeCandidates(candidates) {
+    var _a, _b;
+    if (candidates.length === 0) return ["No merge candidates."];
+    const rows = [
+      "| Status | Primary | Merged | Canonical ID | Source |",
+      "| --- | --- | --- | --- | --- |"
+    ];
+    for (const candidate of candidates) {
+      const primary = this.getContactByEmail(candidate.aEmail);
+      const merged = this.getContactByEmail(candidate.bEmail);
+      const canonicalId = (_b = (_a = primary == null ? void 0 : primary.canonicalId) != null ? _a : merged == null ? void 0 : merged.canonicalId) != null ? _b : "";
+      rows.push([
+        this.escapeTableCell(candidate.status),
+        this.mergeCandidateCell(candidate.aName, candidate.aEmail),
+        this.mergeCandidateCell(candidate.bName, candidate.bEmail),
+        canonicalId ? `\`${this.escapeTableCell(canonicalId)}\`` : "",
+        this.escapeTableCell(candidate.source)
+      ].join(" | ").replace(/^/, "| ").replace(/$/, " |"));
+    }
+    return rows;
+  }
+  mergeCandidateCell(name, email) {
+    var _a;
+    const contact = this.getContactByEmail(email);
+    const aliases = ((_a = contact == null ? void 0 : contact.aliases) == null ? void 0 : _a.length) ? `<br>Aliases: ${contact.aliases.map((alias) => this.escapeTableCell(alias)).join(", ")}` : "";
+    return `${this.escapeTableCell(name || (contact == null ? void 0 : contact.name) || email)}<br><code>${this.escapeTableCell(email)}</code>${aliases}`;
+  }
+  escapeTableCell(value) {
+    return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
   }
   async createBase() {
     try {

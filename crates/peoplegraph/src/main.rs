@@ -14,7 +14,9 @@ const COMMAND_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser, Debug)]
 #[command(name = "peoplegraph")]
 #[command(version = COMMAND_VERSION)]
-#[command(about = "Read-only graph queries over the Obsidian Gmail CRM contact cache")]
+#[command(
+    about = "Graph queries and merge-review writes over the Obsidian Gmail CRM contact cache"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -809,15 +811,29 @@ fn apply_merge(
     };
 
     let canonical_id = canonical_id_for_merge(&index, &a_email, &b_email);
+    let canonical_synced_at = unix_seconds_iso();
     let aliases = merge_aliases(&index, &a_email, &b_email);
 
     let mut index_json = match read_json_value(&cache_path) {
         Ok(value) => value,
         Err(message) => return fail(command, "cache_read_failed", message, start),
     };
-    if let Err(message) = apply_canonical_to_contact(&mut index_json, &a_key, &canonical_id, &aliases)
-        .and_then(|_| apply_canonical_to_contact(&mut index_json, &b_key, &canonical_id, &aliases))
-    {
+    if let Err(message) = apply_canonical_to_contact(
+        &mut index_json,
+        &a_key,
+        &canonical_id,
+        &aliases,
+        &canonical_synced_at,
+    )
+    .and_then(|_| {
+        apply_canonical_to_contact(
+            &mut index_json,
+            &b_key,
+            &canonical_id,
+            &aliases,
+            &canonical_synced_at,
+        )
+    }) {
         return fail(command, "cache_write_failed", message, start);
     }
     if let Err(message) = write_json_value(&cache_path, &index_json) {
@@ -841,12 +857,13 @@ fn apply_merge(
         json!({
             "applied": true,
             "canonical_id": canonical_id,
+            "last_canonical_sync": canonical_synced_at,
             "aliases": aliases,
             "queue_path": queue_path.display().to_string(),
             "queue_status": queue_status,
             "contacts": {
-                "primary": applied_contact_ref(&index, &a_email, &canonical_id, &aliases),
-                "merged": applied_contact_ref(&index, &b_email, &canonical_id, &aliases),
+                "primary": applied_contact_ref(&index, &a_email, &canonical_id, &aliases, &canonical_synced_at),
+                "merged": applied_contact_ref(&index, &b_email, &canonical_id, &aliases, &canonical_synced_at),
             }
         }),
         json!({
@@ -1004,12 +1021,14 @@ fn applied_contact_ref(
     email: &str,
     canonical_id: &str,
     aliases: &[String],
+    canonical_synced_at: &str,
 ) -> Value {
     let row = find_by_email_or_alias(index, email);
     json!({
         "email": email,
         "name": row.as_ref().map(|row| row.contact.name.as_str()).unwrap_or(email),
         "canonical_id": canonical_id,
+        "last_canonical_sync": canonical_synced_at,
         "aliases": aliases,
         "score": row.as_ref().map(|row| infer_score(&row.contact)),
     })
@@ -1030,16 +1049,25 @@ fn contact_name(index: &ContactIndex, email: &str) -> String {
 
 fn contact_key_for_email(index: &ContactIndex, email: &str) -> Option<String> {
     let email = email.trim().to_ascii_lowercase();
-    index.contacts.iter().find_map(|(key, contact)| {
-        let row_email = canonical_email(key, contact);
-        (row_email == email
-            || contact.email.trim().eq_ignore_ascii_case(&email)
-            || contact
-                .aliases
-                .iter()
-                .any(|alias| alias.trim().eq_ignore_ascii_case(&email)))
-        .then(|| key.clone())
-    })
+    index
+        .contacts
+        .iter()
+        .find_map(|(key, contact)| {
+            let row_email = canonical_email(key, contact);
+            (key.eq_ignore_ascii_case(&email)
+                || row_email == email
+                || contact.email.trim().eq_ignore_ascii_case(&email))
+            .then(|| key.clone())
+        })
+        .or_else(|| {
+            index.contacts.iter().find_map(|(key, contact)| {
+                contact
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.trim().eq_ignore_ascii_case(&email))
+                    .then(|| key.clone())
+            })
+        })
 }
 
 fn canonical_id_for_merge(index: &ContactIndex, a_email: &str, b_email: &str) -> String {
@@ -1074,14 +1102,17 @@ fn push_unique_email(values: &mut Vec<String>, email: &str) {
     if email.is_empty() {
         return;
     }
-    if !values.iter().any(|existing| existing.eq_ignore_ascii_case(&email)) {
+    if !values
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&email))
+    {
         values.push(email);
     }
 }
 
 fn read_json_value(path: &Path) -> Result<Value, String> {
-    let content =
-        fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    let content = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
     serde_json::from_str(&content)
         .map_err(|err| format!("failed to parse {}: {err}", path.display()))
 }
@@ -1096,6 +1127,7 @@ fn apply_canonical_to_contact(
     key: &str,
     canonical_id: &str,
     aliases: &[String],
+    canonical_synced_at: &str,
 ) -> Result<(), String> {
     let contact = index_json
         .get_mut("contacts")
@@ -1107,6 +1139,10 @@ fn apply_canonical_to_contact(
     contact.insert(
         "canonicalId".to_string(),
         Value::String(canonical_id.to_string()),
+    );
+    contact.insert(
+        "lastCanonicalSync".to_string(),
+        Value::String(canonical_synced_at.to_string()),
     );
 
     let mut merged_aliases = contact
@@ -1220,6 +1256,34 @@ fn unix_seconds() -> u64 {
         .as_secs()
 }
 
+fn unix_seconds_iso() -> String {
+    unix_to_utc_iso(unix_seconds())
+}
+
+fn unix_to_utc_iso(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = civil_from_unix_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_unix_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    (year, month, day)
+}
+
 fn value_u64(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
@@ -1293,12 +1357,14 @@ fn duplicate_confidence(left: &ContactRow, right: &ContactRow) -> Option<(f64, V
 
     if left_name.len() >= 4 && left_name == right_name {
         confidence = confidence.max(if same_domain { 0.96 } else { 0.9 });
-        reasons.push(if same_domain {
-            "same_name_same_domain"
-        } else {
-            "same_name"
-        }
-        .to_string());
+        reasons.push(
+            if same_domain {
+                "same_name_same_domain"
+            } else {
+                "same_name"
+            }
+            .to_string(),
+        );
     }
 
     if left_compact.len() >= 5 && right_compact.len() >= 5 {
@@ -1438,9 +1504,7 @@ fn looks_like_person_name(name: &str) -> bool {
 fn same_non_generic_domain(left: &ContactRow, right: &ContactRow) -> bool {
     let left_domain = left.contact.domain.trim().to_ascii_lowercase();
     let right_domain = right.contact.domain.trim().to_ascii_lowercase();
-    !left_domain.is_empty()
-        && left_domain == right_domain
-        && !is_generic_email_domain(&left_domain)
+    !left_domain.is_empty() && left_domain == right_domain && !is_generic_email_domain(&left_domain)
 }
 
 fn weak_name_prefix_match(left: &str, right: &str) -> bool {
@@ -1490,7 +1554,11 @@ fn contact_brief(row: &ContactRow) -> Value {
 }
 
 fn email_local(email: &str) -> String {
-    email.split('@').next().unwrap_or_default().to_ascii_lowercase()
+    email
+        .split('@')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn compact_normalize(value: &str) -> String {
@@ -1962,7 +2030,7 @@ fn describe_payload() -> Value {
     json!({
         "name": "peoplegraph",
         "version": COMMAND_VERSION,
-        "summary": "Read-only graph primitive CLI over Obsidian Gmail CRM contact-index.json",
+        "summary": "Graph primitive CLI and explicit merge-review writer over Obsidian Gmail CRM contact-index.json",
         "global_flags": [
             "--format json|jsonl",
             "--cache <path>",
@@ -2082,6 +2150,12 @@ mod tests {
     }
 
     #[test]
+    fn formats_unix_seconds_as_utc_iso() {
+        assert_eq!(unix_to_utc_iso(0), "1970-01-01T00:00:00Z");
+        assert_eq!(unix_to_utc_iso(1_778_864_760), "2026-05-15T17:06:00Z");
+    }
+
+    #[test]
     fn exact_alias_match_is_confident() {
         let row = ContactRow {
             email: "kaya@example.com".to_string(),
@@ -2134,6 +2208,45 @@ mod tests {
 
         let row = find_by_email_or_alias(&index, "primary@example.com").unwrap();
         assert_eq!(row.contact.name, "Primary");
+    }
+
+    #[test]
+    fn exact_contact_key_beats_alias_match() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "primary@example.com".to_string(),
+            Contact {
+                name: "Primary".to_string(),
+                email: "primary@example.com".to_string(),
+                aliases: vec!["alias@example.com".to_string()],
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "alias@example.com".to_string(),
+            Contact {
+                name: "Alias".to_string(),
+                email: "alias@example.com".to_string(),
+                aliases: vec!["primary@example.com".to_string()],
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        assert_eq!(
+            contact_key_for_email(&index, "primary@example.com"),
+            Some("primary@example.com".to_string())
+        );
+        assert_eq!(
+            contact_key_for_email(&index, "alias@example.com"),
+            Some("alias@example.com".to_string())
+        );
     }
 
     #[test]

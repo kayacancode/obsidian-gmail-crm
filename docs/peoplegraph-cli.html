@@ -177,14 +177,14 @@
       <div class="meta" aria-label="Document metadata">
         <span class="pill">Status: Draft v0.1</span>
         <span class="pill">Owner: Kaya</span>
-        <span class="pill">Updated: 2026-05-11</span>
+        <span class="pill">Updated: 2026-05-18</span>
       </div>
     </header>
 
     <section>
       <h2>Summary</h2>
       <p><code>peoplegraph</code> reads the plugin's local <code>contact-index.json</code> cache directly. It does not need the Obsidian runtime, network access, or API keys. Botwick is the primary consumer, but the command surface is general enough for other agents.</p>
-      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, <code>apply-merge</code>, and <code>propose-merge</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, and relationship edges into <code>contact-index.json</code> during staleness updates.</p>
+      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, <code>apply-merge</code>, and <code>propose-merge</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, relationship edges, and canonical identity metadata into <code>contact-index.json</code> during staleness updates.</p>
     </section>
 
     <section>
@@ -208,7 +208,7 @@
         <li>Implement graph primitives as standalone CLI commands.</li>
         <li>Emit stable JSON or JSONL for agent parsing.</li>
         <li>Ship as a single release binary with sub-100ms cold-start target.</li>
-        <li>Read from <code>contact-index.json</code> without mutating plugin contact data.</li>
+        <li>Keep read-only commands non-mutating; reserve writes for explicit merge commands.</li>
         <li>Support <code>who-knows --company X</code> as a compound query.</li>
       </ol>
     </section>
@@ -218,7 +218,7 @@
       <ul>
         <li>Writing directly to Jon's shared graph endpoint.</li>
         <li>Replacing the plugin's TypeScript scoring as source of truth.</li>
-        <li>Modifying vault notes.</li>
+        <li>Bulk-editing vault notes from the CLI.</li>
         <li>Conversation-content analysis.</li>
         <li>Replacing human-facing Obsidian UI.</li>
       </ul>
@@ -238,6 +238,12 @@ peoplegraph (Rust)
         v
 Agent consumer, primarily Botwick</code></pre>
       <p>The Rust binary depends on the JSON shape in <code>src/types.ts</code>. <code>ContactIndex.schemaVersion</code> gives forward-compatibility for future schema changes.</p>
+    </section>
+
+    <section>
+      <h2>Obsidian Visibility</h2>
+      <p><code>apply-merge</code> updates the plugin cache first. The plugin then mirrors canonical identity into people-page frontmatter during <code>Gmail CRM: Update staleness scores</code>, which makes <code>canonical_id</code> and <code>aliases</code> visible in the CRM Base view.</p>
+      <p><code>Gmail CRM: Review merge queue</code> writes and opens <code>People pages/_Merge Queue.md</code> with pending and applied merge candidates, so reviewed merges are visible in the vault instead of only in JSON.</p>
     </section>
 
     <section>
@@ -299,7 +305,7 @@ peoplegraph version</code></pre>
         <li><code>aliases</code> are deterministic match keys.</li>
         <li>Name matching falls back to Levenshtein-style similarity through <code>strsim</code>.</li>
         <li><code>propose-merge</code> writes local pending candidates to <code>merge-queue.json</code>.</li>
-        <li><code>apply-merge</code> writes matching <code>canonicalId</code> and <code>aliases</code> to <code>contact-index.json</code> and marks the queue item applied.</li>
+        <li><code>apply-merge</code> writes matching <code>canonicalId</code>, <code>aliases</code>, and <code>lastCanonicalSync</code> to <code>contact-index.json</code> and marks the queue item applied.</li>
       </ul>
     </section>
 

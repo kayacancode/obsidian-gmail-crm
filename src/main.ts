@@ -27,6 +27,22 @@ import type {
 } from "./types";
 import { CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS } from "./types";
 
+type MergeQueue = {
+	schemaVersion?: number;
+	updatedAtUnix?: number;
+	candidates?: MergeCandidate[];
+};
+
+type MergeCandidate = {
+	aEmail: string;
+	aName: string;
+	bEmail: string;
+	bName: string;
+	status: string;
+	proposedAtUnix: number;
+	source: string;
+};
+
 export default class GmailCrmPlugin extends Plugin {
 	settings: GmailCrmSettings = DEFAULT_SETTINGS;
 	private gmailApi!: GmailApi;
@@ -99,6 +115,13 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "update-staleness",
 			name: "Update staleness scores",
 			callback: () => { void this.updateStaleness(); },
+		});
+
+		// Command: review local merge queue
+		this.addCommand({
+			id: "review-merge-queue",
+			name: "Review merge queue",
+			callback: () => { void this.reviewMergeQueue(); },
 		});
 
 		// Command: create/update CRM base view
@@ -265,6 +288,25 @@ export default class GmailCrmPlugin extends Plugin {
 		return normalizePath(
 			`${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
 		);
+	}
+
+	private getMergeQueuePath(): string {
+		return normalizePath(
+			`${this.app.vault.configDir}/plugins/gmail-crm/merge-queue.json`
+		);
+	}
+
+	private async loadMergeQueue(): Promise<MergeQueue> {
+		const path = this.getMergeQueuePath();
+		try {
+			if (!(await this.app.vault.adapter.exists(path))) {
+				return { schemaVersion: 1, candidates: [] };
+			}
+			const content = await this.app.vault.adapter.read(path);
+			return JSON.parse(content) as MergeQueue;
+		} catch {
+			return { schemaVersion: 1, candidates: [] };
+		}
 	}
 
 	private async loadMessageCache() {
@@ -525,6 +567,14 @@ export default class GmailCrmPlugin extends Plugin {
 				const file = this.app.vault.getAbstractFileByPath(page.path);
 				if (file instanceof TFile) {
 					await fm.updateFrontmatter(file, page, staleness, relationships);
+					const contact = this.getContactForPage(page);
+					if (contact?.canonicalId) {
+						await fm.setCanonicalLink(file, {
+							canonicalId: contact.canonicalId,
+							aliases: contact.aliases,
+							syncedAt: contact.lastCanonicalSync,
+						});
+					}
 				}
 
 				if (done % 20 === 0) {
@@ -688,6 +738,103 @@ export default class GmailCrmPlugin extends Plugin {
 		const raw = domain.split(".")[0];
 		if (!raw) return null;
 		return raw.charAt(0).toUpperCase() + raw.slice(1);
+	}
+
+	async reviewMergeQueue() {
+		const queue = await this.loadMergeQueue();
+		const candidates = queue.candidates ?? [];
+		const pending = candidates.filter((candidate) => candidate.status === "pending");
+		const applied = candidates.filter((candidate) => candidate.status === "applied");
+		const lines = [
+			"---",
+			"title: Merge Queue",
+			"type: crm_merge_queue",
+			`queue_size: ${candidates.length}`,
+			`pending: ${pending.length}`,
+			`applied: ${applied.length}`,
+			`updated: ${new Date().toISOString()}`,
+			"---",
+			"",
+			"# Merge Queue",
+			"",
+			`Queue size: **${candidates.length}**`,
+			`Pending: **${pending.length}**`,
+			`Applied: **${applied.length}**`,
+			"",
+			"## Pending",
+			"",
+			...this.renderMergeCandidates(pending),
+			"",
+			"## Applied",
+			"",
+			...this.renderMergeCandidates(applied),
+			"",
+			"## Source",
+			"",
+			`Cache: \`${this.getIndexPath()}\``,
+			`Queue: \`${this.getMergeQueuePath()}\``,
+			"",
+		];
+
+		const folder = normalizePath(this.settings.peopleFolder);
+		if (!this.app.vault.getAbstractFileByPath(folder)) {
+			try {
+				await this.app.vault.createFolder(folder);
+			} catch {
+				// folder already exists
+			}
+		}
+
+		const path = normalizePath(`${folder}/_Merge Queue.md`);
+		const content = lines.join("\n");
+		const file = this.app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFile) {
+			await this.app.vault.modify(file, content);
+			await this.app.workspace.getLeaf().openFile(file);
+		} else {
+			await this.app.vault.create(path, content);
+			const created = this.app.vault.getAbstractFileByPath(path);
+			if (created instanceof TFile) {
+				await this.app.workspace.getLeaf().openFile(created);
+			}
+		}
+		new Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied`);
+	}
+
+	private renderMergeCandidates(candidates: MergeCandidate[]): string[] {
+		if (candidates.length === 0) return ["No merge candidates."];
+
+		const rows = [
+			"| Status | Primary | Merged | Canonical ID | Source |",
+			"| --- | --- | --- | --- | --- |",
+		];
+
+		for (const candidate of candidates) {
+			const primary = this.getContactByEmail(candidate.aEmail);
+			const merged = this.getContactByEmail(candidate.bEmail);
+			const canonicalId = primary?.canonicalId ?? merged?.canonicalId ?? "";
+			rows.push([
+				this.escapeTableCell(candidate.status),
+				this.mergeCandidateCell(candidate.aName, candidate.aEmail),
+				this.mergeCandidateCell(candidate.bName, candidate.bEmail),
+				canonicalId ? `\`${this.escapeTableCell(canonicalId)}\`` : "",
+				this.escapeTableCell(candidate.source),
+			].join(" | ").replace(/^/, "| ").replace(/$/, " |"));
+		}
+
+		return rows;
+	}
+
+	private mergeCandidateCell(name: string, email: string): string {
+		const contact = this.getContactByEmail(email);
+		const aliases = contact?.aliases?.length
+			? `<br>Aliases: ${contact.aliases.map((alias) => this.escapeTableCell(alias)).join(", ")}`
+			: "";
+		return `${this.escapeTableCell(name || contact?.name || email)}<br><code>${this.escapeTableCell(email)}</code>${aliases}`;
+	}
+
+	private escapeTableCell(value: string): string {
+		return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
 	}
 
 	async createBase() {

@@ -415,7 +415,7 @@
       <div class="brand">
         <span class="eyebrow">Technical Documentation</span>
         <h1>PeopleGraph CLI</h1>
-        <p>Read-only agent query surface for the Obsidian Gmail CRM cache.</p>
+        <p>Agent query surface and explicit merge-review writer for the Obsidian Gmail CRM cache.</p>
       </div>
       <nav aria-label="Page navigation">
         <a href="#overview">Overview</a>
@@ -437,7 +437,7 @@
             PeopleGraph is a Rust CLI that reads the Gmail CRM plugin's local
             <code>contact-index.json</code> and emits predictable JSON for agents.
             It does not start Obsidian, call Gmail, send vault data to a network,
-            or mutate plugin data.
+            or mutate plugin data except for explicit merge-review commands.
           </p>
         </div>
         <div class="status-panel" aria-label="Implementation status">
@@ -449,6 +449,7 @@
             <span class="pill">Cached score snapshots</span>
             <span class="pill">Edge queries</span>
             <span class="pill info">Local merge queue</span>
+            <span class="pill info">Obsidian merge review page</span>
           </div>
           <p>
             Source: <a href="../crates/peoplegraph/src/main.rs">crates/peoplegraph/src/main.rs</a><br>
@@ -539,7 +540,7 @@
               <tr>
                 <td><code>peoplegraph apply-merge &lt;a&gt; &lt;b&gt;</code></td>
                 <td>Implemented</td>
-                <td>Writes shared canonical identity metadata to <code>contact-index.json</code> and marks the queue item applied.</td>
+                <td>Writes shared canonical identity metadata and sync timestamp to <code>contact-index.json</code> and marks the queue item applied.</td>
               </tr>
               <tr>
                 <td><code>peoplegraph propose-merge &lt;a&gt; &lt;b&gt;</code></td>
@@ -552,6 +553,22 @@
 
         <h3>Example</h3>
         <pre><code>peoplegraph --cache /path/to/contact-index.json who-knows --company Disney --format jsonl</code></pre>
+      </section>
+
+      <section id="obsidian-visibility">
+        <h2>Obsidian Visibility</h2>
+        <p>
+          Merge writes land in <code>contact-index.json</code> first. The plugin mirrors
+          <code>canonical_id</code>, <code>aliases</code>, and <code>last_canonical_sync</code>
+          into people-page frontmatter during <code>Gmail CRM: Update staleness scores</code>.
+          The CRM Base now includes visible <code>Canonical ID</code> and <code>Aliases</code>
+          columns.
+        </p>
+        <p>
+          <code>Gmail CRM: Review merge queue</code> writes
+          <code>People pages/_Merge Queue.md</code> with queue size, pending candidates,
+          applied candidates, and source cache paths.
+        </p>
       </section>
 
       <section id="cache">
@@ -620,7 +637,7 @@
             <tbody>
               <tr>
                 <td><code>cargo test</code></td>
-                <td>Passing: 3 tests.</td>
+                <td>Passing: 14 tests.</td>
               </tr>
               <tr>
                 <td><code>cargo clippy -- -D warnings</code></td>
@@ -642,7 +659,7 @@
       <section id="next">
         <h2>Next Steps</h2>
         <ol>
-          <li>Run a full Obsidian sync and staleness update against the real vault cache.</li>
+          <li>Reload Obsidian, run <code>Gmail CRM: Update staleness scores</code>, and confirm canonical fields appear in the CRM Base.</li>
           <li>Tune fuzzy matching thresholds against the 19k-contact vault.</li>
           <li>Decide when local <code>merge-queue.json</code> should route to Jon's review UI.</li>
           <li>Add Botwick skill wiring for the packaged <code>bin/peoplegraph</code> binary.</li>

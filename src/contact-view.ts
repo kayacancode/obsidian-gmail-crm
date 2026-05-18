@@ -151,6 +151,21 @@ export class GmailCrmView extends ItemView {
 				cls: "gmail-crm-faded",
 			});
 
+			if (contact.canonicalId) {
+				const identity = info.createDiv({ cls: "gmail-crm-identity" });
+				identity.createSpan({ text: "Merged", cls: "gmail-crm-identity-badge" });
+				identity.createSpan({
+					text: ` ${contact.canonicalId}`,
+					cls: "gmail-crm-faded",
+				});
+				if (contact.aliases && contact.aliases.length > 0) {
+					identity.createDiv({
+						text: `Aliases: ${contact.aliases.join(", ")}`,
+						cls: "gmail-crm-aliases",
+					});
+				}
+			}
+
 			const dateEl = row.createDiv({ cls: "gmail-crm-date" });
 			dateEl.setText(this.relativeTime(contact.lastContact));
 		}

@@ -95,6 +95,28 @@
 	color: var(--text-muted);
 }
 
+.gmail-crm-identity {
+	margin-top: 3px;
+	font-size: 0.75em;
+	line-height: 1.35;
+	white-space: normal;
+}
+
+.gmail-crm-identity-badge {
+	display: inline-block;
+	padding: 1px 5px;
+	border-radius: 4px;
+	background: var(--background-modifier-success, var(--background-secondary));
+	color: var(--text-normal);
+	font-weight: 600;
+}
+
+.gmail-crm-aliases {
+	color: var(--text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .gmail-crm-date {
 	font-size: 0.75em;
 	color: var(--text-muted);
