@@ -421,6 +421,7 @@
         <a href="#overview">Overview</a>
         <a href="#architecture">Architecture</a>
         <a href="#commands">Command Surface</a>
+        <a href="#remote">Remote Query Mode</a>
         <a href="#cache">Cache Contract</a>
         <a href="#implementation">Implementation</a>
         <a href="#verification">Verification</a>
@@ -448,6 +449,7 @@
             <span class="pill">Read-only cache loading</span>
             <span class="pill">Cached score snapshots</span>
             <span class="pill">Edge queries</span>
+            <span class="pill info">Read-only HTTP server</span>
             <span class="pill info">Local merge queue</span>
             <span class="pill info">Obsidian merge review page</span>
           </div>
@@ -462,7 +464,9 @@
         <h2>Architecture</h2>
         <p>
           The plugin remains the source of truth. PeopleGraph is a fast, local
-          adapter over the plugin's structured cache.
+          adapter over the plugin's structured cache. When Botwick hosts the
+          source-of-truth cache, PeopleGraph can also serve read-only commands
+          over a token-protected HTTP endpoint.
         </p>
         <div class="diagram" aria-label="Architecture flow">
           <div class="node flow">
@@ -475,7 +479,7 @@
           </div>
           <div class="node">
             <b>peoplegraph</b>
-            <span>Rust CLI reads the cache and returns JSON primitives for agents.</span>
+            <span>Rust CLI reads the cache, returns JSON primitives for agents, or hosts read-only query routes.</span>
           </div>
         </div>
       </section>
@@ -552,12 +556,57 @@
                 <td>Implemented</td>
                 <td>Appends a pending candidate to local <code>merge-queue.json</code>.</td>
               </tr>
+              <tr>
+                <td><code>peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></td>
+                <td>Implemented</td>
+                <td>Hosts read-only query commands over HTTP with bearer-token authentication.</td>
+              </tr>
             </tbody>
           </table>
         </div>
 
         <h3>Example</h3>
         <pre><code>peoplegraph --cache /path/to/contact-index.json who-knows --company Disney --format jsonl</code></pre>
+      </section>
+
+      <section id="remote">
+        <h2>Remote Query Mode</h2>
+        <p>
+          This is the first step toward letting anyone query Botwick's graph
+          without installing Obsidian or having the vault locally. The server
+          reads Botwick's <code>contact-index.json</code> and exposes only read-only
+          commands to clients that know the shared bearer token.
+        </p>
+        <pre><code># Server on the source-of-truth machine
+export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
+peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787
+
+# Client query
+peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney</code></pre>
+        <div class="grid-2">
+          <div class="callout">
+            <strong>Remote read-only commands</strong>
+            <p>
+              <code>describe</code>, <code>version</code>, <code>find-person</code>,
+              <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>,
+              <code>get-edges</code>, <code>suggest-duplicates</code>, and
+              <code>merge-queue</code>.
+            </p>
+          </div>
+          <div class="callout">
+            <strong>Local-only writes</strong>
+            <p>
+              <code>propose-merge</code>, <code>dismiss-merge</code>, and
+              <code>apply-merge</code> do not run through <code>--host</code> in V1.
+              Merge review stays explicit on the source-of-truth machine.
+            </p>
+          </div>
+        </div>
+        <p>
+          Keep the default localhost binding when Botwick calls it on the same
+          host. For other clients, prefer a trusted private network, SSH tunnel,
+          or reverse proxy instead of exposing raw HTTP to the public internet.
+        </p>
       </section>
 
       <section id="obsidian-visibility">
@@ -621,6 +670,8 @@
           <li>CLI parsing: <code>clap</code>.</li>
           <li>JSON parsing and output: <code>serde</code> and <code>serde_json</code>.</li>
           <li>Fuzzy name search: <code>strsim::jaro_winkler</code>.</li>
+          <li>Remote client: <code>ureq</code>.</li>
+          <li>Remote server: standard-library TCP listener with a narrow GET-only JSON API.</li>
           <li>Release binary after local build: <code>crates/peoplegraph/target/release/peoplegraph</code>.</li>
           <li>Homebrew install: <code>brew tap kayacancode/tap</code>, then <code>brew install peoplegraph</code>.</li>
         </ul>
@@ -644,7 +695,7 @@
             <tbody>
               <tr>
                 <td><code>cargo test</code></td>
-                <td>Passing: 15 tests.</td>
+                <td>Passing: 18 tests.</td>
               </tr>
               <tr>
                 <td><code>cargo clippy -- -D warnings</code></td>
@@ -656,11 +707,15 @@
               </tr>
               <tr>
                 <td><code>brew install peoplegraph</code></td>
-                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.1.0</code>.</td>
+                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.2.0</code>.</td>
               </tr>
               <tr>
                 <td>Fixture smoke test</td>
                 <td><code>describe</code> and <code>who-knows --company Disney</code> returned valid JSON.</td>
+              </tr>
+              <tr>
+                <td>Remote smoke test</td>
+                <td>Token-protected <code>serve</code> returned Disney results, rejected a bad token, and blocked remote <code>apply-merge</code>.</td>
               </tr>
             </tbody>
           </table>
@@ -672,8 +727,8 @@
         <ol>
           <li>Reload Obsidian, run <code>Gmail CRM: Update staleness scores</code>, and confirm canonical fields appear in the CRM Base.</li>
           <li>Tune fuzzy matching thresholds against the 19k-contact vault.</li>
-          <li>Decide when local <code>merge-queue.json</code> should route to Jon's review UI.</li>
-          <li>Add Botwick skill wiring for the globally installed <code>peoplegraph</code> binary.</li>
+          <li>Add Botwick skill wiring for either a local cache or <code>--host</code> remote query endpoint.</li>
+          <li>Add import flow for user-provided contacts, then propose/reject/apply merge into Botwick's source-of-truth cache.</li>
           <li>Measure cold-start runtime on the real cache and revisit if it exceeds 100ms.</li>
         </ol>
       </section>

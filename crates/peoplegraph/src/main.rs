@@ -1,9 +1,12 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -11,7 +14,7 @@ use strsim::jaro_winkler;
 
 const COMMAND_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "peoplegraph")]
 #[command(version = COMMAND_VERSION)]
 #[command(
@@ -28,6 +31,12 @@ struct Cli {
     cache: Option<PathBuf>,
 
     #[arg(long, global = true)]
+    host: Option<String>,
+
+    #[arg(long, global = true)]
+    token: Option<String>,
+
+    #[arg(long, global = true)]
     quiet: bool,
 }
 
@@ -37,7 +46,7 @@ enum OutputFormat {
     Jsonl,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 enum Commands {
     /// Fuzzy match a person by name, email, or alias.
     FindPerson(FindPersonArgs),
@@ -63,9 +72,11 @@ enum Commands {
     Describe,
     /// Return binary version information.
     Version,
+    /// Serve read-only PeopleGraph queries over HTTP.
+    Serve(ServeArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct FindPersonArgs {
     query: String,
 
@@ -73,12 +84,12 @@ struct FindPersonArgs {
     limit: usize,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct EmailArg {
     email: String,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct WhoKnowsArgs {
     #[arg(long)]
     company: String,
@@ -87,7 +98,7 @@ struct WhoKnowsArgs {
     limit: usize,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct GetEdgesArgs {
     #[arg(long)]
     from: String,
@@ -96,7 +107,7 @@ struct GetEdgesArgs {
     to: String,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct SuggestDuplicatesArgs {
     #[arg(long, default_value_t = 25)]
     limit: usize,
@@ -105,7 +116,7 @@ struct SuggestDuplicatesArgs {
     min_confidence: f64,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct MergeQueueArgs {
     #[arg(long, default_value = "pending")]
     status: String,
@@ -114,13 +125,13 @@ struct MergeQueueArgs {
     limit: usize,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct ApplyMergeArgs {
     a: String,
     b: String,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct DismissMergeArgs {
     a: String,
     b: String,
@@ -129,10 +140,19 @@ struct DismissMergeArgs {
     reason: String,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct ProposeMergeArgs {
     a: String,
     b: String,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ServeArgs {
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    bind: String,
+
+    #[arg(long)]
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,10 +279,10 @@ struct MergeCandidate {
     dismiss_reason: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Response {
     ok: bool,
-    command: &'static str,
+    command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,9 +291,9 @@ struct Response {
     error: Option<ApiError>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ApiError {
-    kind: &'static str,
+    kind: String,
     message: String,
 }
 
@@ -321,6 +341,14 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
+    if let Commands::Serve(args) = &cli.command {
+        return serve_http(cli, args, start);
+    }
+
+    if cli.host.is_some() {
+        return remote_run(cli, command, start);
+    }
+
     match &cli.command {
         Commands::Describe => ok(
             command,
@@ -352,7 +380,428 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::ApplyMerge(args) => apply_merge(cli, command, args, start),
         Commands::DismissMerge(args) => dismiss_merge(cli, command, args, start),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
+        Commands::Serve(_) => unreachable!("serve handled before command dispatch"),
     }
+}
+
+fn remote_run(cli: &Cli, command: &'static str, start: Instant) -> Response {
+    let Some(path) = remote_path(&cli.command) else {
+        return fail(
+            command,
+            "remote_command_not_supported",
+            format!("{command} is not available through --host in V1"),
+            start,
+        );
+    };
+    let Some(host) = cli
+        .host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    else {
+        return fail(
+            command,
+            "remote_host_missing",
+            "pass --host <url> or run against a local cache".to_string(),
+            start,
+        );
+    };
+    let Some(token) = access_token(cli.token.as_deref()) else {
+        return fail(
+            command,
+            "remote_token_missing",
+            "pass --token <value> or set PEOPLEGRAPH_TOKEN".to_string(),
+            start,
+        );
+    };
+
+    let url = format!("{}{}", host.trim_end_matches('/'), path);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut response = match agent
+        .get(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .call()
+    {
+        Ok(response) => response,
+        Err(err) => {
+            return fail(
+                command,
+                "remote_request_failed",
+                format!("failed to query {url}: {err}"),
+                start,
+            );
+        }
+    };
+
+    let status = response.status().as_u16();
+    let body = match response.body_mut().read_to_string() {
+        Ok(body) => body,
+        Err(err) => {
+            return fail(
+                command,
+                "remote_read_failed",
+                format!("failed to read response body from {url}: {err}"),
+                start,
+            );
+        }
+    };
+    let parsed = serde_json::from_str::<Response>(&body).unwrap_or_else(|err| {
+        fail(
+            command,
+            "remote_parse_failed",
+            format!("remote returned HTTP {status}, but response was not PeopleGraph JSON: {err}"),
+            start,
+        )
+    });
+
+    if status >= 400 && parsed.ok {
+        return fail(
+            command,
+            "remote_http_error",
+            format!("remote returned HTTP {status}"),
+            start,
+        );
+    }
+    parsed
+}
+
+fn remote_path(command: &Commands) -> Option<String> {
+    match command {
+        Commands::FindPerson(args) => Some(format!(
+            "/find-person?query={}&limit={}",
+            url_encode(&args.query),
+            args.limit.max(1)
+        )),
+        Commands::Score(args) => Some(format!("/score?email={}", url_encode(&args.email))),
+        Commands::WhoKnows(args) => Some(format!(
+            "/who-knows?company={}&limit={}",
+            url_encode(&args.company),
+            args.limit.max(1)
+        )),
+        Commands::GetNeighbors(args) => {
+            Some(format!("/get-neighbors?email={}", url_encode(&args.email)))
+        }
+        Commands::GetEdges(args) => Some(format!(
+            "/get-edges?from={}&to={}",
+            url_encode(&args.from),
+            url_encode(&args.to)
+        )),
+        Commands::SuggestDuplicates(args) => Some(format!(
+            "/suggest-duplicates?limit={}&min_confidence={}",
+            args.limit.max(1),
+            args.min_confidence
+        )),
+        Commands::MergeQueue(args) => Some(format!(
+            "/merge-queue?status={}&limit={}",
+            url_encode(&args.status),
+            args.limit.max(1)
+        )),
+        Commands::Describe => Some("/describe".to_string()),
+        Commands::Version => Some("/version".to_string()),
+        Commands::ApplyMerge(_)
+        | Commands::DismissMerge(_)
+        | Commands::ProposeMerge(_)
+        | Commands::Serve(_) => None,
+    }
+}
+
+fn serve_http(cli: &Cli, args: &ServeArgs, start: Instant) -> Response {
+    let Some(token) = access_token(args.token.as_deref().or(cli.token.as_deref())) else {
+        return fail(
+            "serve",
+            "token_missing",
+            "serve requires --token <value> or PEOPLEGRAPH_TOKEN".to_string(),
+            start,
+        );
+    };
+    let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
+        Ok(path) => path,
+        Err(message) => return fail("serve", "cache_not_found", message, start),
+    };
+    let listener = match TcpListener::bind(&args.bind) {
+        Ok(listener) => listener,
+        Err(err) => {
+            return fail(
+                "serve",
+                "bind_failed",
+                format!("failed to bind {}: {err}", args.bind),
+                start,
+            );
+        }
+    };
+
+    if !cli.quiet {
+        eprintln!(
+            "peoplegraph serve listening on http://{} using {}",
+            args.bind,
+            cache_path.display()
+        );
+    }
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => handle_http_stream(&mut stream, cli, &cache_path, &token),
+            Err(err) if !cli.quiet => eprintln!("peoplegraph serve connection failed: {err}"),
+            Err(_) => {}
+        }
+    }
+
+    ok(
+        "serve",
+        json!({ "stopped": true }),
+        json!({ "ms": elapsed_ms(start) }),
+    )
+}
+
+fn handle_http_stream(stream: &mut TcpStream, cli: &Cli, cache_path: &Path, token: &str) {
+    let start = Instant::now();
+    let mut buffer = [0_u8; 16_384];
+    let read = match stream.read(&mut buffer) {
+        Ok(read) => read,
+        Err(err) => {
+            let response = fail("remote", "request_read_failed", err.to_string(), start);
+            write_http_response(stream, 400, &response);
+            return;
+        }
+    };
+    let request = String::from_utf8_lossy(&buffer[..read]);
+    let Some((path, headers)) = parse_http_request(&request) else {
+        let response = fail(
+            "remote",
+            "bad_request",
+            "expected a GET request".to_string(),
+            start,
+        );
+        write_http_response(stream, 400, &response);
+        return;
+    };
+
+    let authorized = headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|value| value == token);
+    if !authorized {
+        let response = fail(
+            "remote",
+            "unauthorized",
+            "missing or invalid bearer token".to_string(),
+            start,
+        );
+        write_http_response(stream, 401, &response);
+        return;
+    }
+
+    let response = run_remote_request(cli, cache_path, &path, start);
+    let status = if response.ok { 200 } else { 400 };
+    write_http_response(stream, status, &response);
+}
+
+fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) -> Response {
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let params = parse_query(query);
+    let command = match route {
+        "/describe" => Commands::Describe,
+        "/version" => Commands::Version,
+        "/find-person" => Commands::FindPerson(FindPersonArgs {
+            query: query_param(&params, "query"),
+            limit: query_usize(&params, "limit", 10),
+        }),
+        "/score" => Commands::Score(EmailArg {
+            email: query_param(&params, "email"),
+        }),
+        "/who-knows" => Commands::WhoKnows(WhoKnowsArgs {
+            company: query_param(&params, "company"),
+            limit: query_usize(&params, "limit", 25),
+        }),
+        "/get-neighbors" => Commands::GetNeighbors(EmailArg {
+            email: query_param(&params, "email"),
+        }),
+        "/get-edges" => Commands::GetEdges(GetEdgesArgs {
+            from: query_param(&params, "from"),
+            to: query_param(&params, "to"),
+        }),
+        "/suggest-duplicates" => Commands::SuggestDuplicates(SuggestDuplicatesArgs {
+            limit: query_usize(&params, "limit", 25),
+            min_confidence: query_f64(&params, "min_confidence", 0.82),
+        }),
+        "/merge-queue" => Commands::MergeQueue(MergeQueueArgs {
+            status: query_param_default(&params, "status", "pending"),
+            limit: query_usize(&params, "limit", 25),
+        }),
+        "/health" => {
+            return ok(
+                "health",
+                json!({ "version": COMMAND_VERSION }),
+                json!({ "ms": elapsed_ms(start) }),
+            );
+        }
+        _ => {
+            return fail(
+                "remote",
+                "not_found",
+                format!("unknown PeopleGraph route: {route}"),
+                start,
+            );
+        }
+    };
+    let command_name = command_name(&command);
+    let request_cli = Cli {
+        command,
+        format: OutputFormat::Json,
+        cache: Some(cache_path.to_path_buf()),
+        host: None,
+        token: None,
+        quiet: cli.quiet,
+    };
+    run(&request_cli, command_name, start)
+}
+
+fn parse_http_request(request: &str) -> Option<(String, HashMap<String, String>)> {
+    let mut lines = request.lines();
+    let line = lines.next()?;
+    let mut parts = line.split_whitespace();
+    let method = parts.next()?;
+    let path = parts.next()?;
+    if method != "GET" {
+        return None;
+    }
+
+    let mut headers = HashMap::new();
+    for line in lines {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    Some((path.to_string(), headers))
+}
+
+fn write_http_response(stream: &mut TcpStream, status: u16, response: &Response) {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        _ => "Error",
+    };
+    let body = serde_json::to_string_pretty(response).unwrap_or_else(|_| {
+        r#"{"ok":false,"command":"remote","error":{"kind":"serialize_failed","message":"failed to serialize response"}}"#.to_string()
+    });
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+}
+
+fn access_token(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            env::var("PEOPLEGRAPH_TOKEN")
+                .ok()
+                .map(|token| token.trim().to_string())
+                .filter(|token| !token.is_empty())
+        })
+}
+
+fn url_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn url_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                if let (Some(high), Some(low)) =
+                    (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+                {
+                    decoded.push((high << 4) | low);
+                    index += 3;
+                    continue;
+                }
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_query(query: &str) -> HashMap<String, String> {
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (url_decode(key), url_decode(value))
+        })
+        .collect()
+}
+
+fn query_param(params: &HashMap<String, String>, key: &str) -> String {
+    query_param_default(params, key, "")
+}
+
+fn query_param_default(params: &HashMap<String, String>, key: &str, default: &str) -> String {
+    params
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn query_usize(params: &HashMap<String, String>, key: &str, default: usize) -> usize {
+    params
+        .get(key)
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn query_f64(params: &HashMap<String, String>, key: &str, default: f64) -> f64 {
+    params
+        .get(key)
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(default)
 }
 
 fn with_index<F>(cli: &Cli, command: &'static str, start: Instant, f: F) -> Response
@@ -613,7 +1062,7 @@ fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Resp
         })
         .collect();
 
-    edges.sort_by(|a, b| b.combined_score.cmp(&a.combined_score));
+    edges.sort_by_key(|edge| Reverse(edge.combined_score));
     let matched = edges.len();
     let edge_values: Vec<Value> = edges.iter().map(|edge| edge_value(edge)).collect();
 
@@ -785,7 +1234,7 @@ fn merge_queue(
         })
         .collect();
 
-    candidates.sort_by(|a, b| b.proposed_at_unix.cmp(&a.proposed_at_unix));
+    candidates.sort_by_key(|candidate| Reverse(candidate.proposed_at_unix));
     let matched = candidates.len();
     let returned_candidates: Vec<Value> = candidates
         .into_iter()
@@ -2238,6 +2687,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::ProposeMerge(_) => "propose-merge",
         Commands::Describe => "describe",
         Commands::Version => "version",
+        Commands::Serve(_) => "serve",
     }
 }
 
@@ -2249,6 +2699,8 @@ fn describe_payload() -> Value {
         "global_flags": [
             "--format json|jsonl",
             "--cache <path>",
+            "--host <url>",
+            "--token <value>",
             "--quiet"
         ],
         "commands": [
@@ -2311,8 +2763,34 @@ fn describe_payload() -> Value {
                 "name": "version",
                 "usage": "peoplegraph version",
                 "status": "implemented"
+            },
+            {
+                "name": "serve",
+                "usage": "PEOPLEGRAPH_TOKEN=<token> peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787",
+                "status": "implemented_read_only_http"
             }
         ],
+        "remote_query_contract": {
+            "server": "peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787",
+            "client": "peoplegraph --host http://127.0.0.1:8787 --token <token> who-knows --company Disney",
+            "auth": "Bearer token from --token or PEOPLEGRAPH_TOKEN",
+            "read_only_commands": [
+                "describe",
+                "version",
+                "find-person",
+                "score",
+                "who-knows",
+                "get-neighbors",
+                "get-edges",
+                "suggest-duplicates",
+                "merge-queue"
+            ],
+            "local_only_write_commands": [
+                "propose-merge",
+                "dismiss-merge",
+                "apply-merge"
+            ]
+        },
         "output_contract": {
             "ok": "boolean",
             "command": "string",
@@ -2323,23 +2801,31 @@ fn describe_payload() -> Value {
     })
 }
 
-fn ok(command: &'static str, data: Value, stats: Value) -> Response {
+fn ok(command: impl Into<String>, data: Value, stats: Value) -> Response {
     Response {
         ok: true,
-        command,
+        command: command.into(),
         data: Some(data),
         stats: Some(stats),
         error: None,
     }
 }
 
-fn fail(command: &'static str, kind: &'static str, message: String, start: Instant) -> Response {
+fn fail(
+    command: impl Into<String>,
+    kind: impl Into<String>,
+    message: String,
+    start: Instant,
+) -> Response {
     Response {
         ok: false,
-        command,
+        command: command.into(),
         data: None,
         stats: Some(json!({ "ms": elapsed_ms(start) })),
-        error: Some(ApiError { kind, message }),
+        error: Some(ApiError {
+            kind: kind.into(),
+            message,
+        }),
     }
 }
 
@@ -2679,6 +3165,42 @@ mod tests {
         assert_eq!(
             canonical_id_for_merge(&index, "a@example.com", "b@example.com"),
             "local:a@example.com"
+        );
+    }
+
+    #[test]
+    fn remote_path_encodes_query_values() {
+        let command = Commands::WhoKnows(WhoKnowsArgs {
+            company: "Disney Parks & Resorts".to_string(),
+            limit: 5,
+        });
+
+        assert_eq!(
+            remote_path(&command),
+            Some("/who-knows?company=Disney%20Parks%20%26%20Resorts&limit=5".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_query_decodes_percent_and_plus_values() {
+        let params = parse_query("company=Disney+Parks%20%26%20Resorts&limit=5");
+
+        assert_eq!(
+            query_param(&params, "company"),
+            "Disney Parks & Resorts".to_string()
+        );
+        assert_eq!(query_usize(&params, "limit", 25), 5);
+    }
+
+    #[test]
+    fn parse_http_request_normalizes_headers() {
+        let request = "GET /who-knows?company=Disney HTTP/1.1\r\nAuthorization: Bearer token\r\nHost: localhost\r\n\r\n";
+        let (path, headers) = parse_http_request(request).unwrap();
+
+        assert_eq!(path, "/who-knows?company=Disney");
+        assert_eq!(
+            headers.get("authorization"),
+            Some(&"Bearer token".to_string())
         );
     }
 

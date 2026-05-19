@@ -133,6 +133,21 @@ peoplegraph suggest-duplicates --limit 10
 
 The CLI auto-discovers the active Gmail CRM cache when run near a vault, or you can set `PEOPLEGRAPH_CACHE` / pass `--cache`.
 
+To let another machine or agent query Botwick's source-of-truth cache without installing Obsidian, run the read-only server where Botwick's `contact-index.json` lives:
+
+```bash
+export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
+peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787
+```
+
+Then query it from a client:
+
+```bash
+peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company betaworks
+```
+
+Remote mode is read-only in V1. Merge commands still run against the local cache/queue so Botwick's graph stays protected behind an explicit review step.
+
 ### People Page Format
 
 The plugin expects people pages named `p- Firstname Lastname.md` in your people folder. Example:

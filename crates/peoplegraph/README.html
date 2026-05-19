@@ -108,7 +108,7 @@
   <main>
     <header>
       <h1>PeopleGraph CLI</h1>
-      <p>Graph queries and explicit merge-review writes over the Obsidian Gmail CRM <code>contact-index.json</code> cache.</p>
+      <p>Graph queries, read-only remote access, and explicit merge-review writes over the Obsidian Gmail CRM <code>contact-index.json</code> cache.</p>
     </header>
 
     <section>
@@ -134,6 +134,17 @@ peoplegraph --cache /path/to/contact-index.json apply-merge maya.rivera@disney.c
 peoplegraph --cache /path/to/contact-index.json dismiss-merge maya.rivera@disney.com maya@disney.com --reason not_duplicate
 peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
       <p>All commands emit a stable JSON object on stdout. Query commands are read-only; <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code> intentionally update local merge metadata.</p>
+    </section>
+
+    <section>
+      <h2>Remote Query Mode</h2>
+      <p>Run this on the machine that has Botwick's source-of-truth <code>contact-index.json</code>:</p>
+      <pre><code>export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
+peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
+      <p>Then query from a client with the same token:</p>
+      <pre><code>peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney
+peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"</code></pre>
+      <p>Remote mode supports read-only commands. Merge commands stay local-only in V1 and should be applied on the source-of-truth machine after review.</p>
     </section>
 
     <section>
