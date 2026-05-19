@@ -111,6 +111,28 @@ Each person page gets rewritten with:
 - **Meeting History** — all existing meeting entries preserved verbatim
 - **Suggested Actions** — concrete next steps
 
+## PeopleGraph CLI
+
+PeopleGraph is the agent-facing CLI for querying the Gmail CRM contact cache without scraping Obsidian markdown.
+
+Install from the Homebrew tap:
+
+```bash
+brew tap kayacancode/tap
+brew install peoplegraph
+```
+
+Example commands:
+
+```bash
+peoplegraph who-knows --company betaworks
+peoplegraph find-person "Harper Reed"
+peoplegraph score harper@2389.ai
+peoplegraph suggest-duplicates --limit 10
+```
+
+The CLI auto-discovers the active Gmail CRM cache when run near a vault, or you can set `PEOPLEGRAPH_CACHE` / pass `--cache`.
+
 ### People Page Format
 
 The plugin expects people pages named `p- Firstname Lastname.md` in your people folder. Example:

@@ -622,6 +622,7 @@
           <li>JSON parsing and output: <code>serde</code> and <code>serde_json</code>.</li>
           <li>Fuzzy name search: <code>strsim::jaro_winkler</code>.</li>
           <li>Release binary after local build: <code>crates/peoplegraph/target/release/peoplegraph</code>.</li>
+          <li>Homebrew install: <code>brew tap kayacancode/tap</code>, then <code>brew install peoplegraph</code>.</li>
         </ul>
         <p>
           The current scoring fallback mirrors the plugin's metadata intent:
@@ -654,6 +655,10 @@
                 <td>Passing, release binary built.</td>
               </tr>
               <tr>
+                <td><code>brew install peoplegraph</code></td>
+                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.1.0</code>.</td>
+              </tr>
+              <tr>
                 <td>Fixture smoke test</td>
                 <td><code>describe</code> and <code>who-knows --company Disney</code> returned valid JSON.</td>
               </tr>
@@ -668,7 +673,7 @@
           <li>Reload Obsidian, run <code>Gmail CRM: Update staleness scores</code>, and confirm canonical fields appear in the CRM Base.</li>
           <li>Tune fuzzy matching thresholds against the 19k-contact vault.</li>
           <li>Decide when local <code>merge-queue.json</code> should route to Jon's review UI.</li>
-          <li>Add Botwick skill wiring for the packaged <code>bin/peoplegraph</code> binary.</li>
+          <li>Add Botwick skill wiring for the globally installed <code>peoplegraph</code> binary.</li>
           <li>Measure cold-start runtime on the real cache and revisit if it exceeds 100ms.</li>
         </ol>
       </section>
