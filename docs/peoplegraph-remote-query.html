@@ -434,6 +434,7 @@
       <nav aria-label="Page navigation">
         <a href="#start">Start</a>
         <a href="#connect">Connect</a>
+        <a href="#token">Get The Token</a>
         <a href="#lookup">Lookup Commands</a>
         <a href="#review">Cleanup / Review</a>
         <a href="#info">Info Commands</a>
@@ -516,6 +517,64 @@ export PEOPLEGRAPH_TOKEN="93cf5a...9644"</code></pre>
 peoplegraph --remote describe</code></pre>
               <div class="meta-line">If this fails, check the token, host, and network.</div>
             </div>
+          </div>
+        </section>
+
+        <section id="token">
+          <h2>Get The Token</h2>
+          <p class="section-intro">
+            A remote user cannot create a valid token on their own computer. The
+            token is created on Botwick's source-of-truth computer, the same
+            machine that has the real Obsidian Gmail CRM cache and runs
+            <code>peoplegraph serve</code>.
+          </p>
+          <div class="grid">
+            <div class="command-card">
+              <header>
+                <h3>Botwick owner creates it <span class="tag">source</span></h3>
+                <p>Run this on the computer that owns Botwick's real <code>contact-index.json</code>.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_CACHE="/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json"
+export PEOPLEGRAPH_TOKEN="$(openssl rand -hex 32)"
+printf "%s\n" "$PEOPLEGRAPH_TOKEN"</code></pre>
+              <div class="meta-line">The printed token is the real secret to share privately.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Botwick starts the server <span class="tag">source</span></h3>
+                <p>The server and the remote user must use the same token.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --cache "$PEOPLEGRAPH_CACHE" serve --bind 100.92.219.31:8787</code></pre>
+              <div class="meta-line">Use the Tailscale/private-network IP that remote users can reach.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Share it privately <span class="tag">security</span></h3>
+                <p>Send the real token out-of-band. Do not commit it, screenshot it, or paste it into shared docs.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>Host:  http://100.92.219.31:8787
+Token: paste-the-real-token-from-Botwick</code></pre>
+              <div class="meta-line">Use 1Password, a secure note, or another private channel.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Remote user sets it <span class="tag">client</span></h3>
+                <p>Run this on Kaya's computer or any other query-only machine.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
+export PEOPLEGRAPH_TOKEN="paste-the-real-token-from-Botwick"
+peoplegraph --remote version</code></pre>
+              <div class="meta-line">If this works, all lookup commands below will query Botwick, not the local cache.</div>
+            </div>
+          </div>
+          <div class="note warning">
+            <strong>Rotate the token if it leaks.</strong>
+            Stop the PeopleGraph server on Botwick's computer, generate a new
+            <code>PEOPLEGRAPH_TOKEN</code>, restart <code>peoplegraph serve</code>,
+            and give remote users the new token.
           </div>
         </section>
 
