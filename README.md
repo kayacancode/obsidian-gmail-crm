@@ -133,20 +133,80 @@ peoplegraph suggest-duplicates --limit 10
 
 The CLI auto-discovers the active Gmail CRM cache when run near a vault, or you can set `PEOPLEGRAPH_CACHE` / pass `--cache`.
 
-To let another machine or agent query Botwick's source-of-truth cache without installing Obsidian, run the read-only server where Botwick's `contact-index.json` lives:
+### Botwick / OpenClaw source-of-truth setup
 
-```bash
-export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
-peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787
-```
+Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. That machine owns the source-of-truth `.obsidian/plugins/gmail-crm/contact-index.json`.
 
-Then query it from a client:
+1. Install PeopleGraph:
 
-```bash
-peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company betaworks
-```
+   ```bash
+   brew tap kayacancode/tap
+   brew install peoplegraph
+   ```
 
-Remote mode is read-only in V1. Merge commands still run against the local cache/queue so Botwick's graph stays protected behind an explicit review step.
+2. In Obsidian, run the plugin sync commands so the cache is current:
+
+   ```text
+   Gmail CRM: Sync Gmail contacts
+   Gmail CRM: Update staleness scores
+   ```
+
+3. Start the read-only PeopleGraph server:
+
+   ```bash
+   export PEOPLEGRAPH_CACHE="/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json"
+   export PEOPLEGRAPH_TOKEN="$(openssl rand -hex 32)"
+   echo "$PEOPLEGRAPH_TOKEN"
+
+   peoplegraph --cache "$PEOPLEGRAPH_CACHE" serve --bind 127.0.0.1:8787
+   ```
+
+4. Configure Botwick/OpenClaw to call the local server:
+
+   ```bash
+   export PEOPLEGRAPH_HOST="http://127.0.0.1:8787"
+   export PEOPLEGRAPH_TOKEN="the-token-from-step-3"
+
+   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" who-knows --company betaworks
+   ```
+
+Keep `--bind 127.0.0.1:8787` when Botwick runs on the same computer. If other machines need access, put this behind a trusted private network, SSH tunnel, Tailscale, or a reverse proxy with HTTPS. Do not expose the raw HTTP server publicly.
+
+### Query-only client setup
+
+Use this on another person's computer. They do not need Obsidian or the Gmail CRM plugin. They only need the PeopleGraph CLI, the Botwick host URL, and the token from the source-of-truth machine.
+
+1. Install PeopleGraph:
+
+   ```bash
+   brew tap kayacancode/tap
+   brew install peoplegraph
+   ```
+
+2. If Botwick is exposed through a private URL, query it directly:
+
+   ```bash
+   export PEOPLEGRAPH_HOST="http://botwick-host-or-tailnet-name:8787"
+   export PEOPLEGRAPH_TOKEN="token-shared-by-botwick-owner"
+
+   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
+   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"
+   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" score harper@2389.ai
+   ```
+
+3. If Botwick is only bound to localhost, create an SSH tunnel first:
+
+   ```bash
+   ssh -N -L 8787:127.0.0.1:8787 user@botwick-machine
+   ```
+
+   Then query through the tunnel:
+
+   ```bash
+   peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
+   ```
+
+Remote mode is read-only in V1. Query-only users can run `describe`, `version`, `find-person`, `score`, `who-knows`, `get-neighbors`, `get-edges`, `suggest-duplicates`, and `merge-queue`. Merge writes still run only on the source-of-truth cache/queue so Botwick's graph stays protected behind explicit review.
 
 ### People Page Format
 
