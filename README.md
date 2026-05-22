@@ -236,6 +236,14 @@ John's OpenClaw Telegram agent can review PeopleGraph merge suggestions with inl
 node scripts/peoplegraph-telegram-review.mjs help
 ```
 
+Run this setup on the Botwick source-of-truth computer, meaning the computer that has the real Obsidian vault and this file:
+
+```text
+/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json
+```
+
+That machine is the only machine that should run merge write commands. Query-only client machines can ask questions remotely, but they should not apply merges directly.
+
 Set the source-of-truth cache, Telegram bot token, review chat, and authorized reviewer IDs:
 
 ```bash
@@ -243,22 +251,39 @@ export PEOPLEGRAPH_CACHE="/path/to/vault/.obsidian/plugins/gmail-crm/contact-ind
 export TELEGRAM_BOT_TOKEN="123456:telegram-token"
 export TELEGRAM_REVIEW_CHAT_ID="123456789"
 export PEOPLEGRAPH_APPROVER_TELEGRAM_IDS="111111111,222222222"
+export PEOPLEGRAPH_REVIEW_STATE="$HOME/.peoplegraph/merge-review-queue.json"
 ```
 
-Build the review queue and send the next review card:
+Before sending Telegram reviews, import the external user's cache onto the Botwick machine:
+
+```bash
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" import-cache --source kaya /path/to/kaya/contact-index.json
+```
+
+This creates or updates `external-sources.json` next to Botwick's `contact-index.json`. It does not overwrite the source-of-truth cache.
+
+Build the review queue and send the next review card from the Botwick machine:
 
 ```bash
 node scripts/peoplegraph-telegram-review.mjs queue --source kaya --limit 25
 node scripts/peoplegraph-telegram-review.mjs send-next --source kaya
 ```
 
-When OpenClaw receives a Telegram `callback_query`, pass the update JSON to:
+The bridge script sends the Telegram message, but John's OpenClaw Telegram runtime still needs to receive button callbacks. When OpenClaw receives a Telegram `callback_query`, pass the full update JSON to:
 
 ```bash
 node scripts/peoplegraph-telegram-review.mjs handle-callback -
 ```
 
 The message uses `Merge`, `Reject`, and `Details` inline buttons. Approvals run `apply-external-merge`; rejections run `dismiss-external-merge`; details run `contact-card`. The skill instructions live at `skills/peoplegraph-telegram-merge-review/SKILL.md`.
+
+What gets written on the Botwick machine:
+
+- `contact-index.json`: updated only after an approved `Merge` button.
+- `external-sources.json`: staged external contacts, applied merge records, and rejected merge records.
+- `$PEOPLEGRAPH_REVIEW_STATE`: Telegram review queue and audit trail.
+
+The bridge script is not a standalone Telegram long-polling bot. It is the safe command handler that John's existing OpenClaw Telegram agent should call when it receives a callback.
 
 ### People Page Format
 
