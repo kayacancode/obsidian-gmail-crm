@@ -279,16 +279,17 @@ var GmailApi = class {
     const allMessages = [];
     let pageToken;
     const unlimited = maxResults <= 0;
+    if (afterDate) {
+      console.info(
+        "[Gmail CRM] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
+        { afterDate }
+      );
+    }
     while (unlimited || allMessages.length < maxResults) {
       const remaining = unlimited ? 100 : maxResults - allMessages.length;
       const params = new URLSearchParams({
         maxResults: String(Math.min(100, remaining))
       });
-      if (afterDate) {
-        const d = new Date(afterDate);
-        const q = `after:${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
-        params.set("q", q);
-      }
       if (pageToken) params.set("pageToken", pageToken);
       const resp = await this.apiRequest({
         url: `${GMAIL_API_BASE}/messages?${params.toString()}`,

@@ -107,7 +107,7 @@ export interface ContactIndex {
 // Stored in message-cache.json alongside contact-index.json.
 export interface MessageCache {
 	processedIds: string[]; // message IDs we've already fetched & processed
-	lastSync: string;       // ISO date of last sync (used for after: query)
+	lastSync: string;       // ISO date of last sync; processedIds drives metadata-safe incremental sync
 }
 
 export interface GmailTokenResponse {
