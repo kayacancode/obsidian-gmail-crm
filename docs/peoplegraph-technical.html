@@ -610,7 +610,7 @@ export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
 peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787
 
 # Client query
-peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney</code></pre>
+peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney</code></pre>
         <div class="grid-2">
           <div class="callout">
             <strong>Remote read-only commands</strong>
@@ -627,7 +627,7 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
             <p>
               <code>import-cache</code>, <code>apply-external-merge</code>,
               <code>dismiss-external-merge</code>, <code>propose-merge</code>,
-              <code>dismiss-merge</code>, and <code>apply-merge</code> do not run through <code>--host</code> in V1.
+              <code>dismiss-merge</code>, and <code>apply-merge</code> do not run through remote mode in V1. Use <code>--remote</code> on query-only computers to refuse local cache fallback.
               Merge review stays explicit on the source-of-truth machine.
             </p>
           </div>
@@ -777,7 +777,7 @@ node scripts/peoplegraph-telegram-review.mjs handle-callback -</code></pre>
               </tr>
               <tr>
                 <td><code>brew install peoplegraph</code></td>
-                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.3.0</code>.</td>
+                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.3.1</code>.</td>
               </tr>
               <tr>
                 <td>Fixture smoke test</td>

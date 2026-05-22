@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long, global = true)]
     host: Option<String>,
 
+    /// Force remote mode and refuse local cache fallback.
+    #[arg(long, global = true)]
+    remote: bool,
+
     #[arg(long, global = true)]
     token: Option<String>,
 
@@ -459,7 +463,7 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         return serve_http(cli, args, start);
     }
 
-    if cli.host.is_some() {
+    if cli.remote || effective_host(cli).is_some() {
         return remote_run(cli, command, start);
     }
 
@@ -508,20 +512,15 @@ fn remote_run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         return fail(
             command,
             "remote_command_not_supported",
-            format!("{command} is not available through --host in V1"),
+            format!("{command} is not available through remote mode in V1"),
             start,
         );
     };
-    let Some(host) = cli
-        .host
-        .as_deref()
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-    else {
+    let Some(host) = effective_host(cli) else {
         return fail(
             command,
             "remote_host_missing",
-            "pass --host <url> or run against a local cache".to_string(),
+            "pass --host <url>, set PEOPLEGRAPH_HOST, or omit --remote to run against a local cache".to_string(),
             start,
         );
     };
@@ -801,6 +800,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
         format: OutputFormat::Json,
         cache: Some(cache_path.to_path_buf()),
         host: None,
+        remote: false,
         token: None,
         quiet: cli.quiet,
     };
@@ -858,6 +858,20 @@ fn access_token(explicit: Option<&str>) -> Option<String> {
                 .ok()
                 .map(|token| token.trim().to_string())
                 .filter(|token| !token.is_empty())
+        })
+}
+
+fn effective_host(cli: &Cli) -> Option<String> {
+    cli.host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            env::var("PEOPLEGRAPH_HOST")
+                .ok()
+                .map(|host| host.trim().to_string())
+                .filter(|host| !host.is_empty())
         })
 }
 
@@ -3758,6 +3772,7 @@ fn describe_payload() -> Value {
             "--format json|jsonl",
             "--cache <path>",
             "--host <url>",
+            "--remote",
             "--token <value>",
             "--quiet"
         ],
@@ -3855,8 +3870,10 @@ fn describe_payload() -> Value {
         ],
         "remote_query_contract": {
             "server": "peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787",
-            "client": "peoplegraph --host http://127.0.0.1:8787 --token <token> who-knows --company Disney",
+            "client": "peoplegraph --remote --host http://127.0.0.1:8787 --token <token> who-knows --company Disney",
+            "client_env": "PEOPLEGRAPH_HOST=http://127.0.0.1:8787 PEOPLEGRAPH_TOKEN=<token> peoplegraph --remote who-knows --company Disney",
             "auth": "Bearer token from --token or PEOPLEGRAPH_TOKEN",
+            "local_cache_guard": "Use --remote to refuse local cache fallback when querying from a computer that also has the Obsidian plugin.",
             "read_only_commands": [
                 "describe",
                 "version",

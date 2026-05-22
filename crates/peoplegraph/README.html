@@ -147,9 +147,9 @@ peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney
       <pre><code>export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
 peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
       <p>Then query from a client with the same token:</p>
-      <pre><code>peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney
-peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"
-peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" contact-card harper@2389.ai</code></pre>
+      <pre><code>peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney
+peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"
+peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" contact-card harper@2389.ai</code></pre>
       <p>Remote mode supports read-only commands. Merge commands stay local-only in V1 and should be applied on the source-of-truth machine after review.</p>
     </section>
 

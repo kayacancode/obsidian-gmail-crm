@@ -168,7 +168,7 @@ Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. 
    export PEOPLEGRAPH_HOST="http://127.0.0.1:8787"
    export PEOPLEGRAPH_TOKEN="the-token-from-step-3"
 
-   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" who-knows --company betaworks
+   peoplegraph --remote who-knows --company betaworks
    ```
 
 Keep `--bind 127.0.0.1:8787` when Botwick runs on the same computer. If other machines need access, put this behind a trusted private network, SSH tunnel, Tailscale, or a reverse proxy with HTTPS. Do not expose the raw HTTP server publicly.
@@ -190,10 +190,12 @@ Use this on another person's computer. They do not need Obsidian or the Gmail CR
    export PEOPLEGRAPH_HOST="http://botwick-host-or-tailnet-name:8787"
    export PEOPLEGRAPH_TOKEN="token-shared-by-botwick-owner"
 
-   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
-   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"
-   peoplegraph --host "$PEOPLEGRAPH_HOST" --token "$PEOPLEGRAPH_TOKEN" score harper@2389.ai
+   peoplegraph --remote who-knows --company disney
+   peoplegraph --remote find-person "Harper Reed"
+   peoplegraph --remote score harper@2389.ai
    ```
+
+   Use `--remote` when querying from a computer that also has the Obsidian plugin. It forces remote mode and refuses local cache fallback.
 
 3. If Botwick is only bound to localhost, create an SSH tunnel first:
 
@@ -204,7 +206,7 @@ Use this on another person's computer. They do not need Obsidian or the Gmail CR
    Then query through the tunnel:
 
    ```bash
-   peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
+   peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
    ```
 
 Remote mode is read-only in V1. Query-only users can run `describe`, `version`, `find-person`, `score`, `who-knows`, `get-neighbors`, `get-edges`, `contact-card`, `suggest-duplicates`, `suggest-external-merges`, and `merge-queue`. Merge writes still run only on the source-of-truth cache/queue so Botwick's graph stays protected behind explicit review.

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PeopleGraph 0.3.0 Remote Query Guide</title>
+  <title>PeopleGraph 0.3.1 Remote Query Guide</title>
   <style>
     :root {
       color-scheme: light;
@@ -428,7 +428,7 @@
     <aside>
       <div class="brand">
         <span class="eyebrow">Remote Query Guide</span>
-        <h1>PeopleGraph 0.3.0</h1>
+        <h1>PeopleGraph 0.3.1</h1>
         <p>What Kaya can query from Botwick's source-of-truth graph without installing Obsidian.</p>
       </div>
       <nav aria-label="Page navigation">
@@ -457,7 +457,7 @@
           <div class="connect-card">
             <h3>Current connection target</h3>
             <div class="pill-row">
-              <span class="pill">PeopleGraph 0.3.0</span>
+              <span class="pill">PeopleGraph 0.3.1</span>
               <span class="pill info">Read-only remote mode</span>
               <span class="pill warn">Token required</span>
             </div>
@@ -473,7 +473,8 @@
           <h2>Connect</h2>
           <p class="section-intro">
             Use a prefix for one-off commands, or export the host and token once
-            per terminal session.
+            per terminal session. Add <code>--remote</code> to every query so the
+            CLI errors instead of falling back to a local Obsidian cache.
           </p>
           <div class="grid">
             <div class="command-card">
@@ -484,7 +485,7 @@
               <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>brew tap kayacancode/tap
 brew install peoplegraph
 peoplegraph version</code></pre>
-              <div class="meta-line">Expected version: <code>0.3.0</code> or newer.</div>
+              <div class="meta-line">Expected version: <code>0.3.1</code> or newer.</div>
             </div>
 
             <div class="command-card">
@@ -492,7 +493,7 @@ peoplegraph version</code></pre>
                 <h3>Use the prefix <span class="tag">one-off</span></h3>
                 <p>Paste this before any command if you do not want environment variables.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --host "http://100.92.219.31:8787" --token "93cf5a...9644"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote --host "http://100.92.219.31:8787" --token "93cf5a...9644"</code></pre>
               <div class="meta-line">Replace the redacted token with the real token.</div>
             </div>
 
@@ -511,8 +512,8 @@ export PEOPLEGRAPH_TOKEN="93cf5a...9644"</code></pre>
                 <h3>Smoke test <span class="tag">check</span></h3>
                 <p>Confirm the server and token work before running lookups.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph version
-peoplegraph describe</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote version
+peoplegraph --remote describe</code></pre>
               <div class="meta-line">If this fails, check the token, host, and network.</div>
             </div>
           </div>
@@ -530,8 +531,8 @@ peoplegraph describe</code></pre>
                 <h3>Find a person <span class="tag">lookup</span></h3>
                 <p>Fuzzy match by name, email, or alias. Returns the top 10 by default.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph find-person "Harper Reed"
-peoplegraph find-person "Harper Reed" --limit 20</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote find-person "Harper Reed"
+peoplegraph --remote find-person "Harper Reed" --limit 20</code></pre>
               <div class="meta-line">Use when you do not know the exact email.</div>
             </div>
 
@@ -540,7 +541,7 @@ peoplegraph find-person "Harper Reed" --limit 20</code></pre>
                 <h3>Score one email <span class="tag">score</span></h3>
                 <p>Relationship score for one email: combined score, depth, recency, and quadrant.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph score harper@2389.ai</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote score harper@2389.ai</code></pre>
               <div class="meta-line">Quadrants include <code>nurture</code>, <code>developing</code>, and <code>re-engage</code>.</div>
             </div>
 
@@ -549,7 +550,7 @@ peoplegraph find-person "Harper Reed" --limit 20</code></pre>
                 <h3>Contact card <span class="tag">card</span></h3>
                 <p>Minimal source-aware card for one person: name, emails, company, aliases.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph contact-card "Harper Reed"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote contact-card "Harper Reed"</code></pre>
               <div class="meta-line">Useful before deciding whether a merge suggestion is plausible.</div>
             </div>
 
@@ -558,8 +559,8 @@ peoplegraph find-person "Harper Reed" --limit 20</code></pre>
                 <h3>Who knows a company <span class="tag">company</span></h3>
                 <p>Everyone at a company or domain, ranked by relationship score.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph who-knows --company betaworks
-peoplegraph who-knows --company betaworks --limit 10</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company betaworks
+peoplegraph --remote who-knows --company betaworks --limit 10</code></pre>
               <div class="meta-line">Works with company names and domains.</div>
             </div>
 
@@ -568,7 +569,7 @@ peoplegraph who-knows --company betaworks --limit 10</code></pre>
                 <h3>Neighbors <span class="tag">graph</span></h3>
                 <p>Shows who is connected to a person once edge data exists.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph get-neighbors harper@2389.ai</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote get-neighbors harper@2389.ai</code></pre>
               <div class="meta-line">Best after the plugin has written relationship edges.</div>
             </div>
 
@@ -577,7 +578,7 @@ peoplegraph who-knows --company betaworks --limit 10</code></pre>
                 <h3>Specific edge <span class="tag">graph</span></h3>
                 <p>Returns the relationship edge between two specific people.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph get-edges --from harper@2389.ai --to john@betaworks.com</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote get-edges --from harper@2389.ai --to john@betaworks.com</code></pre>
               <div class="meta-line">Use when you need the direct connection evidence.</div>
             </div>
           </div>
@@ -595,8 +596,8 @@ peoplegraph who-knows --company betaworks --limit 10</code></pre>
                 <h3>Suggest duplicates <span class="tag">review</span></h3>
                 <p>Find likely duplicate contacts in the cache.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph suggest-duplicates
-peoplegraph suggest-duplicates --limit 10 --min-confidence 0.85</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote suggest-duplicates
+peoplegraph --remote suggest-duplicates --limit 10 --min-confidence 0.85</code></pre>
               <div class="meta-line">Returns confidence, reasons, and next action commands.</div>
             </div>
 
@@ -605,8 +606,8 @@ peoplegraph suggest-duplicates --limit 10 --min-confidence 0.85</code></pre>
                 <h3>Merge queue <span class="tag">queue</span></h3>
                 <p>See pending merge proposals already staged on the source-of-truth graph.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph merge-queue
-peoplegraph merge-queue --status pending</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote merge-queue
+peoplegraph --remote merge-queue --status pending</code></pre>
               <div class="meta-line">Use <code>--status all</code> when you want historical queue entries.</div>
             </div>
           </div>
@@ -626,7 +627,7 @@ peoplegraph merge-queue --status pending</code></pre>
                 <h3>Describe <span class="tag">agent</span></h3>
                 <p>Full command surface for agent introspection.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph describe</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote describe</code></pre>
               <div class="meta-line">Good first command for another agent integration.</div>
             </div>
 
@@ -635,7 +636,7 @@ peoplegraph merge-queue --status pending</code></pre>
                 <h3>Version <span class="tag">health</span></h3>
                 <p>CLI and server version info.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph version</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote version</code></pre>
               <div class="meta-line">Confirms local CLI and remote server can talk.</div>
             </div>
           </div>
@@ -646,20 +647,20 @@ peoplegraph merge-queue --status pending</code></pre>
           <div class="grid">
             <div class="note">
               <strong>Find who Botwick knows at a company</strong>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph who-knows --company disney --limit 15</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company disney --limit 15</code></pre>
             </div>
             <div class="note">
               <strong>Look up a person, then inspect the strongest record</strong>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph find-person "Nicole Ripka"
-peoplegraph contact-card "Nicole Ripka"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote find-person "Nicole Ripka"
+peoplegraph --remote contact-card "Nicole Ripka"</code></pre>
             </div>
             <div class="note">
               <strong>Check if a duplicate should be reviewed</strong>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph suggest-duplicates --limit 10 --min-confidence 0.9</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote suggest-duplicates --limit 10 --min-confidence 0.9</code></pre>
             </div>
             <div class="note">
               <strong>Use the prefix without exports</strong>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --host "http://100.92.219.31:8787" --token "93cf5a...9644" who-knows --company betaworks</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote --host "http://100.92.219.31:8787" --token "93cf5a...9644" who-knows --company betaworks</code></pre>
             </div>
           </div>
         </section>
@@ -682,13 +683,13 @@ brew install peoplegraph</code></pre>
               <strong>Connection refused or timeout</strong>
               <p>The Botwick server may not be running, the Tailscale/private network may be disconnected, or the host URL is wrong.</p>
               <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
-peoplegraph version</code></pre>
+peoplegraph --remote version</code></pre>
             </div>
             <div class="note">
               <strong>No results for a company</strong>
               <p>Try the domain, a person lookup, or a higher limit. The source cache may need a fresh sync on Botwick's computer.</p>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph who-knows --company betaworks.com --limit 25
-peoplegraph find-person "Betaworks"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company betaworks.com --limit 25
+peoplegraph --remote find-person "Betaworks"</code></pre>
             </div>
           </div>
         </section>

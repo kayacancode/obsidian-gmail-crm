@@ -268,7 +268,7 @@ peoplegraph propose-merge &lt;a&gt; &lt;b&gt;
 peoplegraph describe
 peoplegraph version
 peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
-      <p>Global flags: <code>--format json|jsonl</code>, <code>--cache &lt;path&gt;</code>, <code>--host &lt;url&gt;</code>, <code>--token &lt;value&gt;</code>, and <code>--quiet</code>.</p>
+      <p>Global flags: <code>--format json|jsonl</code>, <code>--cache &lt;path&gt;</code>, <code>--host &lt;url&gt;</code>, <code>--remote</code>, <code>--token &lt;value&gt;</code>, and <code>--quiet</code>.</p>
     </section>
 
     <section>
@@ -279,8 +279,8 @@ export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
 peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787
 
 # From a client
-peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney</code></pre>
-      <p>Supported remotely: <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>contact-card</code>, <code>suggest-duplicates</code>, <code>suggest-external-merges</code>, and <code>merge-queue</code>. Write commands are intentionally local-only in V1: <code>import-cache</code>, <code>apply-external-merge</code>, <code>dismiss-external-merge</code>, <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code>.</p>
+peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney</code></pre>
+      <p>Supported remotely: <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>contact-card</code>, <code>suggest-duplicates</code>, <code>suggest-external-merges</code>, and <code>merge-queue</code>. Use <code>--remote</code> when querying from a computer that also has a local Obsidian plugin cache; it refuses local fallback if no remote host is configured. Write commands are intentionally local-only in V1: <code>import-cache</code>, <code>apply-external-merge</code>, <code>dismiss-external-merge</code>, <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code>.</p>
       <p>Default binding is localhost. For another person or machine, put this behind a trusted private network, SSH tunnel, or reverse proxy rather than exposing raw HTTP on the public internet.</p>
     </section>
 
@@ -344,7 +344,7 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
     <section>
       <h2>Distribution</h2>
       <ul>
-        <li>Published as <code>peoplegraph-v0.3.0</code> on GitHub Releases.</li>
+        <li>Published as <code>peoplegraph-v0.3.1</code> on GitHub Releases.</li>
         <li>Install with Homebrew: <code>brew tap kayacancode/tap</code>, then <code>brew install peoplegraph</code>.</li>
         <li>Build with <code>npm run build:peoplegraph</code>.</li>
         <li>Package with <code>npm run package:peoplegraph</code>.</li>
@@ -402,7 +402,7 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
 
     <section>
       <h2>Success Criteria</h2>
-      <p>The Disney query runs end-to-end through Botwick to <code>peoplegraph --host &lt;botwick-url&gt; who-knows --company Disney</code>, returning ranked JSON in under a second without loading Obsidian or vault markdown on the client machine.</p>
+      <p>The Disney query runs end-to-end through Botwick to <code>peoplegraph --remote --host &lt;botwick-url&gt; who-knows --company Disney</code>, returning ranked JSON in under a second without loading Obsidian or vault markdown on the client machine.</p>
     </section>
   </main>
 </body>
