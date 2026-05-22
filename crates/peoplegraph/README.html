@@ -128,12 +128,17 @@ peoplegraph --cache /path/to/contact-index.json score maya.rivera@disney.com
 peoplegraph --cache /path/to/contact-index.json who-knows --company Disney
 peoplegraph --cache /path/to/contact-index.json get-neighbors maya.rivera@disney.com
 peoplegraph --cache /path/to/contact-index.json get-edges --from maya.rivera@disney.com --to sam.lee@example.org
+peoplegraph --cache /path/to/contact-index.json contact-card maya.rivera@disney.com
 peoplegraph --cache /path/to/contact-index.json suggest-duplicates --limit 25 --min-confidence 0.82
+peoplegraph --cache /path/to/contact-index.json import-cache --source kaya /path/to/kaya/contact-index.json
+peoplegraph --cache /path/to/contact-index.json suggest-external-merges --source kaya --limit 25
+peoplegraph --cache /path/to/contact-index.json apply-external-merge --source kaya --primary maya.rivera@disney.com --external maya@disney.com
+peoplegraph --cache /path/to/contact-index.json dismiss-external-merge --source kaya --primary maya.rivera@disney.com --external maya@disney.com --reason not_same_person
 peoplegraph --cache /path/to/contact-index.json merge-queue --status pending --limit 25
 peoplegraph --cache /path/to/contact-index.json apply-merge maya.rivera@disney.com maya@disney.com
 peoplegraph --cache /path/to/contact-index.json dismiss-merge maya.rivera@disney.com maya@disney.com --reason not_duplicate
 peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
-      <p>All commands emit a stable JSON object on stdout. Query commands are read-only; <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code> intentionally update local merge metadata.</p>
+      <p>All commands emit a stable JSON object on stdout. Query commands are read-only; merge and import commands intentionally update local sidecar or cache metadata.</p>
     </section>
 
     <section>
@@ -143,8 +148,18 @@ peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney
 peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
       <p>Then query from a client with the same token:</p>
       <pre><code>peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney
-peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"</code></pre>
+peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"
+peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" contact-card harper@2389.ai</code></pre>
       <p>Remote mode supports read-only commands. Merge commands stay local-only in V1 and should be applied on the source-of-truth machine after review.</p>
+    </section>
+
+    <section>
+      <h2>External Source Staging</h2>
+      <p>Import another Gmail CRM plugin user's local cache into <code>external-sources.json</code> without overwriting the source-of-truth graph.</p>
+      <pre><code>peoplegraph --cache /botwick/contact-index.json import-cache --source kaya /kaya/contact-index.json
+peoplegraph --cache /botwick/contact-index.json suggest-external-merges --source kaya
+peoplegraph --cache /botwick/contact-index.json contact-card harper@2389.ai</code></pre>
+      <p><code>apply-external-merge</code> only merges objective identity fields such as aliases/emails and missing company/role fields. Source-specific relationship context remains separate.</p>
     </section>
 
     <section>

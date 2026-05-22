@@ -184,7 +184,7 @@
     <section>
       <h2>Summary</h2>
       <p><code>peoplegraph</code> reads the plugin's local <code>contact-index.json</code> cache directly and can also serve read-only queries from that cache over a token-protected HTTP endpoint. Local use does not need Obsidian running; remote use needs a bearer token. Botwick is the source-of-truth consumer, but the command surface is general enough for other agents.</p>
-      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, <code>apply-merge</code>, <code>dismiss-merge</code>, <code>propose-merge</code>, and read-only <code>serve</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, relationship edges, and canonical identity metadata into <code>contact-index.json</code> during staleness updates.</p>
+      <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>contact-card</code>, <code>import-cache</code>, <code>suggest-external-merges</code>, <code>apply-external-merge</code>, <code>dismiss-external-merge</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, <code>apply-merge</code>, <code>dismiss-merge</code>, <code>propose-merge</code>, and read-only <code>serve</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, relationship edges, and canonical identity metadata into <code>contact-index.json</code> during staleness updates.</p>
     </section>
 
     <section>
@@ -254,6 +254,11 @@ peoplegraph get-neighbors &lt;email&gt;
 peoplegraph get-edges --from &lt;a&gt; --to &lt;b&gt;
 peoplegraph score &lt;email&gt;
 peoplegraph who-knows --company &lt;name&gt;
+peoplegraph contact-card &lt;email-or-name&gt;
+peoplegraph import-cache --source &lt;source&gt; /path/to/contact-index.json
+peoplegraph suggest-external-merges --source &lt;source&gt; --limit 25
+peoplegraph apply-external-merge --source &lt;source&gt; --primary &lt;email&gt; --external &lt;email&gt;
+peoplegraph dismiss-external-merge --source &lt;source&gt; --primary &lt;email&gt; --external &lt;email&gt; --reason not_same_person
 peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82
 peoplegraph merge-queue --status pending --limit 25
 peoplegraph apply-merge &lt;a&gt; &lt;b&gt;
@@ -274,7 +279,7 @@ peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787
 
 # From a client
 peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney</code></pre>
-      <p>Supported remotely: <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>suggest-duplicates</code>, and <code>merge-queue</code>. Write commands are intentionally local-only in V1: <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code>.</p>
+      <p>Supported remotely: <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>contact-card</code>, <code>suggest-duplicates</code>, <code>suggest-external-merges</code>, and <code>merge-queue</code>. Write commands are intentionally local-only in V1: <code>import-cache</code>, <code>apply-external-merge</code>, <code>dismiss-external-merge</code>, <code>propose-merge</code>, <code>dismiss-merge</code>, and <code>apply-merge</code>.</p>
       <p>Default binding is localhost. For another person or machine, put this behind a trusted private network, SSH tunnel, or reverse proxy rather than exposing raw HTTP on the public internet.</p>
     </section>
 
@@ -328,9 +333,16 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
     </section>
 
     <section>
+      <h2>External Source Staging</h2>
+      <p><code>import-cache</code> stages another Gmail CRM plugin user's <code>contact-index.json</code> in <code>external-sources.json</code> next to Botwick's source-of-truth cache. It never overwrites the main graph during import.</p>
+      <p><code>contact-card</code> returns a minimal shared core card plus source-specific evidence. The shared core card is objective identity data; private relationship context remains source-specific.</p>
+      <p><code>apply-external-merge</code> only merges objective identity fields, currently aliases/emails and missing company or role fields. <code>dismiss-external-merge</code> records false positives so they stop reappearing.</p>
+    </section>
+
+    <section>
       <h2>Distribution</h2>
       <ul>
-        <li>Published as <code>peoplegraph-v0.2.1</code> on GitHub Releases.</li>
+        <li>Published as <code>peoplegraph-v0.3.0</code> on GitHub Releases.</li>
         <li>Install with Homebrew: <code>brew tap kayacancode/tap</code>, then <code>brew install peoplegraph</code>.</li>
         <li>Build with <code>npm run build:peoplegraph</code>.</li>
         <li>Package with <code>npm run package:peoplegraph</code>.</li>

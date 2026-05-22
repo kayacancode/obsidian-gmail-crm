@@ -128,6 +128,7 @@ Example commands:
 peoplegraph who-knows --company betaworks
 peoplegraph find-person "Harper Reed"
 peoplegraph score harper@2389.ai
+peoplegraph contact-card harper@2389.ai
 peoplegraph suggest-duplicates --limit 10
 ```
 
@@ -206,7 +207,26 @@ Use this on another person's computer. They do not need Obsidian or the Gmail CR
    peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
    ```
 
-Remote mode is read-only in V1. Query-only users can run `describe`, `version`, `find-person`, `score`, `who-knows`, `get-neighbors`, `get-edges`, `suggest-duplicates`, and `merge-queue`. Merge writes still run only on the source-of-truth cache/queue so Botwick's graph stays protected behind explicit review.
+Remote mode is read-only in V1. Query-only users can run `describe`, `version`, `find-person`, `score`, `who-knows`, `get-neighbors`, `get-edges`, `contact-card`, `suggest-duplicates`, `suggest-external-merges`, and `merge-queue`. Merge writes still run only on the source-of-truth cache/queue so Botwick's graph stays protected behind explicit review.
+
+### Import another plugin user's local cache
+
+If another person already runs the Gmail CRM plugin, they can share their local `.obsidian/plugins/gmail-crm/contact-index.json` with the Botwick source-of-truth machine. Importing it writes a sidecar file named `external-sources.json` next to Botwick's cache; it does not overwrite Botwick's main graph.
+
+```bash
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" import-cache --source kaya /path/to/kaya/contact-index.json
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" suggest-external-merges --source kaya --limit 25
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" contact-card harper@2389.ai
+```
+
+Review suggested matches with the generated commands:
+
+```bash
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" apply-external-merge --source kaya --primary harper@2389.ai --external harper@nata2.org
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" dismiss-external-merge --source kaya --primary harper@2389.ai --external harper@nata2.org --reason not_same_person
+```
+
+`apply-external-merge` only adds objective identity fields, currently aliases/emails and missing company/role fields. Private relationship context remains source-specific evidence in `external-sources.json`; it is not merged into the shared core card.
 
 ### People Page Format
 

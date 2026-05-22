@@ -422,6 +422,7 @@
         <a href="#architecture">Architecture</a>
         <a href="#commands">Command Surface</a>
         <a href="#remote">Remote Query Mode</a>
+        <a href="#external-sources">External Sources</a>
         <a href="#cache">Cache Contract</a>
         <a href="#implementation">Implementation</a>
         <a href="#verification">Verification</a>
@@ -532,6 +533,31 @@
                 <td>Returns scored relationship edge records between two emails.</td>
               </tr>
               <tr>
+                <td><code>peoplegraph contact-card &lt;email-or-name&gt;</code></td>
+                <td>Implemented</td>
+                <td>Returns a minimal shared core identity card plus source-specific evidence.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph import-cache --source &lt;source&gt; /path/to/contact-index.json</code></td>
+                <td>Implemented</td>
+                <td>Stages another Gmail CRM plugin user's local cache in <code>external-sources.json</code>.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph suggest-external-merges --source &lt;source&gt;</code></td>
+                <td>Implemented</td>
+                <td>Suggests human-reviewed merges from staged source contacts into the source-of-truth graph.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph apply-external-merge --source &lt;source&gt; --primary &lt;email&gt; --external &lt;email&gt;</code></td>
+                <td>Implemented</td>
+                <td>Merges objective identity fields only: aliases/emails and missing company or role fields.</td>
+              </tr>
+              <tr>
+                <td><code>peoplegraph dismiss-external-merge --source &lt;source&gt; --primary &lt;email&gt; --external &lt;email&gt;</code></td>
+                <td>Implemented</td>
+                <td>Records a false-positive external merge suggestion in the source sidecar.</td>
+              </tr>
+              <tr>
                 <td><code>peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82</code></td>
                 <td>Implemented</td>
                 <td>Finds likely duplicate or fragment contact rows, skipping pairs already present in the local merge queue.</td>
@@ -589,15 +615,17 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
             <p>
               <code>describe</code>, <code>version</code>, <code>find-person</code>,
               <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>,
-              <code>get-edges</code>, <code>suggest-duplicates</code>, and
-              <code>merge-queue</code>.
+              <code>get-edges</code>, <code>contact-card</code>,
+              <code>suggest-duplicates</code>, <code>suggest-external-merges</code>,
+              and <code>merge-queue</code>.
             </p>
           </div>
           <div class="callout">
             <strong>Local-only writes</strong>
             <p>
-              <code>propose-merge</code>, <code>dismiss-merge</code>, and
-              <code>apply-merge</code> do not run through <code>--host</code> in V1.
+              <code>import-cache</code>, <code>apply-external-merge</code>,
+              <code>dismiss-external-merge</code>, <code>propose-merge</code>,
+              <code>dismiss-merge</code>, and <code>apply-merge</code> do not run through <code>--host</code> in V1.
               Merge review stays explicit on the source-of-truth machine.
             </p>
           </div>
@@ -623,6 +651,24 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
           <code>People pages/_Merge Queue.md</code> with queue size, pending candidates,
           applied candidates, dismissed candidates, source cache paths, and copyable
           apply/dismiss/reopen commands.
+        </p>
+      </section>
+
+      <section id="external-sources">
+        <h2>External Source Staging</h2>
+        <p>
+          Imported plugin caches are staged in <code>external-sources.json</code>
+          beside Botwick's source-of-truth <code>contact-index.json</code>. This
+          keeps another user's relationship context separate while still letting
+          Botwick review objective identity overlap.
+        </p>
+        <pre><code>peoplegraph --cache /botwick/contact-index.json import-cache --source kaya /kaya/contact-index.json
+peoplegraph --cache /botwick/contact-index.json suggest-external-merges --source kaya
+peoplegraph --cache /botwick/contact-index.json contact-card harper@2389.ai</code></pre>
+        <p>
+          <code>apply-external-merge</code> adds objective identity evidence such as
+          emails/aliases and missing company or role fields. Private notes and
+          subjective relationship context are not merged into the shared core card.
         </p>
       </section>
 
@@ -707,7 +753,7 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
               </tr>
               <tr>
                 <td><code>brew install peoplegraph</code></td>
-                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.2.1</code>.</td>
+                <td>Passing from <code>kayacancode/tap</code>; <code>peoplegraph version</code> returns <code>0.3.0</code>.</td>
               </tr>
               <tr>
                 <td>Fixture smoke test</td>

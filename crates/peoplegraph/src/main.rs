@@ -58,10 +58,20 @@ enum Commands {
     GetNeighbors(EmailArg),
     /// Return the edge between two emails once edge data is present in the cache.
     GetEdges(GetEdgesArgs),
+    /// Return a minimal source-aware contact card for one person.
+    ContactCard(ContactCardArgs),
     /// Suggest duplicate/contact-fragment rows to review for canonical identity cleanup.
     SuggestDuplicates(SuggestDuplicatesArgs),
+    /// Import another Gmail CRM contact cache into source-aware staging.
+    ImportCache(ImportCacheArgs),
+    /// Suggest source-aware merges from imported caches into the source-of-truth cache.
+    SuggestExternalMerges(SuggestExternalMergesArgs),
     /// Inspect pending merge proposals without modifying the queue.
     MergeQueue(MergeQueueArgs),
+    /// Apply objective identity fields from an imported source contact to the source-of-truth cache.
+    ApplyExternalMerge(ApplyExternalMergeArgs),
+    /// Dismiss an imported source contact merge candidate.
+    DismissExternalMerge(DismissExternalMergeArgs),
     /// Apply a reviewed merge by writing canonical identity metadata to the cache.
     ApplyMerge(ApplyMergeArgs),
     /// Dismiss a merge candidate as a false positive.
@@ -108,7 +118,32 @@ struct GetEdgesArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct ContactCardArgs {
+    query: String,
+}
+
+#[derive(Args, Debug, Clone)]
 struct SuggestDuplicatesArgs {
+    #[arg(long, default_value_t = 25)]
+    limit: usize,
+
+    #[arg(long, default_value_t = 0.82)]
+    min_confidence: f64,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ImportCacheArgs {
+    #[arg(long)]
+    source: String,
+
+    path: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+struct SuggestExternalMergesArgs {
+    #[arg(long)]
+    source: Option<String>,
+
     #[arg(long, default_value_t = 25)]
     limit: usize,
 
@@ -123,6 +158,33 @@ struct MergeQueueArgs {
 
     #[arg(long, default_value_t = 25)]
     limit: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ApplyExternalMergeArgs {
+    #[arg(long)]
+    source: String,
+
+    #[arg(long)]
+    primary: String,
+
+    #[arg(long)]
+    external: String,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DismissExternalMergeArgs {
+    #[arg(long)]
+    source: String,
+
+    #[arg(long)]
+    primary: String,
+
+    #[arg(long)]
+    external: String,
+
+    #[arg(long, default_value = "not_same_person")]
+    reason: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -155,7 +217,7 @@ struct ServeArgs {
     token: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContactIndex {
     #[serde(default, alias = "schema_version")]
@@ -169,7 +231,7 @@ struct ContactIndex {
     edges: Vec<ContactEdge>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Contact {
     #[serde(default)]
@@ -224,7 +286,7 @@ struct Contact {
     quadrant: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedScore {
     #[serde(default, alias = "relationship_depth")]
@@ -279,6 +341,49 @@ struct MergeCandidate {
     dismiss_reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalSourceStore {
+    schema_version: u32,
+    updated_at_unix: u64,
+    sources: HashMap<String, ExternalSource>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalSource {
+    source: String,
+    imported_at_unix: u64,
+    cache_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_sync: Option<String>,
+    contacts: HashMap<String, Contact>,
+    #[serde(default)]
+    applied: Vec<ExternalMergeRecord>,
+    #[serde(default)]
+    dismissed: Vec<ExternalMergeDismissal>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalMergeRecord {
+    primary_email: String,
+    external_email: String,
+    applied_at_unix: u64,
+    aliases_added: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalMergeDismissal {
+    primary_email: String,
+    external_email: String,
+    dismissed_at_unix: u64,
+    reason: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
     ok: bool,
@@ -316,6 +421,15 @@ struct DuplicateSuggestion {
     confidence: f64,
     primary: ContactRow,
     duplicate: ContactRow,
+    reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ExternalMergeSuggestion {
+    source: String,
+    confidence: f64,
+    primary: ContactRow,
+    external: ContactRow,
     reasons: Vec<String>,
 }
 
@@ -375,8 +489,13 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::GetEdges(args) => with_index(cli, command, start, |index| {
             get_edges(index, &args.from, &args.to, start)
         }),
+        Commands::ContactCard(args) => contact_card(cli, command, args, start),
         Commands::SuggestDuplicates(args) => suggest_duplicates(cli, command, args, start),
+        Commands::ImportCache(args) => import_cache(cli, command, args, start),
+        Commands::SuggestExternalMerges(args) => suggest_external_merges(cli, command, args, start),
         Commands::MergeQueue(args) => merge_queue(cli, command, args, start),
+        Commands::ApplyExternalMerge(args) => apply_external_merge(cli, command, args, start),
+        Commands::DismissExternalMerge(args) => dismiss_external_merge(cli, command, args, start),
         Commands::ApplyMerge(args) => apply_merge(cli, command, args, start),
         Commands::DismissMerge(args) => dismiss_merge(cli, command, args, start),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
@@ -489,11 +608,26 @@ fn remote_path(command: &Commands) -> Option<String> {
             url_encode(&args.from),
             url_encode(&args.to)
         )),
+        Commands::ContactCard(args) => {
+            Some(format!("/contact-card?query={}", url_encode(&args.query)))
+        }
         Commands::SuggestDuplicates(args) => Some(format!(
             "/suggest-duplicates?limit={}&min_confidence={}",
             args.limit.max(1),
             args.min_confidence
         )),
+        Commands::SuggestExternalMerges(args) => {
+            let mut path = format!(
+                "/suggest-external-merges?limit={}&min_confidence={}",
+                args.limit.max(1),
+                args.min_confidence
+            );
+            if let Some(source) = args.source.as_deref() {
+                path.push_str("&source=");
+                path.push_str(&url_encode(source));
+            }
+            Some(path)
+        }
         Commands::MergeQueue(args) => Some(format!(
             "/merge-queue?status={}&limit={}",
             url_encode(&args.status),
@@ -501,7 +635,10 @@ fn remote_path(command: &Commands) -> Option<String> {
         )),
         Commands::Describe => Some("/describe".to_string()),
         Commands::Version => Some("/version".to_string()),
-        Commands::ApplyMerge(_)
+        Commands::ImportCache(_)
+        | Commands::ApplyExternalMerge(_)
+        | Commands::DismissExternalMerge(_)
+        | Commands::ApplyMerge(_)
         | Commands::DismissMerge(_)
         | Commands::ProposeMerge(_)
         | Commands::Serve(_) => None,
@@ -623,7 +760,18 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
             from: query_param(&params, "from"),
             to: query_param(&params, "to"),
         }),
+        "/contact-card" => Commands::ContactCard(ContactCardArgs {
+            query: query_param(&params, "query"),
+        }),
         "/suggest-duplicates" => Commands::SuggestDuplicates(SuggestDuplicatesArgs {
+            limit: query_usize(&params, "limit", 25),
+            min_confidence: query_f64(&params, "min_confidence", 0.82),
+        }),
+        "/suggest-external-merges" => Commands::SuggestExternalMerges(SuggestExternalMergesArgs {
+            source: params
+                .get("source")
+                .cloned()
+                .filter(|value| !value.trim().is_empty()),
             limit: query_usize(&params, "limit", 25),
             min_confidence: query_f64(&params, "min_confidence", 0.82),
         }),
@@ -1086,6 +1234,75 @@ fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Resp
     )
 }
 
+fn contact_card(
+    cli: &Cli,
+    command: &'static str,
+    args: &ContactCardArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let Some(primary) = find_contact_for_query(&index, &args.query) else {
+        return fail(
+            command,
+            "not_found",
+            format!("no contact found for {}", args.query),
+            start,
+        );
+    };
+
+    let sources_path = external_sources_path(&cache_path);
+    let store = read_external_sources(&sources_path);
+    let source_matches = matching_external_contacts(&primary, &store);
+    let source_values: Vec<Value> = source_matches
+        .iter()
+        .map(|(source, row, confidence, reasons)| {
+            json!({
+                "source": source.source,
+                "user_email": source.user_email,
+                "last_sync": source.last_sync,
+                "has_private_context": true,
+                "private_context_policy": "not_merged_into_core_card",
+                "match_confidence": round_confidence(*confidence),
+                "match_reasons": reasons,
+                "contact": source_contact_summary(row),
+            })
+        })
+        .collect();
+
+    ok(
+        command,
+        json!({
+            "query": args.query,
+            "core": contact_core_card(&primary, &source_matches),
+            "source_of_truth": {
+                "source": "botwick",
+                "user_email": index.user_email,
+                "last_sync": index.last_sync,
+                "contact": source_contact_summary(&primary),
+            },
+            "sources": source_values,
+            "merge_policy": {
+                "core_fields": ["name", "previous_names", "emails", "phone_numbers", "company", "location_history"],
+                "private_context": "source-specific relationship notes stay separate and are only shown as review evidence",
+            },
+        }),
+        json!({
+            "matched": 1,
+            "external_source_count": store.sources.len(),
+            "external_matches": source_matches.len(),
+            "sources_path": sources_path.display().to_string(),
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
 fn suggest_duplicates(
     cli: &Cli,
     command: &'static str,
@@ -1212,6 +1429,193 @@ fn suggest_duplicates(
     )
 }
 
+fn import_cache(
+    cli: &Cli,
+    command: &'static str,
+    args: &ImportCacheArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, _index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let Some(source_id) = normalize_source_id(&args.source) else {
+        return fail(
+            command,
+            "invalid_source",
+            "source must contain at least one letter or number".to_string(),
+            start,
+        );
+    };
+    let imported_content = match fs::read_to_string(&args.path) {
+        Ok(content) => content,
+        Err(err) => {
+            return fail(
+                command,
+                "import_read_failed",
+                format!("failed to read {}: {err}", args.path.display()),
+                start,
+            );
+        }
+    };
+    let imported_index = match serde_json::from_str::<ContactIndex>(&imported_content) {
+        Ok(index) => index,
+        Err(err) => {
+            return fail(
+                command,
+                "import_parse_failed",
+                format!("failed to parse {}: {err}", args.path.display()),
+                start,
+            );
+        }
+    };
+
+    let sources_path = external_sources_path(&cache_path);
+    let mut store = read_external_sources(&sources_path);
+    let imported_contact_count = imported_index.contacts.len();
+    let source = ExternalSource {
+        source: source_id.clone(),
+        imported_at_unix: unix_seconds(),
+        cache_path: args.path.display().to_string(),
+        user_email: imported_index.user_email,
+        last_sync: imported_index.last_sync,
+        contacts: imported_index.contacts,
+        applied: store
+            .sources
+            .get(&source_id)
+            .map(|source| source.applied.clone())
+            .unwrap_or_default(),
+        dismissed: store
+            .sources
+            .get(&source_id)
+            .map(|source| source.dismissed.clone())
+            .unwrap_or_default(),
+    };
+    store.updated_at_unix = unix_seconds();
+    store.sources.insert(source_id.clone(), source);
+    if let Err(message) = write_external_sources(&sources_path, &store) {
+        return fail(command, "sources_write_failed", message, start);
+    }
+
+    ok(
+        command,
+        json!({
+            "source": source_id,
+            "imported": true,
+            "sources_path": sources_path.display().to_string(),
+            "contact_count": imported_contact_count,
+            "next_commands": [
+                "peoplegraph suggest-external-merges --source <source>",
+                "peoplegraph contact-card <email-or-name>"
+            ]
+        }),
+        json!({
+            "source_count": store.sources.len(),
+            "contact_count": imported_contact_count,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn suggest_external_merges(
+    cli: &Cli,
+    command: &'static str,
+    args: &SuggestExternalMergesArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let sources_path = external_sources_path(&cache_path);
+    let store = read_external_sources(&sources_path);
+    let Some(source_filter) = normalize_optional_source(args.source.as_deref()) else {
+        return fail(
+            command,
+            "invalid_source",
+            "source must contain at least one letter or number".to_string(),
+            start,
+        );
+    };
+    let min_confidence = args.min_confidence.clamp(0.0, 1.0);
+    let primary_rows = rows(&index);
+    let mut suggestions = Vec::new();
+    let mut skipped_reviewed = 0;
+
+    for (source_id, source) in &store.sources {
+        if source_filter
+            .as_ref()
+            .is_some_and(|filter| filter != source_id)
+        {
+            continue;
+        }
+        for external in rows_from_contacts(&source.contacts) {
+            for primary in &primary_rows {
+                if external_pair_status(source, &primary.email, &external.email).is_some() {
+                    skipped_reviewed += 1;
+                    continue;
+                }
+                if already_linked_to_external(primary, &external) {
+                    continue;
+                }
+                if let Some((confidence, reasons)) = external_merge_confidence(primary, &external)
+                    && confidence >= min_confidence
+                {
+                    suggestions.push(ExternalMergeSuggestion {
+                        source: source_id.clone(),
+                        confidence,
+                        primary: primary.clone(),
+                        external: external.clone(),
+                        reasons,
+                    });
+                }
+            }
+        }
+    }
+
+    suggestions.sort_by(|a, b| {
+        b.confidence
+            .total_cmp(&a.confidence)
+            .then_with(|| {
+                b.primary
+                    .contact
+                    .total_exchanges
+                    .cmp(&a.primary.contact.total_exchanges)
+            })
+            .then_with(|| a.primary.contact.name.cmp(&b.primary.contact.name))
+    });
+
+    let matched = suggestions.len();
+    let limit = args.limit.max(1);
+    let suggestion_values: Vec<Value> = suggestions
+        .into_iter()
+        .take(limit)
+        .map(|suggestion| external_merge_suggestion_value(&suggestion))
+        .collect();
+    let returned = suggestion_values.len();
+
+    ok(
+        command,
+        json!({
+            "suggestions": suggestion_values,
+            "min_confidence": round_confidence(min_confidence),
+            "source_filter": source_filter,
+            "sources_path": sources_path.display().to_string(),
+        }),
+        json!({
+            "matched": matched,
+            "returned": returned,
+            "skipped_reviewed": skipped_reviewed,
+            "source_count": store.sources.len(),
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
 fn merge_queue(
     cli: &Cli,
     command: &'static str,
@@ -1278,6 +1682,189 @@ fn merge_queue(
             "schema_version": index.schema_version,
             "last_sync": &index.last_sync,
             "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn apply_external_merge(
+    cli: &Cli,
+    command: &'static str,
+    args: &ApplyExternalMergeArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let Some(source_id) = normalize_source_id(&args.source) else {
+        return fail(
+            command,
+            "invalid_source",
+            "source must contain at least one letter or number".to_string(),
+            start,
+        );
+    };
+    let primary_email = resolve_email(&index, &args.primary);
+    let Some(primary_key) = contact_key_for_email(&index, &primary_email) else {
+        return fail(
+            command,
+            "not_found",
+            format!("no source-of-truth contact found for {primary_email}"),
+            start,
+        );
+    };
+
+    let sources_path = external_sources_path(&cache_path);
+    let mut store = read_external_sources(&sources_path);
+    let Some(source) = store.sources.get_mut(&source_id) else {
+        return fail(
+            command,
+            "source_not_found",
+            format!("no imported source named {source_id}; run import-cache first"),
+            start,
+        );
+    };
+    let external_email = resolve_email_in_contacts(&source.contacts, &args.external);
+    let Some(external_row) = find_by_email_or_alias_in_contacts(&source.contacts, &external_email)
+    else {
+        return fail(
+            command,
+            "external_not_found",
+            format!("no imported contact found for {external_email} in source {source_id}"),
+            start,
+        );
+    };
+
+    let Some(primary_row) = find_by_email_or_alias(&index, &primary_email) else {
+        return fail(
+            command,
+            "not_found",
+            format!("no source-of-truth contact found for {primary_email}"),
+            start,
+        );
+    };
+    let aliases_to_add = external_aliases_to_add(&primary_row, &external_row);
+    let canonical_id = primary_row
+        .contact
+        .canonical_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| format!("local:{}", primary_row.email));
+    let canonical_synced_at = unix_seconds_iso();
+
+    let mut index_json = match read_json_value(&cache_path) {
+        Ok(value) => value,
+        Err(message) => return fail(command, "cache_read_failed", message, start),
+    };
+    if let Err(message) = apply_external_to_contact(
+        &mut index_json,
+        &primary_key,
+        &canonical_id,
+        &aliases_to_add,
+        &canonical_synced_at,
+        &external_row.contact,
+    ) {
+        return fail(command, "cache_write_failed", message, start);
+    }
+    if let Err(message) = write_json_value(&cache_path, &index_json) {
+        return fail(command, "cache_write_failed", message, start);
+    }
+
+    upsert_external_applied(
+        source,
+        &primary_row.email,
+        &external_row.email,
+        &aliases_to_add,
+    );
+    store.updated_at_unix = unix_seconds();
+    if let Err(message) = write_external_sources(&sources_path, &store) {
+        return fail(command, "sources_write_failed", message, start);
+    }
+
+    ok(
+        command,
+        json!({
+            "applied": true,
+            "source": source_id,
+            "primary": contact_brief(&primary_row),
+            "external": contact_brief(&external_row),
+            "canonical_id": canonical_id,
+            "last_canonical_sync": canonical_synced_at,
+            "aliases_added": aliases_to_add,
+            "sources_path": sources_path.display().to_string(),
+            "policy": "objective identity fields only; private source context remains in the source sidecar",
+        }),
+        json!({
+            "matched": 1,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+fn dismiss_external_merge(
+    cli: &Cli,
+    command: &'static str,
+    args: &DismissExternalMergeArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let Some(source_id) = normalize_source_id(&args.source) else {
+        return fail(
+            command,
+            "invalid_source",
+            "source must contain at least one letter or number".to_string(),
+            start,
+        );
+    };
+    let primary_email = resolve_email(&index, &args.primary);
+    let sources_path = external_sources_path(&cache_path);
+    let mut store = read_external_sources(&sources_path);
+    let Some(source) = store.sources.get_mut(&source_id) else {
+        return fail(
+            command,
+            "source_not_found",
+            format!("no imported source named {source_id}; run import-cache first"),
+            start,
+        );
+    };
+    let external_email = resolve_email_in_contacts(&source.contacts, &args.external);
+    if find_by_email_or_alias_in_contacts(&source.contacts, &external_email).is_none() {
+        return fail(
+            command,
+            "external_not_found",
+            format!("no imported contact found for {external_email} in source {source_id}"),
+            start,
+        );
+    }
+
+    let reason = args.reason.trim();
+    let reason = if reason.is_empty() {
+        "not_same_person"
+    } else {
+        reason
+    };
+    upsert_external_dismissed(source, &primary_email, &external_email, reason);
+    store.updated_at_unix = unix_seconds();
+    if let Err(message) = write_external_sources(&sources_path, &store) {
+        return fail(command, "sources_write_failed", message, start);
+    }
+
+    ok(
+        command,
+        json!({
+            "dismissed": true,
+            "source": source_id,
+            "primary_email": primary_email,
+            "external_email": external_email,
+            "reason": reason,
+            "sources_path": sources_path.display().to_string(),
+        }),
+        json!({
+            "matched": 1,
             "ms": elapsed_ms(start)
         }),
     )
@@ -1717,6 +2304,472 @@ fn read_json_value(path: &Path) -> Result<Value, String> {
 fn write_json_value(path: &Path, value: &Value) -> Result<(), String> {
     let content = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
     fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))
+}
+
+fn external_sources_path(cache_path: &Path) -> PathBuf {
+    cache_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("external-sources.json")
+}
+
+fn read_external_sources(path: &Path) -> ExternalSourceStore {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<ExternalSourceStore>(&content).ok())
+        .unwrap_or_else(|| ExternalSourceStore {
+            schema_version: 1,
+            updated_at_unix: unix_seconds(),
+            sources: HashMap::new(),
+        })
+}
+
+fn write_external_sources(path: &Path, store: &ExternalSourceStore) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(store).map_err(|err| err.to_string())?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))
+}
+
+fn normalize_source_id(value: &str) -> Option<String> {
+    let mut normalized = String::new();
+    let mut last_dash = false;
+    for ch in value.trim().to_ascii_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch);
+            last_dash = false;
+        } else if matches!(ch, '-' | '_' | '.' | ' ') && !last_dash && !normalized.is_empty() {
+            normalized.push('-');
+            last_dash = true;
+        }
+    }
+    let normalized = normalized.trim_matches('-').to_string();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn normalize_optional_source(value: Option<&str>) -> Option<Option<String>> {
+    match value {
+        Some(value) => normalize_source_id(value).map(Some),
+        None => Some(None),
+    }
+}
+
+fn rows_from_contacts(contacts: &HashMap<String, Contact>) -> Vec<ContactRow> {
+    contacts
+        .iter()
+        .map(|(key, contact)| ContactRow {
+            email: canonical_email(key, contact),
+            contact: contact.clone(),
+        })
+        .collect()
+}
+
+fn find_by_email_or_alias_in_contacts(
+    contacts: &HashMap<String, Contact>,
+    email: &str,
+) -> Option<ContactRow> {
+    let email = email.trim().to_ascii_lowercase();
+    let contact_rows = rows_from_contacts(contacts);
+    contact_rows
+        .iter()
+        .find(|row| row.email == email || row.contact.email.trim().eq_ignore_ascii_case(&email))
+        .cloned()
+        .or_else(|| {
+            contact_rows.into_iter().find(|row| {
+                row.contact
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.trim().eq_ignore_ascii_case(&email))
+            })
+        })
+}
+
+fn resolve_email_in_contacts(contacts: &HashMap<String, Contact>, query: &str) -> String {
+    let email = query.trim().to_ascii_lowercase();
+    find_by_email_or_alias_in_contacts(contacts, &email)
+        .map(|row| row.email)
+        .unwrap_or(email)
+}
+
+fn find_contact_for_query(index: &ContactIndex, query: &str) -> Option<ContactRow> {
+    let query_email = query.trim().to_ascii_lowercase();
+    if let Some(row) = find_by_email_or_alias(index, &query_email) {
+        return Some(row);
+    }
+
+    let query_norm = normalize(query);
+    rows(index)
+        .into_iter()
+        .filter_map(|row| {
+            let confidence = match_confidence(&row, &query_norm, &query_email);
+            (confidence >= 0.72).then_some((confidence, row))
+        })
+        .max_by(|(left_confidence, left), (right_confidence, right)| {
+            left_confidence.total_cmp(right_confidence).then_with(|| {
+                infer_score(&left.contact)
+                    .combined
+                    .cmp(&infer_score(&right.contact).combined)
+            })
+        })
+        .map(|(_, row)| row)
+}
+
+fn matching_external_contacts<'a>(
+    primary: &ContactRow,
+    store: &'a ExternalSourceStore,
+) -> Vec<(&'a ExternalSource, ContactRow, f64, Vec<String>)> {
+    let mut matches = Vec::new();
+    for source in store.sources.values() {
+        for external in rows_from_contacts(&source.contacts) {
+            if let Some((confidence, reasons)) = external_merge_confidence(primary, &external)
+                && confidence >= 0.82
+            {
+                matches.push((source, external, confidence, reasons));
+            }
+        }
+    }
+    matches.sort_by(|(_, _, left_confidence, _), (_, _, right_confidence, _)| {
+        right_confidence.total_cmp(left_confidence)
+    });
+    matches
+}
+
+fn contact_core_card(
+    primary: &ContactRow,
+    source_matches: &[(&ExternalSource, ContactRow, f64, Vec<String>)],
+) -> Value {
+    let mut known_names = Vec::new();
+    push_unique_value(&mut known_names, &primary.contact.name);
+    let mut emails = Vec::new();
+    push_unique_email(&mut emails, &primary.email);
+    for alias in &primary.contact.aliases {
+        push_unique_email(&mut emails, alias);
+    }
+    let mut companies = Vec::new();
+    if let Some(company) = display_company(&primary.contact) {
+        push_unique_value(&mut companies, &company);
+    }
+
+    for (_, row, _, _) in source_matches {
+        push_unique_value(&mut known_names, &row.contact.name);
+        push_unique_email(&mut emails, &row.email);
+        for alias in &row.contact.aliases {
+            push_unique_email(&mut emails, alias);
+        }
+        if let Some(company) = display_company(&row.contact) {
+            push_unique_value(&mut companies, &company);
+        }
+    }
+
+    let primary_name = primary.contact.name.trim();
+    let previous_names: Vec<String> = known_names
+        .iter()
+        .filter(|name| !name.eq_ignore_ascii_case(primary_name))
+        .cloned()
+        .collect();
+
+    json!({
+        "canonical_id": primary
+            .contact
+            .canonical_id
+            .clone()
+            .unwrap_or_else(|| format!("local:{}", primary.email)),
+        "name": if primary_name.is_empty() { primary.email.as_str() } else { primary_name },
+        "previous_names": previous_names,
+        "emails": emails,
+        "phone_numbers": Vec::<String>::new(),
+        "company": companies.first(),
+        "companies": companies,
+        "role": &primary.contact.role,
+        "location_history": Vec::<String>::new(),
+        "unsupported_fields": ["phone_numbers", "location_history"],
+    })
+}
+
+fn push_unique_value(values: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    if !values
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(value))
+    {
+        values.push(value.to_string());
+    }
+}
+
+fn source_contact_summary(row: &ContactRow) -> Value {
+    json!({
+        "name": &row.contact.name,
+        "email": &row.email,
+        "aliases": &row.contact.aliases,
+        "company": display_company(&row.contact),
+        "role": &row.contact.role,
+        "domain": &row.contact.domain,
+        "last_contact": &row.contact.last_contact,
+        "total_exchanges": row.contact.total_exchanges,
+        "score": infer_score(&row.contact),
+        "score_source": score_source(&row.contact),
+    })
+}
+
+fn external_merge_confidence(
+    primary: &ContactRow,
+    external: &ContactRow,
+) -> Option<(f64, Vec<String>)> {
+    let mut confidence: f64 = 0.0;
+    let mut reasons = Vec::new();
+
+    if emails_overlap(primary, external) {
+        confidence = confidence.max(0.99);
+        reasons.push("shared_email_or_alias".to_string());
+    }
+
+    if let Some((duplicate_confidence, duplicate_reasons)) = duplicate_confidence(primary, external)
+    {
+        confidence = confidence.max(duplicate_confidence);
+        reasons.extend(duplicate_reasons);
+    }
+
+    let primary_company =
+        display_company(&primary.contact).map(|company| normalize_company(&company));
+    let external_company =
+        display_company(&external.contact).map(|company| normalize_company(&company));
+    if primary_company
+        .as_deref()
+        .zip(external_company.as_deref())
+        .is_some_and(|(left, right)| !left.is_empty() && left == right)
+    {
+        confidence = confidence.max(0.84);
+        reasons.push("same_company".to_string());
+    }
+
+    if confidence > 0.0 {
+        reasons.sort();
+        reasons.dedup();
+        Some((confidence, reasons))
+    } else {
+        None
+    }
+}
+
+fn emails_overlap(left: &ContactRow, right: &ContactRow) -> bool {
+    left.email.eq_ignore_ascii_case(&right.email)
+        || left
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| alias.trim().eq_ignore_ascii_case(&right.email))
+        || right
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| alias.trim().eq_ignore_ascii_case(&left.email))
+        || left.contact.aliases.iter().any(|left_alias| {
+            right
+                .contact
+                .aliases
+                .iter()
+                .any(|right_alias| left_alias.trim().eq_ignore_ascii_case(right_alias.trim()))
+        })
+}
+
+fn already_linked_to_external(primary: &ContactRow, external: &ContactRow) -> bool {
+    primary.email.eq_ignore_ascii_case(&external.email)
+        || primary
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| alias.trim().eq_ignore_ascii_case(&external.email))
+}
+
+fn external_pair_status<'a>(
+    source: &'a ExternalSource,
+    primary_email: &str,
+    external_email: &str,
+) -> Option<&'a str> {
+    if source.applied.iter().any(|record| {
+        record.primary_email.eq_ignore_ascii_case(primary_email)
+            && record.external_email.eq_ignore_ascii_case(external_email)
+    }) {
+        return Some("applied");
+    }
+    if source.dismissed.iter().any(|record| {
+        record.primary_email.eq_ignore_ascii_case(primary_email)
+            && record.external_email.eq_ignore_ascii_case(external_email)
+    }) {
+        return Some("dismissed");
+    }
+    None
+}
+
+fn external_merge_suggestion_value(suggestion: &ExternalMergeSuggestion) -> Value {
+    json!({
+        "source": suggestion.source,
+        "confidence": round_confidence(suggestion.confidence),
+        "reasons": &suggestion.reasons,
+        "primary": contact_brief(&suggestion.primary),
+        "external": contact_brief(&suggestion.external),
+        "next_actions": [
+            {
+                "command": "apply-external-merge",
+                "args": {
+                    "source": suggestion.source,
+                    "primary": suggestion.primary.email,
+                    "external": suggestion.external.email,
+                }
+            },
+            {
+                "command": "dismiss-external-merge",
+                "args": {
+                    "source": suggestion.source,
+                    "primary": suggestion.primary.email,
+                    "external": suggestion.external.email,
+                    "reason": "not_same_person",
+                }
+            }
+        ],
+        "next_command": format!(
+            "peoplegraph apply-external-merge --source {} --primary {} --external {}",
+            suggestion.source,
+            suggestion.primary.email,
+            suggestion.external.email
+        ),
+        "dismiss_command": format!(
+            "peoplegraph dismiss-external-merge --source {} --primary {} --external {} --reason not_same_person",
+            suggestion.source,
+            suggestion.primary.email,
+            suggestion.external.email
+        ),
+        "merge_policy": "objective identity fields only; private relationship context remains source-specific",
+    })
+}
+
+fn external_aliases_to_add(primary: &ContactRow, external: &ContactRow) -> Vec<String> {
+    let mut aliases = primary.contact.aliases.clone();
+    let before = aliases.len();
+    push_unique_email(&mut aliases, &external.email);
+    for alias in &external.contact.aliases {
+        push_unique_email(&mut aliases, alias);
+    }
+    aliases.into_iter().skip(before).collect()
+}
+
+fn apply_external_to_contact(
+    index_json: &mut Value,
+    key: &str,
+    canonical_id: &str,
+    aliases_to_add: &[String],
+    canonical_synced_at: &str,
+    external: &Contact,
+) -> Result<(), String> {
+    let contact = index_json
+        .get_mut("contacts")
+        .and_then(Value::as_object_mut)
+        .and_then(|contacts| contacts.get_mut(key))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("contact not found in JSON cache: {key}"))?;
+
+    contact.insert(
+        "canonicalId".to_string(),
+        Value::String(canonical_id.to_string()),
+    );
+    contact.insert(
+        "lastCanonicalSync".to_string(),
+        Value::String(canonical_synced_at.to_string()),
+    );
+
+    let mut aliases = contact
+        .get("aliases")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for alias in aliases_to_add {
+        push_unique_email(&mut aliases, alias);
+    }
+    contact.insert(
+        "aliases".to_string(),
+        Value::Array(aliases.into_iter().map(Value::String).collect()),
+    );
+
+    insert_if_missing_string(contact, "company", external.company.as_deref());
+    insert_if_missing_string(contact, "role", external.role.as_deref());
+    Ok(())
+}
+
+fn insert_if_missing_string(
+    contact: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let missing = contact
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_none_or(str::is_empty);
+    if missing {
+        contact.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+fn upsert_external_applied(
+    source: &mut ExternalSource,
+    primary_email: &str,
+    external_email: &str,
+    aliases_added: &[String],
+) {
+    source.dismissed.retain(|record| {
+        !(record.primary_email.eq_ignore_ascii_case(primary_email)
+            && record.external_email.eq_ignore_ascii_case(external_email))
+    });
+    if let Some(record) = source.applied.iter_mut().find(|record| {
+        record.primary_email.eq_ignore_ascii_case(primary_email)
+            && record.external_email.eq_ignore_ascii_case(external_email)
+    }) {
+        record.applied_at_unix = unix_seconds();
+        record.aliases_added = aliases_added.to_vec();
+        return;
+    }
+    source.applied.push(ExternalMergeRecord {
+        primary_email: primary_email.to_string(),
+        external_email: external_email.to_string(),
+        applied_at_unix: unix_seconds(),
+        aliases_added: aliases_added.to_vec(),
+    });
+}
+
+fn upsert_external_dismissed(
+    source: &mut ExternalSource,
+    primary_email: &str,
+    external_email: &str,
+    reason: &str,
+) {
+    source.applied.retain(|record| {
+        !(record.primary_email.eq_ignore_ascii_case(primary_email)
+            && record.external_email.eq_ignore_ascii_case(external_email))
+    });
+    if let Some(record) = source.dismissed.iter_mut().find(|record| {
+        record.primary_email.eq_ignore_ascii_case(primary_email)
+            && record.external_email.eq_ignore_ascii_case(external_email)
+    }) {
+        record.dismissed_at_unix = unix_seconds();
+        record.reason = reason.to_string();
+        return;
+    }
+    source.dismissed.push(ExternalMergeDismissal {
+        primary_email: primary_email.to_string(),
+        external_email: external_email.to_string(),
+        dismissed_at_unix: unix_seconds(),
+        reason: reason.to_string(),
+    });
 }
 
 fn apply_canonical_to_contact(
@@ -2680,8 +3733,13 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::WhoKnows(_) => "who-knows",
         Commands::GetNeighbors(_) => "get-neighbors",
         Commands::GetEdges(_) => "get-edges",
+        Commands::ContactCard(_) => "contact-card",
         Commands::SuggestDuplicates(_) => "suggest-duplicates",
+        Commands::ImportCache(_) => "import-cache",
+        Commands::SuggestExternalMerges(_) => "suggest-external-merges",
         Commands::MergeQueue(_) => "merge-queue",
+        Commands::ApplyExternalMerge(_) => "apply-external-merge",
+        Commands::DismissExternalMerge(_) => "dismiss-external-merge",
         Commands::ApplyMerge(_) => "apply-merge",
         Commands::DismissMerge(_) => "dismiss-merge",
         Commands::ProposeMerge(_) => "propose-merge",
@@ -2730,14 +3788,39 @@ fn describe_payload() -> Value {
                 "status": "implemented"
             },
             {
+                "name": "contact-card",
+                "usage": "peoplegraph contact-card <email-or-name>",
+                "status": "implemented_read_only_source_aware"
+            },
+            {
                 "name": "suggest-duplicates",
                 "usage": "peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82",
                 "status": "implemented"
             },
             {
+                "name": "import-cache",
+                "usage": "peoplegraph --cache <botwick-contact-index.json> import-cache --source <source> <other-contact-index.json>",
+                "status": "implemented_local_sidecar_write"
+            },
+            {
+                "name": "suggest-external-merges",
+                "usage": "peoplegraph suggest-external-merges --source <source> --limit 25 --min-confidence 0.82",
+                "status": "implemented_read_only_source_aware"
+            },
+            {
                 "name": "merge-queue",
                 "usage": "peoplegraph merge-queue --status pending --limit 25",
                 "status": "implemented"
+            },
+            {
+                "name": "apply-external-merge",
+                "usage": "peoplegraph apply-external-merge --source <source> --primary <email> --external <email>",
+                "status": "implemented_local_cache_write"
+            },
+            {
+                "name": "dismiss-external-merge",
+                "usage": "peoplegraph dismiss-external-merge --source <source> --primary <email> --external <email> --reason not_same_person",
+                "status": "implemented_local_sidecar_write"
             },
             {
                 "name": "apply-merge",
@@ -2782,10 +3865,15 @@ fn describe_payload() -> Value {
                 "who-knows",
                 "get-neighbors",
                 "get-edges",
+                "contact-card",
                 "suggest-duplicates",
+                "suggest-external-merges",
                 "merge-queue"
             ],
             "local_only_write_commands": [
+                "import-cache",
+                "apply-external-merge",
+                "dismiss-external-merge",
                 "propose-merge",
                 "dismiss-merge",
                 "apply-merge"
@@ -3166,6 +4254,81 @@ mod tests {
             canonical_id_for_merge(&index, "a@example.com", "b@example.com"),
             "local:a@example.com"
         );
+    }
+
+    #[test]
+    fn normalizes_external_source_ids() {
+        assert_eq!(
+            normalize_source_id("Kaya Jones"),
+            Some("kaya-jones".to_string())
+        );
+        assert_eq!(normalize_source_id("  "), None);
+    }
+
+    #[test]
+    fn external_merge_confidence_detects_shared_alias() {
+        let primary = ContactRow {
+            email: "harper@2389.ai".to_string(),
+            contact: Contact {
+                name: "Harper Reed".to_string(),
+                email: "harper@2389.ai".to_string(),
+                aliases: vec!["harper@nata2.org".to_string()],
+                ..empty_contact()
+            },
+        };
+        let external = ContactRow {
+            email: "harper@nata2.org".to_string(),
+            contact: Contact {
+                name: "Harper Reed".to_string(),
+                email: "harper@nata2.org".to_string(),
+                ..empty_contact()
+            },
+        };
+
+        let (confidence, reasons) = external_merge_confidence(&primary, &external).unwrap();
+        assert!(confidence >= 0.99);
+        assert!(reasons.contains(&"shared_email_or_alias".to_string()));
+    }
+
+    #[test]
+    fn contact_core_card_keeps_external_email_as_identity_evidence() {
+        let primary = ContactRow {
+            email: "harper@2389.ai".to_string(),
+            contact: Contact {
+                name: "Harper Reed".to_string(),
+                email: "harper@2389.ai".to_string(),
+                aliases: vec!["old@2389.ai".to_string()],
+                company: Some("2389".to_string()),
+                ..empty_contact()
+            },
+        };
+        let external = ContactRow {
+            email: "harper@nata2.org".to_string(),
+            contact: Contact {
+                name: "Harper Reed".to_string(),
+                email: "harper@nata2.org".to_string(),
+                company: Some("Nata2".to_string()),
+                ..empty_contact()
+            },
+        };
+        let source = ExternalSource {
+            source: "kaya".to_string(),
+            imported_at_unix: 0,
+            cache_path: "contact-index.json".to_string(),
+            user_email: None,
+            last_sync: None,
+            contacts: HashMap::new(),
+            applied: Vec::new(),
+            dismissed: Vec::new(),
+        };
+
+        let matches = vec![(&source, external, 0.9, vec!["same_name".to_string()])];
+        let card = contact_core_card(&primary, &matches);
+        let emails = card.get("emails").and_then(Value::as_array).unwrap();
+
+        assert!(emails.iter().any(|email| email == "harper@2389.ai"));
+        assert!(emails.iter().any(|email| email == "old@2389.ai"));
+        assert!(emails.iter().any(|email| email == "harper@nata2.org"));
     }
 
     #[test]
