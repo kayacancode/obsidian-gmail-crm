@@ -184,6 +184,7 @@
     <section>
       <h2>Summary</h2>
       <p><code>peoplegraph</code> reads the plugin's local <code>contact-index.json</code> cache directly and can also serve read-only queries from that cache over a token-protected HTTP endpoint. Local use does not need Obsidian running; remote use needs a bearer token. Botwick is the source-of-truth consumer, but the command surface is general enough for other agents.</p>
+      <p>For a copy/paste starter page for remote users, see <a href="peoplegraph-remote-query.html">PeopleGraph Remote Query Guide</a>.</p>
       <p><strong>Current implementation:</strong> the CLI implements <code>describe</code>, <code>version</code>, <code>find-person</code>, <code>score</code>, <code>who-knows</code>, <code>get-neighbors</code>, <code>get-edges</code>, <code>contact-card</code>, <code>import-cache</code>, <code>suggest-external-merges</code>, <code>apply-external-merge</code>, <code>dismiss-external-merge</code>, <code>suggest-duplicates</code>, <code>merge-queue</code>, <code>apply-merge</code>, <code>dismiss-merge</code>, <code>propose-merge</code>, and read-only <code>serve</code>. The plugin writes <code>schemaVersion</code>, contact score snapshots, relationship edges, and canonical identity metadata into <code>contact-index.json</code> during staleness updates.</p>
     </section>
 

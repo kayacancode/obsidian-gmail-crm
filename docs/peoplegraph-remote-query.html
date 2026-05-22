@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PeopleGraph 0.3.0 Remote Query Guide</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f4;
+      --paper: #ffffff;
+      --ink: #17201c;
+      --muted: #607069;
+      --line: #d7ded8;
+      --soft: #eef3ee;
+      --soft-2: #f9fbf8;
+      --accent: #0f6b55;
+      --accent-ink: #12483d;
+      --accent-soft: #dfeee8;
+      --warn: #8a481a;
+      --warn-soft: #f6e8da;
+      --code: #10231d;
+      --code-line: #244438;
+      --blue: #245f93;
+      --blue-soft: #e3eef7;
+      --shadow: 0 20px 48px rgba(30, 42, 35, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfa;
+      overflow-y: auto;
+    }
+
+    .brand {
+      display: grid;
+      gap: 7px;
+      margin-bottom: 28px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    nav {
+      display: grid;
+      gap: 4px;
+    }
+
+    nav a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 14px;
+      text-decoration: none;
+    }
+
+    nav a:hover {
+      background: var(--soft);
+      color: var(--ink);
+    }
+
+    main {
+      min-width: 0;
+      padding: 40px;
+    }
+
+    .content {
+      width: min(1120px, 100%);
+      margin: 0 auto;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 22px;
+      margin-bottom: 24px;
+    }
+
+    .hero,
+    .connect-card,
+    section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 38px;
+    }
+
+    .hero h2 {
+      max-width: 760px;
+      margin: 8px 0 14px;
+      font-size: clamp(34px, 6vw, 64px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 760px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .connect-card {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding: 24px;
+      background: var(--soft-2);
+    }
+
+    .connect-card h3 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-ink);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .pill.info {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .pill.warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    section {
+      margin-bottom: 20px;
+      padding: 28px;
+    }
+
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h2 {
+      margin-bottom: 12px;
+      font-size: 27px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 7px;
+      font-size: 17px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    p {
+      color: var(--muted);
+    }
+
+    .section-intro {
+      max-width: 760px;
+      margin-bottom: 18px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .command-card,
+    .note {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft-2);
+    }
+
+    .command-card {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 238px;
+      overflow: hidden;
+    }
+
+    .command-card header {
+      display: block;
+      margin: 0;
+      padding: 16px 16px 0;
+    }
+
+    .command-card h3 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 0 8px;
+    }
+
+    .command-card p {
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+
+    .tag {
+      flex: 0 0 auto;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    pre {
+      position: relative;
+      margin: 0;
+      padding: 15px 48px 15px 15px;
+      overflow-x: auto;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--code);
+      color: #edf7f1;
+      font-size: 13px;
+      line-height: 1.48;
+    }
+
+    pre code {
+      color: inherit;
+      background: transparent;
+    }
+
+    .copy {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--code-line);
+      border-radius: 6px;
+      background: #18352b;
+      color: #edf7f1;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .copy:hover {
+      background: #21483a;
+    }
+
+    .meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 16px 15px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .note {
+      padding: 16px;
+    }
+
+    .note strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+    }
+
+    .warning {
+      border-color: #e1c2a7;
+      background: var(--warn-soft);
+    }
+
+    .warning strong {
+      color: var(--warn);
+    }
+
+    ol,
+    ul {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    .footer {
+      padding: 12px 0 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      main {
+        padding: 24px;
+      }
+
+      header,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      main {
+        padding: 16px;
+      }
+
+      .hero,
+      .connect-card,
+      section {
+        padding: 20px;
+      }
+
+      nav {
+        grid-template-columns: 1fr;
+      }
+
+      pre {
+        padding-right: 15px;
+      }
+
+      .copy {
+        position: static;
+        display: block;
+        width: auto;
+        margin-bottom: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <span class="eyebrow">Remote Query Guide</span>
+        <h1>PeopleGraph 0.3.0</h1>
+        <p>What Kaya can query from Botwick's source-of-truth graph without installing Obsidian.</p>
+      </div>
+      <nav aria-label="Page navigation">
+        <a href="#start">Start</a>
+        <a href="#connect">Connect</a>
+        <a href="#lookup">Lookup Commands</a>
+        <a href="#review">Cleanup / Review</a>
+        <a href="#info">Info Commands</a>
+        <a href="#examples">Common Examples</a>
+        <a href="#troubleshooting">Troubleshooting</a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="content">
+        <header id="start">
+          <div class="hero">
+            <span class="eyebrow">Remote Query-Only</span>
+            <h2>Query Botwick's PeopleGraph from another computer.</h2>
+            <p>
+              Remote users only need the PeopleGraph CLI, the Botwick host URL,
+              and a bearer token. They do not need Obsidian, the Gmail CRM plugin,
+              Gmail credentials, or the source vault.
+            </p>
+          </div>
+          <div class="connect-card">
+            <h3>Current connection target</h3>
+            <div class="pill-row">
+              <span class="pill">PeopleGraph 0.3.0</span>
+              <span class="pill info">Read-only remote mode</span>
+              <span class="pill warn">Token required</span>
+            </div>
+            <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>http://100.92.219.31:8787</code></pre>
+            <p>
+              Keep the token private. The examples below use
+              <code>93cf5a...9644</code> as a redacted placeholder.
+            </p>
+          </div>
+        </header>
+
+        <section id="connect">
+          <h2>Connect</h2>
+          <p class="section-intro">
+            Use a prefix for one-off commands, or export the host and token once
+            per terminal session.
+          </p>
+          <div class="grid">
+            <div class="command-card">
+              <header>
+                <h3>Install the CLI <span class="tag">once</span></h3>
+                <p>Install PeopleGraph from the Homebrew tap.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>brew tap kayacancode/tap
+brew install peoplegraph
+peoplegraph version</code></pre>
+              <div class="meta-line">Expected version: <code>0.3.0</code> or newer.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Use the prefix <span class="tag">one-off</span></h3>
+                <p>Paste this before any command if you do not want environment variables.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --host "http://100.92.219.31:8787" --token "93cf5a...9644"</code></pre>
+              <div class="meta-line">Replace the redacted token with the real token.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Set it once <span class="tag">recommended</span></h3>
+                <p>After exporting these, commands can be shorter.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
+export PEOPLEGRAPH_TOKEN="93cf5a...9644"</code></pre>
+              <div class="meta-line">These exports last for the current terminal session.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Smoke test <span class="tag">check</span></h3>
+                <p>Confirm the server and token work before running lookups.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph version
+peoplegraph describe</code></pre>
+              <div class="meta-line">If this fails, check the token, host, and network.</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="lookup">
+          <h2>Lookup Commands</h2>
+          <p class="section-intro">
+            These commands query Botwick's source-of-truth cache remotely and do
+            not write to the graph.
+          </p>
+          <div class="grid">
+            <div class="command-card">
+              <header>
+                <h3>Find a person <span class="tag">lookup</span></h3>
+                <p>Fuzzy match by name, email, or alias. Returns the top 10 by default.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph find-person "Harper Reed"
+peoplegraph find-person "Harper Reed" --limit 20</code></pre>
+              <div class="meta-line">Use when you do not know the exact email.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Score one email <span class="tag">score</span></h3>
+                <p>Relationship score for one email: combined score, depth, recency, and quadrant.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph score harper@2389.ai</code></pre>
+              <div class="meta-line">Quadrants include <code>nurture</code>, <code>developing</code>, and <code>re-engage</code>.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Contact card <span class="tag">card</span></h3>
+                <p>Minimal source-aware card for one person: name, emails, company, aliases.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph contact-card "Harper Reed"</code></pre>
+              <div class="meta-line">Useful before deciding whether a merge suggestion is plausible.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Who knows a company <span class="tag">company</span></h3>
+                <p>Everyone at a company or domain, ranked by relationship score.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph who-knows --company betaworks
+peoplegraph who-knows --company betaworks --limit 10</code></pre>
+              <div class="meta-line">Works with company names and domains.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Neighbors <span class="tag">graph</span></h3>
+                <p>Shows who is connected to a person once edge data exists.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph get-neighbors harper@2389.ai</code></pre>
+              <div class="meta-line">Best after the plugin has written relationship edges.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Specific edge <span class="tag">graph</span></h3>
+                <p>Returns the relationship edge between two specific people.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph get-edges --from harper@2389.ai --to john@betaworks.com</code></pre>
+              <div class="meta-line">Use when you need the direct connection evidence.</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="review">
+          <h2>Cleanup / Review</h2>
+          <p class="section-intro">
+            Remote users can inspect suggestions and queue state, but source-of-truth
+            write commands still run on Botwick's computer.
+          </p>
+          <div class="grid">
+            <div class="command-card">
+              <header>
+                <h3>Suggest duplicates <span class="tag">review</span></h3>
+                <p>Find likely duplicate contacts in the cache.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph suggest-duplicates
+peoplegraph suggest-duplicates --limit 10 --min-confidence 0.85</code></pre>
+              <div class="meta-line">Returns confidence, reasons, and next action commands.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Merge queue <span class="tag">queue</span></h3>
+                <p>See pending merge proposals already staged on the source-of-truth graph.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph merge-queue
+peoplegraph merge-queue --status pending</code></pre>
+              <div class="meta-line">Use <code>--status all</code> when you want historical queue entries.</div>
+            </div>
+          </div>
+          <div class="note warning">
+            <strong>Remote mode is read-only.</strong>
+            Approve/reject/apply commands such as <code>apply-external-merge</code>,
+            <code>dismiss-external-merge</code>, <code>import-cache</code>, and
+            <code>apply-merge</code> must run on Botwick's source-of-truth computer.
+          </div>
+        </section>
+
+        <section id="info">
+          <h2>Info Commands</h2>
+          <div class="grid">
+            <div class="command-card">
+              <header>
+                <h3>Describe <span class="tag">agent</span></h3>
+                <p>Full command surface for agent introspection.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph describe</code></pre>
+              <div class="meta-line">Good first command for another agent integration.</div>
+            </div>
+
+            <div class="command-card">
+              <header>
+                <h3>Version <span class="tag">health</span></h3>
+                <p>CLI and server version info.</p>
+              </header>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph version</code></pre>
+              <div class="meta-line">Confirms local CLI and remote server can talk.</div>
+            </div>
+          </div>
+        </section>
+
+        <section id="examples">
+          <h2>Common Examples</h2>
+          <div class="grid">
+            <div class="note">
+              <strong>Find who Botwick knows at a company</strong>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph who-knows --company disney --limit 15</code></pre>
+            </div>
+            <div class="note">
+              <strong>Look up a person, then inspect the strongest record</strong>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph find-person "Nicole Ripka"
+peoplegraph contact-card "Nicole Ripka"</code></pre>
+            </div>
+            <div class="note">
+              <strong>Check if a duplicate should be reviewed</strong>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph suggest-duplicates --limit 10 --min-confidence 0.9</code></pre>
+            </div>
+            <div class="note">
+              <strong>Use the prefix without exports</strong>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --host "http://100.92.219.31:8787" --token "93cf5a...9644" who-knows --company betaworks</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <section id="troubleshooting">
+          <h2>Troubleshooting</h2>
+          <div class="grid">
+            <div class="note">
+              <strong><code>command not found: peoplegraph</code></strong>
+              <p>Install the CLI or make sure Homebrew's bin directory is on the shell path.</p>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>brew tap kayacancode/tap
+brew install peoplegraph</code></pre>
+            </div>
+            <div class="note">
+              <strong><code>unauthorized</code></strong>
+              <p>The token is missing, expired, or not the same token Botwick's server expects.</p>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_TOKEN="paste-the-real-token"</code></pre>
+            </div>
+            <div class="note">
+              <strong>Connection refused or timeout</strong>
+              <p>The Botwick server may not be running, the Tailscale/private network may be disconnected, or the host URL is wrong.</p>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
+peoplegraph version</code></pre>
+            </div>
+            <div class="note">
+              <strong>No results for a company</strong>
+              <p>Try the domain, a person lookup, or a higher limit. The source cache may need a fresh sync on Botwick's computer.</p>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph who-knows --company betaworks.com --limit 25
+peoplegraph find-person "Betaworks"</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <div class="footer">
+          PeopleGraph remote query guide. Remote users can inspect Botwick's source-of-truth graph, but merge writes stay on the source machine.
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    for (const button of document.querySelectorAll(".copy")) {
+      button.addEventListener("click", async () => {
+        const code = button.parentElement.querySelector("code");
+        const text = code ? code.innerText.trim() : "";
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "fixed";
+            textarea.style.left = "-9999px";
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand("copy");
+            textarea.remove();
+          }
+          const original = button.textContent;
+          button.textContent = "ok";
+          window.setTimeout(() => {
+            button.textContent = original;
+          }, 900);
+        } catch {
+          button.textContent = "err";
+        }
+      });
+    }
+  </script>
+</body>
+</html>
