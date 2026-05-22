@@ -423,6 +423,7 @@
         <a href="#commands">Command Surface</a>
         <a href="#remote">Remote Query Mode</a>
         <a href="#external-sources">External Sources</a>
+        <a href="#telegram-review">Telegram Review</a>
         <a href="#cache">Cache Contract</a>
         <a href="#implementation">Implementation</a>
         <a href="#verification">Verification</a>
@@ -669,6 +670,28 @@ peoplegraph --cache /botwick/contact-index.json contact-card harper@2389.ai</cod
           <code>apply-external-merge</code> adds objective identity evidence such as
           emails/aliases and missing company or role fields. Private notes and
           subjective relationship context are not merged into the shared core card.
+        </p>
+      </section>
+
+      <section id="telegram-review">
+        <h2>Telegram Merge Review</h2>
+        <p>
+          John's OpenClaw Telegram agent can use
+          <code>scripts/peoplegraph-telegram-review.mjs</code> to turn external
+          merge suggestions into inline button approvals. The bridge stores a
+          JSON queue, sends <strong>Merge</strong>, <strong>Reject</strong>, and
+          <strong>Details</strong> buttons, verifies reviewer Telegram user IDs,
+          and then calls <code>apply-external-merge</code> or
+          <code>dismiss-external-merge</code>.
+        </p>
+        <pre><code>node scripts/peoplegraph-telegram-review.mjs queue --source kaya --limit 25
+node scripts/peoplegraph-telegram-review.mjs send-next --source kaya
+node scripts/peoplegraph-telegram-review.mjs handle-callback -</code></pre>
+        <p>
+          Full setup instructions are in
+          <a href="peoplegraph-telegram-review.html">PeopleGraph Telegram Merge Review</a>.
+          The OpenClaw skill instructions live at
+          <code>skills/peoplegraph-telegram-merge-review/SKILL.md</code>.
         </p>
       </section>
 

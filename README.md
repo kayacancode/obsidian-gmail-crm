@@ -228,6 +228,38 @@ peoplegraph --cache "$PEOPLEGRAPH_CACHE" dismiss-external-merge --source kaya --
 
 `apply-external-merge` only adds objective identity fields, currently aliases/emails and missing company/role fields. Private relationship context remains source-specific evidence in `external-sources.json`; it is not merged into the shared core card.
 
+### Telegram merge review for OpenClaw
+
+John's OpenClaw Telegram agent can review PeopleGraph merge suggestions with inline buttons. The repo includes a runtime-neutral bridge script and skill:
+
+```bash
+node scripts/peoplegraph-telegram-review.mjs help
+```
+
+Set the source-of-truth cache, Telegram bot token, review chat, and authorized reviewer IDs:
+
+```bash
+export PEOPLEGRAPH_CACHE="/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json"
+export TELEGRAM_BOT_TOKEN="123456:telegram-token"
+export TELEGRAM_REVIEW_CHAT_ID="123456789"
+export PEOPLEGRAPH_APPROVER_TELEGRAM_IDS="111111111,222222222"
+```
+
+Build the review queue and send the next review card:
+
+```bash
+node scripts/peoplegraph-telegram-review.mjs queue --source kaya --limit 25
+node scripts/peoplegraph-telegram-review.mjs send-next --source kaya
+```
+
+When OpenClaw receives a Telegram `callback_query`, pass the update JSON to:
+
+```bash
+node scripts/peoplegraph-telegram-review.mjs handle-callback -
+```
+
+The message uses `Merge`, `Reject`, and `Details` inline buttons. Approvals run `apply-external-merge`; rejections run `dismiss-external-merge`; details run `contact-card`. The skill instructions live at `skills/peoplegraph-telegram-merge-review/SKILL.md`.
+
 ### People Page Format
 
 The plugin expects people pages named `p- Firstname Lastname.md` in your people folder. Example:

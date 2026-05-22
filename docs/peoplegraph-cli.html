@@ -175,9 +175,9 @@
       <h1>PeopleGraph CLI PRD</h1>
       <p>A single-binary Rust CLI that exposes the Obsidian Gmail CRM plugin's contact data to agents through stable JSON graph primitives.</p>
       <div class="meta" aria-label="Document metadata">
-        <span class="pill">Status: Draft v0.2</span>
+        <span class="pill">Status: Draft v0.3</span>
         <span class="pill">Owner: Kaya</span>
-        <span class="pill">Updated: 2026-05-19</span>
+        <span class="pill">Updated: 2026-05-22</span>
       </div>
     </header>
 
@@ -337,6 +337,7 @@ peoplegraph --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows 
       <p><code>import-cache</code> stages another Gmail CRM plugin user's <code>contact-index.json</code> in <code>external-sources.json</code> next to Botwick's source-of-truth cache. It never overwrites the main graph during import.</p>
       <p><code>contact-card</code> returns a minimal shared core card plus source-specific evidence. The shared core card is objective identity data; private relationship context remains source-specific.</p>
       <p><code>apply-external-merge</code> only merges objective identity fields, currently aliases/emails and missing company or role fields. <code>dismiss-external-merge</code> records false positives so they stop reappearing.</p>
+      <p>John's OpenClaw Telegram agent can review these suggestions through inline <strong>Merge</strong>, <strong>Reject</strong>, and <strong>Details</strong> buttons. See <a href="peoplegraph-telegram-review.html">PeopleGraph Telegram Merge Review</a>.</p>
     </section>
 
     <section>
