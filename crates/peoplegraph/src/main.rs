@@ -96,6 +96,10 @@ struct FindPersonArgs {
 
     #[arg(long, default_value_t = 10)]
     limit: usize,
+
+    /// Match only the exact stored token order; skip reversed-order rows.
+    #[arg(long)]
+    strict_name_order: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -479,7 +483,13 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
             json!({ "ms": elapsed_ms(start) }),
         ),
         Commands::FindPerson(args) => with_index(cli, command, start, |index| {
-            find_person(index, &args.query, args.limit, start)
+            find_person(
+                index,
+                &args.query,
+                args.limit,
+                args.strict_name_order,
+                start,
+            )
         }),
         Commands::Score(args) => with_index(cli, command, start, |index| {
             score_person(index, &args.email, start)
@@ -588,11 +598,17 @@ fn remote_run(cli: &Cli, command: &'static str, start: Instant) -> Response {
 
 fn remote_path(command: &Commands) -> Option<String> {
     match command {
-        Commands::FindPerson(args) => Some(format!(
-            "/find-person?query={}&limit={}",
-            url_encode(&args.query),
-            args.limit.max(1)
-        )),
+        Commands::FindPerson(args) => {
+            let mut path = format!(
+                "/find-person?query={}&limit={}",
+                url_encode(&args.query),
+                args.limit.max(1)
+            );
+            if args.strict_name_order {
+                path.push_str("&strict_name_order=1");
+            }
+            Some(path)
+        }
         Commands::Score(args) => Some(format!("/score?email={}", url_encode(&args.email))),
         Commands::WhoKnows(args) => Some(format!(
             "/who-knows?company={}&limit={}",
@@ -744,6 +760,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
         "/find-person" => Commands::FindPerson(FindPersonArgs {
             query: query_param(&params, "query"),
             limit: query_usize(&params, "limit", 10),
+            strict_name_order: query_bool(&params, "strict_name_order"),
         }),
         "/score" => Commands::Score(EmailArg {
             email: query_param(&params, "email"),
@@ -966,6 +983,16 @@ fn query_f64(params: &HashMap<String, String>, key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+fn query_bool(params: &HashMap<String, String>, key: &str) -> bool {
+    params
+        .get(key)
+        .map(|value| {
+            let v = value.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
 fn with_index<F>(cli: &Cli, command: &'static str, start: Instant, f: F) -> Response
 where
     F: FnOnce(&ContactIndex) -> Response,
@@ -1015,19 +1042,33 @@ fn load_index(
     Ok((cache_path, index))
 }
 
-fn find_person(index: &ContactIndex, query: &str, limit: usize, start: Instant) -> Response {
+fn find_person(
+    index: &ContactIndex,
+    query: &str,
+    limit: usize,
+    strict_name_order: bool,
+    start: Instant,
+) -> Response {
     let rows = rows(index);
     let query_norm = normalize(query);
     let query_email = query.trim().to_ascii_lowercase();
-    let mut matches: Vec<(f64, ContactRow)> = rows
+    let query_token_key = sorted_token_key(query);
+    let mut matches: Vec<(f64, NameMatchKind, ContactRow)> = rows
         .into_iter()
         .filter_map(|row| {
-            let confidence = match_confidence(&row, &query_norm, &query_email);
-            (confidence >= 0.72).then_some((confidence, row))
+            match_confidence(
+                &row,
+                &query_norm,
+                &query_email,
+                &query_token_key,
+                strict_name_order,
+            )
+            .filter(|(confidence, _)| *confidence >= 0.72)
+            .map(|(confidence, kind)| (confidence, kind, row))
         })
         .collect();
 
-    matches.sort_by(|(a_conf, a), (b_conf, b)| {
+    matches.sort_by(|(a_conf, _, a), (b_conf, _, b)| {
         b_conf
             .total_cmp(a_conf)
             .then_with(|| {
@@ -1038,18 +1079,87 @@ fn find_person(index: &ContactIndex, query: &str, limit: usize, start: Instant) 
             .then_with(|| a.contact.name.cmp(&b.contact.name))
     });
 
+    // Group by sorted-token key across the full matched set so the grouping hint
+    // stays correct even when the result is truncated by --limit.
+    let mut group_members: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, (_, _, row)) in matches.iter().enumerate() {
+        let key = sorted_token_key(&row.contact.name);
+        if !key.is_empty() {
+            group_members.entry(key).or_default().push(idx);
+        }
+    }
+
+    let mut primary_per_group: HashMap<String, usize> = HashMap::new();
+    for (key, members) in &group_members {
+        if let Some(&primary) = members
+            .iter()
+            .max_by_key(|&&i| infer_score(&matches[i].2.contact).combined)
+        {
+            primary_per_group.insert(key.clone(), primary);
+        }
+    }
+
+    let mut variants_per_group: HashMap<String, Vec<String>> = HashMap::new();
+    for (_, _, row) in &matches {
+        let key = sorted_token_key(&row.contact.name);
+        if key.is_empty() {
+            continue;
+        }
+        let variants = variants_per_group.entry(key).or_default();
+        if !variants.iter().any(|v| v == &row.contact.name) {
+            variants.push(row.contact.name.clone());
+        }
+    }
+
     let total = matches.len();
     let limit = limit.max(1);
+
     let data_matches: Vec<Value> = matches
-        .into_iter()
+        .iter()
+        .enumerate()
         .take(limit)
-        .map(|(confidence, row)| contact_match_value(&row, confidence))
+        .map(|(idx, (confidence, kind, row))| {
+            let key = sorted_token_key(&row.contact.name);
+            let (group_id, is_primary, variants) = if key.is_empty() {
+                (None, true, vec![row.contact.name.clone()])
+            } else {
+                let is_primary = primary_per_group.get(&key) == Some(&idx);
+                let variants = variants_per_group
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| vec![row.contact.name.clone()]);
+                (Some(key), is_primary, variants)
+            };
+            contact_match_value(row, *confidence, *kind, group_id, is_primary, variants)
+        })
         .collect();
     let returned = data_matches.len();
 
+    let mut identity_groups: Vec<Value> = group_members
+        .iter()
+        .filter(|(_, members)| members.len() > 1)
+        .map(|(key, members)| {
+            let primary = primary_per_group.get(key).copied().unwrap_or(members[0]);
+            let primary_email = matches[primary].2.email.clone();
+            let member_emails: Vec<String> =
+                members.iter().map(|&i| matches[i].2.email.clone()).collect();
+            let variants = variants_per_group.get(key).cloned().unwrap_or_default();
+            json!({
+                "id": key,
+                "primary_email": primary_email,
+                "members": member_emails,
+                "name_variants": variants,
+            })
+        })
+        .collect();
+    identity_groups.sort_by(|a, b| value_str(a, "id").cmp(&value_str(b, "id")));
+
     ok(
         "find-person",
-        json!({ "matches": data_matches }),
+        json!({
+            "matches": data_matches,
+            "identity_groups": identity_groups,
+        }),
         json!({
             "matched": total,
             "returned": returned,
@@ -1057,6 +1167,7 @@ fn find_person(index: &ContactIndex, query: &str, limit: usize, start: Instant) 
             "schema_version": index.schema_version,
             "last_sync": &index.last_sync,
             "user_email": &index.user_email,
+            "strict_name_order": strict_name_order,
             "ms": elapsed_ms(start)
         }),
     )
@@ -2143,7 +2254,14 @@ fn propose_merge(
     )
 }
 
-fn contact_match_value(row: &ContactRow, confidence: f64) -> Value {
+fn contact_match_value(
+    row: &ContactRow,
+    confidence: f64,
+    name_match: NameMatchKind,
+    identity_group: Option<String>,
+    is_primary: bool,
+    name_variants: Vec<String>,
+) -> Value {
     let score = infer_score(&row.contact);
     json!({
         "email": &row.email,
@@ -2153,6 +2271,10 @@ fn contact_match_value(row: &ContactRow, confidence: f64) -> Value {
         "score": score,
         "score_source": score_source(&row.contact),
         "match_confidence": round_confidence(confidence),
+        "name_match": name_match_label(name_match),
+        "identity_group": identity_group,
+        "is_primary": is_primary,
+        "name_variants": name_variants,
     })
 }
 
@@ -2410,11 +2532,13 @@ fn find_contact_for_query(index: &ContactIndex, query: &str) -> Option<ContactRo
     }
 
     let query_norm = normalize(query);
+    let query_token_key = sorted_token_key(query);
     rows(index)
         .into_iter()
         .filter_map(|row| {
-            let confidence = match_confidence(&row, &query_norm, &query_email);
-            (confidence >= 0.72).then_some((confidence, row))
+            match_confidence(&row, &query_norm, &query_email, &query_token_key, false)
+                .filter(|(confidence, _)| *confidence >= 0.72)
+                .map(|(confidence, _)| (confidence, row))
         })
         .max_by(|(left_confidence, left), (right_confidence, right)| {
             left_confidence.total_cmp(right_confidence).then_with(|| {
@@ -3298,39 +3422,84 @@ fn compact_normalize(value: &str) -> String {
         .collect()
 }
 
-fn match_confidence(row: &ContactRow, query_norm: &str, query_email: &str) -> f64 {
-    if row.email == query_email
-        || row.contact.email.trim().eq_ignore_ascii_case(query_email)
-        || row
-            .contact
-            .aliases
-            .iter()
-            .any(|alias| alias.trim().eq_ignore_ascii_case(query_email))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NameMatchKind {
+    Exact,
+    Reordered,
+}
+
+fn name_match_label(kind: NameMatchKind) -> &'static str {
+    match kind {
+        NameMatchKind::Exact => "exact",
+        NameMatchKind::Reordered => "reordered",
+    }
+}
+
+fn name_tokens(value: &str) -> Vec<String> {
+    normalize(value)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+fn sorted_token_key(value: &str) -> String {
+    let mut tokens = name_tokens(value);
+    tokens.sort();
+    tokens.join(" ")
+}
+
+fn match_confidence(
+    row: &ContactRow,
+    query_norm: &str,
+    query_email: &str,
+    query_token_key: &str,
+    strict_name_order: bool,
+) -> Option<(f64, NameMatchKind)> {
+    if !query_email.is_empty()
+        && (row.email == query_email
+            || row.contact.email.trim().eq_ignore_ascii_case(query_email)
+            || row
+                .contact
+                .aliases
+                .iter()
+                .any(|alias| alias.trim().eq_ignore_ascii_case(query_email)))
     {
-        return 1.0;
+        return Some((1.0, NameMatchKind::Exact));
     }
 
-    if row.email.contains(query_email)
-        || row
-            .contact
-            .aliases
-            .iter()
-            .any(|alias| alias.to_ascii_lowercase().contains(query_email))
+    if !query_email.is_empty()
+        && (row.email.contains(query_email)
+            || row
+                .contact
+                .aliases
+                .iter()
+                .any(|alias| alias.to_ascii_lowercase().contains(query_email)))
     {
-        return 0.96;
+        return Some((0.96, NameMatchKind::Exact));
     }
 
     let name_norm = normalize(&row.contact.name);
     if !query_norm.is_empty() && name_norm.contains(query_norm) {
-        return 0.93;
+        return Some((0.93, NameMatchKind::Exact));
     }
 
     if !query_norm.is_empty() && query_norm.contains(&name_norm) && name_norm.len() >= 4 {
-        return 0.88;
+        return Some((0.88, NameMatchKind::Exact));
+    }
+
+    if !strict_name_order && !query_token_key.is_empty() {
+        let row_token_key = sorted_token_key(&row.contact.name);
+        if !row_token_key.is_empty() && row_token_key == query_token_key {
+            return Some((0.91, NameMatchKind::Reordered));
+        }
     }
 
     let score = jaro_winkler(&name_norm, query_norm);
-    if score > 0.84 { score } else { 0.0 }
+    if score > 0.84 {
+        Some((score, NameMatchKind::Exact))
+    } else {
+        None
+    }
 }
 
 fn infer_score(contact: &Contact) -> ScoreOut {
@@ -3779,8 +3948,9 @@ fn describe_payload() -> Value {
         "commands": [
             {
                 "name": "find-person",
-                "usage": "peoplegraph find-person <query>",
-                "status": "implemented"
+                "usage": "peoplegraph find-person <query> [--strict-name-order]",
+                "status": "implemented",
+                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered'), identity_group, is_primary, and name_variants. Pass --strict-name-order to disable reordered matching."
             },
             {
                 "name": "score",
@@ -3978,14 +4148,16 @@ mod tests {
             },
         };
 
-        assert_eq!(
-            match_confidence(
-                &row,
-                &normalize("kayajones901@gmail.com"),
-                "kayajones901@gmail.com"
-            ),
-            1.0
-        );
+        let (confidence, kind) = match_confidence(
+            &row,
+            &normalize("kayajones901@gmail.com"),
+            "kayajones901@gmail.com",
+            &sorted_token_key("kayajones901@gmail.com"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(confidence, 1.0);
+        assert_eq!(kind, NameMatchKind::Exact);
     }
 
     #[test]
@@ -4370,6 +4542,231 @@ mod tests {
             "Disney Parks & Resorts".to_string()
         );
         assert_eq!(query_usize(&params, "limit", 25), 5);
+    }
+
+    #[test]
+    fn reordered_name_tokens_match_when_not_strict() {
+        let row = ContactRow {
+            email: "bruce@donuts.email".to_string(),
+            contact: Contact {
+                name: "Jaffe Bruce".to_string(),
+                email: "bruce@donuts.email".to_string(),
+                ..empty_contact()
+            },
+        };
+
+        let result = match_confidence(
+            &row,
+            &normalize("Bruce Jaffe"),
+            "bruce jaffe",
+            &sorted_token_key("Bruce Jaffe"),
+            false,
+        )
+        .expect("reordered match should be returned");
+        assert_eq!(result.1, NameMatchKind::Reordered);
+        assert!(result.0 >= 0.9);
+    }
+
+    #[test]
+    fn reordered_name_tokens_skipped_when_strict() {
+        let row = ContactRow {
+            email: "bruce@donuts.email".to_string(),
+            contact: Contact {
+                name: "Jaffe Bruce".to_string(),
+                email: "bruce@donuts.email".to_string(),
+                ..empty_contact()
+            },
+        };
+
+        let result = match_confidence(
+            &row,
+            &normalize("Bruce Jaffe"),
+            "bruce jaffe",
+            &sorted_token_key("Bruce Jaffe"),
+            true,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn different_surnames_never_match_as_reordered() {
+        let row = ContactRow {
+            email: "hank@heyming.com".to_string(),
+            contact: Contact {
+                name: "Hank Heyming".to_string(),
+                email: "hank@heyming.com".to_string(),
+                ..empty_contact()
+            },
+        };
+
+        let result = match_confidence(
+            &row,
+            &normalize("Hank Vigil"),
+            "hank vigil",
+            &sorted_token_key("Hank Vigil"),
+            false,
+        );
+        // Token sets differ ({hank,vigil} vs {hank,heyming}); fuzzy alone shouldn't
+        // upgrade this to a high-confidence reordered match.
+        assert!(
+            result.is_none() || matches!(result.unwrap().1, NameMatchKind::Exact),
+            "different-surname rows must not be flagged as reordered"
+        );
+    }
+
+    #[test]
+    fn find_person_groups_token_permutations() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "bruce@j4.ventures".to_string(),
+            Contact {
+                name: "Bruce Jaffe".to_string(),
+                email: "bruce@j4.ventures".to_string(),
+                total_exchanges: 64,
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "bruce@donuts.email".to_string(),
+            Contact {
+                name: "Jaffe Bruce".to_string(),
+                email: "bruce@donuts.email".to_string(),
+                total_exchanges: 28,
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "hank@heyming.com".to_string(),
+            Contact {
+                name: "Hank Heyming".to_string(),
+                email: "hank@heyming.com".to_string(),
+                total_exchanges: 10,
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        let response = find_person(&index, "Bruce Jaffe", 10, false, Instant::now());
+        assert!(response.ok);
+        let data = response.data.expect("data");
+        let matches = data
+            .get("matches")
+            .and_then(Value::as_array)
+            .expect("matches");
+
+        let emails: Vec<String> = matches
+            .iter()
+            .map(|m| value_str(m, "email"))
+            .collect();
+        assert!(emails.contains(&"bruce@j4.ventures".to_string()));
+        assert!(emails.contains(&"bruce@donuts.email".to_string()));
+        assert!(!emails.contains(&"hank@heyming.com".to_string()));
+
+        let kinds: Vec<String> = matches
+            .iter()
+            .map(|m| value_str(m, "name_match"))
+            .collect();
+        assert!(kinds.contains(&"exact".to_string()));
+        assert!(kinds.contains(&"reordered".to_string()));
+
+        let group_ids: Vec<String> = matches
+            .iter()
+            .map(|m| value_str(m, "identity_group"))
+            .collect();
+        assert_eq!(group_ids[0], group_ids[1]);
+        assert_eq!(group_ids[0], "bruce jaffe");
+
+        let identity_groups = data
+            .get("identity_groups")
+            .and_then(Value::as_array)
+            .expect("identity_groups");
+        assert_eq!(identity_groups.len(), 1);
+        let group = &identity_groups[0];
+        assert_eq!(value_str(group, "id"), "bruce jaffe");
+        assert_eq!(value_str(group, "primary_email"), "bruce@j4.ventures");
+        let variants = group
+            .get("name_variants")
+            .and_then(Value::as_array)
+            .unwrap();
+        let variant_strs: Vec<String> = variants
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        assert!(variant_strs.contains(&"Bruce Jaffe".to_string()));
+        assert!(variant_strs.contains(&"Jaffe Bruce".to_string()));
+
+        let primary_flags: Vec<bool> = matches
+            .iter()
+            .map(|m| m.get("is_primary").and_then(Value::as_bool).unwrap_or(false))
+            .collect();
+        assert_eq!(primary_flags.iter().filter(|&&b| b).count(), 1);
+    }
+
+    #[test]
+    fn find_person_strict_excludes_reordered_rows() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "bruce@j4.ventures".to_string(),
+            Contact {
+                name: "Bruce Jaffe".to_string(),
+                email: "bruce@j4.ventures".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "bruce@donuts.email".to_string(),
+            Contact {
+                name: "Jaffe Bruce".to_string(),
+                email: "bruce@donuts.email".to_string(),
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        let response = find_person(&index, "Bruce Jaffe", 10, true, Instant::now());
+        let data = response.data.expect("data");
+        let matches = data
+            .get("matches")
+            .and_then(Value::as_array)
+            .expect("matches");
+        let emails: Vec<String> = matches
+            .iter()
+            .map(|m| value_str(m, "email"))
+            .collect();
+        assert!(emails.contains(&"bruce@j4.ventures".to_string()));
+        assert!(!emails.contains(&"bruce@donuts.email".to_string()));
+    }
+
+    #[test]
+    fn sorted_token_key_is_order_independent() {
+        assert_eq!(sorted_token_key("Bruce Jaffe"), sorted_token_key("Jaffe Bruce"));
+        assert_eq!(sorted_token_key("Bruce  M. Jaffe"), "bruce jaffe m");
+        assert_eq!(sorted_token_key(""), "");
+    }
+
+    #[test]
+    fn remote_path_passes_strict_name_order() {
+        let command = Commands::FindPerson(FindPersonArgs {
+            query: "Bruce Jaffe".to_string(),
+            limit: 5,
+            strict_name_order: true,
+        });
+        assert_eq!(
+            remote_path(&command),
+            Some("/find-person?query=Bruce%20Jaffe&limit=5&strict_name_order=1".to_string())
+        );
     }
 
     #[test]

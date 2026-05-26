@@ -298,15 +298,40 @@ peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" w
   "error": { "kind": "not_found", "message": "..." }
 }</code></pre>
       <h3>find-person</h3>
+      <p>Name matching is order-independent by default: <code>find-person "Bruce Jaffe"</code> and <code>find-person "Jaffe Bruce"</code> return the same rows. Each match carries <code>name_match</code> (<code>"exact"</code> when the stored name contains the query, <code>"reordered"</code> when only the sorted token set matches), an <code>identity_group</code> id keyed by the sorted token set, an <code>is_primary</code> flag (set on the highest combined-score row in the group), and a <code>name_variants</code> list of every spelling that landed in the same group. Identity grouping is a hint &mdash; rows with different emails are flagged together but never auto-merged. Pass <code>--strict-name-order</code> to disable reordered matching.</p>
       <pre><code>{
   "matches": [
     {
-      "email": "kaya@example.com",
-      "name": "Kaya Jones",
-      "aliases": ["kayajones901@gmail.com"],
+      "email": "bruce@j4.ventures",
+      "name": "Bruce Jaffe",
+      "aliases": [],
       "canonical_id": null,
       "score": { "depth": 4, "recency": 9, "combined": 78, "quadrant": "nurture" },
-      "match_confidence": 0.91
+      "match_confidence": 0.93,
+      "name_match": "exact",
+      "identity_group": "bruce jaffe",
+      "is_primary": true,
+      "name_variants": ["Bruce Jaffe", "Jaffe Bruce"]
+    },
+    {
+      "email": "bruce@donuts.email",
+      "name": "Jaffe Bruce",
+      "aliases": [],
+      "canonical_id": null,
+      "score": { "depth": 3, "recency": 7, "combined": 54, "quadrant": "nurture" },
+      "match_confidence": 0.91,
+      "name_match": "reordered",
+      "identity_group": "bruce jaffe",
+      "is_primary": false,
+      "name_variants": ["Bruce Jaffe", "Jaffe Bruce"]
+    }
+  ],
+  "identity_groups": [
+    {
+      "id": "bruce jaffe",
+      "primary_email": "bruce@j4.ventures",
+      "members": ["bruce@j4.ventures", "bruce@donuts.email"],
+      "name_variants": ["Bruce Jaffe", "Jaffe Bruce"]
     }
   ]
 }</code></pre>
@@ -344,7 +369,7 @@ peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" w
     <section>
       <h2>Distribution</h2>
       <ul>
-        <li>Published as <code>peoplegraph-v0.3.1</code> on GitHub Releases.</li>
+        <li>Published as <code>peoplegraph-v0.3.2</code> on GitHub Releases.</li>
         <li>Install with Homebrew: <code>brew tap kayacancode/tap</code>, then <code>brew install peoplegraph</code>.</li>
         <li>Build with <code>npm run build:peoplegraph</code>.</li>
         <li>Package with <code>npm run package:peoplegraph</code>.</li>
