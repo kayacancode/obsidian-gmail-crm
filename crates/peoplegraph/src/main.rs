@@ -58,6 +58,8 @@ enum Commands {
     Score(EmailArg),
     /// Return people at a company/domain ranked by relationship score.
     WhoKnows(WhoKnowsArgs),
+    /// Surface re-engage (strong + dormant) contacts to reconnect with, ranked by score.
+    Reconnect(ReconnectArgs),
     /// Return neighbors for one email once edge data is present in the cache.
     GetNeighbors(EmailArg),
     /// Return the edge between two emails once edge data is present in the cache.
@@ -114,6 +116,16 @@ struct WhoKnowsArgs {
 
     #[arg(long, default_value_t = 25)]
     limit: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ReconnectArgs {
+    #[arg(long, default_value_t = 5)]
+    limit: usize,
+
+    /// Only include contacts whose combined score is at least this (0–100).
+    #[arg(long, default_value_t = 0)]
+    min_score: u8,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -497,6 +509,9 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::WhoKnows(args) => with_index(cli, command, start, |index| {
             who_knows(index, &args.company, args.limit, start)
         }),
+        Commands::Reconnect(args) => with_index(cli, command, start, |index| {
+            reconnect(index, args.limit, args.min_score, start)
+        }),
         Commands::GetNeighbors(args) => with_index(cli, command, start, |index| {
             get_neighbors(index, &args.email, start)
         }),
@@ -614,6 +629,11 @@ fn remote_path(command: &Commands) -> Option<String> {
             "/who-knows?company={}&limit={}",
             url_encode(&args.company),
             args.limit.max(1)
+        )),
+        Commands::Reconnect(args) => Some(format!(
+            "/reconnect?limit={}&min_score={}",
+            args.limit.max(1),
+            args.min_score
         )),
         Commands::GetNeighbors(args) => {
             Some(format!("/get-neighbors?email={}", url_encode(&args.email)))
@@ -768,6 +788,10 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
         "/who-knows" => Commands::WhoKnows(WhoKnowsArgs {
             company: query_param(&params, "company"),
             limit: query_usize(&params, "limit", 25),
+        }),
+        "/reconnect" => Commands::Reconnect(ReconnectArgs {
+            limit: query_usize(&params, "limit", 5),
+            min_score: query_usize(&params, "min_score", 0).min(100) as u8,
         }),
         "/get-neighbors" => Commands::GetNeighbors(EmailArg {
             email: query_param(&params, "email"),
@@ -1264,6 +1288,94 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
             "ms": elapsed_ms(start)
         }),
     )
+}
+
+fn reconnect(index: &ContactIndex, limit: usize, min_score: u8, start: Instant) -> Response {
+    let mut people: Vec<ContactRow> = rows(index)
+        .into_iter()
+        .filter(|row| {
+            let score = infer_score(&row.contact);
+            score.quadrant == "re-engage" && score.combined >= min_score
+        })
+        .collect();
+
+    people.sort_by(|a, b| {
+        infer_score(&b.contact)
+            .combined
+            .cmp(&infer_score(&a.contact).combined)
+            .then_with(|| b.contact.total_exchanges.cmp(&a.contact.total_exchanges))
+            .then_with(|| a.contact.name.cmp(&b.contact.name))
+    });
+
+    let total = people.len();
+    let limit = limit.max(1);
+    let returned_people: Vec<Value> = people
+        .into_iter()
+        .take(limit)
+        .map(|row| {
+            let score = infer_score(&row.contact);
+            let company = display_company(&row.contact);
+            let company_source = company_source(&row.contact, company.as_deref());
+            let days = days_since_contact(&row.contact);
+            json!({
+                "email": &row.email,
+                "name": &row.contact.name,
+                "role": &row.contact.role,
+                "company": company,
+                "company_source": company_source,
+                "domain": &row.contact.domain,
+                "canonical_id": &row.contact.canonical_id,
+                "score": score,
+                "score_source": score_source(&row.contact),
+                "last_contact": &row.contact.last_contact,
+                "days_since_contact": days,
+                "total_exchanges": row.contact.total_exchanges,
+                "nudge": reconnect_nudge(&row.contact, days),
+            })
+        })
+        .collect();
+    let returned = returned_people.len();
+
+    ok(
+        "reconnect",
+        json!({
+            "people": returned_people,
+            "quadrant": "re-engage",
+            "ranked_by": "combined_score_desc",
+        }),
+        json!({
+            "matched": total,
+            "returned": returned,
+            "min_score": min_score,
+            "contact_count": index.contacts.len(),
+            "schema_version": index.schema_version,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }),
+    )
+}
+
+// Short, human-facing re-engagement reason built from hard signals only.
+fn reconnect_nudge(contact: &Contact, days: Option<i64>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match days {
+        Some(d) if d >= 60 => parts.push(format!("No contact in {} months", (d / 30).max(2))),
+        Some(d) => parts.push(format!("Last contact {d} days ago")),
+        None => parts.push("No recorded contact".to_string()),
+    }
+    if contact.total_exchanges >= 20 {
+        parts.push(format!(
+            "previously active ({} emails)",
+            contact.total_exchanges
+        ));
+    }
+    if let Some(role) = contact.role.as_deref().filter(|r| !r.trim().is_empty()) {
+        parts.push(format!("role: {role}"));
+    } else if let Some(company) = display_company(contact) {
+        parts.push(format!("at {company}"));
+    }
+    parts.join(" — ")
 }
 
 fn get_neighbors(index: &ContactIndex, email: &str, start: Instant) -> Response {
@@ -3914,6 +4026,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::FindPerson(_) => "find-person",
         Commands::Score(_) => "score",
         Commands::WhoKnows(_) => "who-knows",
+        Commands::Reconnect(_) => "reconnect",
         Commands::GetNeighbors(_) => "get-neighbors",
         Commands::GetEdges(_) => "get-edges",
         Commands::ContactCard(_) => "contact-card",
@@ -3961,6 +4074,12 @@ fn describe_payload() -> Value {
                 "name": "who-knows",
                 "usage": "peoplegraph who-knows --company <name>",
                 "status": "implemented"
+            },
+            {
+                "name": "reconnect",
+                "usage": "peoplegraph reconnect --limit 5 [--min-score 0]",
+                "status": "implemented",
+                "notes": "Returns re-engage (strong + dormant) contacts ranked by combined score, each with days_since_contact and a short nudge. Read-only; safe over --remote."
             },
             {
                 "name": "get-neighbors",

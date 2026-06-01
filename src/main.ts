@@ -16,6 +16,7 @@ import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
 import { writeQuadrantView } from "./quadrant-view";
+import { ReconnectView, VIEW_TYPE_GMAIL_CRM_RECONNECT } from "./reconnect-view";
 import type {
 	GmailCrmSettings,
 	ContactIndex,
@@ -133,6 +134,22 @@ export default class GmailCrmPlugin extends Plugin {
 			callback: () => { void this.createBase(); },
 		});
 
+		// Reconnect surface: swipeable view over the re-engage quadrant
+		this.registerView(
+			VIEW_TYPE_GMAIL_CRM_RECONNECT,
+			(leaf) => new ReconnectView(leaf, this)
+		);
+
+		this.addRibbonIcon("users", "Reconnect suggestions", () => {
+			void this.activateReconnectView();
+		});
+
+		this.addCommand({
+			id: "open-reconnect",
+			name: "Open reconnect suggestions",
+			callback: () => { void this.activateReconnectView(); },
+		});
+
 		// Settings tab
 		this.addSettingTab(new GmailCrmSettingTab(this.app, this));
 
@@ -150,6 +167,20 @@ export default class GmailCrmPlugin extends Plugin {
 		if (this.syncInterval !== null) {
 			window.clearInterval(this.syncInterval);
 		}
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_GMAIL_CRM_RECONNECT);
+	}
+
+	async activateReconnectView() {
+		const { workspace } = this.app;
+		let leaf = workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM_RECONNECT)[0];
+		if (!leaf) {
+			leaf = workspace.getLeaf(true);
+			await leaf.setViewState({
+				type: VIEW_TYPE_GMAIL_CRM_RECONNECT,
+				active: true,
+			});
+		}
+		void workspace.revealLeaf(leaf);
 	}
 
 	async loadSettings() {
@@ -360,16 +391,24 @@ export default class GmailCrmPlugin extends Plugin {
 			// Check if a page already exists for this person
 			const existingFile = existingPages.get(contact.name.toLowerCase());
 
-			const frontmatter = [
+			const fmLines = [
 				"---",
 				`email: "${contact.email}"`,
 				`last_contact: ${contact.lastContact.split("T")[0]}`,
-				`first_contact: ${contact.firstContact.split("T")[0]}`,
+			];
+			// Only record first_contact when we observed a real span — a single
+			// message in the synced window leaves first === last, which isn't a
+			// meaningful "first contact" (see frontmatter.ts updateFrontmatter).
+			if (contact.firstContact && contact.firstContact !== contact.lastContact) {
+				fmLines.push(`first_contact: ${contact.firstContact.split("T")[0]}`);
+			}
+			fmLines.push(
 				`total_exchanges: ${contact.totalExchanges}`,
 				`sent: ${contact.sentCount}`,
 				`received: ${contact.receivedCount}`,
 				"---",
-			].join("\n");
+			);
+			const frontmatter = fmLines.join("\n");
 
 			const body = [
 				`# ${contact.name}`,

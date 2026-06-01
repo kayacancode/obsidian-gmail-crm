@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => GmailCrmPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/gmail-api.ts
 var import_obsidian = require("obsidian");
@@ -1595,6 +1595,9 @@ var FrontmatterManager = class {
     }
     if (page.gmailStats) {
       crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+      if (page.gmailStats.firstContact && page.gmailStats.firstContact !== page.gmailStats.lastContact) {
+        crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+      }
       crm.total_exchanges = page.gmailStats.totalExchanges;
       crm.sent = page.gmailStats.sentCount;
       crm.received = page.gmailStats.receivedCount;
@@ -1654,6 +1657,19 @@ var FrontmatterManager = class {
     };
     if (link.aliases && link.aliases.length > 0) fields.aliases = link.aliases;
     const updated = this.mergeFrontmatter(content, fields);
+    if (updated !== content) {
+      await this.vault.modify(file, updated);
+    }
+  }
+  // Write reconnect-surface state for a single person without touching the
+  // score fields. Only the provided fields are set/merged.
+  async setReconnectAction(file, fields) {
+    const content = await this.vault.read(file);
+    const crm = {};
+    if (fields.status !== void 0) crm.reconnect_status = fields.status;
+    if (fields.lastReconnect !== void 0) crm.last_reconnect = fields.lastReconnect;
+    if (fields.snoozeUntil !== void 0) crm.reconnect_snooze_until = fields.snoozeUntil;
+    const updated = this.mergeFrontmatter(content, crm);
     if (updated !== content) {
       await this.vault.modify(file, updated);
     }
@@ -2115,8 +2131,250 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// src/reconnect-view.ts
+var import_obsidian8 = require("obsidian");
+var VIEW_TYPE_GMAIL_CRM_RECONNECT = "gmail-crm-reconnect";
+var RECONTACT_COOLDOWN_DAYS = 60;
+var SNOOZE_DAYS = 30;
+var ReconnectView = class extends import_obsidian8.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.cards = [];
+    this.index = 0;
+    this.plugin = plugin;
+  }
+  getViewType() {
+    return VIEW_TYPE_GMAIL_CRM_RECONNECT;
+  }
+  getDisplayText() {
+    return "Reconnect";
+  }
+  getIcon() {
+    return "users";
+  }
+  async onOpen() {
+    await this.reload();
+  }
+  async reload() {
+    this.cards = await this.loadCards();
+    this.index = 0;
+    this.render();
+  }
+  // Pull re-engage (strong + dormant) people straight from People-page
+  // frontmatter — the same fields update-staleness writes — and drop anyone
+  // already actioned (dismissed, recently contacted, or snoozed).
+  async loadCards() {
+    var _a, _b, _c;
+    const folder = this.app.vault.getAbstractFileByPath(
+      (0, import_obsidian8.normalizePath)(this.plugin.settings.peopleFolder)
+    );
+    if (!(folder instanceof import_obsidian8.TFolder)) return [];
+    const today = isoDate(/* @__PURE__ */ new Date());
+    const cards = [];
+    for (const child of folder.children) {
+      if (!(child instanceof import_obsidian8.TFile) || child.extension !== "md") continue;
+      const content = await this.app.vault.cachedRead(child);
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!fmMatch) continue;
+      const yaml = fmMatch[1];
+      if (readField2(yaml, "quadrant") !== "re-engage") continue;
+      const status = readField2(yaml, "reconnect_status");
+      if (status === "dismissed") continue;
+      if (status === "contacted") {
+        const last = readField2(yaml, "last_reconnect");
+        if (last && daysSince(last) < RECONTACT_COOLDOWN_DAYS) continue;
+      }
+      const snooze = readField2(yaml, "reconnect_snooze_until");
+      if (snooze && snooze > today) continue;
+      cards.push({
+        name: child.basename,
+        path: child.path,
+        company: cleanLink(readField2(yaml, "company")),
+        email: readField2(yaml, "email"),
+        combinedScore: (_a = readNumber2(yaml, "combined_score")) != null ? _a : 0,
+        strengthScore: (_b = readNumber2(yaml, "strength_score")) != null ? _b : 0,
+        momentumScore: (_c = readNumber2(yaml, "momentum_score")) != null ? _c : 0,
+        daysSinceContact: readNumber2(yaml, "days_since_contact"),
+        nudge: readField2(yaml, "nudge")
+      });
+    }
+    cards.sort((a, b) => b.combinedScore - a.combinedScore);
+    return cards;
+  }
+  render() {
+    const root = this.containerEl.children[1];
+    root.empty();
+    root.addClass("gmail-crm-container", "gmail-crm-reconnect");
+    const header = root.createDiv({ cls: "gmail-crm-header" });
+    header.createEl("h4", { text: "Reconnect" });
+    if (this.cards.length === 0) {
+      root.createDiv({
+        cls: "gmail-crm-empty",
+        text: "Nobody to reconnect with right now \u2014 your re-engage queue is clear. \u{1F389}"
+      });
+      return;
+    }
+    if (this.index >= this.cards.length) {
+      root.createDiv({
+        cls: "gmail-crm-empty",
+        text: `Done \u2014 you went through all ${this.cards.length} suggestions.`
+      });
+      const again = root.createEl("button", { text: "Start over", cls: "gmail-crm-rc-btn" });
+      again.addEventListener("click", () => {
+        void this.reload();
+      });
+      return;
+    }
+    header.createDiv({ cls: "gmail-crm-meta gmail-crm-faded" }).setText(`${this.index + 1} of ${this.cards.length}`);
+    const card = this.cards[this.index];
+    const cardEl = root.createDiv({ cls: "gmail-crm-rc-card" });
+    cardEl.setAttribute("tabindex", "0");
+    const name = cardEl.createDiv({ cls: "gmail-crm-rc-name" });
+    name.setText(card.name);
+    if (card.company) {
+      cardEl.createDiv({ cls: "gmail-crm-rc-company gmail-crm-faded" }).setText(card.company);
+    }
+    const last = card.daysSinceContact === null ? "No recorded contact" : card.daysSinceContact === 0 ? "Last contact today" : `Last contact ${card.daysSinceContact} day${card.daysSinceContact === 1 ? "" : "s"} ago`;
+    cardEl.createDiv({ cls: "gmail-crm-rc-last" }).setText(last);
+    const scores = cardEl.createDiv({ cls: "gmail-crm-rc-scores" });
+    scores.createSpan({ cls: "gmail-crm-rc-pill", text: `score ${card.combinedScore}` });
+    scores.createSpan({ cls: "gmail-crm-rc-pill", text: `strength ${card.strengthScore}` });
+    scores.createSpan({ cls: "gmail-crm-rc-pill", text: `momentum ${card.momentumScore}` });
+    if (card.nudge) {
+      cardEl.createDiv({ cls: "gmail-crm-rc-nudge" }).setText(card.nudge);
+    }
+    const actions = root.createDiv({ cls: "gmail-crm-rc-actions" });
+    this.actionButton(actions, "Reached out", "mod-cta", () => this.act(card, "contacted"));
+    this.actionButton(actions, `Snooze ${SNOOZE_DAYS}d`, "", () => this.act(card, "snooze"));
+    this.actionButton(actions, "Dismiss", "", () => this.act(card, "dismissed"));
+    this.actionButton(actions, "Skip", "", () => this.advance());
+    this.actionButton(actions, "Open page", "", () => {
+      void this.openPage(card);
+    });
+    root.createDiv({ cls: "gmail-crm-faded gmail-crm-rc-hint" }).setText(
+      "\u2190 skip  \xB7  r reached out  \xB7  s snooze  \xB7  d dismiss  \xB7  enter open"
+    );
+    cardEl.focus();
+    this.registerDomEvent(cardEl, "keydown", (evt) => this.onKey(evt, card));
+    this.registerSwipe(cardEl, card);
+  }
+  actionButton(parent, label, cls, onClick) {
+    const btn = parent.createEl("button", { text: label, cls: `gmail-crm-rc-btn ${cls}`.trim() });
+    btn.addEventListener("click", onClick);
+  }
+  onKey(evt, card) {
+    switch (evt.key) {
+      case "ArrowLeft":
+      case "ArrowRight":
+        evt.preventDefault();
+        this.advance();
+        break;
+      case "r":
+        void this.act(card, "contacted");
+        break;
+      case "s":
+        void this.act(card, "snooze");
+        break;
+      case "d":
+        void this.act(card, "dismissed");
+        break;
+      case "Enter":
+        void this.openPage(card);
+        break;
+    }
+  }
+  registerSwipe(cardEl, card) {
+    let startX = 0;
+    let dragging = false;
+    this.registerDomEvent(cardEl, "pointerdown", (e) => {
+      dragging = true;
+      startX = e.clientX;
+      cardEl.setPointerCapture(e.pointerId);
+    });
+    this.registerDomEvent(cardEl, "pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      cardEl.style.transform = `translateX(${dx}px)`;
+      cardEl.style.opacity = String(Math.max(0.4, 1 - Math.abs(dx) / 400));
+    });
+    const end = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const dx = e.clientX - startX;
+      cardEl.style.transform = "";
+      cardEl.style.opacity = "";
+      if (dx > 120) {
+        void this.act(card, "contacted");
+      } else if (dx < -120) {
+        this.advance();
+      }
+    };
+    this.registerDomEvent(cardEl, "pointerup", end);
+    this.registerDomEvent(cardEl, "pointercancel", end);
+  }
+  advance() {
+    this.index++;
+    this.render();
+  }
+  async act(card, action) {
+    const file = this.app.vault.getAbstractFileByPath(card.path);
+    if (!(file instanceof import_obsidian8.TFile)) {
+      new import_obsidian8.Notice(`Could not find ${card.name}`);
+      return;
+    }
+    const fm = new FrontmatterManager(this.app.vault, this.plugin.settings.companiesFolder);
+    const today = isoDate(/* @__PURE__ */ new Date());
+    if (action === "snooze") {
+      await fm.setReconnectAction(file, {
+        status: "snoozed",
+        snoozeUntil: isoDate(addDays(/* @__PURE__ */ new Date(), SNOOZE_DAYS))
+      });
+    } else {
+      await fm.setReconnectAction(file, { status: action, lastReconnect: today });
+    }
+    this.cards.splice(this.index, 1);
+    this.render();
+  }
+  async openPage(card) {
+    const file = this.app.vault.getAbstractFileByPath(card.path);
+    if (file instanceof import_obsidian8.TFile) {
+      await this.app.workspace.getLeaf(false).openFile(file);
+    }
+  }
+};
+function readField2(yaml, key) {
+  const m = yaml.match(new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m"));
+  if (!m) return null;
+  return m[1].replace(/^["']|["']$/g, "").trim();
+}
+function readNumber2(yaml, key) {
+  const v = readField2(yaml, key);
+  if (v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function cleanLink(val) {
+  var _a;
+  if (!val) return null;
+  const m = (_a = val.match(/\[\[[^|\]]*\|([^\]]+)\]\]/)) != null ? _a : val.match(/\[\[([^\]]+)\]\]/);
+  return m ? m[1] : val;
+}
+function isoDate(d) {
+  return d.toISOString().split("T")[0];
+}
+function addDays(d, days) {
+  const copy = new Date(d);
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+function daysSince(iso) {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return Number.POSITIVE_INFINITY;
+  return Math.floor((Date.now() - then) / 864e5);
+}
+
 // src/main.ts
-var GmailCrmPlugin = class extends import_obsidian8.Plugin {
+var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -2163,7 +2421,7 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
       name: "Enrich current person",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
-        if (!file || !file.path.startsWith((0, import_obsidian8.normalizePath)(this.settings.peopleFolder))) {
+        if (!file || !file.path.startsWith((0, import_obsidian9.normalizePath)(this.settings.peopleFolder))) {
           return false;
         }
         if (!checking) {
@@ -2201,6 +2459,20 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
         void this.createBase();
       }
     });
+    this.registerView(
+      VIEW_TYPE_GMAIL_CRM_RECONNECT,
+      (leaf) => new ReconnectView(leaf, this)
+    );
+    this.addRibbonIcon("users", "Reconnect suggestions", () => {
+      void this.activateReconnectView();
+    });
+    this.addCommand({
+      id: "open-reconnect",
+      name: "Open reconnect suggestions",
+      callback: () => {
+        void this.activateReconnectView();
+      }
+    });
     this.addSettingTab(new GmailCrmSettingTab(this.app, this));
     await this.loadContactIndex();
     await this.loadMessageCache();
@@ -2212,6 +2484,19 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     if (this.syncInterval !== null) {
       window.clearInterval(this.syncInterval);
     }
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_GMAIL_CRM_RECONNECT);
+  }
+  async activateReconnectView() {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(VIEW_TYPE_GMAIL_CRM_RECONNECT)[0];
+    if (!leaf) {
+      leaf = workspace.getLeaf(true);
+      await leaf.setViewState({
+        type: VIEW_TYPE_GMAIL_CRM_RECONNECT,
+        active: true
+      });
+    }
+    void workspace.revealLeaf(leaf);
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -2226,15 +2511,15 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
       const authUrl = this.gmailApi.getAuthUrl();
       const codePromise = startOAuthCallbackServer();
       window.open(authUrl);
-      new import_obsidian8.Notice("Opening browser for authorization...");
+      new import_obsidian9.Notice("Opening browser for authorization...");
       const code = await codePromise;
       await this.gmailApi.exchangeCode(code);
-      new import_obsidian8.Notice("Gmail connected successfully!");
+      new import_obsidian9.Notice("Gmail connected successfully!");
       this.startAutoSync();
       await this.syncContacts();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Gmail auth failed: ${msg}`);
+      new import_obsidian9.Notice(`Gmail auth failed: ${msg}`);
     }
   }
   startAutoSync() {
@@ -2251,10 +2536,10 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
-      new import_obsidian8.Notice("Connect your account first in plugin settings");
+      new import_obsidian9.Notice("Connect your account first in plugin settings");
       return;
     }
-    const notice = new import_obsidian8.Notice("Syncing contacts...", 0);
+    const notice = new import_obsidian9.Notice("Syncing contacts...", 0);
     try {
       const isIncremental = !!(this.contactIndex && this.messageCache);
       const result = await this.gmailApi.buildContactIndex(
@@ -2286,13 +2571,13 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Sync failed: ${msg}`);
+      new import_obsidian9.Notice(`Sync failed: ${msg}`);
     }
   }
   async fullResync() {
     this.messageCache = null;
     this.contactIndex = null;
-    new import_obsidian8.Notice("Cache cleared \u2014 running full re-sync...");
+    new import_obsidian9.Notice("Cache cleared \u2014 running full re-sync...");
     await this.syncContacts();
   }
   async loadContactIndex() {
@@ -2318,20 +2603,20 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     (_b = (_a = this.contactIndex).edges) != null ? _b : _a.edges = [];
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex, null, 2);
-    await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
+    await this.app.vault.adapter.write((0, import_obsidian9.normalizePath)(path), content);
   }
   getIndexPath() {
-    return (0, import_obsidian8.normalizePath)(
+    return (0, import_obsidian9.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
     );
   }
   getCachePath() {
-    return (0, import_obsidian8.normalizePath)(
+    return (0, import_obsidian9.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
     );
   }
   getMergeQueuePath() {
-    return (0, import_obsidian8.normalizePath)(
+    return (0, import_obsidian9.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/merge-queue.json`
     );
   }
@@ -2360,11 +2645,11 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     if (!this.messageCache) return;
     const path = this.getCachePath();
     const content = JSON.stringify(this.messageCache);
-    await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
+    await this.app.vault.adapter.write((0, import_obsidian9.normalizePath)(path), content);
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;
-    const folder = (0, import_obsidian8.normalizePath)(this.settings.contactNotesFolder);
+    const folder = (0, import_obsidian9.normalizePath)(this.settings.contactNotesFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
@@ -2373,9 +2658,9 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     }
     const existingPages = /* @__PURE__ */ new Map();
     const folderObj = this.app.vault.getAbstractFileByPath(folder);
-    if (folderObj instanceof import_obsidian8.TFolder) {
+    if (folderObj instanceof import_obsidian9.TFolder) {
       for (const child of folderObj.children) {
-        if (child instanceof import_obsidian8.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian9.TFile && child.extension === "md") {
           const pageName = child.basename.replace(/^p-\s*/, "").toLowerCase();
           existingPages.set(pageName, child);
         }
@@ -2383,18 +2668,23 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     }
     for (const contact of Object.values(this.contactIndex.contacts)) {
       const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-      const notePath = (0, import_obsidian8.normalizePath)(`${folder}/p- ${safeName}.md`);
+      const notePath = (0, import_obsidian9.normalizePath)(`${folder}/p- ${safeName}.md`);
       const existingFile = existingPages.get(contact.name.toLowerCase());
-      const frontmatter = [
+      const fmLines = [
         "---",
         `email: "${contact.email}"`,
-        `last_contact: ${contact.lastContact.split("T")[0]}`,
-        `first_contact: ${contact.firstContact.split("T")[0]}`,
+        `last_contact: ${contact.lastContact.split("T")[0]}`
+      ];
+      if (contact.firstContact && contact.firstContact !== contact.lastContact) {
+        fmLines.push(`first_contact: ${contact.firstContact.split("T")[0]}`);
+      }
+      fmLines.push(
         `total_exchanges: ${contact.totalExchanges}`,
         `sent: ${contact.sentCount}`,
         `received: ${contact.receivedCount}`,
         "---"
-      ].join("\n");
+      );
+      const frontmatter = fmLines.join("\n");
       const body = [
         `# ${contact.name}`,
         "",
@@ -2416,7 +2706,7 @@ ${body}`;
         continue;
       }
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (noteFile instanceof import_obsidian8.TFile) {
+      if (noteFile instanceof import_obsidian9.TFile) {
         continue;
       }
       try {
@@ -2434,20 +2724,20 @@ ${body}`;
   }
   async openContactNote(contact) {
     const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-    const notePath = (0, import_obsidian8.normalizePath)(
+    const notePath = (0, import_obsidian9.normalizePath)(
       `${this.settings.contactNotesFolder}/${safeName}.md`
     );
     const file = this.app.vault.getAbstractFileByPath(notePath);
-    if (file instanceof import_obsidian8.TFile) {
+    if (file instanceof import_obsidian9.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     } else {
-      new import_obsidian8.Notice(`No note found for ${contact.name}. Run sync first.`);
+      new import_obsidian9.Notice(`No note found for ${contact.name}. Run sync first.`);
     }
   }
   async enrichAllPeople(skipAi = false) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian8.Notice("Loading people pages...", 0);
+    const notice = new import_obsidian9.Notice("Loading people pages...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -2459,7 +2749,7 @@ ${body}`;
       if (!skipAi) {
         if (!this.settings.anthropicApiKey) {
           notice.hide();
-          new import_obsidian8.Notice("Set your API key in plugin settings first.");
+          new import_obsidian9.Notice("Set your API key in plugin settings first.");
           return;
         }
         harper = new HarperSkill(
@@ -2474,7 +2764,7 @@ ${body}`;
         notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
         const relationships = (_a = graph[name]) != null ? _a : [];
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (!(file instanceof import_obsidian8.TFile)) continue;
+        if (!(file instanceof import_obsidian9.TFile)) continue;
         if (harper) {
           try {
             const rewritten = await harper.rewritePersonPage(name, page, relationships, pages);
@@ -2482,7 +2772,7 @@ ${body}`;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error(`Harper skill failed for ${name}: ${msg}`);
-            new import_obsidian8.Notice(`Failed on ${name}: ${msg}`);
+            new import_obsidian9.Notice(`Failed on ${name}: ${msg}`);
           }
         } else {
           const relLines = relationships.map(
@@ -2507,25 +2797,25 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian9.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async enrichSinglePerson(name) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian8.Notice(`Enriching ${name}...`, 0);
+    const notice = new import_obsidian9.Notice(`Enriching ${name}...`, 0);
     try {
       const pages = await engine.loadPeoplePages();
       if (!pages[name]) {
         notice.hide();
-        new import_obsidian8.Notice(`Person "${name}" not found in people pages.`);
+        new import_obsidian9.Notice(`Person "${name}" not found in people pages.`);
         return;
       }
       const graph = engine.buildGraph(pages, this.contactIndex);
       const relationships = (_a = graph[name]) != null ? _a : [];
       if (!this.settings.anthropicApiKey) {
         notice.hide();
-        new import_obsidian8.Notice("Set your API key in plugin settings first.");
+        new import_obsidian9.Notice("Set your API key in plugin settings first.");
         return;
       }
       const harper = new HarperSkill(
@@ -2535,7 +2825,7 @@ ${relSection}
       );
       const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
       const file = this.app.vault.getAbstractFileByPath(pages[name].path);
-      if (file instanceof import_obsidian8.TFile) {
+      if (file instanceof import_obsidian9.TFile) {
         await this.app.vault.modify(file, rewritten);
       }
       notice.setMessage(`Enriched ${name}!`);
@@ -2543,14 +2833,14 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian9.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async updateStaleness() {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
     const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
-    const notice = new import_obsidian8.Notice("Computing staleness scores...", 0);
+    const notice = new import_obsidian9.Notice("Computing staleness scores...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -2567,7 +2857,7 @@ ${relSection}
           staleCount++;
         }
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (file instanceof import_obsidian8.TFile) {
+        if (file instanceof import_obsidian9.TFile) {
           await fm.updateFrontmatter(file, page, staleness, relationships);
           const contact = this.getContactForPage(page);
           if (contact == null ? void 0 : contact.canonicalId) {
@@ -2591,7 +2881,7 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Staleness update failed: ${msg}`);
+      new import_obsidian9.Notice(`Staleness update failed: ${msg}`);
     }
   }
   updateContactScore(page, staleness, updatedAt) {
@@ -2772,27 +3062,27 @@ ${relSection}
       `Queue: \`${this.getMergeQueuePath()}\``,
       ""
     ];
-    const folder = (0, import_obsidian8.normalizePath)(this.settings.peopleFolder);
+    const folder = (0, import_obsidian9.normalizePath)(this.settings.peopleFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
       } catch (e) {
       }
     }
-    const path = (0, import_obsidian8.normalizePath)(`${folder}/_Merge Queue.md`);
+    const path = (0, import_obsidian9.normalizePath)(`${folder}/_Merge Queue.md`);
     const content = lines.join("\n");
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian8.TFile) {
+    if (file instanceof import_obsidian9.TFile) {
       await this.app.vault.modify(file, content);
       await this.app.workspace.getLeaf().openFile(file);
     } else {
       await this.app.vault.create(path, content);
       const created = this.app.vault.getAbstractFileByPath(path);
-      if (created instanceof import_obsidian8.TFile) {
+      if (created instanceof import_obsidian9.TFile) {
         await this.app.workspace.getLeaf().openFile(created);
       }
     }
-    new import_obsidian8.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
+    new import_obsidian9.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
   }
   renderMergeCandidates(candidates) {
     var _a, _b;
@@ -2843,14 +3133,14 @@ ${relSection}
   async createBase() {
     try {
       const basePath = await createBaseView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian8.Notice(`CRM Base created at ${basePath}`);
+      new import_obsidian9.Notice(`CRM Base created at ${basePath}`);
       const file = this.app.vault.getAbstractFileByPath(basePath);
-      if (file instanceof import_obsidian8.TFile) {
+      if (file instanceof import_obsidian9.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Failed to create Base: ${msg}`);
+      new import_obsidian9.Notice(`Failed to create Base: ${msg}`);
     }
   }
   async refreshBaseView() {
@@ -2869,14 +3159,14 @@ ${relSection}
   async createQuadrantView() {
     try {
       const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian8.Notice(`Quadrant view written to ${path}`);
+      new import_obsidian9.Notice(`Quadrant view written to ${path}`);
       const file = this.app.vault.getAbstractFileByPath(path);
-      if (file instanceof import_obsidian8.TFile) {
+      if (file instanceof import_obsidian9.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Failed to write quadrant view: ${msg}`);
+      new import_obsidian9.Notice(`Failed to write quadrant view: ${msg}`);
     }
   }
 };

@@ -33,6 +33,10 @@ export interface CrmFrontmatter {
 	canonical_id?: string;
 	aliases?: string[];
 	last_canonical_sync?: string;
+	// Reconnect surface state (written by the Reconnect view)
+	reconnect_status?: string; // "contacted" | "snoozed" | "dismissed"
+	last_reconnect?: string; // ISO date the card was actioned as contacted
+	reconnect_snooze_until?: string; // ISO date the card resurfaces
 }
 
 export class FrontmatterManager {
@@ -183,6 +187,17 @@ export class FrontmatterManager {
 
 		if (page.gmailStats) {
 			crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+			// Only emit first_contact when we actually observed a span. The
+			// gmail.metadata scope forbids q= history searches, so a contact with
+			// a single message in the synced window has firstContact === lastContact
+			// — that's not a real "first contact", so don't write a misleading
+			// identical date.
+			if (
+				page.gmailStats.firstContact &&
+				page.gmailStats.firstContact !== page.gmailStats.lastContact
+			) {
+				crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+			}
 			crm.total_exchanges = page.gmailStats.totalExchanges;
 			crm.sent = page.gmailStats.sentCount;
 			crm.received = page.gmailStats.receivedCount;
@@ -251,6 +266,23 @@ export class FrontmatterManager {
 		};
 		if (link.aliases && link.aliases.length > 0) fields.aliases = link.aliases;
 		const updated = this.mergeFrontmatter(content, fields);
+		if (updated !== content) {
+			await this.vault.modify(file, updated);
+		}
+	}
+
+	// Write reconnect-surface state for a single person without touching the
+	// score fields. Only the provided fields are set/merged.
+	async setReconnectAction(
+		file: TFile,
+		fields: { status?: string; lastReconnect?: string; snoozeUntil?: string }
+	): Promise<void> {
+		const content = await this.vault.read(file);
+		const crm: CrmFrontmatter = {};
+		if (fields.status !== undefined) crm.reconnect_status = fields.status;
+		if (fields.lastReconnect !== undefined) crm.last_reconnect = fields.lastReconnect;
+		if (fields.snoozeUntil !== undefined) crm.reconnect_snooze_until = fields.snoozeUntil;
+		const updated = this.mergeFrontmatter(content, crm);
 		if (updated !== content) {
 			await this.vault.modify(file, updated);
 		}

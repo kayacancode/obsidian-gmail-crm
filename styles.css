@@ -235,3 +235,87 @@
 	color: var(--text-muted);
 	text-align: center;
 }
+
+/* Reconnect view */
+.gmail-crm-reconnect {
+	max-width: 520px;
+	margin: 0 auto;
+}
+
+.gmail-crm-rc-card {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	padding: 20px;
+	margin: 12px 0 16px 0;
+	background: var(--background-primary-alt);
+	cursor: grab;
+	touch-action: pan-y;
+	outline: none;
+	transition: box-shadow 0.1s;
+}
+
+.gmail-crm-rc-card:focus {
+	box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+
+.gmail-crm-rc-card:active {
+	cursor: grabbing;
+}
+
+.gmail-crm-rc-name {
+	font-size: 1.4em;
+	font-weight: 600;
+}
+
+.gmail-crm-rc-company {
+	margin-top: 2px;
+}
+
+.gmail-crm-rc-last {
+	margin-top: 10px;
+	font-size: 0.9em;
+	color: var(--text-muted);
+}
+
+.gmail-crm-rc-scores {
+	display: flex;
+	gap: 6px;
+	margin-top: 10px;
+	flex-wrap: wrap;
+}
+
+.gmail-crm-rc-pill {
+	font-size: 0.75em;
+	padding: 2px 8px;
+	border-radius: 10px;
+	background: var(--background-modifier-border);
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.gmail-crm-rc-nudge {
+	margin-top: 14px;
+	padding: 10px 12px;
+	border-radius: 8px;
+	background: rgba(108, 162, 220, 0.12);
+	font-size: 0.9em;
+	line-height: 1.4;
+}
+
+.gmail-crm-rc-actions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.gmail-crm-rc-btn {
+	padding: 6px 12px;
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.gmail-crm-rc-hint {
+	margin-top: 12px;
+	font-size: 0.75em;
+	text-align: center;
+}
