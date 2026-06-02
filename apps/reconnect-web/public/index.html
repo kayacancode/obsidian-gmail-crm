@@ -64,19 +64,27 @@
 			if (cfg.googleClientId && window.google) {
 				google.accounts.id.initialize({
 					client_id: cfg.googleClientId,
-					callback: (resp) => { idToken = resp.credential; renderAuthedHint(); },
+					callback: (resp) => { idToken = resp.credential; load(); },
 				});
-				google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "medium" });
+				google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "large" });
+			} else {
+				stage.innerHTML = `<div class="gate">Sign-in unavailable — missing Google config.</div>`;
+				return;
 			}
-			await load();
+			renderGate();
 		}
 
-		function renderAuthedHint() {
-			// no-op visual; swiping just works once idToken is set
+		function renderGate() {
+			actionsEl.hidden = true;
+			countEl.textContent = "";
+			stage.innerHTML = `<div class="gate">Sign in with Google to view your reconnect list.</div>`;
 		}
 
 		async function load() {
-			const data = await fetch("/api/candidates").then(r => r.json()).catch(() => ({ candidates: [] }));
+			if (!idToken) { renderGate(); return; }
+			const resp = await fetch("/api/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
+			if (!resp || resp.status === 401) { renderGate(); return; }
+			const data = await resp.json().catch(() => ({ candidates: [] }));
 			queue = data.candidates || [];
 			total = queue.length;
 			render();
