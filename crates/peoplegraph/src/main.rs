@@ -60,6 +60,8 @@ enum Commands {
     WhoKnows(WhoKnowsArgs),
     /// Surface re-engage (strong + dormant) contacts to reconnect with, ranked by score.
     Reconnect(ReconnectArgs),
+    /// Record a human swipe decision (boost/suppress/delete) into the reconnect feedback overlay.
+    Feedback(FeedbackArgs),
     /// Return neighbors for one email once edge data is present in the cache.
     GetNeighbors(EmailArg),
     /// Return the edge between two emails once edge data is present in the cache.
@@ -126,6 +128,20 @@ struct ReconnectArgs {
     /// Only include contacts whose combined score is at least this (0–100).
     #[arg(long, default_value_t = 0)]
     min_score: u8,
+}
+
+#[derive(Args, Debug, Clone)]
+struct FeedbackArgs {
+    #[arg(long)]
+    email: String,
+
+    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist)
+    #[arg(long)]
+    action: String,
+
+    /// Score delta for boost/suppress (0–100, default 10). Ignored for delete.
+    #[arg(long, default_value_t = 10)]
+    delta: u8,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -339,6 +355,31 @@ struct ContactEdge {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct FeedbackStore {
+    #[serde(default = "one")]
+    schema_version: u32,
+    #[serde(default)]
+    updated_at_unix: u64,
+    #[serde(default)]
+    entries: HashMap<String, FeedbackEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FeedbackEntry {
+    action: String, // "boost" | "suppress" | "delete"
+    #[serde(default)]
+    delta: u8,
+    #[serde(default)]
+    updated_unix: u64,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct MergeQueue {
     schema_version: u32,
     updated_at_unix: u64,
@@ -509,9 +550,8 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::WhoKnows(args) => with_index(cli, command, start, |index| {
             who_knows(index, &args.company, args.limit, start)
         }),
-        Commands::Reconnect(args) => with_index(cli, command, start, |index| {
-            reconnect(index, args.limit, args.min_score, start)
-        }),
+        Commands::Reconnect(args) => reconnect(cli, command, args, start),
+        Commands::Feedback(args) => feedback(cli, command, args, start),
         Commands::GetNeighbors(args) => with_index(cli, command, start, |index| {
             get_neighbors(index, &args.email, start)
         }),
@@ -676,6 +716,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::ApplyMerge(_)
         | Commands::DismissMerge(_)
         | Commands::ProposeMerge(_)
+        | Commands::Feedback(_)
         | Commands::Serve(_) => None,
     }
 }
@@ -1290,33 +1331,60 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
     )
 }
 
-fn reconnect(index: &ContactIndex, limit: usize, min_score: u8, start: Instant) -> Response {
-    let mut people: Vec<ContactRow> = rows(index)
+fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Instant) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    let feedback = read_feedback(&feedback_path(&cache_path));
+    let min_score = args.min_score;
+
+    // Re-engage candidates, with human feedback applied: suppress/delete are
+    // dropped, boost raises the ranking score. Carry the effective score so the
+    // map below doesn't recompute it.
+    let mut people: Vec<(ContactRow, u8)> = rows(&index)
         .into_iter()
-        .filter(|row| {
+        .filter_map(|row| {
+            let entry = feedback_entry_for(&feedback, &row);
+            if matches!(entry.map(|e| e.action.as_str()), Some("suppress") | Some("delete")) {
+                return None;
+            }
             let score = infer_score(&row.contact);
-            score.quadrant == "re-engage" && score.combined >= min_score
+            if score.quadrant != "re-engage" {
+                return None;
+            }
+            let boost = entry
+                .filter(|e| e.action == "boost")
+                .map(|e| e.delta)
+                .unwrap_or(0);
+            let effective = ((score.combined as u16) + (boost as u16)).min(100) as u8;
+            if effective < min_score {
+                return None;
+            }
+            Some((row, effective))
         })
         .collect();
 
     people.sort_by(|a, b| {
-        infer_score(&b.contact)
-            .combined
-            .cmp(&infer_score(&a.contact).combined)
-            .then_with(|| b.contact.total_exchanges.cmp(&a.contact.total_exchanges))
-            .then_with(|| a.contact.name.cmp(&b.contact.name))
+        b.1.cmp(&a.1)
+            .then_with(|| b.0.contact.total_exchanges.cmp(&a.0.contact.total_exchanges))
+            .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
     let total = people.len();
-    let limit = limit.max(1);
+    let limit = args.limit.max(1);
     let returned_people: Vec<Value> = people
         .into_iter()
         .take(limit)
-        .map(|row| {
+        .map(|(row, effective)| {
             let score = infer_score(&row.contact);
             let company = display_company(&row.contact);
             let company_source = company_source(&row.contact, company.as_deref());
             let days = days_since_contact(&row.contact);
+            let boost = feedback_entry_for(&feedback, &row)
+                .filter(|e| e.action == "boost")
+                .map(|e| e.delta)
+                .unwrap_or(0);
             json!({
                 "email": &row.email,
                 "name": &row.contact.name,
@@ -1326,6 +1394,8 @@ fn reconnect(index: &ContactIndex, limit: usize, min_score: u8, start: Instant) 
                 "domain": &row.contact.domain,
                 "canonical_id": &row.contact.canonical_id,
                 "score": score,
+                "effective_score": effective,
+                "manual_boost": boost,
                 "score_source": score_source(&row.contact),
                 "last_contact": &row.contact.last_contact,
                 "days_since_contact": days,
@@ -1341,7 +1411,7 @@ fn reconnect(index: &ContactIndex, limit: usize, min_score: u8, start: Instant) 
         json!({
             "people": returned_people,
             "quadrant": "re-engage",
-            "ranked_by": "combined_score_desc",
+            "ranked_by": "effective_score_desc",
         }),
         json!({
             "matched": total,
@@ -1353,6 +1423,123 @@ fn reconnect(index: &ContactIndex, limit: usize, min_score: u8, start: Instant) 
             "user_email": &index.user_email,
             "ms": elapsed_ms(start)
         }),
+    )
+}
+
+// Look up a human feedback entry for a contact by its email or any alias.
+fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<&'a FeedbackEntry> {
+    let mut keys = vec![
+        row.email.trim().to_ascii_lowercase(),
+        row.contact.email.trim().to_ascii_lowercase(),
+    ];
+    for alias in &row.contact.aliases {
+        keys.push(alias.trim().to_ascii_lowercase());
+    }
+    keys.into_iter().find_map(|key| store.entries.get(&key))
+}
+
+// Record a human swipe decision. WRITE — local source-of-truth machine only.
+fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instant) -> Response {
+    let action = args.action.trim().to_ascii_lowercase();
+    if !matches!(action.as_str(), "boost" | "suppress" | "delete") {
+        return fail(
+            command,
+            "invalid_action",
+            format!("unknown action '{}': use boost|suppress|delete", args.action),
+            start,
+        );
+    }
+    let email = args.email.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return fail(command, "invalid_email", "missing --email".to_string(), start);
+    }
+
+    let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
+        Ok(path) => path,
+        Err(message) => return fail(command, "cache_not_found", message, start),
+    };
+
+    // delete: pull the contact out of the cache (raw JSON, preserving unknown
+    // fields) and add the email to the blocklist so future syncs skip it.
+    let mut removed_from_cache = false;
+    if action == "delete" {
+        if let Ok(mut index_json) = read_json_value(&cache_path) {
+            if let Some(contacts) = index_json
+                .get_mut("contacts")
+                .and_then(|value| value.as_object_mut())
+            {
+                let keys_to_remove: Vec<String> = contacts
+                    .iter()
+                    .filter(|(key, value)| {
+                        key.eq_ignore_ascii_case(&email)
+                            || value
+                                .get("email")
+                                .and_then(|e| e.as_str())
+                                .is_some_and(|e| e.eq_ignore_ascii_case(&email))
+                            || value
+                                .get("aliases")
+                                .and_then(|a| a.as_array())
+                                .is_some_and(|arr| {
+                                    arr.iter().any(|al| {
+                                        al.as_str().is_some_and(|s| s.eq_ignore_ascii_case(&email))
+                                    })
+                                })
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in &keys_to_remove {
+                    contacts.remove(key);
+                    removed_from_cache = true;
+                }
+            }
+            if removed_from_cache {
+                if let Err(message) = write_json_value(&cache_path, &index_json) {
+                    return fail(command, "write_failed", message, start);
+                }
+            }
+        }
+
+        let bl_path = blocklist_path(&cache_path);
+        let mut blocklist: Vec<String> = fs::read_to_string(&bl_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Vec<String>>(&content).ok())
+            .unwrap_or_default();
+        if !blocklist.iter().any(|e| e.eq_ignore_ascii_case(&email)) {
+            blocklist.push(email.clone());
+        }
+        if let Err(message) = write_json_value(&bl_path, &json!(blocklist)) {
+            return fail(command, "write_failed", message, start);
+        }
+    }
+
+    // Record the overlay entry for every action (a delete leaves a tombstone).
+    let fb_path = feedback_path(&cache_path);
+    let mut store = read_feedback(&fb_path);
+    let now = unix_seconds();
+    let delta = if action == "delete" { 0 } else { args.delta.min(100) };
+    store.entries.insert(
+        email.clone(),
+        FeedbackEntry {
+            action: action.clone(),
+            delta,
+            updated_unix: now,
+        },
+    );
+    store.updated_at_unix = now;
+    store.schema_version = 1;
+    if let Err(message) = write_feedback(&fb_path, &store) {
+        return fail(command, "write_failed", message, start);
+    }
+
+    ok(
+        command,
+        json!({
+            "email": email,
+            "action": action,
+            "delta": delta,
+            "removed_from_cache": removed_from_cache,
+        }),
+        json!({ "ms": elapsed_ms(start) }),
     )
 }
 
@@ -2559,6 +2746,36 @@ fn external_sources_path(cache_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("external-sources.json")
+}
+
+fn feedback_path(cache_path: &Path) -> PathBuf {
+    cache_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("reconnect-feedback.json")
+}
+
+fn blocklist_path(cache_path: &Path) -> PathBuf {
+    cache_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("reconnect-blocklist.json")
+}
+
+fn read_feedback(path: &Path) -> FeedbackStore {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<FeedbackStore>(&content).ok())
+        .unwrap_or_else(|| FeedbackStore {
+            schema_version: 1,
+            updated_at_unix: unix_seconds(),
+            entries: HashMap::new(),
+        })
+}
+
+fn write_feedback(path: &Path, store: &FeedbackStore) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(store).map_err(|err| err.to_string())?;
+    fs::write(path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
 fn read_external_sources(path: &Path) -> ExternalSourceStore {
@@ -4027,6 +4244,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Score(_) => "score",
         Commands::WhoKnows(_) => "who-knows",
         Commands::Reconnect(_) => "reconnect",
+        Commands::Feedback(_) => "feedback",
         Commands::GetNeighbors(_) => "get-neighbors",
         Commands::GetEdges(_) => "get-edges",
         Commands::ContactCard(_) => "contact-card",
@@ -4079,7 +4297,13 @@ fn describe_payload() -> Value {
                 "name": "reconnect",
                 "usage": "peoplegraph reconnect --limit 5 [--min-score 0]",
                 "status": "implemented",
-                "notes": "Returns re-engage (strong + dormant) contacts ranked by combined score, each with days_since_contact and a short nudge. Read-only; safe over --remote."
+                "notes": "Returns re-engage (strong + dormant) contacts ranked by combined score, each with days_since_contact and a short nudge. Honors the reconnect-feedback overlay (boost raises rank; suppress/delete are excluded). Read-only; safe over --remote."
+            },
+            {
+                "name": "feedback",
+                "usage": "peoplegraph feedback --email <email> --action boost|suppress|delete [--delta 10]",
+                "status": "implemented",
+                "notes": "Records a human swipe decision into reconnect-feedback.json next to the cache. boost raises score and keeps the contact; suppress hides them from reconnect and lowers score; delete removes the contact from the cache and adds them to reconnect-blocklist.json. WRITE command — local source-of-truth machine only, not exposed over --remote."
             },
             {
                 "name": "get-neighbors",
@@ -4169,6 +4393,7 @@ fn describe_payload() -> Value {
                 "find-person",
                 "score",
                 "who-knows",
+                "reconnect",
                 "get-neighbors",
                 "get-edges",
                 "contact-card",
@@ -4182,7 +4407,8 @@ fn describe_payload() -> Value {
                 "dismiss-external-merge",
                 "propose-merge",
                 "dismiss-merge",
-                "apply-merge"
+                "apply-merge",
+                "feedback"
             ]
         },
         "output_contract": {

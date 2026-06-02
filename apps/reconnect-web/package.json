@@ -1,0 +1,18 @@
+{
+  "name": "reconnect-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Names-only Tinder-style swipe UI for reviewing reconnect suggestions, backed by Cloudflare Workers + D1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute reconnect --file ./schema.sql",
+    "db:init:remote": "wrangler d1 execute reconnect --remote --file ./schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250501.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  }
+}

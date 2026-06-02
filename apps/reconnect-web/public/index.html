@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+	<title>Reconnect</title>
+	<script src="https://accounts.google.com/gsi/client" async defer></script>
+	<style>
+		:root { --bg:#0f1115; --card:#1a1d24; --muted:#8a90a0; --text:#eef0f5; --accent:#6ca2dc; --good:#4ec98b; --bad:#e0656f; }
+		* { box-sizing: border-box; }
+		body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; align-items:center; }
+		header { width:100%; max-width:480px; display:flex; align-items:center; justify-content:space-between; padding:16px; }
+		header h1 { font-size:1.1rem; margin:0; letter-spacing:.02em; }
+		#count { color:var(--muted); font-size:.85rem; }
+		main { flex:1; width:100%; max-width:480px; padding:0 16px; display:flex; flex-direction:column; justify-content:center; }
+		.card { position:relative; background:var(--card); border:1px solid #262a33; border-radius:18px; padding:28px 24px; min-height:300px; display:flex; flex-direction:column; gap:10px; touch-action:none; user-select:none; transition:transform .15s ease, opacity .15s ease; }
+		.card .name { font-size:1.9rem; font-weight:700; line-height:1.1; }
+		.card .company { color:var(--muted); font-size:1rem; }
+		.card .last { color:var(--muted); font-size:.9rem; margin-top:6px; }
+		.pills { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+		.pill { font-size:.72rem; padding:2px 8px; border-radius:10px; background:#262a33; color:var(--muted); }
+		.nudge { margin-top:auto; padding:12px; border-radius:10px; background:rgba(108,162,220,.12); font-size:.92rem; line-height:1.4; }
+		.stamp { position:absolute; top:20px; font-size:1.4rem; font-weight:800; letter-spacing:.08em; padding:4px 10px; border-radius:8px; border:3px solid; opacity:0; }
+		.stamp.keep { right:20px; color:var(--good); border-color:var(--good); transform:rotate(12deg); }
+		.stamp.skip { left:20px; color:var(--bad); border-color:var(--bad); transform:rotate(-12deg); }
+		.actions { display:flex; align-items:center; justify-content:center; gap:18px; padding:22px 0 32px; }
+		.btn { width:60px; height:60px; border-radius:50%; border:1px solid #2c313c; background:var(--card); color:var(--text); font-size:1.5rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:transform .1s; }
+		.btn:active { transform:scale(.92); }
+		.btn.good { color:var(--good); border-color:var(--good); }
+		.btn.bad { color:var(--bad); border-color:var(--bad); }
+		.btn.del { width:46px; height:46px; font-size:1.1rem; color:var(--muted); }
+		.hint { color:var(--muted); font-size:.75rem; text-align:center; padding-bottom:16px; }
+		.empty { text-align:center; color:var(--muted); padding:60px 20px; }
+		#signin { display:flex; justify-content:flex-end; }
+		.gate { text-align:center; padding:50px 20px; color:var(--muted); }
+	</style>
+</head>
+<body>
+	<header>
+		<h1>☀️ Reconnect</h1>
+		<span id="count"></span>
+	</header>
+	<main>
+		<div id="signin"></div>
+		<div id="stage"></div>
+		<div class="actions" id="actions" hidden>
+			<button class="btn bad" id="b-skip" title="Suppress — don't show again (left)">✕</button>
+			<button class="btn del" id="b-del" title="Delete from database forever">🗑</button>
+			<button class="btn good" id="b-keep" title="Good contact — keep & boost (right)">♥</button>
+		</div>
+		<div class="hint">swipe right = keep · left = suppress · 🗑 = remove forever · ← / → keys work too</div>
+	</main>
+
+	<script>
+		const stage = document.getElementById("stage");
+		const actionsEl = document.getElementById("actions");
+		const countEl = document.getElementById("count");
+		let idToken = null;       // Google ID token (required to swipe)
+		let queue = [];           // pending candidates
+		let total = 0;
+
+		async function boot() {
+			const cfg = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
+			if (cfg.googleClientId && window.google) {
+				google.accounts.id.initialize({
+					client_id: cfg.googleClientId,
+					callback: (resp) => { idToken = resp.credential; renderAuthedHint(); },
+				});
+				google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "medium" });
+			}
+			await load();
+		}
+
+		function renderAuthedHint() {
+			// no-op visual; swiping just works once idToken is set
+		}
+
+		async function load() {
+			const data = await fetch("/api/candidates").then(r => r.json()).catch(() => ({ candidates: [] }));
+			queue = data.candidates || [];
+			total = queue.length;
+			render();
+		}
+
+		function render() {
+			countEl.textContent = total ? `${total - queue.length + (queue.length?1:0)} / ${total}` : "";
+			if (queue.length === 0) {
+				actionsEl.hidden = true;
+				stage.innerHTML = `<div class="empty">Nobody to reconnect with right now — you're clear. 🎉</div>`;
+				countEl.textContent = "";
+				return;
+			}
+			const c = queue[0];
+			actionsEl.hidden = false;
+			const last = c.days_since == null ? "No recorded contact"
+				: c.days_since === 0 ? "Last contact today"
+				: `Last contact ${c.days_since} day${c.days_since === 1 ? "" : "s"} ago`;
+			const card = document.createElement("div");
+			card.className = "card";
+			card.innerHTML = `
+				<div class="stamp keep">KEEP</div>
+				<div class="stamp skip">SKIP</div>
+				<div class="name"></div>
+				<div class="company"></div>
+				<div class="last"></div>
+				<div class="pills">${c.score != null ? `<span class="pill">score ${c.score}</span>` : ""}</div>
+				${c.nudge ? `<div class="nudge"></div>` : ""}
+			`;
+			card.querySelector(".name").textContent = c.name;
+			card.querySelector(".company").textContent = c.company || "";
+			card.querySelector(".last").textContent = last;
+			if (c.nudge) card.querySelector(".nudge").textContent = c.nudge;
+			stage.innerHTML = "";
+			stage.appendChild(card);
+			wireDrag(card);
+		}
+
+		async function decide(action) {
+			const c = queue[0];
+			if (!c) return;
+			if (!idToken) { alert("Sign in with Google to record swipes."); return; }
+			// optimistic: pop the card immediately
+			queue.shift();
+			render();
+			try {
+				const r = await fetch("/api/swipe", {
+					method: "POST",
+					headers: { "content-type": "application/json", "authorization": "Bearer " + idToken },
+					body: JSON.stringify({ id: c.id, action }),
+				});
+				if (!r.ok) {
+					const e = await r.json().catch(() => ({}));
+					if (r.status === 401) { alert("Sign-in required / not authorized."); }
+					else { console.warn("swipe failed", e); }
+				}
+			} catch (e) { console.warn(e); }
+		}
+
+		// right swipe -> boost (keep), left -> suppress
+		document.getElementById("b-keep").onclick = () => decide("boost");
+		document.getElementById("b-skip").onclick = () => decide("suppress");
+		document.getElementById("b-del").onclick = () => {
+			const c = queue[0]; if (!c) return;
+			if (confirm(`Delete ${c.name} from the database forever?`)) decide("delete");
+		};
+		document.addEventListener("keydown", (e) => {
+			if (e.key === "ArrowRight") decide("boost");
+			else if (e.key === "ArrowLeft") decide("suppress");
+		});
+
+		function wireDrag(card) {
+			let startX = 0, dx = 0, dragging = false;
+			const keep = card.querySelector(".stamp.keep");
+			const skip = card.querySelector(".stamp.skip");
+			const down = (x) => { dragging = true; startX = x; };
+			const move = (x) => {
+				if (!dragging) return;
+				dx = x - startX;
+				card.style.transform = `translateX(${dx}px) rotate(${dx / 25}deg)`;
+				keep.style.opacity = dx > 0 ? Math.min(1, dx / 120) : 0;
+				skip.style.opacity = dx < 0 ? Math.min(1, -dx / 120) : 0;
+			};
+			const up = () => {
+				if (!dragging) return;
+				dragging = false;
+				if (dx > 120) decide("boost");
+				else if (dx < -120) decide("suppress");
+				else { card.style.transform = ""; keep.style.opacity = 0; skip.style.opacity = 0; }
+				dx = 0;
+			};
+			card.addEventListener("pointerdown", (e) => { card.setPointerCapture(e.pointerId); down(e.clientX); });
+			card.addEventListener("pointermove", (e) => move(e.clientX));
+			card.addEventListener("pointerup", up);
+			card.addEventListener("pointercancel", up);
+		}
+
+		boot();
+	</script>
+</body>
+</html>
