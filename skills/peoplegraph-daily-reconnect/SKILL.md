@@ -1,130 +1,97 @@
 ---
 name: peoplegraph-daily-reconnect
-description: Send a daily Telegram "people to reconnect with" brief from PeopleGraph — the re-engage quadrant (strong relationships that have gone dormant), with snooze/dismiss handling. Read-only against the contact graph.
+description: Run the daily reconnect curation loop — push re-engage candidates (strong relationships gone dormant) to the swipe web app, write a daily-note link, and apply the human's swipe decisions back into the contact graph via `peoplegraph feedback`.
 ---
 
 # PeopleGraph Daily Reconnect
 
-Use this skill when Botwick/OpenClaw is asked to surface who the owner should reconnect with, or to send the daily reconnect brief. It mirrors how the meeting summaries go out: a short, scannable Telegram message once a day.
+Use this skill when Botwick/OpenClaw is asked to surface who the owner should reconnect with, run the daily reconnect job, or apply reconnect swipes.
 
-It reads the **re-engage quadrant** (strong + dormant — people you have a real relationship with who have gone quiet) ranked by combined score. It is **read-only** against the contact graph; the only state it writes is its own snooze/dismiss queue.
+The human-in-the-loop surface is a **names-only Tinder-style swipe web app** (`apps/reconnect-web`, deployed on Cloudflare). Each day Botwick pushes the top re-engage candidates to it and drops a one-line link in the daily note; the owner swipes; Botwick pulls the decisions and feeds them back into scoring. This replaces the earlier Telegram-brief approach (see the bottom of this file).
+
+## Architecture
+
+```
+Botwick machine (source of truth)              Cloudflare                  owner's phone
+  peoplegraph reconnect  ──push names + opaque ids──►  Worker + D1  ──►  swipe UI (names only)
+  peoplegraph feedback   ◄──pull swipe decisions─────                ◄──  right / left / 🗑
+```
+
+**Privacy:** emails never leave the source-of-truth machine. The bridge assigns each candidate an opaque id and keeps the `id → email` map locally; D1 only ever stores names + display fields.
 
 ## Requirements
 
-- `peoplegraph` CLI version `0.3.3` or newer (the `reconnect` command).
-- `PEOPLEGRAPH_CACHE` points to the source-of-truth `contact-index.json` (local mode), **or** `PEOPLEGRAPH_HOST` + `PEOPLEGRAPH_TOKEN` are set to reach Botwick's read-only server (remote mode).
-- `TELEGRAM_BOT_TOKEN` available to the Telegram runtime.
-- `TELEGRAM_RECONNECT_CHAT_ID` — the chat that receives the brief (default to the owner's DM).
-- `PEOPLEGRAPH_RECONNECT_STATE` — JSON state file for snooze/dismiss. Default `$HOME/.peoplegraph/reconnect-state.json`.
+- `peoplegraph` CLI `0.3.4` or newer (has `reconnect` **and** `feedback`).
+- `PEOPLEGRAPH_CACHE` → the source-of-truth `contact-index.json` (the bridge needs local writes, so run it on this machine, not over `--remote`).
+- The reconnect web app deployed (see `apps/reconnect-web/README.md`). Current deployment: `https://reconnect-web.kayarjones901.workers.dev`.
+- Bridge env (default `~/.peoplegraph/reconnect-web.env`):
+  - `RECONNECT_WEB_URL` / `RECONNECT_PUBLIC_URL` — the Worker URL
+  - `RECONNECT_SYNC_TOKEN` — matches the Worker's `SYNC_TOKEN` secret
+  - `PEOPLEGRAPH_CACHE`, `PEOPLEGRAPH_BIN`, `RECONNECT_LIMIT` (default 5), `RECONNECT_STATE`
+  - optional `RECONNECT_DAILY_NOTE` — today's daily note to append the link to
 
-## Core Rules
+## The daily job (preferred path: the bridge)
 
-- **Never write to the contact graph.** This skill only reads (`reconnect`, `contact-card`, `score`). Snooze/dismiss live in `PEOPLEGRAPH_RECONNECT_STATE`, not in the cache.
-- Suggestions come only from the `re-engage` quadrant. Do not invent candidates or pull from other quadrants.
-- Respect snooze/dismiss: never re-surface a person who is dismissed or whose snooze has not expired.
-- Keep the brief short — default 5 people. This is a nudge, not a CRM dump.
-- The `nudge` string from the CLI is a starting point; you may rephrase it warmly, but never fabricate facts (last-contact timing, email counts, role) beyond what the CLI returns.
-
-## Pull Today's Candidates
-
-Local mode:
+The bridge script `scripts/peoplegraph-reconnect-web.mjs` does the whole loop. Normally you just run it:
 
 ```bash
+source ~/.peoplegraph/reconnect-web.env
+node scripts/peoplegraph-reconnect-web.mjs run     # = pull (apply yesterday's swipes) then push (post today's)
+```
+
+- `push` — runs `peoplegraph reconnect --limit N`, assigns opaque ids (kept in `RECONNECT_STATE`), POSTs names to `/api/sync`, and appends a single click-through line to the daily note.
+- `pull` — GETs `/api/decisions`, maps each opaque id back to its email locally, applies it with `peoplegraph feedback`, and acks.
+
+Cron it once a day on the machine with the cache:
+
+```bash
+0 8 * * *  source ~/.peoplegraph/reconnect-web.env && node /path/to/obsidian-gmail-crm/scripts/peoplegraph-reconnect-web.mjs run
+```
+
+## Swipe semantics → feedback
+
+The web app records one of three actions; the bridge applies each via `peoplegraph feedback`:
+
+| Swipe | action | `peoplegraph feedback` effect |
+|---|---|---|
+| right / ♥ | `boost` | keep + raise the contact's effective score |
+| left / ✕ | `suppress` | hide from future reconnect suggestions + lower score |
+| 🗑 (confirm) | `delete` | remove the contact from the cache + add to `reconnect-blocklist.json` |
+
+```bash
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" feedback --email <email> --action boost|suppress|delete
+```
+
+`reconnect` honors this overlay (`reconnect-feedback.json`) on its next run: suppressed/deleted are excluded, boosted rank higher. This is what makes the swipes shape future suggestions instead of being a one-time filter.
+
+## Core rules
+
+- **Suggestions come only from the `re-engage` quadrant** (strong + dormant). Don't invent candidates or pull from other quadrants.
+- Keep it small — default 5/day. This is a nudge, not a CRM dump.
+- The `nudge` string from `reconnect` is the human-facing reason; you may rephrase it warmly but never fabricate facts (last-contact timing, email counts, role) beyond what the CLI returns.
+- `feedback` is a **local write** — it only runs on the source-of-truth machine, never over `--remote`.
+- If nothing is in re-engage after filtering, push nothing and skip the daily-note line. Don't post an empty batch every morning.
+
+## Doing it by hand (no bridge)
+
+If asked to run a step manually or the bridge isn't available:
+
+```bash
+# see today's candidates
 peoplegraph --cache "$PEOPLEGRAPH_CACHE" reconnect --limit 5
+
+# apply a decision the owner tells you in chat ("keep harper", "suppress sri", "delete dr goldberg")
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" feedback --email harper@2389.ai --action boost
 ```
 
-Remote mode (Botwick's read-only server):
+The owner can also act conversationally: "who should I reconnect with?" → run `reconnect`; "keep / suppress / delete <name>" → resolve the name to an email (`peoplegraph find-person`) then `feedback`.
 
-```bash
-peoplegraph --remote reconnect --limit 5
-```
+## Failure handling
 
-Optionally raise the bar with `--min-score 40` to only surface higher-confidence relationships. Each person comes back with `name`, `email`, `company`, `days_since_contact`, `score` (combined/strength/momentum/quadrant), and a `nudge`.
+- If `peoplegraph` exits with `ok: false`, surface `error.kind` + `error.message`; don't retry blindly.
+- If `PEOPLEGRAPH_CACHE` is unset, ask the operator to configure it; don't guess a path.
+- If the Worker is unreachable on `pull`, leave decisions un-acked so they're retried next run; on `push`, just skip — no candidates is safe.
 
-To over-fetch so you can skip snoozed/dismissed people and still land 5, request more (e.g. `--limit 15`) and filter locally against `PEOPLEGRAPH_RECONNECT_STATE`.
+## Deprecated: Telegram brief
 
-## State File
-
-`PEOPLEGRAPH_RECONNECT_STATE` holds per-person action state keyed by email:
-
-```json
-{
-  "harper@2389.ai": { "status": "snoozed", "until": "2026-07-01", "updated": "2026-06-01" },
-  "old@friend.com": { "status": "dismissed", "updated": "2026-05-20" }
-}
-```
-
-Filtering rules when building the brief:
-
-- `dismissed` → skip permanently (until the owner clears it).
-- `snoozed` with `until` in the future → skip; once `until` has passed, eligible again.
-- `contacted` within the last 60 days → skip (the next sync usually moves a genuine reply out of re-engage on its own; this just avoids nagging if they marked it but never wrote).
-- No entry → eligible.
-
-## Render The Brief
-
-Send one Telegram message to `TELEGRAM_RECONNECT_CHAT_ID`, e.g.:
-
-```text
-☀️ Reconnect — 3 people worth a note today
-
-1. Harper Reed · Founder at Nata2
-   No contact in 4 months — previously active (58 emails)
-
-2. Jane Okafor · Betaworks
-   Last contact 73 days ago — previously active (24 emails)
-
-3. Sam Lee · Acme
-   No contact in 5 months
-```
-
-Attach inline buttons per person (one row each) so the owner can act without typing:
-
-```json
-{
-  "inline_keyboard": [
-    [
-      { "text": "✅ Reached out · Harper", "callback_data": "pgr:harper@2389.ai:contacted" },
-      { "text": "💤 Snooze",              "callback_data": "pgr:harper@2389.ai:snooze" },
-      { "text": "🚫 Dismiss",             "callback_data": "pgr:harper@2389.ai:dismiss" }
-    ]
-  ]
-}
-```
-
-`callback_data` has a small size limit — if an email is too long for the payload, store a short id → email map in the state file and put the short id in the button instead.
-
-## Handle Button Callbacks
-
-On a `callback_query`:
-
-1. Parse `callback_data` as `pgr:<key>:<action>`.
-2. Resolve `<key>` to an email (directly, or via the short-id map).
-3. Update `PEOPLEGRAPH_RECONNECT_STATE`:
-   - `contacted` → `{ "status": "contacted", "updated": "<today>" }`
-   - `snooze` → `{ "status": "snoozed", "until": "<today + 30 days>", "updated": "<today>" }`
-   - `dismiss` → `{ "status": "dismissed", "updated": "<today>" }`
-4. Call Telegram `answerCallbackQuery`, then edit the message line to reflect the action (e.g. strike-through or a ✓).
-
-Owner can also act by text: `reconnected with harper`, `snooze harper`, `dismiss harper`, `who should I reconnect with?` (re-run the pull on demand).
-
-## Daily Cadence
-
-Run once a day on the machine that can reach the cache/server (cron, launchd, or the OpenClaw scheduler):
-
-```bash
-# 8am daily
-0 8 * * *  cd /path/to/obsidian-gmail-crm && node scripts/<reconnect-bridge-or-agent-entrypoint>
-```
-
-If no candidates remain after filtering, send nothing (or a once-a-week "inbox zero — nobody overdue" note). Don't send an empty brief every morning.
-
-## Failure Handling
-
-- If `peoplegraph` exits with `ok: false`, surface `error.kind` + `error.message`; do not retry blindly.
-- If `PEOPLEGRAPH_CACHE`/`PEOPLEGRAPH_HOST` is unset, tell the operator to configure it; do not guess a path.
-- If Telegram send fails, keep the state file unchanged so the same people are eligible next run.
-
-## Audit Trail
-
-Keep in the state file (or a sibling log), per action: email, action, timestamp, and the Telegram user id who pressed the button. Do not store Telegram bot tokens, Google credentials, or email bodies.
+An earlier version of this skill delivered the daily list as a Telegram message with inline buttons (modeled on `skills/peoplegraph-telegram-merge-review`). That's superseded by the web swipe app. If a Telegram-only delivery is ever needed again, the same `reconnect` + `feedback` commands back it — send the brief, map `pgr:<email>:<action>` callbacks to `peoplegraph feedback`, and skip the web push/pull.
