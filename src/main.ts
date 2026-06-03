@@ -12,6 +12,7 @@ import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
 import { computeStaleness } from "./staleness";
+import { syncCalendarData } from "./calendar-sync";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
@@ -110,6 +111,13 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "map-relationships",
 			name: "Map relationships only (no AI)",
 			callback: () => { void this.enrichAllPeople(true); },
+		});
+
+		// Command: sync calendar meeting data
+		this.addCommand({
+			id: "sync-calendar",
+			name: "Sync calendar meeting data",
+			callback: () => { void this.syncCalendar(); },
 		});
 
 		// Command: update staleness scores
@@ -225,6 +233,25 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 
 			const contactCount = Object.keys(this.contactIndex.contacts).length;
+			notice.setMessage(`Synced ${contactCount} contacts — syncing calendar...`);
+
+			// Calendar sync: merge meeting data into contacts (non-fatal on failure)
+			try {
+				await syncCalendarData(
+					this.settings,
+					this.contactIndex.contacts,
+					this.contactIndex.userEmail
+				);
+				await this.saveContactIndex();
+			} catch (e: unknown) {
+				const calMsg = e instanceof Error ? e.message : String(e);
+				if (calMsg.includes("401") || calMsg.includes("403")) {
+					new Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
+				} else {
+					console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
+				}
+			}
+
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 
 			// Auto-update staleness scores and Base view after sync
@@ -250,6 +277,40 @@ export default class GmailCrmPlugin extends Plugin {
 		this.contactIndex = null;
 		new Notice("Cache cleared — running full re-sync...");
 		await this.syncContacts();
+	}
+
+	async syncCalendar() {
+		if (!this.settings.refreshToken) {
+			new Notice("Connect your account first in plugin settings");
+			return;
+		}
+		if (!this.contactIndex) {
+			new Notice("No contact index found. Run a contact sync first.");
+			return;
+		}
+
+		const notice = new Notice("Syncing calendar meeting data...", 0);
+		try {
+			await syncCalendarData(
+				this.settings,
+				this.contactIndex.contacts,
+				this.contactIndex.userEmail
+			);
+			await this.saveContactIndex();
+
+			const withCal = Object.values(this.contactIndex.contacts)
+				.filter((c) => (c.calendarMeetings ?? 0) > 0).length;
+			notice.setMessage(`Calendar sync complete — ${withCal} contacts have meeting data`);
+			setTimeout(() => notice.hide(), 3000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			if (msg.includes("401") || msg.includes("403")) {
+				new Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
+			} else {
+				new Notice(`Calendar sync failed: ${msg}`);
+			}
+		}
 	}
 
 	private async loadContactIndex() {

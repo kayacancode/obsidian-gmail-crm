@@ -299,6 +299,14 @@ export class RelationshipEngine {
 					if (contact.lastThreadDepth !== undefined) {
 						existing.lastThreadDepth = Math.max(existing.lastThreadDepth ?? 0, contact.lastThreadDepth);
 					}
+					// Merge calendar stats
+					existing.calendarMeetings = (existing.calendarMeetings ?? 0) + (contact.calendarMeetings ?? 0);
+					existing.calendarAccepted = (existing.calendarAccepted ?? 0) + (contact.calendarAccepted ?? 0);
+					existing.calendarOrganizedByThem = (existing.calendarOrganizedByThem ?? 0) + (contact.calendarOrganizedByThem ?? 0);
+					existing.calendarMeetingsLast90d = (existing.calendarMeetingsLast90d ?? 0) + (contact.calendarMeetingsLast90d ?? 0);
+					if (contact.calendarLastMeeting && (!existing.calendarLastMeeting || contact.calendarLastMeeting > existing.calendarLastMeeting)) {
+						existing.calendarLastMeeting = contact.calendarLastMeeting;
+					}
 					if (preferredProfileSource && !existing.profileSourcePreferred) {
 						existing.domain = contact.domain ?? existing.domain;
 						existing.profileEmail = profileEmail;
@@ -306,7 +314,7 @@ export class RelationshipEngine {
 					} else if (!existing.domain && contact.domain) {
 						existing.domain = contact.domain;
 						existing.profileEmail = profileEmail;
-					}
+				}
 				} else {
 					pages[pageName].gmailStats = {
 						totalExchanges: contact.totalExchanges,
@@ -324,6 +332,11 @@ export class RelationshipEngine {
 						lastThreadDepth: contact.lastThreadDepth,
 						profileEmail,
 						profileSourcePreferred: preferredProfileSource,
+						calendarMeetings: contact.calendarMeetings,
+						calendarAccepted: contact.calendarAccepted,
+						calendarLastMeeting: contact.calendarLastMeeting,
+						calendarOrganizedByThem: contact.calendarOrganizedByThem,
+						calendarMeetingsLast90d: contact.calendarMeetingsLast90d,
 					};
 				}
 			}

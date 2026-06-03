@@ -13,7 +13,7 @@ import { CONTACT_INDEX_SCHEMA_VERSION } from "./types";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-const SCOPES = "https://www.googleapis.com/auth/gmail.metadata";
+const SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
 const REDIRECT_URI = "http://127.0.0.1:42813/callback";
 
 // Subject-line pattern used to detect calendar invite / RSVP threads.

@@ -74,6 +74,12 @@ export interface Contact {
 	canonicalId?: string;
 	aliases?: string[]; // alternate emails for the same person
 	lastCanonicalSync?: string; // ISO date of last reconcile with shared graph
+	// Calendar meeting signals (populated by calendar-sync)
+	calendarMeetings?: number;       // total shared calendar events
+	calendarAccepted?: number;       // events where BOTH accepted
+	calendarLastMeeting?: string;    // ISO date of most recent shared meeting
+	calendarOrganizedByThem?: number; // events they organized with owner as attendee
+	calendarMeetingsLast90d?: number; // meetings in last 90 days
 	role?: string;
 	company?: string;
 	score?: ContactScore;
@@ -171,6 +177,12 @@ export interface GmailStats {
 	lastThreadDepth?: number;
 	profileEmail?: string;
 	profileSourcePreferred?: boolean;
+	// Calendar meeting signals (mirrored from Contact for scoring)
+	calendarMeetings?: number;
+	calendarAccepted?: number;
+	calendarLastMeeting?: string;
+	calendarOrganizedByThem?: number;
+	calendarMeetingsLast90d?: number;
 }
 
 export interface Relationship {

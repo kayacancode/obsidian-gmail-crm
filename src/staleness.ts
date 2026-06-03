@@ -257,16 +257,31 @@ function computeStrengthScore(
 		initiationScore = 5 + ratio * 20; // 5–25
 	}
 
-	// Time span (0–25): how long you've been in contact
+	// Time span (0–15): how long you've been in contact (reduced from 25 to make room for calendar)
 	let spanScore = 0;
 	if (gmail && gmail.firstContact) {
 		const first = new Date(gmail.firstContact).getTime();
 		const last = new Date(gmail.lastContact).getTime();
 		const spanDays = Math.max(0, (last - first) / 86_400_000);
-		spanScore = Math.min(25, (spanDays / 365) * 12.5); // ~2 years = max
+		spanScore = Math.min(15, (spanDays / 365) * 7.5); // ~2 years = max
 	}
 
-	return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore));
+	// Calendar component (0–20): shared calendar meetings as a relationship signal.
+	// Uses Contact fields populated by calendar-sync; falls back to 0 when absent.
+	let calScore = 0;
+	if (gmail) {
+		const meetings90d = gmail.calendarMeetingsLast90d ?? 0;
+		const acceptedTotal = gmail.calendarAccepted ?? 0;
+
+		if (meetings90d >= 5) calScore = 20;
+		else if (meetings90d >= 3) calScore = 16;
+		else if (meetings90d >= 1) calScore = 12;
+		else if (acceptedTotal >= 3) calScore = 8;
+		else if (acceptedTotal >= 1) calScore = 4;
+	}
+
+	// Max: volume(25) + depth(30) + initiation(25) + span(15) + calendar(20) = 115, clamped to 100
+	return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore + calScore));
 }
 
 // Composite Momentum axis: exponential recency decay + activity trend
@@ -322,6 +337,15 @@ function assignQuadrant(
 		const baf = gmail.backAndForthThreads ?? 0;
 		const sent = gmail.sentCount ?? 0;
 		if (baf >= 1 && sent >= 2) {
+			isStrong = true;
+		}
+	}
+
+	// Calendar override: if you've both accepted ≥2 shared meetings, treat as
+	// strong relationship — real-world face time trumps email patterns.
+	if (!isStrong && gmail) {
+		const calAccepted = gmail.calendarAccepted ?? 0;
+		if (calAccepted >= 2) {
 			isStrong = true;
 		}
 	}

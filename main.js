@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => GmailCrmPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/gmail-api.ts
 var import_obsidian = require("obsidian");
@@ -62,7 +62,7 @@ var DEFAULT_SETTINGS = {
 var GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-var SCOPES = "https://www.googleapis.com/auth/gmail.metadata";
+var SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
 var REDIRECT_URI = "http://127.0.0.1:42813/callback";
 var RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
 var AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
@@ -843,7 +843,7 @@ var RelationshipEngine = class {
     return pages;
   }
   buildGraph(pages, contactIndex) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
     const graph = {};
     const allNames = new Set(Object.keys(pages));
     for (const name of allNames) {
@@ -999,8 +999,15 @@ var RelationshipEngine = class {
           if (contact.lastThreadDepth !== void 0) {
             existing.lastThreadDepth = Math.max((_l = existing.lastThreadDepth) != null ? _l : 0, contact.lastThreadDepth);
           }
+          existing.calendarMeetings = ((_m = existing.calendarMeetings) != null ? _m : 0) + ((_n = contact.calendarMeetings) != null ? _n : 0);
+          existing.calendarAccepted = ((_o = existing.calendarAccepted) != null ? _o : 0) + ((_p = contact.calendarAccepted) != null ? _p : 0);
+          existing.calendarOrganizedByThem = ((_q = existing.calendarOrganizedByThem) != null ? _q : 0) + ((_r = contact.calendarOrganizedByThem) != null ? _r : 0);
+          existing.calendarMeetingsLast90d = ((_s = existing.calendarMeetingsLast90d) != null ? _s : 0) + ((_t = contact.calendarMeetingsLast90d) != null ? _t : 0);
+          if (contact.calendarLastMeeting && (!existing.calendarLastMeeting || contact.calendarLastMeeting > existing.calendarLastMeeting)) {
+            existing.calendarLastMeeting = contact.calendarLastMeeting;
+          }
           if (preferredProfileSource && !existing.profileSourcePreferred) {
-            existing.domain = (_m = contact.domain) != null ? _m : existing.domain;
+            existing.domain = (_u = contact.domain) != null ? _u : existing.domain;
             existing.profileEmail = profileEmail;
             existing.profileSourcePreferred = true;
           } else if (!existing.domain && contact.domain) {
@@ -1014,16 +1021,21 @@ var RelationshipEngine = class {
             receivedCount: contact.receivedCount,
             lastContact: contact.lastContact,
             firstContact: contact.firstContact,
-            subjects: (_n = contact.subjects) != null ? _n : [],
-            lastSubject: (_o = contact.lastSubject) != null ? _o : "",
-            domain: (_p = contact.domain) != null ? _p : "",
+            subjects: (_v = contact.subjects) != null ? _v : [],
+            lastSubject: (_w = contact.lastSubject) != null ? _w : "",
+            domain: (_x = contact.domain) != null ? _x : "",
             threadCount: contact.threadCount,
             maxThreadDepth: contact.maxThreadDepth,
             backAndForthThreads: contact.backAndForthThreads,
             rsvpOnlyThreads: contact.rsvpOnlyThreads,
             lastThreadDepth: contact.lastThreadDepth,
             profileEmail,
-            profileSourcePreferred: preferredProfileSource
+            profileSourcePreferred: preferredProfileSource,
+            calendarMeetings: contact.calendarMeetings,
+            calendarAccepted: contact.calendarAccepted,
+            calendarLastMeeting: contact.calendarLastMeeting,
+            calendarOrganizedByThem: contact.calendarOrganizedByThem,
+            calendarMeetingsLast90d: contact.calendarMeetingsLast90d
           };
         }
       }
@@ -1410,7 +1422,7 @@ function scoreToLabel(score) {
   return "dormant";
 }
 function computeStrengthScore(gmail, totalExchanges, edgeCount) {
-  var _a, _b;
+  var _a, _b, _c, _d;
   if (!gmail && totalExchanges === 0) return 0;
   const volumeScore = Math.min(25, Math.log2(totalExchanges + 1) * 4);
   let depthScore = 0;
@@ -1431,9 +1443,19 @@ function computeStrengthScore(gmail, totalExchanges, edgeCount) {
     const first = new Date(gmail.firstContact).getTime();
     const last = new Date(gmail.lastContact).getTime();
     const spanDays = Math.max(0, (last - first) / 864e5);
-    spanScore = Math.min(25, spanDays / 365 * 12.5);
+    spanScore = Math.min(15, spanDays / 365 * 7.5);
   }
-  return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore));
+  let calScore = 0;
+  if (gmail) {
+    const meetings90d = (_c = gmail.calendarMeetingsLast90d) != null ? _c : 0;
+    const acceptedTotal = (_d = gmail.calendarAccepted) != null ? _d : 0;
+    if (meetings90d >= 5) calScore = 20;
+    else if (meetings90d >= 3) calScore = 16;
+    else if (meetings90d >= 1) calScore = 12;
+    else if (acceptedTotal >= 3) calScore = 8;
+    else if (acceptedTotal >= 1) calScore = 4;
+  }
+  return Math.round(Math.min(100, volumeScore + depthScore + initiationScore + spanScore + calScore));
 }
 function computeMomentumScore(gmail, daysSinceContact) {
   var _a, _b;
@@ -1450,7 +1472,7 @@ function computeMomentumScore(gmail, daysSinceContact) {
   return Math.round(Math.min(100, decayScore + trendScore));
 }
 function assignQuadrant(strengthScore, momentumScore, gmail) {
-  var _a, _b;
+  var _a, _b, _c;
   const strongThreshold = 40;
   const activeThreshold = 30;
   let isStrong = strengthScore >= strongThreshold;
@@ -1459,6 +1481,12 @@ function assignQuadrant(strengthScore, momentumScore, gmail) {
     const baf = (_a = gmail.backAndForthThreads) != null ? _a : 0;
     const sent = (_b = gmail.sentCount) != null ? _b : 0;
     if (baf >= 1 && sent >= 2) {
+      isStrong = true;
+    }
+  }
+  if (!isStrong && gmail) {
+    const calAccepted = (_c = gmail.calendarAccepted) != null ? _c : 0;
+    if (calAccepted >= 2) {
       isStrong = true;
     }
   }
@@ -1484,8 +1512,126 @@ function generateNudge(page, days, exchanges) {
   return parts.join(" \u2014 ") || "Consider re-engaging";
 }
 
-// src/frontmatter.ts
+// src/calendar-sync.ts
 var import_obsidian5 = require("obsidian");
+var CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
+async function syncCalendarData(settings, contacts, userEmail) {
+  if (!settings.accessToken) {
+    console.warn("[Gmail CRM] Calendar sync skipped \u2014 no access token");
+    return;
+  }
+  try {
+    const ownerEmail = (userEmail != null ? userEmail : "").toLowerCase();
+    const stats = await fetchCalendarStats(settings, ownerEmail);
+    mergeCalendarStats(contacts, stats);
+    console.log(`[Gmail CRM] Calendar sync complete \u2014 updated ${stats.size} contacts`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[Gmail CRM] Calendar sync failed (non-fatal): ${msg}`);
+  }
+}
+async function getHeaders(settings) {
+  return { Authorization: `Bearer ${settings.accessToken}` };
+}
+async function fetchCalendarStats(settings, ownerEmail) {
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
+  const headers = await getHeaders(settings);
+  const now = /* @__PURE__ */ new Date();
+  const yearAgo = new Date(now.getTime() - 365 * 864e5);
+  const ninetyDaysAgo = new Date(now.getTime() - 90 * 864e5);
+  const timeMin = yearAgo.toISOString();
+  const timeMax = now.toISOString();
+  const statsMap = /* @__PURE__ */ new Map();
+  let pageToken;
+  do {
+    const params = new URLSearchParams({
+      timeMin,
+      timeMax,
+      maxResults: "2500",
+      singleEvents: "true",
+      fields: "items(summary,start,end,attendees,organizer,status),nextPageToken"
+    });
+    if (pageToken) params.set("pageToken", pageToken);
+    const url = `${CALENDAR_API_BASE}/calendars/primary/events?${params.toString()}`;
+    const resp = await (0, import_obsidian5.requestUrl)({ url, headers, throw: false });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(
+        `Calendar API returned ${resp.status}. You may need to re-authenticate to grant the calendar.events.readonly scope.`
+      );
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+      throw new Error(`Calendar API HTTP ${resp.status}: ${((_a = resp.text) != null ? _a : "").slice(0, 300)}`);
+    }
+    const data = resp.json;
+    const events = (_b = data.items) != null ? _b : [];
+    for (const event of events) {
+      if (event.status === "cancelled") continue;
+      if (!event.attendees || event.attendees.length === 0) continue;
+      const eventStart = (_f = (_e = (_c = event.start) == null ? void 0 : _c.dateTime) != null ? _e : (_d = event.start) == null ? void 0 : _d.date) != null ? _f : "";
+      if (!eventStart) continue;
+      const eventDate = new Date(eventStart);
+      const isLast90d = eventDate >= ninetyDaysAgo;
+      const ownerAttendee = event.attendees.find(
+        (a) => {
+          var _a2;
+          return a.self || ((_a2 = a.email) == null ? void 0 : _a2.toLowerCase()) === ownerEmail;
+        }
+      );
+      const ownerAccepted = (ownerAttendee == null ? void 0 : ownerAttendee.responseStatus) === "accepted";
+      const organizerEmail = (_i = (_h = (_g = event.organizer) == null ? void 0 : _g.email) == null ? void 0 : _h.toLowerCase()) != null ? _i : "";
+      const organizerIsSelf = (_k = (_j = event.organizer) == null ? void 0 : _j.self) != null ? _k : false;
+      for (const attendee of event.attendees) {
+        if (attendee.self) continue;
+        const email = (_l = attendee.email) == null ? void 0 : _l.toLowerCase();
+        if (!email) continue;
+        if (email === ownerEmail) continue;
+        let stat = statsMap.get(email);
+        if (!stat) {
+          stat = {
+            meetings: 0,
+            accepted: 0,
+            organizedByThem: 0,
+            meetingsLast90d: 0,
+            lastMeeting: null
+          };
+          statsMap.set(email, stat);
+        }
+        stat.meetings++;
+        if (ownerAccepted && attendee.responseStatus === "accepted") {
+          stat.accepted++;
+        }
+        if (!organizerIsSelf && organizerEmail === email) {
+          stat.organizedByThem++;
+        }
+        if (isLast90d) {
+          stat.meetingsLast90d++;
+        }
+        const eventIso = eventDate.toISOString();
+        if (!stat.lastMeeting || eventIso > stat.lastMeeting) {
+          stat.lastMeeting = eventIso;
+        }
+      }
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return statsMap;
+}
+function mergeCalendarStats(contacts, stats) {
+  for (const [email, stat] of stats) {
+    const contact = contacts[email];
+    if (!contact) continue;
+    contact.calendarMeetings = stat.meetings;
+    contact.calendarAccepted = stat.accepted;
+    contact.calendarOrganizedByThem = stat.organizedByThem;
+    contact.calendarMeetingsLast90d = stat.meetingsLast90d;
+    if (stat.lastMeeting) {
+      contact.calendarLastMeeting = stat.lastMeeting;
+    }
+  }
+}
+
+// src/frontmatter.ts
+var import_obsidian6 = require("obsidian");
 var FrontmatterManager = class {
   constructor(vault, companiesFolder = "Companies") {
     this.companyIndex = null;
@@ -1496,11 +1642,11 @@ var FrontmatterManager = class {
     if (this.companyIndex) return this.companyIndex;
     this.companyIndex = /* @__PURE__ */ new Map();
     const folder = this.vault.getAbstractFileByPath(
-      (0, import_obsidian5.normalizePath)(this.companiesFolder)
+      (0, import_obsidian6.normalizePath)(this.companiesFolder)
     );
-    if (folder instanceof import_obsidian5.TFolder) {
+    if (folder instanceof import_obsidian6.TFolder) {
       for (const child of folder.children) {
-        if (child instanceof import_obsidian5.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian6.TFile && child.extension === "md") {
           this.companyIndex.set(child.basename.toLowerCase(), child.basename);
         }
       }
@@ -1526,7 +1672,7 @@ var FrontmatterManager = class {
       return `"[[${this.companiesFolder}/${matched}|${matched}]]"`;
     }
     const safeName = rawCompany.replace(/[\\/:*?"<>|]/g, "_").trim();
-    const stubPath = (0, import_obsidian5.normalizePath)(`${this.companiesFolder}/${safeName}.md`);
+    const stubPath = (0, import_obsidian6.normalizePath)(`${this.companiesFolder}/${safeName}.md`);
     const existing = this.vault.getAbstractFileByPath(stubPath);
     if (!existing) {
       const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
@@ -1548,10 +1694,10 @@ var FrontmatterManager = class {
       ].join("\n");
       try {
         const folder = this.vault.getAbstractFileByPath(
-          (0, import_obsidian5.normalizePath)(this.companiesFolder)
+          (0, import_obsidian6.normalizePath)(this.companiesFolder)
         );
         if (!folder) {
-          await this.vault.createFolder((0, import_obsidian5.normalizePath)(this.companiesFolder));
+          await this.vault.createFolder((0, import_obsidian6.normalizePath)(this.companiesFolder));
         }
         await this.vault.create(stubPath, content);
       } catch (e) {
@@ -1735,7 +1881,7 @@ ${items.join("\n")}`;
 };
 
 // src/base-view.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var BASE_CONTENT = `filters:
   and:
     - staleness_label != null
@@ -1989,9 +2135,9 @@ views:
       quadrant: 130
 `;
 async function createBaseView(vault, peopleFolder) {
-  const basePath = (0, import_obsidian6.normalizePath)(`${peopleFolder}/CRM.base`);
+  const basePath = (0, import_obsidian7.normalizePath)(`${peopleFolder}/CRM.base`);
   const existing = vault.getAbstractFileByPath(basePath);
-  if (existing instanceof import_obsidian6.TFile) {
+  if (existing instanceof import_obsidian7.TFile) {
     await vault.modify(existing, BASE_CONTENT);
   } else {
     try {
@@ -2004,7 +2150,7 @@ async function createBaseView(vault, peopleFolder) {
 }
 
 // src/quadrant-view.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize"];
 var QUADRANT_LABELS = {
   nurture: { title: "NURTURE", subtitle: "strong + active" },
@@ -2014,8 +2160,8 @@ var QUADRANT_LABELS = {
 };
 async function writeQuadrantView(vault, peopleFolder) {
   var _a, _b, _c;
-  const folder = vault.getAbstractFileByPath((0, import_obsidian7.normalizePath)(peopleFolder));
-  if (!(folder instanceof import_obsidian7.TFolder)) {
+  const folder = vault.getAbstractFileByPath((0, import_obsidian8.normalizePath)(peopleFolder));
+  if (!(folder instanceof import_obsidian8.TFolder)) {
     throw new Error(`People folder not found: ${peopleFolder}`);
   }
   const buckets = {
@@ -2025,7 +2171,7 @@ async function writeQuadrantView(vault, peopleFolder) {
     deprioritize: []
   };
   for (const child of folder.children) {
-    if (!(child instanceof import_obsidian7.TFile) || child.extension !== "md") continue;
+    if (!(child instanceof import_obsidian8.TFile) || child.extension !== "md") continue;
     const content = await vault.read(child);
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) continue;
@@ -2044,9 +2190,9 @@ async function writeQuadrantView(vault, peopleFolder) {
     buckets[q].sort((a, b) => b.combinedScore - a.combinedScore);
   }
   const html = renderGrid(buckets, peopleFolder);
-  const path = (0, import_obsidian7.normalizePath)(`${peopleFolder}/_Quadrants.md`);
+  const path = (0, import_obsidian8.normalizePath)(`${peopleFolder}/_Quadrants.md`);
   const existing = vault.getAbstractFileByPath(path);
-  if (existing instanceof import_obsidian7.TFile) {
+  if (existing instanceof import_obsidian8.TFile) {
     await vault.modify(existing, html);
   } else {
     try {
@@ -2055,9 +2201,9 @@ async function writeQuadrantView(vault, peopleFolder) {
       await vault.adapter.write(path, html);
     }
   }
-  const legacyPath = (0, import_obsidian7.normalizePath)(`${peopleFolder}/Quadrants.md`);
+  const legacyPath = (0, import_obsidian8.normalizePath)(`${peopleFolder}/Quadrants.md`);
   const legacy = vault.getAbstractFileByPath(legacyPath);
-  if (legacy instanceof import_obsidian7.TFile) {
+  if (legacy instanceof import_obsidian8.TFile) {
     try {
       await vault.delete(legacy);
     } catch (e) {
@@ -2116,7 +2262,7 @@ function escapeHtml(s) {
 }
 
 // src/main.ts
-var GmailCrmPlugin = class extends import_obsidian8.Plugin {
+var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -2163,7 +2309,7 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
       name: "Enrich current person",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
-        if (!file || !file.path.startsWith((0, import_obsidian8.normalizePath)(this.settings.peopleFolder))) {
+        if (!file || !file.path.startsWith((0, import_obsidian9.normalizePath)(this.settings.peopleFolder))) {
           return false;
         }
         if (!checking) {
@@ -2178,6 +2324,13 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
       name: "Map relationships only (no AI)",
       callback: () => {
         void this.enrichAllPeople(true);
+      }
+    });
+    this.addCommand({
+      id: "sync-calendar",
+      name: "Sync calendar meeting data",
+      callback: () => {
+        void this.syncCalendar();
       }
     });
     this.addCommand({
@@ -2226,15 +2379,15 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
       const authUrl = this.gmailApi.getAuthUrl();
       const codePromise = startOAuthCallbackServer();
       window.open(authUrl);
-      new import_obsidian8.Notice("Opening browser for authorization...");
+      new import_obsidian9.Notice("Opening browser for authorization...");
       const code = await codePromise;
       await this.gmailApi.exchangeCode(code);
-      new import_obsidian8.Notice("Gmail connected successfully!");
+      new import_obsidian9.Notice("Gmail connected successfully!");
       this.startAutoSync();
       await this.syncContacts();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Gmail auth failed: ${msg}`);
+      new import_obsidian9.Notice(`Gmail auth failed: ${msg}`);
     }
   }
   startAutoSync() {
@@ -2251,10 +2404,10 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
-      new import_obsidian8.Notice("Connect your account first in plugin settings");
+      new import_obsidian9.Notice("Connect your account first in plugin settings");
       return;
     }
-    const notice = new import_obsidian8.Notice("Syncing contacts...", 0);
+    const notice = new import_obsidian9.Notice("Syncing contacts...", 0);
     try {
       const isIncremental = !!(this.contactIndex && this.messageCache);
       const result = await this.gmailApi.buildContactIndex(
@@ -2274,6 +2427,22 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
         await this.writeContactNotes();
       }
       const contactCount = Object.keys(this.contactIndex.contacts).length;
+      notice.setMessage(`Synced ${contactCount} contacts \u2014 syncing calendar...`);
+      try {
+        await syncCalendarData(
+          this.settings,
+          this.contactIndex.contacts,
+          this.contactIndex.userEmail
+        );
+        await this.saveContactIndex();
+      } catch (e) {
+        const calMsg = e instanceof Error ? e.message : String(e);
+        if (calMsg.includes("401") || calMsg.includes("403")) {
+          new import_obsidian9.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
+        } else {
+          console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
+        }
+      }
       notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
       await this.updateStaleness();
       await this.refreshBaseView();
@@ -2286,14 +2455,47 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Sync failed: ${msg}`);
+      new import_obsidian9.Notice(`Sync failed: ${msg}`);
     }
   }
   async fullResync() {
     this.messageCache = null;
     this.contactIndex = null;
-    new import_obsidian8.Notice("Cache cleared \u2014 running full re-sync...");
+    new import_obsidian9.Notice("Cache cleared \u2014 running full re-sync...");
     await this.syncContacts();
+  }
+  async syncCalendar() {
+    if (!this.settings.refreshToken) {
+      new import_obsidian9.Notice("Connect your account first in plugin settings");
+      return;
+    }
+    if (!this.contactIndex) {
+      new import_obsidian9.Notice("No contact index found. Run a contact sync first.");
+      return;
+    }
+    const notice = new import_obsidian9.Notice("Syncing calendar meeting data...", 0);
+    try {
+      await syncCalendarData(
+        this.settings,
+        this.contactIndex.contacts,
+        this.contactIndex.userEmail
+      );
+      await this.saveContactIndex();
+      const withCal = Object.values(this.contactIndex.contacts).filter((c) => {
+        var _a;
+        return ((_a = c.calendarMeetings) != null ? _a : 0) > 0;
+      }).length;
+      notice.setMessage(`Calendar sync complete \u2014 ${withCal} contacts have meeting data`);
+      setTimeout(() => notice.hide(), 3e3);
+    } catch (e) {
+      notice.hide();
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("401") || msg.includes("403")) {
+        new import_obsidian9.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
+      } else {
+        new import_obsidian9.Notice(`Calendar sync failed: ${msg}`);
+      }
+    }
   }
   async loadContactIndex() {
     var _a, _b, _c;
@@ -2318,20 +2520,20 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     (_b = (_a = this.contactIndex).edges) != null ? _b : _a.edges = [];
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex, null, 2);
-    await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
+    await this.app.vault.adapter.write((0, import_obsidian9.normalizePath)(path), content);
   }
   getIndexPath() {
-    return (0, import_obsidian8.normalizePath)(
+    return (0, import_obsidian9.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
     );
   }
   getCachePath() {
-    return (0, import_obsidian8.normalizePath)(
+    return (0, import_obsidian9.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
     );
   }
   getMergeQueuePath() {
-    return (0, import_obsidian8.normalizePath)(
+    return (0, import_obsidian9.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/merge-queue.json`
     );
   }
@@ -2360,11 +2562,11 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     if (!this.messageCache) return;
     const path = this.getCachePath();
     const content = JSON.stringify(this.messageCache);
-    await this.app.vault.adapter.write((0, import_obsidian8.normalizePath)(path), content);
+    await this.app.vault.adapter.write((0, import_obsidian9.normalizePath)(path), content);
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;
-    const folder = (0, import_obsidian8.normalizePath)(this.settings.contactNotesFolder);
+    const folder = (0, import_obsidian9.normalizePath)(this.settings.contactNotesFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
@@ -2373,9 +2575,9 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     }
     const existingPages = /* @__PURE__ */ new Map();
     const folderObj = this.app.vault.getAbstractFileByPath(folder);
-    if (folderObj instanceof import_obsidian8.TFolder) {
+    if (folderObj instanceof import_obsidian9.TFolder) {
       for (const child of folderObj.children) {
-        if (child instanceof import_obsidian8.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian9.TFile && child.extension === "md") {
           const pageName = child.basename.replace(/^p-\s*/, "").toLowerCase();
           existingPages.set(pageName, child);
         }
@@ -2383,7 +2585,7 @@ var GmailCrmPlugin = class extends import_obsidian8.Plugin {
     }
     for (const contact of Object.values(this.contactIndex.contacts)) {
       const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-      const notePath = (0, import_obsidian8.normalizePath)(`${folder}/p- ${safeName}.md`);
+      const notePath = (0, import_obsidian9.normalizePath)(`${folder}/p- ${safeName}.md`);
       const existingFile = existingPages.get(contact.name.toLowerCase());
       const frontmatter = [
         "---",
@@ -2416,7 +2618,7 @@ ${body}`;
         continue;
       }
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (noteFile instanceof import_obsidian8.TFile) {
+      if (noteFile instanceof import_obsidian9.TFile) {
         continue;
       }
       try {
@@ -2434,20 +2636,20 @@ ${body}`;
   }
   async openContactNote(contact) {
     const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-    const notePath = (0, import_obsidian8.normalizePath)(
+    const notePath = (0, import_obsidian9.normalizePath)(
       `${this.settings.contactNotesFolder}/${safeName}.md`
     );
     const file = this.app.vault.getAbstractFileByPath(notePath);
-    if (file instanceof import_obsidian8.TFile) {
+    if (file instanceof import_obsidian9.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     } else {
-      new import_obsidian8.Notice(`No note found for ${contact.name}. Run sync first.`);
+      new import_obsidian9.Notice(`No note found for ${contact.name}. Run sync first.`);
     }
   }
   async enrichAllPeople(skipAi = false) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian8.Notice("Loading people pages...", 0);
+    const notice = new import_obsidian9.Notice("Loading people pages...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -2459,7 +2661,7 @@ ${body}`;
       if (!skipAi) {
         if (!this.settings.anthropicApiKey) {
           notice.hide();
-          new import_obsidian8.Notice("Set your API key in plugin settings first.");
+          new import_obsidian9.Notice("Set your API key in plugin settings first.");
           return;
         }
         harper = new HarperSkill(
@@ -2474,7 +2676,7 @@ ${body}`;
         notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
         const relationships = (_a = graph[name]) != null ? _a : [];
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (!(file instanceof import_obsidian8.TFile)) continue;
+        if (!(file instanceof import_obsidian9.TFile)) continue;
         if (harper) {
           try {
             const rewritten = await harper.rewritePersonPage(name, page, relationships, pages);
@@ -2482,7 +2684,7 @@ ${body}`;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error(`Harper skill failed for ${name}: ${msg}`);
-            new import_obsidian8.Notice(`Failed on ${name}: ${msg}`);
+            new import_obsidian9.Notice(`Failed on ${name}: ${msg}`);
           }
         } else {
           const relLines = relationships.map(
@@ -2507,25 +2709,25 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian9.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async enrichSinglePerson(name) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian8.Notice(`Enriching ${name}...`, 0);
+    const notice = new import_obsidian9.Notice(`Enriching ${name}...`, 0);
     try {
       const pages = await engine.loadPeoplePages();
       if (!pages[name]) {
         notice.hide();
-        new import_obsidian8.Notice(`Person "${name}" not found in people pages.`);
+        new import_obsidian9.Notice(`Person "${name}" not found in people pages.`);
         return;
       }
       const graph = engine.buildGraph(pages, this.contactIndex);
       const relationships = (_a = graph[name]) != null ? _a : [];
       if (!this.settings.anthropicApiKey) {
         notice.hide();
-        new import_obsidian8.Notice("Set your API key in plugin settings first.");
+        new import_obsidian9.Notice("Set your API key in plugin settings first.");
         return;
       }
       const harper = new HarperSkill(
@@ -2535,7 +2737,7 @@ ${relSection}
       );
       const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
       const file = this.app.vault.getAbstractFileByPath(pages[name].path);
-      if (file instanceof import_obsidian8.TFile) {
+      if (file instanceof import_obsidian9.TFile) {
         await this.app.vault.modify(file, rewritten);
       }
       notice.setMessage(`Enriched ${name}!`);
@@ -2543,14 +2745,14 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian9.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async updateStaleness() {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
     const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
-    const notice = new import_obsidian8.Notice("Computing staleness scores...", 0);
+    const notice = new import_obsidian9.Notice("Computing staleness scores...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -2567,7 +2769,7 @@ ${relSection}
           staleCount++;
         }
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (file instanceof import_obsidian8.TFile) {
+        if (file instanceof import_obsidian9.TFile) {
           await fm.updateFrontmatter(file, page, staleness, relationships);
           const contact = this.getContactForPage(page);
           if (contact == null ? void 0 : contact.canonicalId) {
@@ -2591,7 +2793,7 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Staleness update failed: ${msg}`);
+      new import_obsidian9.Notice(`Staleness update failed: ${msg}`);
     }
   }
   updateContactScore(page, staleness, updatedAt) {
@@ -2772,27 +2974,27 @@ ${relSection}
       `Queue: \`${this.getMergeQueuePath()}\``,
       ""
     ];
-    const folder = (0, import_obsidian8.normalizePath)(this.settings.peopleFolder);
+    const folder = (0, import_obsidian9.normalizePath)(this.settings.peopleFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
       } catch (e) {
       }
     }
-    const path = (0, import_obsidian8.normalizePath)(`${folder}/_Merge Queue.md`);
+    const path = (0, import_obsidian9.normalizePath)(`${folder}/_Merge Queue.md`);
     const content = lines.join("\n");
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian8.TFile) {
+    if (file instanceof import_obsidian9.TFile) {
       await this.app.vault.modify(file, content);
       await this.app.workspace.getLeaf().openFile(file);
     } else {
       await this.app.vault.create(path, content);
       const created = this.app.vault.getAbstractFileByPath(path);
-      if (created instanceof import_obsidian8.TFile) {
+      if (created instanceof import_obsidian9.TFile) {
         await this.app.workspace.getLeaf().openFile(created);
       }
     }
-    new import_obsidian8.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
+    new import_obsidian9.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
   }
   renderMergeCandidates(candidates) {
     var _a, _b;
@@ -2843,14 +3045,14 @@ ${relSection}
   async createBase() {
     try {
       const basePath = await createBaseView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian8.Notice(`CRM Base created at ${basePath}`);
+      new import_obsidian9.Notice(`CRM Base created at ${basePath}`);
       const file = this.app.vault.getAbstractFileByPath(basePath);
-      if (file instanceof import_obsidian8.TFile) {
+      if (file instanceof import_obsidian9.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Failed to create Base: ${msg}`);
+      new import_obsidian9.Notice(`Failed to create Base: ${msg}`);
     }
   }
   async refreshBaseView() {
@@ -2869,14 +3071,14 @@ ${relSection}
   async createQuadrantView() {
     try {
       const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian8.Notice(`Quadrant view written to ${path}`);
+      new import_obsidian9.Notice(`Quadrant view written to ${path}`);
       const file = this.app.vault.getAbstractFileByPath(path);
-      if (file instanceof import_obsidian8.TFile) {
+      if (file instanceof import_obsidian9.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian8.Notice(`Failed to write quadrant view: ${msg}`);
+      new import_obsidian9.Notice(`Failed to write quadrant view: ${msg}`);
     }
   }
 };
