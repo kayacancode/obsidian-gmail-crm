@@ -59,18 +59,39 @@
 		let queue = [];           // pending candidates
 		let total = 0;
 
+		// The GIS client loads async; wait for it instead of racing it (the old
+		// code checked window.google once and dead-ended on "Sign-in unavailable"
+		// if it hadn't arrived yet — the "hangs on auth" symptom).
+		function waitForGoogle(timeoutMs = 10000) {
+			return new Promise((resolve) => {
+				if (window.google?.accounts?.id) return resolve(true);
+				const start = Date.now();
+				const t = setInterval(() => {
+					if (window.google?.accounts?.id) { clearInterval(t); resolve(true); }
+					else if (Date.now() - start > timeoutMs) { clearInterval(t); resolve(false); }
+				}, 100);
+			});
+		}
+
 		async function boot() {
+			stage.innerHTML = `<div class="gate">Loading…</div>`;
 			const cfg = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
-			if (cfg.googleClientId && window.google) {
-				google.accounts.id.initialize({
-					client_id: cfg.googleClientId,
-					callback: (resp) => { idToken = resp.credential; load(); },
-				});
-				google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "large" });
-			} else {
+			if (!cfg.googleClientId) {
 				stage.innerHTML = `<div class="gate">Sign-in unavailable — missing Google config.</div>`;
 				return;
 			}
+			const ready = await waitForGoogle();
+			if (!ready) {
+				stage.innerHTML = `<div class="gate">Couldn't load Google sign-in. <button id="retry">Retry</button></div>`;
+				document.getElementById("retry").onclick = boot;
+				return;
+			}
+			google.accounts.id.initialize({
+				client_id: cfg.googleClientId,
+				callback: (resp) => { idToken = resp.credential; load(); },
+			});
+			google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "large" });
+			google.accounts.id.prompt(); // show One Tap as well as the button
 			renderGate();
 		}
 
@@ -83,7 +104,13 @@
 		async function load() {
 			if (!idToken) { renderGate(); return; }
 			const resp = await fetch("/api/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
-			if (!resp || resp.status === 401) { renderGate(); return; }
+			if (!resp || resp.status === 401) {
+				// Token likely expired (Google ID tokens last ~1h) — drop it and re-prompt.
+				idToken = null;
+				renderGate();
+				if (window.google?.accounts?.id) google.accounts.id.prompt();
+				return;
+			}
 			const data = await resp.json().catch(() => ({ candidates: [] }));
 			queue = data.candidates || [];
 			total = queue.length;
