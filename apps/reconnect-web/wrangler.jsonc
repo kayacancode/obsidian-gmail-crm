@@ -1,0 +1,29 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "reconnect-web",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-05-01",
+	"observability": { "enabled": true },
+	"assets": {
+		// Names-only swipe UI. Served for any non-/api route.
+		"directory": "./public",
+		"binding": "ASSETS"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "reconnect",
+			// Fill in after `wrangler d1 create reconnect`.
+			"database_id": "ce0d3ff6-6cd2-4cdc-82e9-2b609a40475a"
+		}
+	],
+	"vars": {
+		// Comma-separated Google account emails allowed to swipe (write).
+		// Reads (names) are public; only decisions require sign-in.
+		"ALLOWED_EMAILS": "kayarjones901@gmail.com,john@betaworks.com",
+		// Google OAuth client id for Google Identity Services sign-in.
+		"GOOGLE_CLIENT_ID": "726397126192-d5esd42caksfb95hcoh12vpuji8kv008.apps.googleusercontent.com"
+	}
+	// Secret (set via `wrangler secret put SYNC_TOKEN`): shared bearer token the
+	// Botwick bridge uses to push candidates and pull decisions.
+}
