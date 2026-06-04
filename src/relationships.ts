@@ -314,7 +314,7 @@ export class RelationshipEngine {
 					} else if (!existing.domain && contact.domain) {
 						existing.domain = contact.domain;
 						existing.profileEmail = profileEmail;
-				}
+					}
 				} else {
 					pages[pageName].gmailStats = {
 						totalExchanges: contact.totalExchanges,
