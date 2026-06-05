@@ -100,7 +100,7 @@ async function push() {
 	const state = loadState();
 	const batch_date = todayStamp();
 	state.batch_date = batch_date;
-	state.map = {}; // fresh id->email map for today's batch
+	if (!state.map) state.map = {}; // keep old mappings so pull can resolve them
 
 	const candidates = people.map((p) => {
 		const id = randomUUID();
@@ -161,6 +161,11 @@ async function pull() {
 	}
 
 	if (acked.length) await api("/api/decisions/ack", { method: "POST", body: { ids: acked } });
+
+	// Clean up applied IDs from the local map to prevent unbounded growth
+	for (const id of acked) delete state.map[id];
+	saveState(state);
+
 	console.log(`applied ${acked.length}/${decisions.length} decisions`);
 }
 
