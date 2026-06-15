@@ -116,7 +116,7 @@ async function push() {
 	});
 
 	// Push in chunks to avoid D1 batch limits (Worker does one DB.batch per sync)
-	const CHUNK = 50;
+	const CHUNK = 500;
 	for (let i = 0; i < candidates.length; i += CHUNK) {
 		const chunk = candidates.slice(i, i + CHUNK);
 		// Only replace on the first chunk to clear old batch; subsequent chunks append
