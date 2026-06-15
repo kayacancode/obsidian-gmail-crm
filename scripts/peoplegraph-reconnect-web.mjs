@@ -115,21 +115,28 @@ async function push() {
 		};
 	});
 
-	await api("/api/sync", { method: "POST", body: { batch_date, replace: true, candidates } });
+	// Push in chunks to avoid D1 batch limits (Worker does one DB.batch per sync)
+	const CHUNK = 50;
+	for (let i = 0; i < candidates.length; i += CHUNK) {
+		const chunk = candidates.slice(i, i + CHUNK);
+		// Only replace on the first chunk to clear old batch; subsequent chunks append
+		await api("/api/sync", { method: "POST", body: { batch_date, replace: i === 0, candidates: chunk } });
+	}
 	saveState(state);
 
 	writeDailyNoteLine(candidates.length);
 	console.log(`pushed ${candidates.length} candidates for ${batch_date}`);
 
-	// Output candidate details as JSON so callers (e.g. Botwick cron) can
-	// read the names without re-running `peoplegraph reconnect` (which would
-	// now return different people since swiped ones are excluded).
-	console.log("CANDIDATES_JSON:" + JSON.stringify(people.map(p => ({
+	// Output only the top 20 candidate details as JSON for the Telegram preview.
+	// The full set is in the swipe app already.
+	const preview = people.slice(0, 20);
+	console.log("CANDIDATES_JSON:" + JSON.stringify(preview.map(p => ({
 		name: p.name,
 		company: p.company ?? null,
 		days_since: p.days_since_contact ?? null,
 		nudge: p.nudge ?? null,
 	}))));
+	console.log(`TOTAL_CANDIDATES:${candidates.length}`);
 }
 
 function writeDailyNoteLine(count) {
