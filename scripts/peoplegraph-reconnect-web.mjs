@@ -124,6 +124,31 @@ async function push() {
 	}
 	saveState(state);
 
+	// Mark all pushed candidates as "shown" in reconnect-feedback.json so
+	// they don't reappear in tomorrow's batch. Written directly to the JSON
+	// file (not via CLI) for speed. Real swipe decisions (boost/suppress/delete)
+	// from pull() will overwrite "shown" entries. Shown entries expire after
+	// 30 days in the reconnect filter so unswiped contacts eventually resurface.
+	const fbPath = join(dirname(CACHE), "reconnect-feedback.json");
+	let fb;
+	try {
+		fb = JSON.parse(readFileSync(fbPath, "utf8"));
+	} catch {
+		fb = { schemaVersion: 1, updatedAtUnix: 0, entries: {} };
+	}
+	const nowUnix = Math.floor(Date.now() / 1000);
+	let shownCount = 0;
+	for (const p of people) {
+		const email = p.email.trim().toLowerCase();
+		const existing = fb.entries?.[email];
+		if (existing && existing.action !== "shown") continue; // don't overwrite real swipes
+		fb.entries[email] = { action: "shown", delta: 0, updatedUnix: nowUnix };
+		shownCount++;
+	}
+	fb.updatedAtUnix = nowUnix;
+	writeFileSync(fbPath, JSON.stringify(fb, null, 2));
+	console.log(`marked ${shownCount} candidates as shown`);
+
 	writeDailyNoteLine(candidates.length);
 	console.log(`pushed ${candidates.length} candidates for ${batch_date}`);
 
