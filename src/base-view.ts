@@ -60,6 +60,8 @@ properties:
     displayName: Quadrant
   note.combined_score:
     displayName: Score
+  note.open_engagement:
+    displayName: Opens
 views:
   - type: table
     name: CRM
@@ -77,6 +79,7 @@ views:
       - staleness_label
       - quadrant
       - combined_score
+      - open_engagement
       - nudge
     sort:
       - property: combined_score

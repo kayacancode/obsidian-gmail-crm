@@ -151,6 +151,22 @@ export class GmailCrmView extends ItemView {
 				cls: "gmail-crm-faded",
 			});
 
+			// Open tracking label from Superhuman read receipts
+			if (contact.openEngagement && contact.openEngagement !== "none") {
+				const emoji =
+					contact.openEngagement === "replied" ? "💬" :
+					contact.openEngagement === "multi_opened" ? "📬📬" :
+					contact.openEngagement === "opened" ? "📬" :
+					contact.openEngagement === "sent_no_open" ? "📭" : "";
+				if (emoji) {
+					stats.createSpan({
+						text: ` \u00B7 ${emoji}`,
+						cls: "gmail-crm-faded",
+						attr: { title: `Open tracking: ${contact.openEngagement} (${contact.openCount ?? 0} opens)` },
+					});
+				}
+			}
+
 			if (contact.canonicalId) {
 				const identity = info.createDiv({ cls: "gmail-crm-identity" });
 				identity.createSpan({ text: "Merged", cls: "gmail-crm-identity-badge" });

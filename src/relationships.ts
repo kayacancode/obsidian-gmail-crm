@@ -337,7 +337,10 @@ export class RelationshipEngine {
 						calendarLastMeeting: contact.calendarLastMeeting,
 						calendarOrganizedByThem: contact.calendarOrganizedByThem,
 						calendarMeetingsLast90d: contact.calendarMeetingsLast90d,
-					};
+						openCount: contact.openCount,
+						lastOpenAt: contact.lastOpenAt,
+						openEngagement: contact.openEngagement,
+						};
 				}
 			}
 

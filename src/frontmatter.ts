@@ -33,6 +33,9 @@ export interface CrmFrontmatter {
 	canonical_id?: string;
 	aliases?: string[];
 	last_canonical_sync?: string;
+	// Email open tracking
+	open_engagement?: string;
+	open_count?: number;
 }
 
 export class FrontmatterManager {
@@ -203,6 +206,18 @@ export class FrontmatterManager {
 			}
 			if (page.gmailStats.lastThreadDepth !== undefined) {
 				crm.last_thread_depth = page.gmailStats.lastThreadDepth;
+			}
+			// Email open tracking (from Superhuman read receipts)
+			if (page.gmailStats.openCount !== undefined && page.gmailStats.openCount > 0) {
+				crm.open_count = page.gmailStats.openCount;
+				const eng = page.gmailStats.openEngagement ?? "none";
+				const label =
+					eng === "replied" ? "💬 Replied" :
+					eng === "multi_opened" ? "📬 Opened multiple times" :
+					eng === "opened" ? "📬 Opened" :
+					eng === "sent_no_open" ? "📭 No opens" :
+					"📭 No opens";
+				crm.open_engagement = label;
 			}
 		}
 

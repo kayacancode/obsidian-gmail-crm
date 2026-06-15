@@ -187,6 +187,10 @@ export interface GmailStats {
 	calendarLastMeeting?: string;
 	calendarOrganizedByThem?: number;
 	calendarMeetingsLast90d?: number;
+	// Email open tracking (from Superhuman read receipts)
+	openCount?: number;
+	lastOpenAt?: string;
+	openEngagement?: string;
 }
 
 export interface Relationship {
