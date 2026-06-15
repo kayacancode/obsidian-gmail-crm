@@ -118,6 +118,18 @@ async function push() {
 	await api("/api/sync", { method: "POST", body: { batch_date, replace: true, candidates } });
 	saveState(state);
 
+	// Mark every pushed candidate as "shown" so they don't reappear tomorrow.
+	// If the user swipes (boost/suppress/delete), pull() will overwrite this
+	// entry with the real decision. If they don't swipe, the "shown" entry
+	// keeps them out of the pool for 30 days before they resurface.
+	for (const p of people) {
+		try {
+			pg(["feedback", "--email", p.email, "--action", "shown"]);
+		} catch (err) {
+			console.warn(`warn: failed to mark ${p.email} as shown: ${err.message}`);
+		}
+	}
+
 	writeDailyNoteLine(candidates.length);
 	console.log(`pushed ${candidates.length} candidates for ${batch_date}`);
 }

@@ -135,7 +135,7 @@ struct FeedbackArgs {
     #[arg(long)]
     email: String,
 
-    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist)
+    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist) | shown (mark as surfaced, 30-day cooldown)
     #[arg(long)]
     action: String,
 
@@ -367,7 +367,7 @@ struct FeedbackStore {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FeedbackEntry {
-    action: String, // "boost" | "suppress" | "delete"
+    action: String, // "boost" | "suppress" | "delete" | "shown"
     #[serde(default)]
     delta: u8,
     #[serde(default)]
@@ -1339,25 +1339,31 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
     let feedback = read_feedback(&feedback_path(&cache_path));
     let min_score = args.min_score;
 
-    // Re-engage candidates, with human feedback applied: suppress/delete are
-    // dropped, boost raises the ranking score. Carry the effective score so the
-    // map below doesn't recompute it.
+    // Re-engage candidates, with human feedback applied:
+    // - boost/suppress/delete: permanently excluded (user made a decision)
+    // - shown: excluded for 30 days (unswiped candidates resurface after cooldown)
+    let now_unix = unix_seconds();
+    const SHOWN_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
     let mut people: Vec<(ContactRow, u8)> = rows(&index)
         .into_iter()
         .filter_map(|row| {
             let entry = feedback_entry_for(&feedback, &row);
-            if matches!(entry.map(|e| e.action.as_str()), Some("suppress") | Some("delete")) {
-                return None;
+            if let Some(e) = entry {
+                if e.action == "shown" {
+                    // "shown" entries expire after the cooldown period
+                    if now_unix.saturating_sub(e.updated_unix) < SHOWN_COOLDOWN_SECS {
+                        return None; // still in cooldown
+                    }
+                    // cooldown expired — allow back into pool
+                } else {
+                    return None; // boost/suppress/delete — permanent exclusion
+                }
             }
             let score = infer_score(&row.contact);
             if score.quadrant != "re-engage" {
                 return None;
             }
-            let boost = entry
-                .filter(|e| e.action == "boost")
-                .map(|e| e.delta)
-                .unwrap_or(0);
-            let effective = ((score.combined as u16) + (boost as u16)).min(100) as u8;
+            let effective = score.combined;
             if effective < min_score {
                 return None;
             }
@@ -1381,10 +1387,6 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
             let company = display_company(&row.contact);
             let company_source = company_source(&row.contact, company.as_deref());
             let days = days_since_contact(&row.contact);
-            let boost = feedback_entry_for(&feedback, &row)
-                .filter(|e| e.action == "boost")
-                .map(|e| e.delta)
-                .unwrap_or(0);
             json!({
                 "email": &row.email,
                 "name": &row.contact.name,
@@ -1395,7 +1397,7 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
                 "canonical_id": &row.contact.canonical_id,
                 "score": score,
                 "effective_score": effective,
-                "manual_boost": boost,
+                "manual_boost": 0,
                 "score_source": score_source(&row.contact),
                 "last_contact": &row.contact.last_contact,
                 "days_since_contact": days,
@@ -1441,11 +1443,11 @@ fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<
 // Record a human swipe decision. WRITE — local source-of-truth machine only.
 fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instant) -> Response {
     let action = args.action.trim().to_ascii_lowercase();
-    if !matches!(action.as_str(), "boost" | "suppress" | "delete") {
+    if !matches!(action.as_str(), "boost" | "suppress" | "delete" | "shown") {
         return fail(
             command,
             "invalid_action",
-            format!("unknown action '{}': use boost|suppress|delete", args.action),
+            format!("unknown action '{}': use boost|suppress|delete|shown", args.action),
             start,
         );
     }
@@ -1516,7 +1518,7 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
     let fb_path = feedback_path(&cache_path);
     let mut store = read_feedback(&fb_path);
     let now = unix_seconds();
-    let delta = if action == "delete" { 0 } else { args.delta.min(100) };
+    let delta = if action == "delete" || action == "shown" { 0 } else { args.delta.min(100) };
     store.entries.insert(
         email.clone(),
         FeedbackEntry {
