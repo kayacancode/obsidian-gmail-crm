@@ -306,6 +306,13 @@ struct Contact {
     aliases: Vec<String>,
     #[serde(default)]
     last_canonical_sync: Option<String>,
+    // Email open tracking (from Superhuman read receipts)
+    #[serde(default)]
+    open_count: u32,
+    #[serde(default)]
+    last_open_at: Option<String>,
+    #[serde(default)]
+    open_engagement: Option<String>,
     #[serde(default)]
     role: Option<String>,
     #[serde(default)]
@@ -4033,7 +4040,16 @@ fn compute_strength_score(contact: &Contact) -> u8 {
         _ => 0.0,
     };
 
-    (volume_score + depth_score + initiation_score + span_score)
+    // Open engagement signal (max 5) — from Superhuman read receipts.
+    // Directional signal only: opens mean "probably viewed", not "interested".
+    let open_score = match contact.open_count {
+        0 => 0.0,
+        1 => 1.0,
+        2..=3 => 2.0,
+        _ => 3.0, // 4+ opens; replies already captured in exchange data
+    };
+
+    (volume_score + depth_score + initiation_score + span_score + open_score)
         .round()
         .clamp(0.0, 100.0) as u8
 }
@@ -4048,7 +4064,20 @@ fn compute_momentum_score(contact: &Contact) -> u8 {
         let back_and_forth = contact.back_and_forth_threads.unwrap_or(0);
         (last_depth * 2).min(10) + (back_and_forth * 2).min(10)
     };
-    (decay_score + trend_score as f64).round().clamp(0.0, 100.0) as u8
+    // Recent opens boost momentum even without a reply (max 5).
+    let open_momentum = contact
+        .last_open_at
+        .as_deref()
+        .and_then(|s| date_days(s))
+        .map(|open_day| {
+            let days_since_open = current_unix_days() - open_day;
+            if days_since_open <= 7 { 5 }
+            else if days_since_open <= 14 { 3 }
+            else if days_since_open <= 30 { 1 }
+            else { 0 }
+        })
+        .unwrap_or(0);
+    (decay_score + trend_score as f64 + open_momentum as f64).round().clamp(0.0, 100.0) as u8
 }
 
 fn compute_quadrant(contact: &Contact) -> String {

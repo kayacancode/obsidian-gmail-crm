@@ -80,6 +80,10 @@ export interface Contact {
 	calendarLastMeeting?: string;    // ISO date of most recent shared meeting
 	calendarOrganizedByThem?: number; // events they organized with owner as attendee
 	calendarMeetingsLast90d?: number; // meetings in last 90 days
+	// Email open tracking (from Superhuman read receipts)
+	openCount?: number;         // total opens on recent outbound emails
+	lastOpenAt?: string;        // ISO timestamp of most recent open
+	openEngagement?: string;    // "none" | "sent_no_open" | "opened" | "multi_opened" | "replied"
 	role?: string;
 	company?: string;
 	score?: ContactScore;
