@@ -118,39 +118,12 @@ async function push() {
 	await api("/api/sync", { method: "POST", body: { batch_date, replace: true, candidates } });
 	saveState(state);
 
-	// Mark every pushed candidate as "shown" so they don't reappear tomorrow.
-	// Write directly to reconnect-feedback.json instead of calling
-	// `peoplegraph feedback` N times (which loads the 23K index each time and
-	// blew past the cron timeout).  If the user swipes (boost/suppress/delete),
-	// pull() will overwrite the "shown" entry with the real decision.  If they
-	// don't swipe, "shown" keeps them out of the pool for 30 days.
-	const fbPath = join(dirname(CACHE), "reconnect-feedback.json");
-	let fb;
-	try {
-		fb = JSON.parse(readFileSync(fbPath, "utf8"));
-	} catch {
-		fb = { schemaVersion: 1, updatedAtUnix: 0, entries: {} };
-	}
-	const nowUnix = Math.floor(Date.now() / 1000);
-	let shownCount = 0;
-	for (const p of people) {
-		const email = p.email.trim().toLowerCase();
-		// Don't overwrite a real swipe decision with "shown"
-		const existing = fb.entries?.[email];
-		if (existing && existing.action !== "shown") continue;
-		fb.entries[email] = { action: "shown", delta: 0, updatedUnix: nowUnix };
-		shownCount++;
-	}
-	fb.updatedAtUnix = nowUnix;
-	writeFileSync(fbPath, JSON.stringify(fb, null, 2));
-	console.log(`marked ${shownCount} candidates as shown`);
-
 	writeDailyNoteLine(candidates.length);
 	console.log(`pushed ${candidates.length} candidates for ${batch_date}`);
 
 	// Output candidate details as JSON so callers (e.g. Botwick cron) can
 	// read the names without re-running `peoplegraph reconnect` (which would
-	// now return different people since these are marked "shown").
+	// now return different people since swiped ones are excluded).
 	console.log("CANDIDATES_JSON:" + JSON.stringify(people.map(p => ({
 		name: p.name,
 		company: p.company ?? null,
