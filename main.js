@@ -55,7 +55,10 @@ var DEFAULT_SETTINGS = {
   anthropicApiKey: "",
   harperModel: "claude-sonnet-4-6",
   enrichOnSync: false,
-  blockedDomains: ""
+  blockedDomains: "",
+  autoUpdateStaleness: true,
+  stalenessUpdateInterval: 0
+  // 0 = only after sync, not on its own timer
 };
 
 // src/gmail-api.ts
@@ -694,6 +697,19 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       text: "Staleness scoring tracks relationship freshness. The base view gives you a sortable table of all your contacts with status indicators.",
       cls: "setting-item-description"
     });
+    new import_obsidian2.Setting(containerEl).setName("Auto-update staleness after sync").setDesc("Automatically recompute scores and update people pages after each Gmail sync").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoUpdateStaleness).onChange(async (value) => {
+        this.plugin.settings.autoUpdateStaleness = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Staleness update schedule").setDesc("Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.").addDropdown(
+      (drop) => drop.addOption("0", "Only after sync").addOption("6", "Every 6 hours").addOption("12", "Every 12 hours").addOption("24", "Every day").addOption("48", "Every 2 days").addOption("168", "Every week").setValue(String(this.plugin.settings.stalenessUpdateInterval)).onChange(async (value) => {
+        this.plugin.settings.stalenessUpdateInterval = parseInt(value);
+        await this.plugin.saveSettings();
+        this.plugin.resetStalenessTimer();
+      })
+    );
     new import_obsidian2.Setting(containerEl).setName("Update staleness scores").setDesc("Compute freshness scores and write to frontmatter on all people pages").addButton(
       (btn) => btn.setButtonText("Score all").setCta().onClick(async () => {
         await this.plugin.updateStaleness();
@@ -1035,7 +1051,10 @@ var RelationshipEngine = class {
             calendarAccepted: contact.calendarAccepted,
             calendarLastMeeting: contact.calendarLastMeeting,
             calendarOrganizedByThem: contact.calendarOrganizedByThem,
-            calendarMeetingsLast90d: contact.calendarMeetingsLast90d
+            calendarMeetingsLast90d: contact.calendarMeetingsLast90d,
+            openCount: contact.openCount,
+            lastOpenAt: contact.lastOpenAt,
+            openEngagement: contact.openEngagement
           };
         }
       }
@@ -1707,7 +1726,7 @@ var FrontmatterManager = class {
     return `"[[${this.companiesFolder}/${safeName}|${safeName}]]"`;
   }
   async updateFrontmatter(file, page, staleness, relationships) {
-    var _a;
+    var _a, _b;
     const content = await this.vault.read(file);
     const crm = {
       staleness_score: staleness.score,
@@ -1741,6 +1760,7 @@ var FrontmatterManager = class {
     }
     if (page.gmailStats) {
       crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+      crm.first_contact = page.gmailStats.firstContact.split("T")[0];
       crm.total_exchanges = page.gmailStats.totalExchanges;
       crm.sent = page.gmailStats.sentCount;
       crm.received = page.gmailStats.receivedCount;
@@ -1762,17 +1782,107 @@ var FrontmatterManager = class {
       if (page.gmailStats.lastThreadDepth !== void 0) {
         crm.last_thread_depth = page.gmailStats.lastThreadDepth;
       }
+      if (page.gmailStats.openCount !== void 0 && page.gmailStats.openCount > 0) {
+        crm.open_count = page.gmailStats.openCount;
+        const eng = (_b = page.gmailStats.openEngagement) != null ? _b : "none";
+        const label = eng === "replied" ? "\u{1F4AC} Replied" : eng === "multi_opened" ? "\u{1F4EC} Opened multiple times" : eng === "opened" ? "\u{1F4EC} Opened" : eng === "sent_no_open" ? "\u{1F4ED} No opens" : "\u{1F4ED} No opens";
+        crm.open_engagement = label;
+      }
     }
     if (staleness.daysSinceContact !== null) {
       crm.days_since_contact = staleness.daysSinceContact;
     }
     if (staleness.nudge) {
       crm.nudge = staleness.nudge;
+    } else {
+      crm.nudge = "";
     }
     const updated = this.mergeFrontmatter(content, crm);
-    if (updated !== content) {
-      await this.vault.modify(file, updated);
+    const withStatus = this.updateRelationshipStatus(updated, page, staleness, relationships);
+    if (withStatus !== content) {
+      await this.vault.modify(file, withStatus);
     }
+  }
+  updateRelationshipStatus(content, page, staleness, relationships) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const lines = [];
+    const quadrantEmoji = {
+      "nurture": "\u{1F7E2}",
+      "re-engage": "\u{1F7E1}",
+      "developing": "\u{1F535}",
+      "deprioritize": "\u26AA"
+    };
+    const emoji = (_a = quadrantEmoji[staleness.quadrant]) != null ? _a : "\u26AA";
+    lines.push(`${emoji} **${staleness.quadrant.charAt(0).toUpperCase() + staleness.quadrant.slice(1)}** \xB7 ${staleness.label}`);
+    lines.push("");
+    lines.push(`| Metric | Score |`);
+    lines.push(`|--------|-------|`);
+    lines.push(`| Strength | ${staleness.strengthScore}/100 ${this.scoreBar(staleness.strengthScore)} |`);
+    lines.push(`| Momentum | ${staleness.momentumScore}/100 ${this.scoreBar(staleness.momentumScore)} |`);
+    lines.push(`| Combined | ${staleness.combinedScore}/100 ${this.scoreBar(staleness.combinedScore)} |`);
+    lines.push(`| Depth | ${staleness.relationshipDepth}/5 |`);
+    lines.push(`| Recency | ${staleness.relationshipRecency}/10 |`);
+    lines.push("");
+    if (page.gmailStats) {
+      const g = page.gmailStats;
+      const sent = (_b = g.sentCount) != null ? _b : 0;
+      const received = (_c = g.receivedCount) != null ? _c : 0;
+      const total = (_d = g.totalExchanges) != null ? _d : 0;
+      const threads = (_e = g.threadCount) != null ? _e : 0;
+      const baf = (_f = g.backAndForthThreads) != null ? _f : 0;
+      lines.push(`**${total} emails** (${sent} sent \xB7 ${received} received) across ${threads} threads \xB7 ${baf} back-and-forth`);
+      if (g.firstContact && g.lastContact) {
+        const first = g.firstContact.split("T")[0];
+        const last = g.lastContact.split("T")[0];
+        if (first === last) {
+          lines.push(`Only contact: ${last}`);
+        } else {
+          lines.push(`First contact: ${first} \xB7 Last contact: ${last}`);
+        }
+      }
+      const meetings90d = (_g = g.calendarMeetingsLast90d) != null ? _g : 0;
+      const meetingsTotal = (_h = g.calendarMeetings) != null ? _h : 0;
+      if (meetingsTotal > 0) {
+        lines.push(`\u{1F4C5} ${meetingsTotal} calendar meetings (${meetings90d} in last 90 days)`);
+      }
+      lines.push("");
+    }
+    if (relationships.length > 0) {
+      const names = relationships.slice(0, 5).map((r) => `[[${r.target}]]`).join(", ");
+      const suffix = relationships.length > 5 ? ` + ${relationships.length - 5} more` : "";
+      lines.push(`**${relationships.length} connections:** ${names}${suffix}`);
+      lines.push("");
+    }
+    if (staleness.nudge) {
+      lines.push(`> [!tip] Nudge`);
+      lines.push(`> ${staleness.nudge}`);
+      lines.push("");
+    }
+    const section = `## Relationship Status
+
+${lines.join("\n")}`;
+    const sectionRegex = /## Relationship Status\n[\s\S]*?(?=\n## (?!Relationship Status)|\n---\n|$)/;
+    if (sectionRegex.test(content)) {
+      return content.replace(sectionRegex, section);
+    } else {
+      const fmEnd = content.indexOf("---", content.indexOf("---") + 3);
+      if (fmEnd !== -1) {
+        const insertPos = fmEnd + 3;
+        const before = content.slice(0, insertPos);
+        const after = content.slice(insertPos);
+        return `${before}
+
+${section}
+${after}`;
+      }
+      return `${section}
+
+${content}`;
+    }
+  }
+  scoreBar(score) {
+    const filled = Math.round(score / 10);
+    return "\u2588".repeat(filled) + "\u2591".repeat(10 - filled);
   }
   parseRoleCompany(role) {
     const roleParts = role.split(/\s+at\s+|\s+@\s+/i);
@@ -1819,11 +1929,13 @@ var FrontmatterManager = class {
           existingKeys.add(key);
           if (key in fields) {
             const val = fields[key];
-            if (val !== void 0) {
+            if (val !== void 0 && val !== "") {
               updatedLines.push(this.formatField(key, val));
               if (Array.isArray(val)) {
                 skipContinuation = true;
               }
+            } else if (val === "") {
+              skipContinuation = true;
             } else {
               updatedLines.push(line);
             }
@@ -1942,6 +2054,8 @@ properties:
     displayName: Quadrant
   note.combined_score:
     displayName: Score
+  note.open_engagement:
+    displayName: Opens
 views:
   - type: table
     name: CRM
@@ -1959,6 +2073,7 @@ views:
       - staleness_label
       - quadrant
       - combined_score
+      - open_engagement
       - nudge
     sort:
       - property: combined_score
@@ -2269,6 +2384,7 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
     this.contactIndex = null;
     this.messageCache = null;
     this.syncInterval = null;
+    this.stalenessInterval = null;
   }
   async onload() {
     await this.loadSettings();
@@ -2359,11 +2475,15 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
     await this.loadMessageCache();
     if (this.settings.refreshToken) {
       this.startAutoSync();
+      this.resetStalenessTimer();
     }
   }
   onunload() {
     if (this.syncInterval !== null) {
       window.clearInterval(this.syncInterval);
+    }
+    if (this.stalenessInterval !== null) {
+      window.clearInterval(this.stalenessInterval);
     }
   }
   async loadSettings() {
@@ -2401,6 +2521,22 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
       this.settings.syncIntervalMinutes * 6e4
     );
     this.registerInterval(this.syncInterval);
+  }
+  resetStalenessTimer() {
+    if (this.stalenessInterval !== null) {
+      window.clearInterval(this.stalenessInterval);
+      this.stalenessInterval = null;
+    }
+    const hours = this.settings.stalenessUpdateInterval;
+    if (hours > 0) {
+      this.stalenessInterval = window.setInterval(
+        () => {
+          void this.updateStaleness();
+        },
+        hours * 36e5
+      );
+      this.registerInterval(this.stalenessInterval);
+    }
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
@@ -2444,10 +2580,14 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
         }
       }
       notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
-      await this.updateStaleness();
-      await this.refreshBaseView();
-      await this.refreshQuadrantView();
-      notice.setMessage(`Synced ${contactCount} contacts \u2014 scores updated`);
+      if (this.settings.autoUpdateStaleness) {
+        await this.updateStaleness();
+        await this.refreshBaseView();
+        await this.refreshQuadrantView();
+        notice.setMessage(`Synced ${contactCount} contacts \u2014 scores updated`);
+      } else {
+        notice.setMessage(`Synced ${contactCount} contacts`);
+      }
       setTimeout(() => notice.hide(), 3e3);
       if (this.settings.enrichOnSync) {
         await this.enrichAllPeople();

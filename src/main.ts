@@ -52,6 +52,7 @@ export default class GmailCrmPlugin extends Plugin {
 	private contactIndex: ContactIndex | null = null;
 	private messageCache: MessageCache | null = null;
 	private syncInterval: number | null = null;
+	private stalenessInterval: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -151,12 +152,16 @@ export default class GmailCrmPlugin extends Plugin {
 		// Start auto-sync if authenticated
 		if (this.settings.refreshToken) {
 			this.startAutoSync();
+			this.resetStalenessTimer();
 		}
 	}
 
 	onunload() {
 		if (this.syncInterval !== null) {
 			window.clearInterval(this.syncInterval);
+		}
+		if (this.stalenessInterval !== null) {
+			window.clearInterval(this.stalenessInterval);
 		}
 	}
 
@@ -201,6 +206,21 @@ export default class GmailCrmPlugin extends Plugin {
 			this.settings.syncIntervalMinutes * 60_000
 		);
 		this.registerInterval(this.syncInterval);
+	}
+
+	resetStalenessTimer() {
+		if (this.stalenessInterval !== null) {
+			window.clearInterval(this.stalenessInterval);
+			this.stalenessInterval = null;
+		}
+		const hours = this.settings.stalenessUpdateInterval;
+		if (hours > 0) {
+			this.stalenessInterval = window.setInterval(
+				() => { void this.updateStaleness(); },
+				hours * 3_600_000
+			);
+			this.registerInterval(this.stalenessInterval);
+		}
 	}
 
 	async syncContacts() {
@@ -254,12 +274,15 @@ export default class GmailCrmPlugin extends Plugin {
 
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 
-			// Auto-update staleness scores and Base view after sync
-			await this.updateStaleness();
-			await this.refreshBaseView();
-			await this.refreshQuadrantView();
-
-			notice.setMessage(`Synced ${contactCount} contacts — scores updated`);
+			// Auto-update staleness scores and Base view after sync (if enabled)
+			if (this.settings.autoUpdateStaleness) {
+				await this.updateStaleness();
+				await this.refreshBaseView();
+				await this.refreshQuadrantView();
+				notice.setMessage(`Synced ${contactCount} contacts — scores updated`);
+			} else {
+				notice.setMessage(`Synced ${contactCount} contacts`);
+			}
 			setTimeout(() => notice.hide(), 3000);
 
 			if (this.settings.enrichOnSync) {

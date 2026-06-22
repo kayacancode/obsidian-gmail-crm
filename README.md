@@ -1,319 +1,334 @@
 # Gmail CRM for Obsidian
 
-A privacy-first CRM that pulls Gmail metadata into your Obsidian vault. No email content is accessed — only sender names, dates, and exchange counts. Includes **Harper Skill**, an AI-powered relationship intelligence layer that enriches your people pages with relationship maps, strategic context, and suggested actions.
+A privacy-first CRM that builds a relationship graph from your Gmail metadata — entirely inside Obsidian. No data leaves your machine. No email content is read.
 
-## Features
+## What It Does
 
-- **Gmail Metadata Sync** — pulls contact names, last contact dates, email frequency (metadata-only scope, no email bodies)
-- **Contact Sidebar** — searchable, sortable CRM view inside Obsidian
-- **Relationship Graph Engine** — auto-maps connections between people via wiki links, shared meetings, introducer chains, and text mentions
-- **Harper Skill Analysis** — AI-powered full rewrites of people pages with relationship maps, key themes, strategic context, communication patterns, and suggested actions
-- **Privacy Firewall** — acts as a gateway between your email and AI. Gmail metadata stays in your vault, never sent to third parties unless you explicitly run Harper Skill analysis
+Gmail CRM syncs your email metadata (sender, recipient, date, subject line, thread structure) and builds:
 
-## Install
+- **People pages** — one markdown note per contact with frontmatter stats
+- **Company pages** — auto-created stubs linked to people
+- **Relationship scores** — staleness, strength, momentum, and quadrant assignments
+- **CRM base view** — sortable/filterable table of all contacts
+- **Quadrant view** — 2×2 grid: nurture / re-engage / developing / deprioritize
+- **AI enrichment** (optional) — Claude rewrites people pages with structured sections
+- **Calendar integration** (optional) — meeting history as a relationship signal
 
-### Via BRAT (recommended for beta)
+## Getting Started
 
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) if you don't have it
-2. Settings > BRAT > Add Beta Plugin
-3. Paste: `kayacancode/obsidian-gmail-crm`
-4. Enable the plugin in Community Plugins
+### 1. Install the Plugin
 
-### Manual
+**Via BRAT (recommended for now):**
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) if you haven't
+2. Add `kayacancode/obsidian-gmail-crm` as a beta plugin
+3. Enable "Gmail CRM" in Community Plugins
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the latest release
-2. Create `.obsidian/plugins/gmail-crm/` in your vault
-3. Copy the three files in
-4. Enable in Settings > Community Plugins
+**Manual install:**
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/kayacancode/obsidian-gmail-crm/releases)
+2. Create `<vault>/.obsidian/plugins/gmail-crm/` and place the files there
+3. Enable "Gmail CRM" in Community Plugins
 
-## Setup
+### 2. Set Up Google OAuth
 
-### 1. Create a Google Cloud Project
+The plugin needs read-only access to your Gmail metadata. You create your own OAuth credentials — no shared API key, no third-party server.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
 2. Create a new project (or use an existing one)
-3. Enable the **Gmail API**:
-   - Go to **APIs & Services > Library**
-   - Search for "Gmail API"
-   - Click **Enable**
-
-### 2. Configure OAuth Consent Screen
-
-1. Go to **APIs & Services > OAuth consent screen**
-2. Choose **External** user type
-3. Fill in the app name (e.g., "Gmail CRM") and your email
-4. Under **Scopes**, click **Add or remove scopes** and add:
-   ```
-   https://www.googleapis.com/auth/gmail.metadata
-   ```
-5. Under **Test users**, add your Gmail address
-6. Save
-
-### 3. Create OAuth Credentials
-
-1. Go to **APIs & Services > Credentials**
-2. Click **Create Credentials > OAuth client ID**
-3. Application type: **Desktop app**
-4. Name it whatever you want
-5. Click **Create**
+3. Enable the **Gmail API** (and optionally **Google Calendar API**)
+4. Go to **OAuth consent screen** → set to "Internal" (Workspace) or "External" (personal Gmail)
+   - For personal Gmail: add your email as a test user
+5. Create **OAuth 2.0 Client ID** → Application type: **Desktop app**
 6. Copy the **Client ID** and **Client Secret**
-7. Under **Authorized redirect URIs**, add:
-   ```
-   http://127.0.0.1:42813/callback
-   ```
+7. In Obsidian → Gmail CRM settings:
+   - Paste Client ID and Client Secret
+   - Click **Connect** — a browser window opens for Google sign-in
+   - Authorize the app — you'll be redirected back automatically
 
-### 4. Configure the Plugin
+### 3. Run Your First Sync
 
-1. Open Obsidian Settings > Gmail CRM
-2. Paste your **Client ID** and **Client Secret**
-3. Click **Connect Gmail** — this opens your browser for OAuth
-4. Authorize the app — you'll see "Gmail CRM connected!" when done
+- Open the command palette (Cmd/Ctrl + P) → **Gmail CRM: Sync Gmail contacts**
+- The plugin scans your email metadata and builds the contact index
+- First sync may take a few minutes depending on mailbox size
+- Subsequent syncs are incremental (only new messages)
 
-### 5. Sync
+### 4. Explore Your CRM
 
-Click **Sync** in the plugin settings or use the command palette: `Gmail CRM: Sync Gmail contacts`
+After your first sync, you'll have a **People/** folder with one markdown note per contact. Here's how to make sense of it all:
 
-## Harper Skill (AI Enrichment)
+#### People Pages
 
-Harper Skill rewrites your people pages with relationship intelligence. It requires a Claude API key from Anthropic.
+Each contact gets a markdown note (e.g., `p- Jane Smith.md`) with YAML frontmatter containing their email stats:
 
-### Setup
-
-1. Get an API key from [console.anthropic.com](https://console.anthropic.com/)
-2. In plugin settings under **Harper Skill Analysis**, paste your API key
-3. Set your **People pages folder** (the vault folder with your people notes)
-4. Choose a model:
-   - **Sonnet 4.6** — fast, good balance of speed and quality
-   - **Opus 4.6** — most thorough analysis
-   - **Haiku 4.5** — cheapest, good for large vaults
-
-### Usage
-
-**Command palette:**
-- `Enrich all people (relationships + Harper Skill)` — rewrites all people pages
-- `Enrich current person (Harper Skill)` — rewrites the currently open person page
-- `Map relationships only (no AI)` — adds `## Relationships` section with wiki links, no API calls
-
-**Settings buttons:**
-- **Enrich All** — runs Harper Skill on every page in your people folder
-- **Map Only** — relationship links only, free and instant
-
-### What Harper Skill Generates
-
-Each person page gets rewritten with:
-
-- **Overview** — role, email, connection context
-- **Background** — synthesized bio
-- **Relationship Map** — `[[p- Name]]` wiki links with connection types and strength signals
-- **Key Themes & Interests** — what they care about
-- **Strategic Context** — why they matter in your network
-- **Communication Pattern** — email frequency and engagement (if Gmail data available)
-- **Meeting History** — all existing meeting entries preserved verbatim
-- **Suggested Actions** — concrete next steps
-
-## PeopleGraph CLI
-
-PeopleGraph is the agent-facing CLI for querying the Gmail CRM contact cache without scraping Obsidian markdown.
-
-Install from the Homebrew tap:
-
-```bash
-brew tap kayacancode/tap
-brew install peoplegraph
+```yaml
+---
+email: jane@example.com
+company: "[[Companies/Acme Corp|Acme Corp]]"
+role: "CTO at Acme Corp"
+sent: 45
+received: 38
+total_exchanges: 83
+threads: 22
+first_contact: "2023-03-15"
+last_contact: "2026-06-10"
+staleness: 85
+staleness_label: active
+strength_score: 72
+momentum_score: 65
+combined_score: 69
+quadrant: nurture
+depth: 4
+recency: 9
+nudge: null
+---
 ```
 
-Example commands:
+If you enable AI enrichment, the page body gets structured sections: Overview, Background, Relationship Map, Key Themes, and Suggested Actions.
 
-```bash
-peoplegraph who-knows --company betaworks
-peoplegraph find-person "Harper Reed"
-peoplegraph score harper@2389.ai
-peoplegraph contact-card harper@2389.ai
-peoplegraph suggest-duplicates --limit 10
-```
+#### Company Pages
 
-The CLI auto-discovers the active Gmail CRM cache when run near a vault, or you can set `PEOPLEGRAPH_CACHE` / pass `--cache`.
+The plugin auto-creates stub notes in the **Companies/** folder, linked from people pages via wiki-links. This lets you click through from a person to see everyone you know at that company.
 
-### Botwick / OpenClaw source-of-truth setup
+#### CRM Base View
 
-Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. That machine owns the source-of-truth `.obsidian/plugins/gmail-crm/contact-index.json`.
+Run **Gmail CRM: Create base view** (Cmd/Ctrl + P) to generate `CRM.base` — a sortable, filterable table of all your contacts. It includes 6 pre-built views:
 
-1. Install PeopleGraph:
+| View | What It Shows |
+|------|---------------|
+| **CRM** | All contacts sorted by combined score |
+| **Re-engage** | Strong relationships that have gone quiet — people worth reaching out to |
+| **By Company** | Contacts grouped by company |
+| **Nurture** | Your strongest, most active relationships |
+| **Developing** | New or weak relationships with recent activity — potential to grow |
+| **Quadrants** | All contacts with their quadrant assignment visible |
 
-   ```bash
-   brew tap kayacancode/tap
-   brew install peoplegraph
-   ```
+You can sort by any column, filter by company or score range, and click through to any person's page.
 
-2. In Obsidian, run the plugin sync commands so the cache is current:
+#### Staleness Scores
 
-   ```text
-   Gmail CRM: Sync Gmail contacts
-   Gmail CRM: Update staleness scores
-   ```
+Run **Gmail CRM: Update staleness scores** to compute relationship scores for every contact. Each person gets:
 
-3. Start the read-only PeopleGraph server:
+- **Staleness** (0–100) — how fresh is the relationship?
+- **Strength** (0–100) — how deep and balanced is it overall?
+- **Momentum** (0–100) — how active is it right now?
+- **Combined** (0–100) — single sortable number (average of strength + momentum)
+- **Quadrant** — nurture / re-engage / developing / deprioritize
+- **Nudge** — suggested reason to re-engage (for stale contacts that were once strong)
 
-   ```bash
-   export PEOPLEGRAPH_CACHE="/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json"
-   export PEOPLEGRAPH_TOKEN="$(openssl rand -hex 32)"
-   echo "$PEOPLEGRAPH_TOKEN"
+See [How Scoring Works](#how-scoring-works) below for the full algorithm.
 
-   peoplegraph --cache "$PEOPLEGRAPH_CACHE" serve --bind 127.0.0.1:8787
-   ```
+#### Quadrant View
 
-4. Configure Botwick/OpenClaw to call the local server:
-
-   ```bash
-   export PEOPLEGRAPH_HOST="http://127.0.0.1:8787"
-   export PEOPLEGRAPH_TOKEN="the-token-from-step-3"
-
-   peoplegraph --remote who-knows --company betaworks
-   ```
-
-Keep `--bind 127.0.0.1:8787` when Botwick runs on the same computer. If other machines need access, put this behind a trusted private network, SSH tunnel, Tailscale, or a reverse proxy with HTTPS. Do not expose the raw HTTP server publicly.
-
-### Query-only client setup
-
-Use this on another person's computer. They do not need Obsidian or the Gmail CRM plugin. They only need the PeopleGraph CLI, the Botwick host URL, and the token from the source-of-truth machine.
-
-1. Install PeopleGraph:
-
-   ```bash
-   brew tap kayacancode/tap
-   brew install peoplegraph
-   ```
-
-2. If Botwick is exposed through a private URL, query it directly:
-
-   ```bash
-   export PEOPLEGRAPH_HOST="http://botwick-host-or-tailnet-name:8787"
-   export PEOPLEGRAPH_TOKEN="token-shared-by-botwick-owner"
-
-   peoplegraph --remote who-knows --company disney
-   peoplegraph --remote find-person "Harper Reed"
-   peoplegraph --remote score harper@2389.ai
-   ```
-
-   Use `--remote` when querying from a computer that also has the Obsidian plugin. It forces remote mode and refuses local cache fallback.
-
-3. If Botwick is only bound to localhost, create an SSH tunnel first:
-
-   ```bash
-   ssh -N -L 8787:127.0.0.1:8787 user@botwick-machine
-   ```
-
-   Then query through the tunnel:
-
-   ```bash
-   peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company disney
-   ```
-
-Remote mode is read-only in V1. Query-only users can run `describe`, `version`, `find-person`, `score`, `who-knows`, `get-neighbors`, `get-edges`, `contact-card`, `suggest-duplicates`, `suggest-external-merges`, and `merge-queue`. Merge writes still run only on the source-of-truth cache/queue so Botwick's graph stays protected behind explicit review.
-
-### Import another plugin user's local cache
-
-If another person already runs the Gmail CRM plugin, they can share their local `.obsidian/plugins/gmail-crm/contact-index.json` with the Botwick source-of-truth machine. Importing it writes a sidecar file named `external-sources.json` next to Botwick's cache; it does not overwrite Botwick's main graph.
-
-```bash
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" import-cache --source kaya /path/to/kaya/contact-index.json
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" suggest-external-merges --source kaya --limit 25
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" contact-card harper@2389.ai
-```
-
-Review suggested matches with the generated commands:
-
-```bash
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" apply-external-merge --source kaya --primary harper@2389.ai --external harper@nata2.org
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" dismiss-external-merge --source kaya --primary harper@2389.ai --external harper@nata2.org --reason not_same_person
-```
-
-`apply-external-merge` only adds objective identity fields, currently aliases/emails and missing company/role fields. Private relationship context remains source-specific evidence in `external-sources.json`; it is not merged into the shared core card.
-
-### Telegram merge review for OpenClaw
-
-John's OpenClaw Telegram agent can review PeopleGraph merge suggestions with inline buttons. The repo includes a runtime-neutral bridge script and skill:
-
-```bash
-node scripts/peoplegraph-telegram-review.mjs help
-```
-
-Run this setup on the Botwick source-of-truth computer, meaning the computer that has the real Obsidian vault and this file:
-
-```text
-/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json
-```
-
-That machine is the only machine that should run merge write commands. Query-only client machines can ask questions remotely, but they should not apply merges directly.
-
-Set the source-of-truth cache, Telegram bot token, review chat, and authorized reviewer IDs:
-
-```bash
-export PEOPLEGRAPH_CACHE="/path/to/vault/.obsidian/plugins/gmail-crm/contact-index.json"
-export TELEGRAM_BOT_TOKEN="123456:telegram-token"
-export TELEGRAM_REVIEW_CHAT_ID="123456789"
-export PEOPLEGRAPH_APPROVER_TELEGRAM_IDS="111111111,222222222"
-export PEOPLEGRAPH_REVIEW_STATE="$HOME/.peoplegraph/merge-review-queue.json"
-```
-
-Before sending Telegram reviews, import the external user's cache onto the Botwick machine:
-
-```bash
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" import-cache --source kaya /path/to/kaya/contact-index.json
-```
-
-This creates or updates `external-sources.json` next to Botwick's `contact-index.json`. It does not overwrite the source-of-truth cache.
-
-Build the review queue and send the next review card from the Botwick machine:
-
-```bash
-node scripts/peoplegraph-telegram-review.mjs queue --source kaya --limit 25
-node scripts/peoplegraph-telegram-review.mjs send-next --source kaya
-```
-
-The bridge script sends the Telegram message, but John's OpenClaw Telegram runtime still needs to receive button callbacks. When OpenClaw receives a Telegram `callback_query`, pass the full update JSON to:
-
-```bash
-node scripts/peoplegraph-telegram-review.mjs handle-callback -
-```
-
-The message uses `Merge`, `Reject`, and `Details` inline buttons. Approvals run `apply-external-merge`; rejections run `dismiss-external-merge`; details run `contact-card`. The skill instructions live at `skills/peoplegraph-telegram-merge-review/SKILL.md`.
-
-What gets written on the Botwick machine:
-
-- `contact-index.json`: updated only after an approved `Merge` button.
-- `external-sources.json`: staged external contacts, applied merge records, and rejected merge records.
-- `$PEOPLEGRAPH_REVIEW_STATE`: Telegram review queue and audit trail.
-
-The bridge script is not a standalone Telegram long-polling bot. It is the safe command handler that John's existing OpenClaw Telegram agent should call when it receives a callback.
-
-### People Page Format
-
-The plugin expects people pages named `p- Firstname Lastname.md` in your people folder. Example:
+Run **Gmail CRM: Create quadrant view** to generate `_Quadrants.md` — a visual 2×2 grid showing your contacts organized by relationship health:
 
 ```
-p- John Borthwick.md
-p- Alice Albrecht.md
-p- Chris Perry.md
+         DEVELOPING        │        NURTURE
+    (new but active)       │   (strong + active)
+                           │
+  ─────────────────────────┼─────────────────────────
+                           │
+       DEPRIORITIZE        │       RE-ENGAGE
+    (weak + dormant)       │   (strong but dormant)
 ```
 
-## Privacy & Security
+- **Nurture** — your best relationships, keep them going
+- **Re-engage** — strong relationships going cold, reach out
+- **Developing** — new contacts with momentum, invest here
+- **Deprioritize** — low activity, low depth, let these be
 
-- **Gmail metadata only** — the plugin uses the `gmail.metadata` scope, which grants access to email headers (sender, recipient, date, subject) but **never email bodies**
-- **Local storage** — all data stays in your vault. The contact index is stored in `.obsidian/plugins/gmail-crm/`
-- **No telemetry** — the plugin makes zero external calls except to Gmail API and (optionally) Anthropic API
-- **You control the AI** — Harper Skill only runs when you explicitly trigger it. Your people pages are sent to Claude API for analysis — if that's a concern, use **Map Only** mode instead
+#### Relationship Mapping
+
+Run **Gmail CRM: Map relationships** to build a graph of connections between your contacts. The engine detects relationships from:
+
+- Wiki-links between people pages (`[[p- Jane Smith]]` mentioned in another person's page)
+- Shared email threads (introduced-by patterns)
+- Shared calendar meetings
+- Role/company overlaps
+
+These edges feed into the strength score and show up in AI-enriched pages under "Relationship Map."
+
+#### Calendar Integration
+
+Run **Gmail CRM: Sync calendar** to pull meeting history from Google Calendar. This adds:
+
+- Total meetings with each contact
+- Meetings in the last 90 days
+- Whether they organized meetings with you
+- Calendar acceptance count
+
+Calendar data feeds into the strength score (up to 20 bonus points) and can override the quadrant assignment — if you've shared 2+ calendar events with someone, they're treated as a strong relationship regardless of email volume.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| Open Gmail CRM | Opens the contact sidebar |
-| Sync Gmail contacts | Pulls latest Gmail metadata |
-| Enrich all people | Harper Skill rewrite on all people pages |
-| Enrich current person | Harper Skill rewrite on the open page |
-| Map relationships only | Adds relationship links without AI |
+| Sync Gmail contacts | Incremental sync of new email metadata |
+| Full re-sync | Wipe and rebuild the entire contact index |
+| Update staleness scores | Recompute all relationship scores and quadrants |
+| Create base view | Generate/refresh the CRM.base sortable table |
+| Create quadrant view | Generate/refresh the _Quadrants.md grid |
+| Enrich current person | AI-rewrite the current people page (requires Anthropic API key) |
+| Enrich all people pages | AI-rewrite all people pages |
+| Map relationships | Build relationship edges from wiki-links and shared meetings |
+| Sync calendar | Pull Google Calendar meeting history into contact records |
+
+## How Scoring Works
+
+Every contact gets scored on multiple dimensions. The system uses **only metadata** — it never reads email body content.
+
+### Staleness Score (0–100)
+
+How fresh is your relationship? Based on days since last contact:
+
+| Days Since Contact | Score Range |
+|---|---|
+| ≤ 7 days | 100 (fresh) |
+| 8–30 days | 70–90 |
+| 31–90 days | 40–70 |
+| 91–180 days | 15–40 |
+| 181–360 days | 0–15 |
+| > 360 days | 0 (dormant) |
+
+**Boosts:** +10 for contacts with 50+ email exchanges, +5 for 20+, +5 for 5+ relationship edges in the graph.
+
+The staleness score maps to a label:
+
+| Score | Label |
+|---|---|
+| 70–100 | **Active** |
+| 50–69 | **Warm** |
+| 30–49 | **Cooling** |
+| 10–29 | **Stale** |
+| 0–9 | **Dormant** |
+
+### Relationship Depth (1–5)
+
+How deep is the conversation? Driven by email thread metadata:
+
+| Depth | Pattern |
+|---|---|
+| **5** | 3+ back-and-forth threads, 20+ exchanges, threads 5+ messages deep |
+| **4** | At least 1 back-and-forth thread with 8+ exchanges |
+| **3** | 8+ exchanges with threads 3+ deep |
+| **2** | 3+ exchanges (unless mostly RSVPs → drops to 1) |
+| **1** | Minimal contact or RSVP-only threads |
+
+Key insight: **back-and-forth replies are the strongest signal**. A deep email thread means a real conversation. Single RSVP responses are explicitly down-weighted.
+
+### Relationship Recency (1–10)
+
+Fine-grained recency scale:
+
+| Days | Score |
+|---|---|
+| 0–2 | 10 |
+| 3–7 | 9 |
+| 8–14 | 8 |
+| 15–21 | 7 |
+| 22–30 | 6 |
+| 31–60 | 5 |
+| 61–90 | 4 |
+| 91–120 | 3 |
+| 121–180 | 2 |
+| 180+ | 1 |
+
+### Strength Score (0–100)
+
+Composite score measuring overall relationship strength. Five weighted components:
+
+| Component | Max Points | How It's Calculated |
+|---|---|---|
+| **Volume** | 25 | Log-scaled email count: `log2(exchanges + 1) × 4` |
+| **Depth** | 30 | Back-and-forth threads (×5, max 20) + max thread depth (×2, max 10) |
+| **Initiation Balance** | 25 | How balanced is sent vs received? 50/50 = 25, one-sided = 5 |
+| **Time Span** | 15 | How long you've been in contact. ~2 years = max |
+| **Calendar** | 20 | Shared meetings: 5+ in 90 days = 20, 3+ = 16, 1+ = 12, etc. |
+
+**Total possible: 115, clamped to 100.** The calendar component means people you actually meet in person get a meaningful boost even with low email volume.
+
+### Momentum Score (0–100)
+
+How active is the relationship right now? Two components:
+
+| Component | Max Points | How It's Calculated |
+|---|---|---|
+| **Recency Decay** | 80 | Exponential decay: `e^(-0.02 × days)`. Half-life ≈ 35 days |
+| **Activity Trend** | 20 | Recent thread depth (max 10) + back-and-forth threads (max 10) |
+
+The exponential decay is aggressive by design — a strong past relationship that has gone quiet will show up in the "re-engage" quadrant, not stay in "active."
+
+### Combined Score (0–100)
+
+Simple average of Strength + Momentum: `(strengthScore + momentumScore) / 2`. This is the single sortable number used in the CRM base view.
+
+### Quadrant Assignment
+
+Contacts are placed in a 2×2 grid based on strength and momentum:
+
+```
+                    High Momentum
+                         │
+         DEVELOPING      │      NURTURE
+       (weak + active)   │   (strong + active)
+                         │
+  ───────────────────────┼───────────────────────
+                         │
+       DEPRIORITIZE      │      RE-ENGAGE
+       (weak + dormant)  │   (strong + dormant)
+                         │
+                    Low Momentum
+```
+
+**Thresholds:** Strength ≥ 40, Momentum ≥ 30.
+
+**Hard overrides** (these trump the thresholds):
+- **Back-and-forth override:** If you've had at least 1 real two-way conversation AND sent 2+ messages, the contact is treated as "strong" — never deprioritized.
+- **Calendar override:** If you've both accepted 2+ shared calendar events, treated as "strong" — real-world face time trumps email patterns.
+
+### Nudges
+
+Stale or cooling contacts that were previously strong/moderate get a nudge — a suggested reason to re-engage:
+
+- How long since last contact
+- Previous activity level ("previously active — 45 emails")
+- Context from the person's page (role, key context)
+
+## AI Enrichment (Optional)
+
+If you add an Anthropic API key in settings, you can use Claude to rewrite people pages with structured sections:
+
+- **Overview** — who they are
+- **Background** — career, education
+- **Relationship Map** — how you're connected
+- **Key Themes** — what you discuss
+- **Strategic Context** — why the relationship matters
+- **Communication Pattern** — how/when you interact
+- **Suggested Actions** — what to do next
+
+This uses the metadata and existing page content — it does not read your emails.
+
+## Privacy & Security
+
+- **No email content is read** — only metadata (From, To, Date, Subject, thread structure)
+- **Everything stays local** — the contact index lives in your vault's plugin data folder
+- **Your OAuth credentials** — you create and control them
+- **No external servers** — the plugin talks directly to Gmail API from your machine
+- **AI enrichment is optional** — only runs when you explicitly trigger it, using your own API key
+
+## Settings
+
+| Setting | Description |
+|---------|-------------|
+| Client ID / Secret | Your Google OAuth credentials |
+| Blocked domains | Comma-separated domains to exclude from sync |
+| Sync interval | Auto-sync frequency (15–480 minutes) |
+| Max messages | Limit how many messages to scan (100–50000, or All) |
+| Contact notes folder | Where people pages are created (default: People) |
+| Companies folder | Where company stubs are created (default: Companies) |
+| Your name | Used for AI enrichment personalization |
+| Anthropic API key | For AI enrichment (optional) |
+| Model | Claude model for enrichment (Sonnet/Opus/Haiku) |
+| Enrich on sync | Auto-run AI enrichment after each sync |
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

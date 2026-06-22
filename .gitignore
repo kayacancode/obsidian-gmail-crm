@@ -7,3 +7,5 @@ data.json
 node_modules/
 target/
 crates/*/target/
+main.js
+*.js.map

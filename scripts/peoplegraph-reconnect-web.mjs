@@ -72,8 +72,13 @@ function saveState(state) {
 }
 
 function pg(args) {
-	const out = execFileSync(BIN, ["--cache", CACHE, ...args], { encoding: "utf8" });
-	return JSON.parse(out);
+	try {
+		const out = execFileSync(BIN, ["--cache", CACHE, ...args], { encoding: "utf8" });
+		return JSON.parse(out);
+	} catch (err) {
+		const raw = err.stdout || err.output?.[1] || "{}";
+		try { return JSON.parse(raw); } catch { return { ok: false, error: { message: String(err) } }; }
+	}
 }
 
 async function api(path, { method = "GET", body } = {}) {

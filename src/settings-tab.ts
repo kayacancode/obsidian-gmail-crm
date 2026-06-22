@@ -297,6 +297,37 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		});
 
 		new Setting(containerEl)
+			.setName("Auto-update staleness after sync")
+			.setDesc("Automatically recompute scores and update people pages after each Gmail sync")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoUpdateStaleness)
+					.onChange(async (value) => {
+						this.plugin.settings.autoUpdateStaleness = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Staleness update schedule")
+			.setDesc("Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.")
+			.addDropdown((drop) =>
+				drop
+					.addOption("0", "Only after sync")
+					.addOption("6", "Every 6 hours")
+					.addOption("12", "Every 12 hours")
+					.addOption("24", "Every day")
+					.addOption("48", "Every 2 days")
+					.addOption("168", "Every week")
+					.setValue(String(this.plugin.settings.stalenessUpdateInterval))
+					.onChange(async (value) => {
+						this.plugin.settings.stalenessUpdateInterval = parseInt(value);
+						await this.plugin.saveSettings();
+						this.plugin.resetStalenessTimer();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Update staleness scores")
 			.setDesc("Compute freshness scores and write to frontmatter on all people pages")
 			.addButton((btn) =>

@@ -16,6 +16,8 @@ export interface GmailCrmSettings {
 	harperModel: string;
 	enrichOnSync: boolean;
 	blockedDomains: string; // comma-separated domains to exclude
+	autoUpdateStaleness: boolean; // run staleness update after each sync
+	stalenessUpdateInterval: number; // 0 = only on sync, otherwise hours between auto-updates
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -37,6 +39,8 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	harperModel: "claude-sonnet-4-6",
 	enrichOnSync: false,
 	blockedDomains: "",
+	autoUpdateStaleness: true,
+	stalenessUpdateInterval: 0, // 0 = only after sync, not on its own timer
 };
 
 export interface ContactScore {
@@ -68,9 +72,9 @@ export interface Contact {
 	backAndForthThreads?: number; // threads with both directions and >=3 messages
 	rsvpOnlyThreads?: number; // single-message threads matching invite/RSVP pattern
 	lastThreadDepth?: number; // depth of the thread containing the most recent message
-	// Canonical link to Jon Chin's shared contact graph. Populated by the betaworks-sync
-	// command once the API contract is finalized; absent on records that haven't been
-	// reconciled with the shared graph.
+	// Optional canonical ID for linking to an external shared contact graph.
+	// Populated by external sync commands; absent on records that haven't been
+	// reconciled with an external graph.
 	canonicalId?: string;
 	aliases?: string[]; // alternate emails for the same person
 	lastCanonicalSync?: string; // ISO date of last reconcile with shared graph

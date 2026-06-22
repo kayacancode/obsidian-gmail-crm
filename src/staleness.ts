@@ -5,13 +5,12 @@ export interface StalenessScore {
 	label: "active" | "warm" | "cooling" | "stale" | "dormant";
 	daysSinceContact: number | null;
 	relationshipStrength: "strong" | "moderate" | "weak" | "unknown";
-	// Numerical scores per John Borthwick's feedback. These complement the
-	// existing string-based `relationshipStrength` and `label` fields rather than
-	// replacing them.
+	// Numerical scores that complement the existing string-based
+	// `relationshipStrength` and `label` fields rather than replacing them.
 	relationshipDepth: number; // 1–5, driven by email metadata patterns
 	relationshipRecency: number; // 1–10, driven by days since last contact
 	nudge: string | null; // suggested re-engagement reason, null if not stale
-	// Composite axes per John's framework
+	// Composite axes for the relationship quadrant
 	strengthScore: number; // 0–100, composite of depth × volume × initiation balance × time span
 	momentumScore: number; // 0–100, exponential recency decay + activity trend
 	combinedScore: number; // 0–100, mean of strength + momentum for single-column sorting
@@ -47,7 +46,7 @@ export function computeStaleness(
 	// Relationship strength from email volume + relationship edges
 	const relationshipStrength = computeStrength(totalExchanges, relationships.length);
 
-	// 1–5 numerical scores (John Borthwick's feedback)
+	// 1–5 numerical scores
 	const relationshipRecency = computeRecency(daysSinceContact);
 	const relationshipDepth = computeDepth(gmail, totalExchanges, relationships.length);
 
@@ -90,11 +89,11 @@ export function computeStaleness(
 		nudge = generateNudge(page, daysSinceContact, totalExchanges);
 	}
 
-	// Composite axes per John's framework
+	// Composite axes for the relationship quadrant
 	const strengthScore = computeStrengthScore(gmail, totalExchanges, relationships.length);
 	const momentumScore = computeMomentumScore(gmail, daysSinceContact);
 	const quadrant = assignQuadrant(strengthScore, momentumScore, gmail);
-	// Single sortable score combining both axes (John's "one number under the words").
+	// Single sortable score combining both axes.
 	const combinedScore = Math.round((strengthScore + momentumScore) / 2);
 
 	console.log(`[Gmail CRM] Scoring: ${page.name}`, {
@@ -154,7 +153,7 @@ function computeRecency(daysSinceContact: number | null): number {
 	return 1;
 }
 
-// Relationship depth on a 1–5 scale, driven by metadata patterns per John:
+// Relationship depth on a 1–5 scale, driven by metadata patterns:
 //   "personal back-and-forth replies → stronger; single RSVP responses → weaker;
 //    reply frequency and thread depth as key strength signals"
 // Prefers metadata signals when Gmail data is available; falls back to the
@@ -226,7 +225,7 @@ function scoreToLabel(score: number): StalenessScore["label"] {
 }
 
 // Composite Strength axis: depth × volume × initiation balance × time span
-// Returns 0–100. Per John: "Relationship Strength = depth × volume × consistency × time span"
+// Returns 0–100. Relationship Strength = depth × volume × consistency × time span
 function computeStrengthScore(
 	gmail: PersonPage["gmailStats"],
 	totalExchanges: number,
@@ -285,7 +284,7 @@ function computeStrengthScore(
 }
 
 // Composite Momentum axis: exponential recency decay + activity trend
-// Returns 0–100. Per John: "recent activity trend, response times, thread trajectory"
+// Returns 0–100. Tracks recent activity trend and response trajectory
 function computeMomentumScore(
 	gmail: PersonPage["gmailStats"],
 	daysSinceContact: number | null
@@ -330,7 +329,7 @@ function assignQuadrant(
 	let isStrong = strengthScore >= strongThreshold;
 	const isActive = momentumScore >= activeThreshold;
 
-	// Hard-number override: a real two-way conversation (Kaya replied AND received
+	// Hard-number override: a real two-way conversation (sent AND received
 	// replies) never qualifies for deprioritize. Subject content/scoring nuance
 	// is a fallback to the raw response counts, not a substitute.
 	if (!isStrong && gmail) {

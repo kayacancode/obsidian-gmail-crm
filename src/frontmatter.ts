@@ -186,6 +186,7 @@ export class FrontmatterManager {
 
 		if (page.gmailStats) {
 			crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+			crm.first_contact = page.gmailStats.firstContact.split("T")[0];
 			crm.total_exchanges = page.gmailStats.totalExchanges;
 			crm.sent = page.gmailStats.sentCount;
 			crm.received = page.gmailStats.receivedCount;
@@ -227,12 +228,120 @@ export class FrontmatterManager {
 
 		if (staleness.nudge) {
 			crm.nudge = staleness.nudge;
+		} else {
+			// Explicitly clear stale nudges: set to empty string so mergeFrontmatter
+			// overwrites the old value, then strip the empty line in the merge.
+			crm.nudge = "";
 		}
 
 		const updated = this.mergeFrontmatter(content, crm);
-		if (updated !== content) {
-			await this.vault.modify(file, updated);
+		// Update the Relationship Status section in the page body
+		const withStatus = this.updateRelationshipStatus(updated, page, staleness, relationships);
+		if (withStatus !== content) {
+			await this.vault.modify(file, withStatus);
 		}
+	}
+
+	private updateRelationshipStatus(
+		content: string,
+		page: PersonPage,
+		staleness: StalenessScore,
+		relationships: Relationship[]
+	): string {
+		const lines: string[] = [];
+
+		// Quadrant + label line
+		const quadrantEmoji: Record<string, string> = {
+			"nurture": "🟢",
+			"re-engage": "🟡",
+			"developing": "🔵",
+			"deprioritize": "⚪",
+		};
+		const emoji = quadrantEmoji[staleness.quadrant] ?? "⚪";
+		lines.push(`${emoji} **${staleness.quadrant.charAt(0).toUpperCase() + staleness.quadrant.slice(1)}** · ${staleness.label}`);
+		lines.push("");
+
+		// Score bars
+		lines.push(`| Metric | Score |`);
+		lines.push(`|--------|-------|`);
+		lines.push(`| Strength | ${staleness.strengthScore}/100 ${this.scoreBar(staleness.strengthScore)} |`);
+		lines.push(`| Momentum | ${staleness.momentumScore}/100 ${this.scoreBar(staleness.momentumScore)} |`);
+		lines.push(`| Combined | ${staleness.combinedScore}/100 ${this.scoreBar(staleness.combinedScore)} |`);
+		lines.push(`| Depth | ${staleness.relationshipDepth}/5 |`);
+		lines.push(`| Recency | ${staleness.relationshipRecency}/10 |`);
+		lines.push("");
+
+		// Email stats
+		if (page.gmailStats) {
+			const g = page.gmailStats;
+			const sent = g.sentCount ?? 0;
+			const received = g.receivedCount ?? 0;
+			const total = g.totalExchanges ?? 0;
+			const threads = g.threadCount ?? 0;
+			const baf = g.backAndForthThreads ?? 0;
+			lines.push(`**${total} emails** (${sent} sent · ${received} received) across ${threads} threads · ${baf} back-and-forth`);
+
+			if (g.firstContact && g.lastContact) {
+				const first = g.firstContact.split("T")[0];
+				const last = g.lastContact.split("T")[0];
+				if (first === last) {
+					lines.push(`Only contact: ${last}`);
+				} else {
+					lines.push(`First contact: ${first} · Last contact: ${last}`);
+				}
+			}
+
+			// Calendar meetings
+			const meetings90d = g.calendarMeetingsLast90d ?? 0;
+			const meetingsTotal = g.calendarMeetings ?? 0;
+			if (meetingsTotal > 0) {
+				lines.push(`📅 ${meetingsTotal} calendar meetings (${meetings90d} in last 90 days)`);
+			}
+			lines.push("");
+		}
+
+		// Connections
+		if (relationships.length > 0) {
+			const names = relationships
+				.slice(0, 5)
+				.map((r) => `[[${r.target}]]`)
+				.join(", ");
+			const suffix = relationships.length > 5 ? ` + ${relationships.length - 5} more` : "";
+			lines.push(`**${relationships.length} connections:** ${names}${suffix}`);
+			lines.push("");
+		}
+
+		// Nudge
+		if (staleness.nudge) {
+			lines.push(`> [!tip] Nudge`);
+			lines.push(`> ${staleness.nudge}`);
+			lines.push("");
+		}
+
+		const section = `## Relationship Status\n\n${lines.join("\n")}`;
+
+		// Replace existing section or insert after frontmatter
+		const sectionRegex = /## Relationship Status\n[\s\S]*?(?=\n## (?!Relationship Status)|\n---\n|$)/;
+		if (sectionRegex.test(content)) {
+			return content.replace(sectionRegex, section);
+		} else {
+			// Insert after frontmatter closing ---
+			const fmEnd = content.indexOf("---", content.indexOf("---") + 3);
+			if (fmEnd !== -1) {
+				const insertPos = fmEnd + 3;
+				const before = content.slice(0, insertPos);
+				const after = content.slice(insertPos);
+				// If there's already a heading right after, insert before it
+				return `${before}\n\n${section}\n${after}`;
+			}
+			// No frontmatter — prepend
+			return `${section}\n\n${content}`;
+		}
+	}
+
+	private scoreBar(score: number): string {
+		const filled = Math.round(score / 10);
+		return "█".repeat(filled) + "░".repeat(10 - filled);
 	}
 
 	private parseRoleCompany(role: string): { role: string; company: string | null } {
@@ -288,12 +397,15 @@ export class FrontmatterManager {
 					existingKeys.add(key);
 					if (key in fields) {
 						const val = fields[key as keyof CrmFrontmatter];
-						if (val !== undefined) {
+						if (val !== undefined && val !== "") {
 							updatedLines.push(this.formatField(key, val));
 							// If the new value is multi-line (array), skip old continuation lines
 							if (Array.isArray(val)) {
 								skipContinuation = true;
 							}
+						} else if (val === "") {
+							// Empty string = remove this key from frontmatter
+							skipContinuation = true;
 						} else {
 							updatedLines.push(line);
 						}
