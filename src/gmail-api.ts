@@ -140,7 +140,7 @@ export class GmailApi {
 	}
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async apiRequest(options: Parameters<typeof requestUrl>[0], retries = 3): Promise<any> {
+	private async apiRequest(options: Parameters<typeof requestUrl>[0], retries = 5): Promise<any> {
 		const url = typeof options === "string" ? options : options.url;
 		// Pass throw: false so we can read the actual response body on errors.
 		// Otherwise Obsidian throws a generic "Request failed, status N" with
@@ -166,8 +166,9 @@ export class GmailApi {
 		const isRateLimit = resp.status === 429 ||
 			(resp.status === 403 && (resp.text ?? "").includes("rateLimitExceeded"));
 		if (isRateLimit && retries > 0) {
-			const backoff = (4 - retries) * 2000; // 2s, 4s, 6s
-			console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff}ms (${retries} retries left)`);
+			const attempt = 6 - retries; // 1, 2, 3, 4, 5
+			const backoff = Math.min(attempt * 15000, 60000); // 15s, 30s, 45s, 60s, 60s
+			console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff / 1000}s (${retries} retries left)`);
 			await this.sleep(backoff);
 			return this.apiRequest(options, retries - 1);
 		}

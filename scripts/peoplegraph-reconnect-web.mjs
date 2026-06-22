@@ -24,7 +24,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,10 +34,16 @@ const WEB_URL = (env.RECONNECT_WEB_URL || "").replace(/\/$/, "");
 const SYNC_TOKEN = env.RECONNECT_SYNC_TOKEN || "";
 const CACHE = env.PEOPLEGRAPH_CACHE || "";
 const BIN = env.PEOPLEGRAPH_BIN || "peoplegraph";
-const LIMIT = Number(env.RECONNECT_LIMIT || "5");
+const RAW_LIMIT = Number(env.RECONNECT_LIMIT || "5");
+const MAX_LIMIT = Number(env.RECONNECT_MAX_LIMIT || "50");
+const LIMIT = Math.min(RAW_LIMIT, MAX_LIMIT);
+if (RAW_LIMIT > MAX_LIMIT) {
+	console.error(`warning: RECONNECT_LIMIT=${RAW_LIMIT} exceeds MAX (${MAX_LIMIT}); capped. Every pushed candidate gets a 30-day "shown" cooldown, so over-pushing silently drains the re-engage pool. Lower RECONNECT_LIMIT to what the human actually swipes per day, or raise RECONNECT_MAX_LIMIT explicitly.`);
+}
 const STATE_PATH = env.RECONNECT_STATE || join(homedir(), ".peoplegraph", "reconnect-web-state.json");
 const DAILY_NOTE = env.RECONNECT_DAILY_NOTE || "";
 const PUBLIC_URL = (env.RECONNECT_PUBLIC_URL || WEB_URL).replace(/\/$/, "");
+const PEOPLE_FOLDER = env.RECONNECT_PEOPLE_FOLDER || join(homedir(), "Documents", "master_jb_peoplecrm", "People");
 
 function die(msg) {
 	console.error(`error: ${msg}`);
@@ -179,6 +185,48 @@ function writeDailyNoteLine(count) {
 	appendFileSync(DAILY_NOTE, (existing && !existing.endsWith("\n") ? "\n" : "") + line);
 }
 
+let _emailToPath = null;
+function buildEmailToPath() {
+	if (_emailToPath) return _emailToPath;
+	const map = new Map();
+	if (!existsSync(PEOPLE_FOLDER)) {
+		console.warn(`people folder not found, skipping note overrides: ${PEOPLE_FOLDER}`);
+		_emailToPath = map;
+		return map;
+	}
+	for (const name of readdirSync(PEOPLE_FOLDER)) {
+		if (!name.endsWith(".md")) continue;
+		const p = join(PEOPLE_FOLDER, name);
+		let head;
+		try { head = readFileSync(p, "utf8").slice(0, 4096); } catch { continue; }
+		const fm = head.match(/^---\n([\s\S]*?)\n---/);
+		if (!fm) continue;
+		const m = fm[1].match(/^email:\s*(.+?)\s*$/m);
+		if (!m) continue;
+		const e = m[1].replace(/^["']|["']$/g, "").trim().toLowerCase();
+		if (e) map.set(e, p);
+	}
+	_emailToPath = map;
+	return map;
+}
+
+function patchOverride(filePath, action, dateStamp) {
+	const src = readFileSync(filePath, "utf8");
+	const fm = src.match(/^---\n([\s\S]*?)\n---/);
+	if (!fm) return false;
+	let yaml = fm[1];
+	const setField = (name, value) => {
+		const re = new RegExp(`^${name}:.*$`, "m");
+		if (re.test(yaml)) yaml = yaml.replace(re, `${name}: ${value}`);
+		else yaml = yaml.replace(/\s*$/, "") + `\n${name}: ${value}`;
+	};
+	setField("override", action);
+	setField("override_at", dateStamp);
+	const rebuilt = `---\n${yaml}\n---` + src.slice(fm[0].length);
+	writeFileSync(filePath, rebuilt);
+	return true;
+}
+
 async function pull() {
 	const state = loadState();
 	const { decisions = [] } = await api("/api/decisions?applied=0");
@@ -188,6 +236,18 @@ async function pull() {
 	}
 
 	const acked = [];
+	// Write feedback directly to reconnect-feedback.json instead of calling
+	// `peoplegraph feedback` (which fails via server in V1 remote mode).
+	// Also avoids the 23K-index-load-per-call performance pitfall.
+	const fbPath = join(dirname(CACHE), "reconnect-feedback.json");
+	let fb;
+	try {
+		fb = JSON.parse(readFileSync(fbPath, "utf8"));
+	} catch {
+		fb = { schemaVersion: 1, updatedAtUnix: 0, entries: {} };
+	}
+	const nowUnix = Math.floor(Date.now() / 1000);
+
 	for (const d of decisions) {
 		const email = state.map?.[d.id];
 		if (!email) {
@@ -198,16 +258,40 @@ async function pull() {
 			console.warn(`skip ${d.id}: unknown action ${d.action}`);
 			continue;
 		}
-		const res = pg(["feedback", "--email", email, "--action", d.action]);
-		if (res.ok) {
-			acked.push(d.id);
-			console.log(`applied ${d.action} -> ${email}`);
+
+		// Write to feedback JSON directly
+		const delta = d.action === "delete" ? 0 : 10;
+		fb.entries[email] = { action: d.action, delta, updatedUnix: nowUnix };
+		acked.push(d.id);
+		console.log(`applied ${d.action} -> ${email}`);
+
+		const notePath = buildEmailToPath().get(email.toLowerCase());
+		if (notePath) {
+			try {
+				patchOverride(notePath, d.action, todayStamp());
+				console.log(`override ${d.action} -> ${notePath}`);
+			} catch (e) {
+				console.warn(`override write failed for ${email}: ${e.message}`);
+			}
 		} else {
-			console.warn(`feedback failed for ${email}: ${JSON.stringify(res.error || res)}`);
+			console.warn(`no Person note found for ${email} (override not written)`);
 		}
 	}
 
-	if (acked.length) await api("/api/decisions/ack", { method: "POST", body: { ids: acked } });
+	// Persist feedback file and ack decisions on the Worker
+	if (acked.length) {
+		fb.updatedAtUnix = nowUnix;
+		writeFileSync(fbPath, JSON.stringify(fb, null, 2));
+		// Ack in chunks of 50 to stay within D1 SQL variable limits
+		for (let i = 0; i < acked.length; i += 50) {
+			const chunk = acked.slice(i, i + 50);
+			try {
+				await api("/api/decisions/ack", { method: "POST", body: { ids: chunk } });
+			} catch (e) {
+				console.warn(`ack chunk ${i}-${i + chunk.length} failed: ${e.message}`);
+			}
+		}
+	}
 
 	// Clean up applied IDs from the local map to prevent unbounded growth
 	for (const id of acked) delete state.map[id];
