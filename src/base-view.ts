@@ -62,6 +62,10 @@ properties:
     displayName: Score
   note.open_engagement:
     displayName: Opens
+  note.override:
+    displayName: Swipe
+  note.override_at:
+    displayName: Swiped On
 views:
   - type: table
     name: CRM
@@ -80,7 +84,12 @@ views:
       - quadrant
       - combined_score
       - open_engagement
+      - override
       - nudge
+    filters:
+      and:
+        - override != suppress
+        - override != delete
     sort:
       - property: combined_score
         direction: DESC
@@ -97,6 +106,7 @@ views:
       - momentum_score
       - quadrant
       - combined_score
+      - override
       - nudge
     columnSize:
       file.name: 200
@@ -107,6 +117,40 @@ views:
       nudge: 300
     summaries:
       total_exchanges: Sum
+  - type: table
+    name: Boosted
+    order:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
+      - quadrant
+      - combined_score
+      - override_at
+      - nudge
+    filters:
+      and:
+        - override = boost
+    sort:
+      - property: combined_score
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
+      - quadrant
+      - combined_score
+      - override_at
+      - nudge
+    columnSize:
+      file.name: 200
+      company: 160
+      nudge: 350
   - type: table
     name: Re-engage
     order:

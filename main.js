@@ -210,7 +210,7 @@ var GmailApi = class {
     });
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async apiRequest(options, retries = 3) {
+  async apiRequest(options, retries = 5) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i;
     const url = typeof options === "string" ? options : options.url;
     const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
@@ -227,8 +227,9 @@ var GmailApi = class {
     }
     const isRateLimit = resp.status === 429 || resp.status === 403 && ((_b = resp.text) != null ? _b : "").includes("rateLimitExceeded");
     if (isRateLimit && retries > 0) {
-      const backoff = (4 - retries) * 2e3;
-      console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff}ms (${retries} retries left)`);
+      const attempt = 6 - retries;
+      const backoff = Math.min(attempt * 15e3, 6e4);
+      console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
       await this.sleep(backoff);
       return this.apiRequest(options, retries - 1);
     }
@@ -2056,6 +2057,10 @@ properties:
     displayName: Score
   note.open_engagement:
     displayName: Opens
+  note.override:
+    displayName: Swipe
+  note.override_at:
+    displayName: Swiped On
 views:
   - type: table
     name: CRM
@@ -2074,7 +2079,12 @@ views:
       - quadrant
       - combined_score
       - open_engagement
+      - override
       - nudge
+    filters:
+      and:
+        - override != suppress
+        - override != delete
     sort:
       - property: combined_score
         direction: DESC
@@ -2091,6 +2101,7 @@ views:
       - momentum_score
       - quadrant
       - combined_score
+      - override
       - nudge
     columnSize:
       file.name: 200
@@ -2101,6 +2112,40 @@ views:
       nudge: 300
     summaries:
       total_exchanges: Sum
+  - type: table
+    name: Boosted
+    order:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
+      - quadrant
+      - combined_score
+      - override_at
+      - nudge
+    filters:
+      and:
+        - override = boost
+    sort:
+      - property: combined_score
+        direction: DESC
+    columns:
+      - file.name
+      - company
+      - last_contact
+      - total_exchanges
+      - strength_score
+      - momentum_score
+      - quadrant
+      - combined_score
+      - override_at
+      - nudge
+    columnSize:
+      file.name: 200
+      company: 160
+      nudge: 350
   - type: table
     name: Re-engage
     order:
@@ -2266,12 +2311,13 @@ async function createBaseView(vault, peopleFolder) {
 
 // src/quadrant-view.ts
 var import_obsidian8 = require("obsidian");
-var QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize"];
+var QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize", "suppressed"];
 var QUADRANT_LABELS = {
   nurture: { title: "NURTURE", subtitle: "strong + active" },
   "re-engage": { title: "RE-ENGAGE", subtitle: "strong + dormant" },
   developing: { title: "DEVELOPING", subtitle: "weak + active" },
-  deprioritize: { title: "DEPRIORITIZE", subtitle: "weak + dormant" }
+  deprioritize: { title: "DEPRIORITIZE", subtitle: "weak + dormant" },
+  suppressed: { title: "SUPPRESSED", subtitle: "human-overridden (suppress / delete)" }
 };
 async function writeQuadrantView(vault, peopleFolder) {
   var _a, _b, _c;
@@ -2283,7 +2329,8 @@ async function writeQuadrantView(vault, peopleFolder) {
     nurture: [],
     "re-engage": [],
     developing: [],
-    deprioritize: []
+    deprioritize: [],
+    suppressed: []
   };
   for (const child of folder.children) {
     if (!(child instanceof import_obsidian8.TFile) || child.extension !== "md") continue;
@@ -2292,17 +2339,27 @@ async function writeQuadrantView(vault, peopleFolder) {
     if (!fmMatch) continue;
     const yaml = fmMatch[1];
     const quadrant = readField(yaml, "quadrant");
-    if (!quadrant || !buckets[quadrant]) continue;
-    buckets[quadrant].push({
+    const override = readField(yaml, "override");
+    const row = {
       name: child.basename,
       combinedScore: (_a = readNumber(yaml, "combined_score")) != null ? _a : 0,
       strengthScore: (_b = readNumber(yaml, "strength_score")) != null ? _b : 0,
       momentumScore: (_c = readNumber(yaml, "momentum_score")) != null ? _c : 0,
-      quadrant
-    });
+      quadrant: quadrant != null ? quadrant : "",
+      boosted: override === "boost"
+    };
+    if (override === "suppress" || override === "delete") {
+      buckets.suppressed.push({ ...row, quadrant: "suppressed" });
+      continue;
+    }
+    if (!quadrant || !buckets[quadrant]) continue;
+    buckets[quadrant].push(row);
   }
   for (const q of QUADRANT_ORDER) {
-    buckets[q].sort((a, b) => b.combinedScore - a.combinedScore);
+    buckets[q].sort((a, b) => {
+      if (a.boosted !== b.boosted) return a.boosted ? -1 : 1;
+      return b.combinedScore - a.combinedScore;
+    });
   }
   const html = renderGrid(buckets, peopleFolder);
   const path = (0, import_obsidian8.normalizePath)(`${peopleFolder}/_Quadrants.md`);
@@ -2342,7 +2399,7 @@ function renderGrid(buckets, peopleFolder) {
   const cell = (q) => {
     const rows = buckets[q];
     const items = rows.slice(0, 50).map(
-      (r) => `<li><a class="internal-link" href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md" data-href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md">${escapeHtml(r.name)}</a> <span class="gmail-crm-q-score">${r.combinedScore}</span></li>`
+      (r) => `<li><a class="internal-link" href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md" data-href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md">${escapeHtml(r.name)}</a> <span class="gmail-crm-q-score">${r.combinedScore}</span>${r.boosted ? ' <span class="gmail-crm-q-boost">\u2605</span>' : ""}</li>`
     ).join("");
     const overflow = rows.length > 50 ? `<div class="gmail-crm-q-overflow">+${rows.length - 50} more</div>` : "";
     const label = QUADRANT_LABELS[q];
@@ -2369,7 +2426,14 @@ ${cell("re-engage")}
 ${cell("deprioritize")}
 </div>
 
-> Sorted by combined score within each quadrant. Top 50 per cell.
+${buckets.suppressed.length > 0 ? `
+<details><summary>Suppressed \u2014 ${buckets.suppressed.length} (human override)</summary>
+
+${cell("suppressed")}
+</details>
+` : ""}
+
+> Sorted by combined score within each quadrant. Top 50 per cell. \u2605 = boosted by swipe.
 `;
 }
 function escapeHtml(s) {

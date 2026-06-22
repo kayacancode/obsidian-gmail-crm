@@ -6,14 +6,16 @@ interface PersonRow {
 	strengthScore: number;
 	momentumScore: number;
 	quadrant: string;
+	boosted: boolean;
 }
 
-const QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize"] as const;
+const QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize", "suppressed"] as const;
 const QUADRANT_LABELS: Record<string, { title: string; subtitle: string }> = {
 	nurture: { title: "NURTURE", subtitle: "strong + active" },
 	"re-engage": { title: "RE-ENGAGE", subtitle: "strong + dormant" },
 	developing: { title: "DEVELOPING", subtitle: "weak + active" },
 	deprioritize: { title: "DEPRIORITIZE", subtitle: "weak + dormant" },
+	suppressed: { title: "SUPPRESSED", subtitle: "human-overridden (suppress / delete)" },
 };
 
 export async function writeQuadrantView(
@@ -30,6 +32,7 @@ export async function writeQuadrantView(
 		"re-engage": [],
 		developing: [],
 		deprioritize: [],
+		suppressed: [],
 	};
 
 	for (const child of folder.children) {
@@ -39,18 +42,30 @@ export async function writeQuadrantView(
 		if (!fmMatch) continue;
 		const yaml = fmMatch[1];
 		const quadrant = readField(yaml, "quadrant");
-		if (!quadrant || !buckets[quadrant]) continue;
-		buckets[quadrant].push({
+		const override = readField(yaml, "override");
+		const row: PersonRow = {
 			name: child.basename,
 			combinedScore: readNumber(yaml, "combined_score") ?? 0,
 			strengthScore: readNumber(yaml, "strength_score") ?? 0,
 			momentumScore: readNumber(yaml, "momentum_score") ?? 0,
-			quadrant,
-		});
+			quadrant: quadrant ?? "",
+			boosted: override === "boost",
+		};
+		// Human overrides win over signal-derived quadrant.
+		if (override === "suppress" || override === "delete") {
+			buckets.suppressed.push({ ...row, quadrant: "suppressed" });
+			continue;
+		}
+		if (!quadrant || !buckets[quadrant]) continue;
+		buckets[quadrant].push(row);
 	}
 
 	for (const q of QUADRANT_ORDER) {
-		buckets[q].sort((a, b) => b.combinedScore - a.combinedScore);
+		// Boosted rows pin to the top; otherwise sort by combined score.
+		buckets[q].sort((a, b) => {
+			if (a.boosted !== b.boosted) return a.boosted ? -1 : 1;
+			return b.combinedScore - a.combinedScore;
+		});
 	}
 
 	const html = renderGrid(buckets, peopleFolder);
@@ -106,7 +121,7 @@ function renderGrid(
 			.slice(0, 50)
 			.map(
 				(r) =>
-					`<li><a class="internal-link" href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md" data-href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md">${escapeHtml(r.name)}</a> <span class="gmail-crm-q-score">${r.combinedScore}</span></li>`
+					`<li><a class="internal-link" href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md" data-href="${escapeHtml(peopleFolder)}/${escapeHtml(r.name)}.md">${escapeHtml(r.name)}</a> <span class="gmail-crm-q-score">${r.combinedScore}</span>${r.boosted ? ' <span class="gmail-crm-q-boost">★</span>' : ""}</li>`
 			)
 			.join("");
 		const overflow =
@@ -136,7 +151,9 @@ ${cell("re-engage")}
 ${cell("deprioritize")}
 </div>
 
-> Sorted by combined score within each quadrant. Top 50 per cell.
+${buckets.suppressed.length > 0 ? `\n<details><summary>Suppressed — ${buckets.suppressed.length} (human override)</summary>\n\n${cell("suppressed")}\n</details>\n` : ""}
+
+> Sorted by combined score within each quadrant. Top 50 per cell. ★ = boosted by swipe.
 `;
 }
 
