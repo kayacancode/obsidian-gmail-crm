@@ -4264,9 +4264,35 @@ fn resolve_obsidian_cache_path() -> Option<PathBuf> {
 }
 
 fn obsidian_config_path() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("Library/Application Support/obsidian/obsidian.json"))
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+
+    // macOS
+    let mac_path = home.join("Library/Application Support/obsidian/obsidian.json");
+    if mac_path.exists() {
+        return Some(mac_path);
+    }
+
+    // Linux (XDG)
+    if let Ok(config_dir) = env::var("XDG_CONFIG_HOME") {
+        let xdg_path = PathBuf::from(config_dir).join("obsidian/obsidian.json");
+        if xdg_path.exists() {
+            return Some(xdg_path);
+        }
+    }
+    let linux_path = home.join(".config/obsidian/obsidian.json");
+    if linux_path.exists() {
+        return Some(linux_path);
+    }
+
+    // Windows (via WSL or APPDATA)
+    if let Ok(appdata) = env::var("APPDATA") {
+        let win_path = PathBuf::from(appdata).join("obsidian/obsidian.json");
+        if win_path.exists() {
+            return Some(win_path);
+        }
+    }
+
+    None
 }
 
 fn command_name(command: &Commands) -> &'static str {
