@@ -17,50 +17,28 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		// Auth section
 		new Setting(containerEl).setName("Authentication").setHeading();
-		containerEl.createEl("p", {
-			text: "See the plugin readme for setup instructions.",
-			cls: "setting-item-description",
-		});
-
-		new Setting(containerEl)
-			.setName("Client ID")
-			.setDesc("From your API credentials")
-			.addText((text) =>
-				text
-					.setPlaceholder("Your client ID")
-					.setValue(this.plugin.settings.clientId)
-					.onChange(async (value) => {
-						this.plugin.settings.clientId = value;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Client secret")
-			.setDesc("From your API credentials")
-			.addText((text) => {
-				text
-					.setPlaceholder("Your client secret")
-					.setValue(this.plugin.settings.clientSecret)
-					.onChange(async (value) => {
-						this.plugin.settings.clientSecret = value;
-						await this.plugin.saveSettings();
-					});
-				text.inputEl.type = "password";
-			});
 
 		const isAuthenticated = !!this.plugin.settings.refreshToken;
+
+		if (!isAuthenticated) {
+			containerEl.createEl("p", {
+				text: "Connect your Google account to start syncing Gmail contacts.",
+				cls: "setting-item-description",
+			});
+		}
 
 		new Setting(containerEl)
 			.setName("Connection status")
 			.setDesc(isAuthenticated ? "Connected" : "Not connected")
 			.addButton((btn) =>
 				btn
-					.setButtonText(isAuthenticated ? "Reconnect" : "Connect")
+					.setButtonText(isAuthenticated ? "Reconnect" : "Connect with Google")
 					.setCta()
 					.onClick(async () => {
-						if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
-							new Notice("Please enter client ID and client secret first.");
+						const clientId = this.plugin.getEffectiveClientId();
+						const clientSecret = this.plugin.getEffectiveClientSecret();
+						if (!clientId || !clientSecret) {
+							new Notice("Please enter client ID and client secret in advanced OAuth settings, or wait for shared credentials to be configured.");
 							return;
 						}
 						await this.plugin.startOAuthFlow();
@@ -81,6 +59,49 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 						this.display();
 					})
 			);
+		}
+
+		// Advanced OAuth toggle
+		new Setting(containerEl)
+			.setName("Use custom OAuth credentials")
+			.setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.useCustomOAuth)
+					.onChange(async (value) => {
+						this.plugin.settings.useCustomOAuth = value;
+						await this.plugin.saveSettings();
+						this.display(); // re-render to show/hide fields
+					})
+			);
+
+		if (this.plugin.settings.useCustomOAuth) {
+			new Setting(containerEl)
+				.setName("Client ID")
+				.setDesc("From your Google Cloud Console API credentials")
+				.addText((text) =>
+					text
+						.setPlaceholder("Your client ID")
+						.setValue(this.plugin.settings.clientId)
+						.onChange(async (value) => {
+							this.plugin.settings.clientId = value;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName("Client secret")
+				.setDesc("From your Google Cloud Console API credentials")
+				.addText((text) => {
+					text
+						.setPlaceholder("Your client secret")
+						.setValue(this.plugin.settings.clientSecret)
+						.onChange(async (value) => {
+							this.plugin.settings.clientSecret = value;
+							await this.plugin.saveSettings();
+						});
+					text.inputEl.type = "password";
+				});
 		}
 
 		// Filtering section

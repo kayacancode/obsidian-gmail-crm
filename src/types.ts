@@ -1,6 +1,7 @@
 export interface GmailCrmSettings {
 	clientId: string;
 	clientSecret: string;
+	useCustomOAuth: boolean; // false = use built-in shared credentials
 	accessToken: string;
 	refreshToken: string;
 	tokenExpiry: number;
@@ -25,6 +26,7 @@ export const CONTACT_INDEX_SCHEMA_VERSION = 1;
 export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	clientId: "",
 	clientSecret: "",
+	useCustomOAuth: false,
 	accessToken: "",
 	refreshToken: "",
 	tokenExpiry: 0,

@@ -4,6 +4,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -26,6 +29,541 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/types.ts
+var CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS;
+var init_types = __esm({
+  "src/types.ts"() {
+    CONTACT_INDEX_SCHEMA_VERSION = 1;
+    DEFAULT_SETTINGS = {
+      clientId: "",
+      clientSecret: "",
+      useCustomOAuth: false,
+      accessToken: "",
+      refreshToken: "",
+      tokenExpiry: 0,
+      syncIntervalMinutes: 60,
+      maxResults: 500,
+      createContactNotes: false,
+      contactNotesFolder: "People pages",
+      vaultOwnerName: "",
+      peopleFolder: "People pages",
+      companiesFolder: "Companies",
+      anthropicApiKey: "",
+      harperModel: "claude-sonnet-4-6",
+      enrichOnSync: false,
+      blockedDomains: "",
+      autoUpdateStaleness: true,
+      stalenessUpdateInterval: 0
+      // 0 = only after sync, not on its own timer
+    };
+  }
+});
+
+// src/gmail-api.ts
+var gmail_api_exports = {};
+__export(gmail_api_exports, {
+  GmailApi: () => GmailApi,
+  SHARED_CLIENT_ID: () => SHARED_CLIENT_ID,
+  SHARED_CLIENT_SECRET: () => SHARED_CLIENT_SECRET
+});
+var import_obsidian, GOOGLE_AUTH_URL, GOOGLE_TOKEN_URL, GMAIL_API_BASE, SCOPES, REDIRECT_URI, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET, RSVP_SUBJECT_PATTERN, AUTOMATED_EMAIL_PATTERN, AUTOMATED_DOMAINS, GmailApi;
+var init_gmail_api = __esm({
+  "src/gmail-api.ts"() {
+    import_obsidian = require("obsidian");
+    init_types();
+    GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+    GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+    GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+    SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
+    REDIRECT_URI = "http://127.0.0.1:42813/callback";
+    SHARED_CLIENT_ID = "726397126192-kuv4nprnrumuekateh37t3abne2r5893.apps.googleusercontent.com";
+    SHARED_CLIENT_SECRET = "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";
+    RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
+    AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
+    AUTOMATED_DOMAINS = /* @__PURE__ */ new Set([
+      // Cloud / SaaS
+      "dropbox.com",
+      "dropboxmail.com",
+      "google.com",
+      "accounts.google.com",
+      "docs.google.com",
+      "amazonses.com",
+      "amazonaws.com",
+      "aws.amazon.com",
+      "microsoft.com",
+      "sharepointonline.com",
+      // Dev tools
+      "github.com",
+      "gitlab.com",
+      "bitbucket.org",
+      "vercel.com",
+      "netlify.com",
+      "heroku.com",
+      "circleci.com",
+      "travis-ci.com",
+      // Newsletters / content
+      "substack.com",
+      "substackmail.com",
+      "readwise.io",
+      "medium.com",
+      "mailchimp.com",
+      "sendgrid.net",
+      "sendgrid.com",
+      "mailgun.org",
+      "mandrillapp.com",
+      "constantcontact.com",
+      "hubspot.com",
+      "hubspotmail.com",
+      // Productivity / signing
+      "dropboxsign.com",
+      "hellosign.com",
+      "docusign.net",
+      "docusign.com",
+      "pandadoc.com",
+      "adobesign.com",
+      // Social
+      "facebookmail.com",
+      "linkedin.com",
+      "twitter.com",
+      "x.com",
+      "instagrammail.com",
+      "tiktok.com",
+      // Payments / commerce
+      "paypal.com",
+      "stripe.com",
+      "squareup.com",
+      "shopify.com",
+      "intuit.com",
+      "quickbooks.intuit.com",
+      // Scheduling / calendar
+      "calendly.com",
+      "savvycal.com",
+      "cal.com",
+      // Project management
+      "notion.so",
+      "asana.com",
+      "trello.com",
+      "monday.com",
+      "clickup.com",
+      "jira.atlassian.com",
+      "atlassian.com",
+      "atlassian.net",
+      // Design
+      "figma.com",
+      "canva.com",
+      // Other common services
+      "zoom.us",
+      "loom.com",
+      "slack.com",
+      "slackbot.com",
+      "intercom.io",
+      "intercom-mail.com",
+      "zendesk.com",
+      "eventbrite.com",
+      "meetup.com"
+    ]);
+    GmailApi = class {
+      constructor(settings, onSettingsUpdate) {
+        this.settings = settings;
+        this.onSettingsUpdate = onSettingsUpdate;
+      }
+      updateSettings(settings) {
+        this.settings = settings;
+      }
+      effectiveClientId() {
+        if (this.settings.useCustomOAuth && this.settings.clientId) {
+          return this.settings.clientId;
+        }
+        return SHARED_CLIENT_ID;
+      }
+      effectiveClientSecret() {
+        if (this.settings.useCustomOAuth && this.settings.clientSecret) {
+          return this.settings.clientSecret;
+        }
+        return SHARED_CLIENT_SECRET;
+      }
+      getAuthUrl() {
+        const params = new URLSearchParams({
+          client_id: this.effectiveClientId(),
+          redirect_uri: REDIRECT_URI,
+          response_type: "code",
+          scope: SCOPES,
+          access_type: "offline",
+          prompt: "consent"
+        });
+        return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+      }
+      async exchangeCode(code) {
+        var _a;
+        const resp = await this.apiRequest({
+          url: GOOGLE_TOKEN_URL,
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            code,
+            client_id: this.effectiveClientId(),
+            client_secret: this.effectiveClientSecret(),
+            redirect_uri: REDIRECT_URI,
+            grant_type: "authorization_code"
+          }).toString()
+        });
+        const data = resp.json;
+        await this.onSettingsUpdate({
+          accessToken: data.access_token,
+          refreshToken: (_a = data.refresh_token) != null ? _a : this.settings.refreshToken,
+          tokenExpiry: Date.now() + data.expires_in * 1e3
+        });
+      }
+      async refreshAccessToken() {
+        const resp = await this.apiRequest({
+          url: GOOGLE_TOKEN_URL,
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: this.effectiveClientId(),
+            client_secret: this.effectiveClientSecret(),
+            refresh_token: this.settings.refreshToken,
+            grant_type: "refresh_token"
+          }).toString()
+        });
+        const data = resp.json;
+        await this.onSettingsUpdate({
+          accessToken: data.access_token,
+          tokenExpiry: Date.now() + data.expires_in * 1e3
+        });
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async apiRequest(options, retries = 5) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+        const url = typeof options === "string" ? options : options.url;
+        const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
+        let resp;
+        try {
+          resp = await (0, import_obsidian.requestUrl)(reqOptions);
+        } catch (e) {
+          const err = e;
+          console.error(`[Gmail CRM] Network error`, { url, error: err });
+          throw new Error((_a = err == null ? void 0 : err.message) != null ? _a : "Network request failed");
+        }
+        if (resp.status >= 200 && resp.status < 300) {
+          return resp;
+        }
+        const isRateLimit = resp.status === 429 || resp.status === 403 && ((_b = resp.text) != null ? _b : "").includes("rateLimitExceeded");
+        if (isRateLimit && retries > 0) {
+          const attempt = 6 - retries;
+          const backoff = Math.min(attempt * 15e3, 6e4);
+          console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
+          await this.sleep(backoff);
+          return this.apiRequest(options, retries - 1);
+        }
+        const status = resp.status;
+        const rawBody = (_c = resp.text) != null ? _c : "";
+        console.error(`[Gmail CRM] API request failed`, {
+          url,
+          status,
+          body: rawBody,
+          headers: resp.headers
+        });
+        let detail = "";
+        if (rawBody) {
+          try {
+            const parsed = JSON.parse(rawBody);
+            detail = (_h = (_g = (_e = (_d = parsed == null ? void 0 : parsed.error) == null ? void 0 : _d.message) != null ? _e : parsed == null ? void 0 : parsed.error_description) != null ? _g : (_f = parsed == null ? void 0 : parsed.error) == null ? void 0 : _f.status) != null ? _h : JSON.stringify(parsed).slice(0, 300);
+          } catch (e) {
+            detail = rawBody.slice(0, 300);
+          }
+        }
+        if (!detail) {
+          const hints = {
+            401: "Token expired or invalid. Try disconnecting and reconnecting.",
+            403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
+            404: "Endpoint not found. The Gmail API may not be enabled.",
+            429: "Rate limited by Google. Wait a few minutes and try again."
+          };
+          detail = (_i = hints[status]) != null ? _i : `HTTP ${status}`;
+        }
+        throw new Error(`HTTP ${status}: ${detail}`);
+      }
+      sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+      async getHeaders() {
+        if (Date.now() >= this.settings.tokenExpiry - 6e4) {
+          await this.refreshAccessToken();
+        }
+        return { Authorization: `Bearer ${this.settings.accessToken}` };
+      }
+      async getUserEmail() {
+        const headers = await this.getHeaders();
+        const resp = await this.apiRequest({
+          url: `${GMAIL_API_BASE}/profile`,
+          headers
+        });
+        return resp.json.emailAddress;
+      }
+      async fetchAllMessageIds(maxResults, afterDate) {
+        const headers = await this.getHeaders();
+        const allMessages = [];
+        let pageToken;
+        const unlimited = maxResults <= 0;
+        if (afterDate) {
+          console.info(
+            "[Gmail CRM] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
+            { afterDate }
+          );
+        }
+        while (unlimited || allMessages.length < maxResults) {
+          const remaining = unlimited ? 100 : maxResults - allMessages.length;
+          const params = new URLSearchParams({
+            maxResults: String(Math.min(100, remaining))
+          });
+          if (pageToken) params.set("pageToken", pageToken);
+          const resp = await this.apiRequest({
+            url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
+            headers
+          });
+          const data = resp.json;
+          if (!data.messages) break;
+          allMessages.push(...data.messages);
+          pageToken = data.nextPageToken;
+          if (!pageToken) break;
+        }
+        return allMessages;
+      }
+      async fetchMessageMetadata(messageId) {
+        const headers = await this.getHeaders();
+        const resp = await this.apiRequest({
+          url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
+          headers
+        });
+        return resp.json;
+      }
+      async buildContactIndex(maxResults, onProgress, existingIndex, messageCache) {
+        var _a, _b, _c, _d, _e, _f, _g, _h;
+        const userEmail = await this.getUserEmail();
+        const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
+        const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
+        const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
+        const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
+        const contacts = existingIndex ? JSON.parse(JSON.stringify(existingIndex.contacts)) : {};
+        const edges = (_c = existingIndex == null ? void 0 : existingIndex.edges) != null ? _c : [];
+        const threadStates = /* @__PURE__ */ new Map();
+        if (existingIndex && newMessageIds.length > 0) {
+          for (const [key, c] of Object.entries(contacts)) {
+            threadStates.set(key, /* @__PURE__ */ new Map());
+          }
+        }
+        const BATCH_SIZE = 10;
+        const BATCH_DELAY_MS = 100;
+        for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
+          const batch = newMessageIds.slice(i, i + BATCH_SIZE);
+          const results = await Promise.all(
+            batch.map((m) => this.fetchMessageMetadata(m.id))
+          );
+          for (const msg of results) {
+            this.processMessage(msg, userEmail, contacts, threadStates);
+          }
+          onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
+          if (i + BATCH_SIZE < newMessageIds.length) {
+            await this.sleep(BATCH_DELAY_MS);
+          }
+        }
+        if (newMessageIds.length > 0) {
+          this.finalizeContactMetrics(contacts, threadStates);
+        }
+        console.log(`[Gmail CRM] Sync complete`, {
+          mode: afterDate ? "incremental" : "full",
+          afterDate: afterDate != null ? afterDate : "n/a",
+          totalListed: allMessageIds.length,
+          alreadyCached: allMessageIds.length - newMessageIds.length,
+          newProcessed: newMessageIds.length,
+          totalContacts: Object.keys(contacts).length
+        });
+        const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
+        for (const c of sorted.slice(0, 20)) {
+          console.log(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
+            exchanges: c.totalExchanges,
+            sent: c.sentCount,
+            received: c.receivedCount,
+            threads: (_d = c.threadCount) != null ? _d : 0,
+            backAndForth: (_e = c.backAndForthThreads) != null ? _e : 0,
+            maxDepth: (_f = c.maxThreadDepth) != null ? _f : 0,
+            lastDepth: (_g = c.lastThreadDepth) != null ? _g : 0,
+            rsvpOnly: (_h = c.rsvpOnlyThreads) != null ? _h : 0,
+            firstContact: c.firstContact,
+            lastContact: c.lastContact,
+            domain: c.domain
+          });
+        }
+        for (const m of allMessageIds) {
+          cachedIds.add(m.id);
+        }
+        const updatedCache = {
+          processedIds: Array.from(cachedIds),
+          lastSync: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        return {
+          index: {
+            schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
+            lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+            userEmail,
+            contacts,
+            edges
+          },
+          cache: updatedCache
+        };
+      }
+      processMessage(msg, userEmail, contacts, threadStates) {
+        var _a;
+        const headers = msg.payload.headers;
+        const from = this.getHeader(headers, "From");
+        const to = this.getHeader(headers, "To");
+        const subject = (_a = this.getHeader(headers, "Subject")) != null ? _a : "";
+        const date = new Date(parseInt(msg.internalDate)).toISOString();
+        const threadId = msg.threadId;
+        const fromParsed = this.parseEmailAddress(from != null ? from : "");
+        const toParsed = this.parseEmailAddress(to != null ? to : "");
+        if (!fromParsed) return;
+        const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
+        if (isSent && toParsed) {
+          if (this.isFiltered(toParsed.email)) {
+            console.debug(`[Gmail CRM] Filtered out: ${toParsed.email}`);
+            return;
+          }
+          this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
+        } else if (!isSent) {
+          if (this.isFiltered(fromParsed.email)) {
+            console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
+            return;
+          }
+          this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
+        }
+      }
+      isFiltered(email) {
+        var _a;
+        const lower = email.toLowerCase();
+        const domain = (_a = lower.split("@")[1]) != null ? _a : "";
+        if (AUTOMATED_EMAIL_PATTERN.test(lower)) return true;
+        if (AUTOMATED_DOMAINS.has(domain)) return true;
+        if (this.blockedDomains.has(domain)) return true;
+        return false;
+      }
+      get blockedDomains() {
+        var _a;
+        const raw = (_a = this.settings.blockedDomains) != null ? _a : "";
+        return new Set(
+          raw.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean)
+        );
+      }
+      upsertContact(contacts, threadStates, parsed, date, subject, threadId, direction) {
+        var _a, _b;
+        const key = parsed.email.toLowerCase();
+        const domain = (_b = (_a = parsed.email.split("@")[1]) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
+        if (!contacts[key]) {
+          contacts[key] = {
+            name: parsed.name || parsed.email,
+            email: parsed.email,
+            lastContact: date,
+            firstContact: date,
+            sentCount: 0,
+            receivedCount: 0,
+            totalExchanges: 0,
+            subjects: [],
+            lastSubject: "",
+            domain
+          };
+        }
+        const c = contacts[key];
+        if (parsed.name && (!c.name || c.name === c.email)) {
+          c.name = parsed.name;
+        }
+        if (date > c.lastContact) {
+          c.lastContact = date;
+          if (subject) c.lastSubject = subject;
+        }
+        if (date < c.firstContact) c.firstContact = date;
+        if (direction === "sent") c.sentCount++;
+        else c.receivedCount++;
+        c.totalExchanges++;
+        if (subject && c.subjects.length < 10) {
+          c.subjects.push(subject);
+        }
+        let contactThreads = threadStates.get(key);
+        if (!contactThreads) {
+          contactThreads = /* @__PURE__ */ new Map();
+          threadStates.set(key, contactThreads);
+        }
+        let thread = contactThreads.get(threadId);
+        if (!thread) {
+          thread = { sent: 0, received: 0, subject, lastDate: date };
+          contactThreads.set(threadId, thread);
+        }
+        if (direction === "sent") thread.sent++;
+        else thread.received++;
+        if (date > thread.lastDate) {
+          thread.lastDate = date;
+          if (subject) thread.subject = subject;
+        }
+      }
+      // Finalize metadata pattern signals (thread count, back-and-forth, RSVP-only)
+      // into the persisted Contact records. See task #4 — metadata heuristics per
+      // John Borthwick's feedback: focus on patterns, not email content.
+      finalizeContactMetrics(contacts, threadStates) {
+        for (const [key, threads] of threadStates) {
+          const contact = contacts[key];
+          if (!contact) continue;
+          let maxDepth = 0;
+          let backAndForth = 0;
+          let rsvpOnly = 0;
+          let lastThreadDepth = 0;
+          let latestDate = "";
+          for (const state of threads.values()) {
+            const depth = state.sent + state.received;
+            if (depth > maxDepth) maxDepth = depth;
+            if (state.sent > 0 && state.received > 0 && depth >= 3) {
+              backAndForth++;
+            }
+            if (depth === 1 && RSVP_SUBJECT_PATTERN.test(state.subject)) {
+              rsvpOnly++;
+            }
+            if (state.lastDate > latestDate) {
+              latestDate = state.lastDate;
+              lastThreadDepth = depth;
+            }
+          }
+          contact.threadCount = threads.size;
+          contact.maxThreadDepth = maxDepth;
+          contact.backAndForthThreads = backAndForth;
+          contact.rsvpOnlyThreads = rsvpOnly;
+          contact.lastThreadDepth = lastThreadDepth;
+        }
+      }
+      getHeader(headers, name) {
+        var _a;
+        return (_a = headers.find((h) => h.name.toLowerCase() === name.toLowerCase())) == null ? void 0 : _a.value;
+      }
+      parseEmailAddress(raw) {
+        var _a;
+        const trimmed = raw.trim();
+        const bareEmail = trimmed.match(/^([^@\s<>"]+@[^@\s<>"]+)$/);
+        if (bareEmail) {
+          return {
+            name: "",
+            email: bareEmail[1].trim()
+          };
+        }
+        const angleMatch = trimmed.match(/^(?:"?([^"<]*)"?\s*)<([^<>\s]+@[^<>\s]+)>$/);
+        const match = angleMatch != null ? angleMatch : trimmed.match(/^"?([^"<]*)"?\s+([^@\s<>"]+@[^@\s<>"]+)$/);
+        if (!match) return null;
+        return {
+          name: ((_a = match[1]) != null ? _a : "").trim(),
+          email: match[2].trim()
+        };
+      }
+    };
+  }
+});
+
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
@@ -33,511 +571,7 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian9 = require("obsidian");
-
-// src/gmail-api.ts
-var import_obsidian = require("obsidian");
-
-// src/types.ts
-var CONTACT_INDEX_SCHEMA_VERSION = 1;
-var DEFAULT_SETTINGS = {
-  clientId: "",
-  clientSecret: "",
-  accessToken: "",
-  refreshToken: "",
-  tokenExpiry: 0,
-  syncIntervalMinutes: 60,
-  maxResults: 500,
-  createContactNotes: false,
-  contactNotesFolder: "People pages",
-  vaultOwnerName: "",
-  peopleFolder: "People pages",
-  companiesFolder: "Companies",
-  anthropicApiKey: "",
-  harperModel: "claude-sonnet-4-6",
-  enrichOnSync: false,
-  blockedDomains: "",
-  autoUpdateStaleness: true,
-  stalenessUpdateInterval: 0
-  // 0 = only after sync, not on its own timer
-};
-
-// src/gmail-api.ts
-var GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-var SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
-var REDIRECT_URI = "http://127.0.0.1:42813/callback";
-var RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
-var AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
-var AUTOMATED_DOMAINS = /* @__PURE__ */ new Set([
-  // Cloud / SaaS
-  "dropbox.com",
-  "dropboxmail.com",
-  "google.com",
-  "accounts.google.com",
-  "docs.google.com",
-  "amazonses.com",
-  "amazonaws.com",
-  "aws.amazon.com",
-  "microsoft.com",
-  "sharepointonline.com",
-  // Dev tools
-  "github.com",
-  "gitlab.com",
-  "bitbucket.org",
-  "vercel.com",
-  "netlify.com",
-  "heroku.com",
-  "circleci.com",
-  "travis-ci.com",
-  // Newsletters / content
-  "substack.com",
-  "substackmail.com",
-  "readwise.io",
-  "medium.com",
-  "mailchimp.com",
-  "sendgrid.net",
-  "sendgrid.com",
-  "mailgun.org",
-  "mandrillapp.com",
-  "constantcontact.com",
-  "hubspot.com",
-  "hubspotmail.com",
-  // Productivity / signing
-  "dropboxsign.com",
-  "hellosign.com",
-  "docusign.net",
-  "docusign.com",
-  "pandadoc.com",
-  "adobesign.com",
-  // Social
-  "facebookmail.com",
-  "linkedin.com",
-  "twitter.com",
-  "x.com",
-  "instagrammail.com",
-  "tiktok.com",
-  // Payments / commerce
-  "paypal.com",
-  "stripe.com",
-  "squareup.com",
-  "shopify.com",
-  "intuit.com",
-  "quickbooks.intuit.com",
-  // Scheduling / calendar
-  "calendly.com",
-  "savvycal.com",
-  "cal.com",
-  // Project management
-  "notion.so",
-  "asana.com",
-  "trello.com",
-  "monday.com",
-  "clickup.com",
-  "jira.atlassian.com",
-  "atlassian.com",
-  "atlassian.net",
-  // Design
-  "figma.com",
-  "canva.com",
-  // Other common services
-  "zoom.us",
-  "loom.com",
-  "slack.com",
-  "slackbot.com",
-  "intercom.io",
-  "intercom-mail.com",
-  "zendesk.com",
-  "eventbrite.com",
-  "meetup.com"
-]);
-var GmailApi = class {
-  constructor(settings, onSettingsUpdate) {
-    this.settings = settings;
-    this.onSettingsUpdate = onSettingsUpdate;
-  }
-  updateSettings(settings) {
-    this.settings = settings;
-  }
-  getAuthUrl() {
-    const params = new URLSearchParams({
-      client_id: this.settings.clientId,
-      redirect_uri: REDIRECT_URI,
-      response_type: "code",
-      scope: SCOPES,
-      access_type: "offline",
-      prompt: "consent"
-    });
-    return `${GOOGLE_AUTH_URL}?${params.toString()}`;
-  }
-  async exchangeCode(code) {
-    var _a;
-    const resp = await this.apiRequest({
-      url: GOOGLE_TOKEN_URL,
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        code,
-        client_id: this.settings.clientId,
-        client_secret: this.settings.clientSecret,
-        redirect_uri: REDIRECT_URI,
-        grant_type: "authorization_code"
-      }).toString()
-    });
-    const data = resp.json;
-    await this.onSettingsUpdate({
-      accessToken: data.access_token,
-      refreshToken: (_a = data.refresh_token) != null ? _a : this.settings.refreshToken,
-      tokenExpiry: Date.now() + data.expires_in * 1e3
-    });
-  }
-  async refreshAccessToken() {
-    const resp = await this.apiRequest({
-      url: GOOGLE_TOKEN_URL,
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: this.settings.clientId,
-        client_secret: this.settings.clientSecret,
-        refresh_token: this.settings.refreshToken,
-        grant_type: "refresh_token"
-      }).toString()
-    });
-    const data = resp.json;
-    await this.onSettingsUpdate({
-      accessToken: data.access_token,
-      tokenExpiry: Date.now() + data.expires_in * 1e3
-    });
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async apiRequest(options, retries = 5) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
-    const url = typeof options === "string" ? options : options.url;
-    const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
-    let resp;
-    try {
-      resp = await (0, import_obsidian.requestUrl)(reqOptions);
-    } catch (e) {
-      const err = e;
-      console.error(`[Gmail CRM] Network error`, { url, error: err });
-      throw new Error((_a = err == null ? void 0 : err.message) != null ? _a : "Network request failed");
-    }
-    if (resp.status >= 200 && resp.status < 300) {
-      return resp;
-    }
-    const isRateLimit = resp.status === 429 || resp.status === 403 && ((_b = resp.text) != null ? _b : "").includes("rateLimitExceeded");
-    if (isRateLimit && retries > 0) {
-      const attempt = 6 - retries;
-      const backoff = Math.min(attempt * 15e3, 6e4);
-      console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
-      await this.sleep(backoff);
-      return this.apiRequest(options, retries - 1);
-    }
-    const status = resp.status;
-    const rawBody = (_c = resp.text) != null ? _c : "";
-    console.error(`[Gmail CRM] API request failed`, {
-      url,
-      status,
-      body: rawBody,
-      headers: resp.headers
-    });
-    let detail = "";
-    if (rawBody) {
-      try {
-        const parsed = JSON.parse(rawBody);
-        detail = (_h = (_g = (_e = (_d = parsed == null ? void 0 : parsed.error) == null ? void 0 : _d.message) != null ? _e : parsed == null ? void 0 : parsed.error_description) != null ? _g : (_f = parsed == null ? void 0 : parsed.error) == null ? void 0 : _f.status) != null ? _h : JSON.stringify(parsed).slice(0, 300);
-      } catch (e) {
-        detail = rawBody.slice(0, 300);
-      }
-    }
-    if (!detail) {
-      const hints = {
-        401: "Token expired or invalid. Try disconnecting and reconnecting.",
-        403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
-        404: "Endpoint not found. The Gmail API may not be enabled.",
-        429: "Rate limited by Google. Wait a few minutes and try again."
-      };
-      detail = (_i = hints[status]) != null ? _i : `HTTP ${status}`;
-    }
-    throw new Error(`HTTP ${status}: ${detail}`);
-  }
-  sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-  async getHeaders() {
-    if (Date.now() >= this.settings.tokenExpiry - 6e4) {
-      await this.refreshAccessToken();
-    }
-    return { Authorization: `Bearer ${this.settings.accessToken}` };
-  }
-  async getUserEmail() {
-    const headers = await this.getHeaders();
-    const resp = await this.apiRequest({
-      url: `${GMAIL_API_BASE}/profile`,
-      headers
-    });
-    return resp.json.emailAddress;
-  }
-  async fetchAllMessageIds(maxResults, afterDate) {
-    const headers = await this.getHeaders();
-    const allMessages = [];
-    let pageToken;
-    const unlimited = maxResults <= 0;
-    if (afterDate) {
-      console.info(
-        "[Gmail CRM] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
-        { afterDate }
-      );
-    }
-    while (unlimited || allMessages.length < maxResults) {
-      const remaining = unlimited ? 100 : maxResults - allMessages.length;
-      const params = new URLSearchParams({
-        maxResults: String(Math.min(100, remaining))
-      });
-      if (pageToken) params.set("pageToken", pageToken);
-      const resp = await this.apiRequest({
-        url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
-        headers
-      });
-      const data = resp.json;
-      if (!data.messages) break;
-      allMessages.push(...data.messages);
-      pageToken = data.nextPageToken;
-      if (!pageToken) break;
-    }
-    return allMessages;
-  }
-  async fetchMessageMetadata(messageId) {
-    const headers = await this.getHeaders();
-    const resp = await this.apiRequest({
-      url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
-      headers
-    });
-    return resp.json;
-  }
-  async buildContactIndex(maxResults, onProgress, existingIndex, messageCache) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
-    const userEmail = await this.getUserEmail();
-    const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
-    const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
-    const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
-    const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
-    const contacts = existingIndex ? JSON.parse(JSON.stringify(existingIndex.contacts)) : {};
-    const edges = (_c = existingIndex == null ? void 0 : existingIndex.edges) != null ? _c : [];
-    const threadStates = /* @__PURE__ */ new Map();
-    if (existingIndex && newMessageIds.length > 0) {
-      for (const [key, c] of Object.entries(contacts)) {
-        threadStates.set(key, /* @__PURE__ */ new Map());
-      }
-    }
-    const BATCH_SIZE = 10;
-    const BATCH_DELAY_MS = 100;
-    for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
-      const batch = newMessageIds.slice(i, i + BATCH_SIZE);
-      const results = await Promise.all(
-        batch.map((m) => this.fetchMessageMetadata(m.id))
-      );
-      for (const msg of results) {
-        this.processMessage(msg, userEmail, contacts, threadStates);
-      }
-      onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
-      if (i + BATCH_SIZE < newMessageIds.length) {
-        await this.sleep(BATCH_DELAY_MS);
-      }
-    }
-    if (newMessageIds.length > 0) {
-      this.finalizeContactMetrics(contacts, threadStates);
-    }
-    console.log(`[Gmail CRM] Sync complete`, {
-      mode: afterDate ? "incremental" : "full",
-      afterDate: afterDate != null ? afterDate : "n/a",
-      totalListed: allMessageIds.length,
-      alreadyCached: allMessageIds.length - newMessageIds.length,
-      newProcessed: newMessageIds.length,
-      totalContacts: Object.keys(contacts).length
-    });
-    const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
-    for (const c of sorted.slice(0, 20)) {
-      console.log(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
-        exchanges: c.totalExchanges,
-        sent: c.sentCount,
-        received: c.receivedCount,
-        threads: (_d = c.threadCount) != null ? _d : 0,
-        backAndForth: (_e = c.backAndForthThreads) != null ? _e : 0,
-        maxDepth: (_f = c.maxThreadDepth) != null ? _f : 0,
-        lastDepth: (_g = c.lastThreadDepth) != null ? _g : 0,
-        rsvpOnly: (_h = c.rsvpOnlyThreads) != null ? _h : 0,
-        firstContact: c.firstContact,
-        lastContact: c.lastContact,
-        domain: c.domain
-      });
-    }
-    for (const m of allMessageIds) {
-      cachedIds.add(m.id);
-    }
-    const updatedCache = {
-      processedIds: Array.from(cachedIds),
-      lastSync: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    return {
-      index: {
-        schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
-        lastSync: (/* @__PURE__ */ new Date()).toISOString(),
-        userEmail,
-        contacts,
-        edges
-      },
-      cache: updatedCache
-    };
-  }
-  processMessage(msg, userEmail, contacts, threadStates) {
-    var _a;
-    const headers = msg.payload.headers;
-    const from = this.getHeader(headers, "From");
-    const to = this.getHeader(headers, "To");
-    const subject = (_a = this.getHeader(headers, "Subject")) != null ? _a : "";
-    const date = new Date(parseInt(msg.internalDate)).toISOString();
-    const threadId = msg.threadId;
-    const fromParsed = this.parseEmailAddress(from != null ? from : "");
-    const toParsed = this.parseEmailAddress(to != null ? to : "");
-    if (!fromParsed) return;
-    const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
-    if (isSent && toParsed) {
-      if (this.isFiltered(toParsed.email)) {
-        console.debug(`[Gmail CRM] Filtered out: ${toParsed.email}`);
-        return;
-      }
-      this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
-    } else if (!isSent) {
-      if (this.isFiltered(fromParsed.email)) {
-        console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
-        return;
-      }
-      this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
-    }
-  }
-  isFiltered(email) {
-    var _a;
-    const lower = email.toLowerCase();
-    const domain = (_a = lower.split("@")[1]) != null ? _a : "";
-    if (AUTOMATED_EMAIL_PATTERN.test(lower)) return true;
-    if (AUTOMATED_DOMAINS.has(domain)) return true;
-    if (this.blockedDomains.has(domain)) return true;
-    return false;
-  }
-  get blockedDomains() {
-    var _a;
-    const raw = (_a = this.settings.blockedDomains) != null ? _a : "";
-    return new Set(
-      raw.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean)
-    );
-  }
-  upsertContact(contacts, threadStates, parsed, date, subject, threadId, direction) {
-    var _a, _b;
-    const key = parsed.email.toLowerCase();
-    const domain = (_b = (_a = parsed.email.split("@")[1]) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
-    if (!contacts[key]) {
-      contacts[key] = {
-        name: parsed.name || parsed.email,
-        email: parsed.email,
-        lastContact: date,
-        firstContact: date,
-        sentCount: 0,
-        receivedCount: 0,
-        totalExchanges: 0,
-        subjects: [],
-        lastSubject: "",
-        domain
-      };
-    }
-    const c = contacts[key];
-    if (parsed.name && (!c.name || c.name === c.email)) {
-      c.name = parsed.name;
-    }
-    if (date > c.lastContact) {
-      c.lastContact = date;
-      if (subject) c.lastSubject = subject;
-    }
-    if (date < c.firstContact) c.firstContact = date;
-    if (direction === "sent") c.sentCount++;
-    else c.receivedCount++;
-    c.totalExchanges++;
-    if (subject && c.subjects.length < 10) {
-      c.subjects.push(subject);
-    }
-    let contactThreads = threadStates.get(key);
-    if (!contactThreads) {
-      contactThreads = /* @__PURE__ */ new Map();
-      threadStates.set(key, contactThreads);
-    }
-    let thread = contactThreads.get(threadId);
-    if (!thread) {
-      thread = { sent: 0, received: 0, subject, lastDate: date };
-      contactThreads.set(threadId, thread);
-    }
-    if (direction === "sent") thread.sent++;
-    else thread.received++;
-    if (date > thread.lastDate) {
-      thread.lastDate = date;
-      if (subject) thread.subject = subject;
-    }
-  }
-  // Finalize metadata pattern signals (thread count, back-and-forth, RSVP-only)
-  // into the persisted Contact records. See task #4 — metadata heuristics per
-  // John Borthwick's feedback: focus on patterns, not email content.
-  finalizeContactMetrics(contacts, threadStates) {
-    for (const [key, threads] of threadStates) {
-      const contact = contacts[key];
-      if (!contact) continue;
-      let maxDepth = 0;
-      let backAndForth = 0;
-      let rsvpOnly = 0;
-      let lastThreadDepth = 0;
-      let latestDate = "";
-      for (const state of threads.values()) {
-        const depth = state.sent + state.received;
-        if (depth > maxDepth) maxDepth = depth;
-        if (state.sent > 0 && state.received > 0 && depth >= 3) {
-          backAndForth++;
-        }
-        if (depth === 1 && RSVP_SUBJECT_PATTERN.test(state.subject)) {
-          rsvpOnly++;
-        }
-        if (state.lastDate > latestDate) {
-          latestDate = state.lastDate;
-          lastThreadDepth = depth;
-        }
-      }
-      contact.threadCount = threads.size;
-      contact.maxThreadDepth = maxDepth;
-      contact.backAndForthThreads = backAndForth;
-      contact.rsvpOnlyThreads = rsvpOnly;
-      contact.lastThreadDepth = lastThreadDepth;
-    }
-  }
-  getHeader(headers, name) {
-    var _a;
-    return (_a = headers.find((h) => h.name.toLowerCase() === name.toLowerCase())) == null ? void 0 : _a.value;
-  }
-  parseEmailAddress(raw) {
-    var _a;
-    const trimmed = raw.trim();
-    const bareEmail = trimmed.match(/^([^@\s<>"]+@[^@\s<>"]+)$/);
-    if (bareEmail) {
-      return {
-        name: "",
-        email: bareEmail[1].trim()
-      };
-    }
-    const angleMatch = trimmed.match(/^(?:"?([^"<]*)"?\s*)<([^<>\s]+@[^<>\s]+)>$/);
-    const match = angleMatch != null ? angleMatch : trimmed.match(/^"?([^"<]*)"?\s+([^@\s<>"]+@[^@\s<>"]+)$/);
-    if (!match) return null;
-    return {
-      name: ((_a = match[1]) != null ? _a : "").trim(),
-      email: match[2].trim()
-    };
-  }
-};
+init_gmail_api();
 
 // src/settings-tab.ts
 var import_obsidian2 = require("obsidian");
@@ -550,28 +584,19 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian2.Setting(containerEl).setName("Authentication").setHeading();
-    containerEl.createEl("p", {
-      text: "See the plugin readme for setup instructions.",
-      cls: "setting-item-description"
-    });
-    new import_obsidian2.Setting(containerEl).setName("Client ID").setDesc("From your API credentials").addText(
-      (text) => text.setPlaceholder("Your client ID").setValue(this.plugin.settings.clientId).onChange(async (value) => {
-        this.plugin.settings.clientId = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian2.Setting(containerEl).setName("Client secret").setDesc("From your API credentials").addText((text) => {
-      text.setPlaceholder("Your client secret").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
-        this.plugin.settings.clientSecret = value;
-        await this.plugin.saveSettings();
-      });
-      text.inputEl.type = "password";
-    });
     const isAuthenticated = !!this.plugin.settings.refreshToken;
+    if (!isAuthenticated) {
+      containerEl.createEl("p", {
+        text: "Connect your Google account to start syncing Gmail contacts.",
+        cls: "setting-item-description"
+      });
+    }
     new import_obsidian2.Setting(containerEl).setName("Connection status").setDesc(isAuthenticated ? "Connected" : "Not connected").addButton(
-      (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect").setCta().onClick(async () => {
-        if (!this.plugin.settings.clientId || !this.plugin.settings.clientSecret) {
-          new import_obsidian2.Notice("Please enter client ID and client secret first.");
+      (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect with Google").setCta().onClick(async () => {
+        const clientId = this.plugin.getEffectiveClientId();
+        const clientSecret = this.plugin.getEffectiveClientSecret();
+        if (!clientId || !clientSecret) {
+          new import_obsidian2.Notice("Please enter client ID and client secret in advanced OAuth settings, or wait for shared credentials to be configured.");
           return;
         }
         await this.plugin.startOAuthFlow();
@@ -588,6 +613,28 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
           this.display();
         })
       );
+    }
+    new import_obsidian2.Setting(containerEl).setName("Use custom OAuth credentials").setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.useCustomOAuth).onChange(async (value) => {
+        this.plugin.settings.useCustomOAuth = value;
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+    if (this.plugin.settings.useCustomOAuth) {
+      new import_obsidian2.Setting(containerEl).setName("Client ID").setDesc("From your Google Cloud Console API credentials").addText(
+        (text) => text.setPlaceholder("Your client ID").setValue(this.plugin.settings.clientId).onChange(async (value) => {
+          this.plugin.settings.clientId = value;
+          await this.plugin.saveSettings();
+        })
+      );
+      new import_obsidian2.Setting(containerEl).setName("Client secret").setDesc("From your Google Cloud Console API credentials").addText((text) => {
+        text.setPlaceholder("Your client secret").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
+          this.plugin.settings.clientSecret = value;
+          await this.plugin.saveSettings();
+        });
+        text.inputEl.type = "password";
+      });
     }
     new import_obsidian2.Setting(containerEl).setName("Filtering").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Blocked domains").setDesc("Comma-separated domains to exclude (e.g. substack.com, readwise.io). Common services like noreply senders are auto-filtered.").addTextArea(
@@ -2441,6 +2488,7 @@ function escapeHtml(s) {
 }
 
 // src/main.ts
+init_types();
 var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
@@ -2557,6 +2605,20 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
     var _a;
     await this.saveData(this.settings);
     (_a = this.gmailApi) == null ? void 0 : _a.updateSettings(this.settings);
+  }
+  getEffectiveClientId() {
+    if (this.settings.useCustomOAuth && this.settings.clientId) {
+      return this.settings.clientId;
+    }
+    const { SHARED_CLIENT_ID: SHARED_CLIENT_ID2 } = (init_gmail_api(), __toCommonJS(gmail_api_exports));
+    return SHARED_CLIENT_ID2;
+  }
+  getEffectiveClientSecret() {
+    if (this.settings.useCustomOAuth && this.settings.clientSecret) {
+      return this.settings.clientSecret;
+    }
+    const { SHARED_CLIENT_SECRET: SHARED_CLIENT_SECRET2 } = (init_gmail_api(), __toCommonJS(gmail_api_exports));
+    return SHARED_CLIENT_SECRET2;
   }
   async startOAuthFlow() {
     try {

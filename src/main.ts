@@ -174,6 +174,23 @@ export default class GmailCrmPlugin extends Plugin {
 		this.gmailApi?.updateSettings(this.settings);
 	}
 
+	getEffectiveClientId(): string {
+		if (this.settings.useCustomOAuth && this.settings.clientId) {
+			return this.settings.clientId;
+		}
+		// Fall back to shared credentials
+		const { SHARED_CLIENT_ID } = require("./gmail-api");
+		return SHARED_CLIENT_ID;
+	}
+
+	getEffectiveClientSecret(): string {
+		if (this.settings.useCustomOAuth && this.settings.clientSecret) {
+			return this.settings.clientSecret;
+		}
+		const { SHARED_CLIENT_SECRET } = require("./gmail-api");
+		return SHARED_CLIENT_SECRET;
+	}
+
 	async startOAuthFlow() {
 		try {
 			const authUrl = this.gmailApi.getAuthUrl();

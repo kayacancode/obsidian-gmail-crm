@@ -16,6 +16,13 @@ const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 const SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
 const REDIRECT_URI = "http://127.0.0.1:42813/callback";
 
+// Shared OAuth credentials for the Gmail CRM plugin (Desktop app type).
+// Per Google: "In this context, the client secret is obviously not treated as a secret."
+// https://developers.google.com/identity/protocols/oauth2/native-app
+// Users can override with their own credentials in plugin settings.
+export const SHARED_CLIENT_ID = "726397126192-kuv4nprnrumuekateh37t3abne2r5893.apps.googleusercontent.com";
+export const SHARED_CLIENT_SECRET = "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";
+
 // Subject-line pattern used to detect calendar invite / RSVP threads.
 // John Borthwick: "single RSVP responses to event invites → weaker relationship"
 const RSVP_SUBJECT_PATTERN =
@@ -85,9 +92,23 @@ export class GmailApi {
 		this.settings = settings;
 	}
 
+	private effectiveClientId(): string {
+		if (this.settings.useCustomOAuth && this.settings.clientId) {
+			return this.settings.clientId;
+		}
+		return SHARED_CLIENT_ID;
+	}
+
+	private effectiveClientSecret(): string {
+		if (this.settings.useCustomOAuth && this.settings.clientSecret) {
+			return this.settings.clientSecret;
+		}
+		return SHARED_CLIENT_SECRET;
+	}
+
 	getAuthUrl(): string {
 		const params = new URLSearchParams({
-			client_id: this.settings.clientId,
+			client_id: this.effectiveClientId(),
 			redirect_uri: REDIRECT_URI,
 			response_type: "code",
 			scope: SCOPES,
@@ -104,8 +125,8 @@ export class GmailApi {
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({
 				code,
-				client_id: this.settings.clientId,
-				client_secret: this.settings.clientSecret,
+				client_id: this.effectiveClientId(),
+				client_secret: this.effectiveClientSecret(),
 				redirect_uri: REDIRECT_URI,
 				grant_type: "authorization_code",
 			}).toString(),
@@ -125,8 +146,8 @@ export class GmailApi {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			body: new URLSearchParams({
-				client_id: this.settings.clientId,
-				client_secret: this.settings.clientSecret,
+				client_id: this.effectiveClientId(),
+				client_secret: this.effectiveClientSecret(),
 				refresh_token: this.settings.refreshToken,
 				grant_type: "refresh_token",
 			}).toString(),
