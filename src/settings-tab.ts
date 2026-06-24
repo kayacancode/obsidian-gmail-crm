@@ -120,6 +120,32 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					})
 			);
 
+		new Setting(containerEl)
+			.setName("Exclude Gmail categories")
+			.setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.")
+			.addText((text) =>
+				text
+					.setPlaceholder("promotions, social")
+					.setValue(this.plugin.settings.excludeCategories)
+					.onChange(async (value) => {
+						this.plugin.settings.excludeCategories = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Exclude Gmail labels")
+			.setDesc("Comma-separated Gmail labels to skip during sync (e.g. shop@, service@). These are custom labels in your Gmail.")
+			.addText((text) =>
+				text
+					.setPlaceholder("shop@, service@")
+					.setValue(this.plugin.settings.excludeLabels)
+					.onChange(async (value) => {
+						this.plugin.settings.excludeLabels = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// Sync section
 		new Setting(containerEl).setName("Sync").setHeading();
 

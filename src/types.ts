@@ -19,6 +19,8 @@ export interface GmailCrmSettings {
 	blockedDomains: string; // comma-separated domains to exclude
 	autoUpdateStaleness: boolean; // run staleness update after each sync
 	stalenessUpdateInterval: number; // 0 = only on sync, otherwise hours between auto-updates
+	excludeCategories: string; // comma-separated Gmail categories to skip (promotions,social,updates,forums)
+	excludeLabels: string; // comma-separated Gmail labels to skip (e.g. shop@,service@)
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -43,6 +45,8 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	blockedDomains: "",
 	autoUpdateStaleness: true,
 	stalenessUpdateInterval: 0, // 0 = only after sync, not on its own timer
+	excludeCategories: "promotions,social", // skip promo and social by default
+	excludeLabels: "", // user-configured labels to skip
 };
 
 export interface ContactScore {

@@ -53,8 +53,12 @@ var init_types = __esm({
       enrichOnSync: false,
       blockedDomains: "",
       autoUpdateStaleness: true,
-      stalenessUpdateInterval: 0
+      stalenessUpdateInterval: 0,
       // 0 = only after sync, not on its own timer
+      excludeCategories: "promotions,social",
+      // skip promo and social by default
+      excludeLabels: ""
+      // user-configured labels to skip
     };
   }
 });
@@ -74,7 +78,7 @@ var init_gmail_api = __esm({
     GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
     GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
     GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-    SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
+    SCOPES = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events.readonly";
     REDIRECT_URI = "http://127.0.0.1:42813/callback";
     SHARED_CLIENT_ID = "726397126192-kuv4nprnrumuekateh37t3abne2r5893.apps.googleusercontent.com";
     SHARED_CLIENT_SECRET = "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";
@@ -163,7 +167,9 @@ var init_gmail_api = __esm({
       "meetup.com"
     ]);
     GmailApi = class {
+      // lock to prevent parallel refreshes
       constructor(settings, onSettingsUpdate) {
+        this.refreshPromise = null;
         this.settings = settings;
         this.onSettingsUpdate = onSettingsUpdate;
       }
@@ -256,6 +262,29 @@ var init_gmail_api = __esm({
           await this.sleep(backoff);
           return this.apiRequest(options, retries - 1);
         }
+        if (resp.status === 401 && retries > 0) {
+          console.warn(`[Gmail CRM] Token expired, refreshing and retrying...`);
+          try {
+            if (!this.refreshPromise) {
+              this.refreshPromise = this.refreshAccessToken().finally(() => {
+                this.refreshPromise = null;
+              });
+            }
+            await this.refreshPromise;
+            if (typeof options !== "string" && options.headers) {
+              options.headers["Authorization"] = `Bearer ${this.settings.accessToken}`;
+            }
+            return this.apiRequest(options, retries - 1);
+          } catch (refreshErr) {
+            console.error(`[Gmail CRM] Token refresh failed`, refreshErr);
+          }
+        }
+        if ((resp.status === 500 || resp.status === 503) && retries > 0) {
+          const backoff = Math.min((6 - retries) * 5e3, 3e4);
+          console.warn(`[Gmail CRM] Server error ${resp.status}, retrying in ${backoff / 1e3}s (${retries} retries left)`);
+          await this.sleep(backoff);
+          return this.apiRequest(options, retries - 1);
+        }
         const status = resp.status;
         const rawBody = (_c = resp.text) != null ? _c : "";
         console.error(`[Gmail CRM] API request failed`, {
@@ -289,7 +318,12 @@ var init_gmail_api = __esm({
       }
       async getHeaders() {
         if (Date.now() >= this.settings.tokenExpiry - 6e4) {
-          await this.refreshAccessToken();
+          if (!this.refreshPromise) {
+            this.refreshPromise = this.refreshAccessToken().finally(() => {
+              this.refreshPromise = null;
+            });
+          }
+          await this.refreshPromise;
         }
         return { Authorization: `Bearer ${this.settings.accessToken}` };
       }
@@ -302,6 +336,7 @@ var init_gmail_api = __esm({
         return resp.json.emailAddress;
       }
       async fetchAllMessageIds(maxResults, afterDate) {
+        var _a, _b;
         const headers = await this.getHeaders();
         const allMessages = [];
         let pageToken;
@@ -318,6 +353,20 @@ var init_gmail_api = __esm({
             maxResults: String(Math.min(100, remaining))
           });
           if (pageToken) params.set("pageToken", pageToken);
+          const excludes = [];
+          const cats = ((_a = this.settings.excludeCategories) != null ? _a : "").split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
+          for (const cat of cats) {
+            excludes.push(`-category:${cat}`);
+          }
+          const labels = ((_b = this.settings.excludeLabels) != null ? _b : "").split(",").map((l) => l.trim()).filter(Boolean);
+          for (const label of labels) {
+            excludes.push(`-label:${label}`);
+          }
+          for (const domain of this.blockedDomains) {
+            excludes.push(`-from:${domain}`);
+          }
+          const q = excludes.join(" ");
+          if (q) params.set("q", q);
           const resp = await this.apiRequest({
             url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
             headers
@@ -338,8 +387,8 @@ var init_gmail_api = __esm({
         });
         return resp.json;
       }
-      async buildContactIndex(maxResults, onProgress, existingIndex, messageCache) {
-        var _a, _b, _c, _d, _e, _f, _g, _h;
+      async buildContactIndex(maxResults, onProgress, existingIndex, messageCache, onCheckpoint) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
         const userEmail = await this.getUserEmail();
         const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
         const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
@@ -355,6 +404,9 @@ var init_gmail_api = __esm({
         }
         const BATCH_SIZE = 10;
         const BATCH_DELAY_MS = 100;
+        const CHECKPOINT_INTERVAL = 2e3;
+        const processedIds = new Set((_d = messageCache == null ? void 0 : messageCache.processedIds) != null ? _d : []);
+        let lastCheckpoint = 0;
         for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
           const batch = newMessageIds.slice(i, i + BATCH_SIZE);
           const results = await Promise.all(
@@ -363,7 +415,25 @@ var init_gmail_api = __esm({
           for (const msg of results) {
             this.processMessage(msg, userEmail, contacts, threadStates);
           }
-          onProgress == null ? void 0 : onProgress(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
+          for (const m of batch) processedIds.add(m.id);
+          const done = Math.min(i + BATCH_SIZE, newMessageIds.length);
+          onProgress == null ? void 0 : onProgress(done, newMessageIds.length);
+          if (onCheckpoint && done - lastCheckpoint >= CHECKPOINT_INTERVAL) {
+            lastCheckpoint = done;
+            this.finalizeContactMetrics(contacts, threadStates);
+            const checkpointIndex = {
+              schemaVersion: 1,
+              lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+              userEmail,
+              contacts,
+              edges: (_e = existingIndex == null ? void 0 : existingIndex.edges) != null ? _e : []
+            };
+            const checkpointCache = {
+              lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+              processedIds: [...processedIds]
+            };
+            await onCheckpoint(checkpointIndex, checkpointCache);
+          }
           if (i + BATCH_SIZE < newMessageIds.length) {
             await this.sleep(BATCH_DELAY_MS);
           }
@@ -385,11 +455,11 @@ var init_gmail_api = __esm({
             exchanges: c.totalExchanges,
             sent: c.sentCount,
             received: c.receivedCount,
-            threads: (_d = c.threadCount) != null ? _d : 0,
-            backAndForth: (_e = c.backAndForthThreads) != null ? _e : 0,
-            maxDepth: (_f = c.maxThreadDepth) != null ? _f : 0,
-            lastDepth: (_g = c.lastThreadDepth) != null ? _g : 0,
-            rsvpOnly: (_h = c.rsvpOnlyThreads) != null ? _h : 0,
+            threads: (_f = c.threadCount) != null ? _f : 0,
+            backAndForth: (_g = c.backAndForthThreads) != null ? _g : 0,
+            maxDepth: (_h = c.maxThreadDepth) != null ? _h : 0,
+            lastDepth: (_i = c.lastThreadDepth) != null ? _i : 0,
+            rsvpOnly: (_j = c.rsvpOnlyThreads) != null ? _j : 0,
             firstContact: c.firstContact,
             lastContact: c.lastContact,
             domain: c.domain
@@ -640,6 +710,18 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Blocked domains").setDesc("Comma-separated domains to exclude (e.g. substack.com, readwise.io). Common services like noreply senders are auto-filtered.").addTextArea(
       (text) => text.setPlaceholder("substack.com, readwise.io, beehiiv.com").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
         this.plugin.settings.blockedDomains = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Exclude Gmail categories").setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.").addText(
+      (text) => text.setPlaceholder("promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
+        this.plugin.settings.excludeCategories = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (e.g. shop@, service@). These are custom labels in your Gmail.").addText(
+      (text) => text.setPlaceholder("shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
+        this.plugin.settings.excludeLabels = value;
         await this.plugin.saveSettings();
       })
     );
@@ -2679,7 +2761,22 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
           notice.setMessage(`${prefix}... ${done}/${total} new messages`);
         },
         this.contactIndex,
-        this.messageCache
+        this.messageCache,
+        // Progressive checkpoint: flush to disk + score + create pages every 2000 messages
+        async (checkpointIndex, checkpointCache) => {
+          this.contactIndex = checkpointIndex;
+          this.messageCache = checkpointCache;
+          await this.saveContactIndex();
+          await this.saveMessageCache();
+          if (this.settings.createContactNotes) {
+            await this.writeContactNotes();
+          }
+          if (this.settings.autoUpdateStaleness) {
+            await this.updateStaleness();
+          }
+          const count = Object.keys(checkpointIndex.contacts).length;
+          console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
+        }
       );
       this.contactIndex = result.index;
       this.messageCache = result.cache;

@@ -256,7 +256,22 @@ export default class GmailCrmPlugin extends Plugin {
 					notice.setMessage(`${prefix}... ${done}/${total} new messages`);
 				},
 				this.contactIndex,
-				this.messageCache
+				this.messageCache,
+				// Progressive checkpoint: flush to disk + score + create pages every 2000 messages
+				async (checkpointIndex, checkpointCache) => {
+					this.contactIndex = checkpointIndex;
+					this.messageCache = checkpointCache;
+					await this.saveContactIndex();
+					await this.saveMessageCache();
+					if (this.settings.createContactNotes) {
+						await this.writeContactNotes();
+					}
+					if (this.settings.autoUpdateStaleness) {
+						await this.updateStaleness();
+					}
+					const count = Object.keys(checkpointIndex.contacts).length;
+					console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
+				}
 			);
 
 			this.contactIndex = result.index;

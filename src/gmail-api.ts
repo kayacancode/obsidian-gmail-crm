@@ -13,7 +13,7 @@ import { CONTACT_INDEX_SCHEMA_VERSION } from "./types";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-const SCOPES = "https://www.googleapis.com/auth/gmail.metadata https://www.googleapis.com/auth/calendar.events.readonly";
+const SCOPES = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events.readonly";
 const REDIRECT_URI = "http://127.0.0.1:42813/callback";
 
 // Shared OAuth credentials for the Gmail CRM plugin (Desktop app type).
@@ -79,6 +79,7 @@ type ThreadState = {
 export class GmailApi {
 	private settings: GmailCrmSettings;
 	private onSettingsUpdate: (patch: Partial<GmailCrmSettings>) => Promise<void>;
+	private refreshPromise: Promise<void> | null = null; // lock to prevent parallel refreshes
 
 	constructor(
 		settings: GmailCrmSettings,
@@ -194,6 +195,34 @@ export class GmailApi {
 			return this.apiRequest(options, retries - 1);
 		}
 
+		// Retry on 401 (token expired) — refresh and retry once
+		if (resp.status === 401 && retries > 0) {
+			console.warn(`[Gmail CRM] Token expired, refreshing and retrying...`);
+			try {
+				if (!this.refreshPromise) {
+					this.refreshPromise = this.refreshAccessToken().finally(() => {
+						this.refreshPromise = null;
+					});
+				}
+				await this.refreshPromise;
+				// Update the Authorization header with the new token
+				if (typeof options !== "string" && options.headers) {
+					options.headers["Authorization"] = `Bearer ${this.settings.accessToken}`;
+				}
+				return this.apiRequest(options, retries - 1);
+			} catch (refreshErr) {
+				console.error(`[Gmail CRM] Token refresh failed`, refreshErr);
+			}
+		}
+
+		// Retry on 500/503 (transient server errors)
+		if ((resp.status === 500 || resp.status === 503) && retries > 0) {
+			const backoff = Math.min((6 - retries) * 5000, 30000);
+			console.warn(`[Gmail CRM] Server error ${resp.status}, retrying in ${backoff / 1000}s (${retries} retries left)`);
+			await this.sleep(backoff);
+			return this.apiRequest(options, retries - 1);
+		}
+
 		// Non-2xx: extract the real error from Google's response body
 		const status = resp.status;
 		const rawBody = resp.text ?? "";
@@ -233,7 +262,13 @@ export class GmailApi {
 
 	private async getHeaders(): Promise<Record<string, string>> {
 		if (Date.now() >= this.settings.tokenExpiry - 60_000) {
-			await this.refreshAccessToken();
+			// Use a lock so parallel requests don't all refresh simultaneously
+			if (!this.refreshPromise) {
+				this.refreshPromise = this.refreshAccessToken().finally(() => {
+					this.refreshPromise = null;
+				});
+			}
+			await this.refreshPromise;
 		}
 		return { Authorization: `Bearer ${this.settings.accessToken}` };
 	}
@@ -270,6 +305,28 @@ export class GmailApi {
 			});
 			if (pageToken) params.set("pageToken", pageToken);
 
+			// With gmail.readonly scope, we can use q= search parameter to filter
+			// server-side — dramatically faster than fetching everything.
+			const excludes: string[] = [];
+			// Exclude user-configured Gmail categories
+			const cats = (this.settings.excludeCategories ?? "")
+				.split(",").map(c => c.trim().toLowerCase()).filter(Boolean);
+			for (const cat of cats) {
+				excludes.push(`-category:${cat}`);
+			}
+			// Exclude user-configured Gmail labels
+			const labels = (this.settings.excludeLabels ?? "")
+				.split(",").map(l => l.trim()).filter(Boolean);
+			for (const label of labels) {
+				excludes.push(`-label:${label}`);
+			}
+			// Exclude user-configured blocked domains
+			for (const domain of this.blockedDomains) {
+				excludes.push(`-from:${domain}`);
+			}
+			const q = excludes.join(" ");
+			if (q) params.set("q", q);
+
 			const resp = await this.apiRequest({
 				url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
 				headers,
@@ -299,7 +356,8 @@ export class GmailApi {
 		maxResults: number,
 		onProgress?: (done: number, total: number) => void,
 		existingIndex?: ContactIndex | null,
-		messageCache?: MessageCache | null
+		messageCache?: MessageCache | null,
+		onCheckpoint?: (index: ContactIndex, cache: MessageCache) => Promise<void>
 	): Promise<{ index: ContactIndex; cache: MessageCache }> {
 		const userEmail = await this.getUserEmail();
 
@@ -336,6 +394,10 @@ export class GmailApi {
 
 		const BATCH_SIZE = 10;
 		const BATCH_DELAY_MS = 100; // throttle to stay under Gmail quota
+		const CHECKPOINT_INTERVAL = 2000; // flush to disk every N messages
+		const processedIds = new Set(messageCache?.processedIds ?? []);
+		let lastCheckpoint = 0;
+
 		for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
 			const batch = newMessageIds.slice(i, i + BATCH_SIZE);
 			const results = await Promise.all(
@@ -345,8 +407,29 @@ export class GmailApi {
 			for (const msg of results) {
 				this.processMessage(msg, userEmail, contacts, threadStates);
 			}
+			// Track processed IDs for incremental sync
+			for (const m of batch) processedIds.add(m.id);
 
-			onProgress?.(Math.min(i + BATCH_SIZE, newMessageIds.length), newMessageIds.length);
+			const done = Math.min(i + BATCH_SIZE, newMessageIds.length);
+			onProgress?.(done, newMessageIds.length);
+
+			// Checkpoint: flush index + cache to disk periodically
+			if (onCheckpoint && done - lastCheckpoint >= CHECKPOINT_INTERVAL) {
+				lastCheckpoint = done;
+				this.finalizeContactMetrics(contacts, threadStates);
+				const checkpointIndex: ContactIndex = {
+					schemaVersion: 1,
+					lastSync: new Date().toISOString(),
+					userEmail,
+					contacts,
+					edges: existingIndex?.edges ?? [],
+				};
+				const checkpointCache: MessageCache = {
+					lastSync: new Date().toISOString(),
+					processedIds: [...processedIds],
+				};
+				await onCheckpoint(checkpointIndex, checkpointCache);
+			}
 
 			// Small delay between batches to avoid hitting rate limits
 			if (i + BATCH_SIZE < newMessageIds.length) {
