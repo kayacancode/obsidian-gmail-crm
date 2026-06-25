@@ -34,8 +34,8 @@ const WEB_URL = (env.RECONNECT_WEB_URL || "").replace(/\/$/, "");
 const SYNC_TOKEN = env.RECONNECT_SYNC_TOKEN || "";
 const CACHE = env.PEOPLEGRAPH_CACHE || "";
 const BIN = env.PEOPLEGRAPH_BIN || "peoplegraph";
-const RAW_LIMIT = Number(env.RECONNECT_LIMIT || "5");
-const MAX_LIMIT = Number(env.RECONNECT_MAX_LIMIT || "50");
+const RAW_LIMIT = Number(env.RECONNECT_LIMIT || "500");
+const MAX_LIMIT = Number(env.RECONNECT_MAX_LIMIT || "500");
 const LIMIT = Math.min(RAW_LIMIT, MAX_LIMIT);
 if (RAW_LIMIT > MAX_LIMIT) {
 	console.error(`warning: RECONNECT_LIMIT=${RAW_LIMIT} exceeds MAX (${MAX_LIMIT}); capped. Every pushed candidate gets a 30-day "shown" cooldown, so over-pushing silently drains the re-engage pool. Lower RECONNECT_LIMIT to what the human actually swipes per day, or raise RECONNECT_MAX_LIMIT explicitly.`);
