@@ -79,7 +79,7 @@ function saveState(state) {
 
 function pg(args) {
 	try {
-		const out = execFileSync(BIN, ["--cache", CACHE, ...args], { encoding: "utf8" });
+		const out = execFileSync(BIN, ["--cache", CACHE, ...args], { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
 		return JSON.parse(out);
 	} catch (err) {
 		const raw = err.stdout || err.output?.[1] || "{}";
