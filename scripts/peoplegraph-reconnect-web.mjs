@@ -105,20 +105,12 @@ async function api(path, { method = "GET", body } = {}) {
 
 async function push() {
 	const state = loadState();
-	if (!state.pushed) state.pushed = {};
 
-	// Request more than LIMIT so we can filter out recently pushed candidates
-	const requestLimit = Math.min(LIMIT * 2, 2000);
-	const res = pg(["reconnect", "--limit", String(requestLimit)]);
+	// Push ALL reconnect candidates — no limit, no dedup.
+	// The swipe app marks unswiped ones as "unseen" so the user sees what's new.
+	const res = pg(["reconnect", "--limit", "5000"]);
 	if (!res.ok) die(`peoplegraph reconnect failed: ${JSON.stringify(res.error || res)}`);
-	const allPeople = res.data?.people ?? [];
-
-	// Filter out anyone pushed in the last 7 days (dedup window)
-	const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
-	const people = allPeople.filter((p) => {
-		const lastPushed = state.pushed[p.email.trim().toLowerCase()];
-		return !lastPushed || lastPushed < sevenDaysAgo;
-	}).slice(0, LIMIT);
+	const people = res.data?.people ?? [];
 
 	const batch_date = todayStamp();
 	state.batch_date = batch_date;
@@ -145,25 +137,6 @@ async function push() {
 		await api("/api/sync", { method: "POST", body: { batch_date, replace: i === 0, candidates: chunk } });
 	}
 	saveState(state);
-
-	// Track pushed candidates in bridge state so we can avoid re-pushing the same
-	// people across consecutive days. But do NOT mark them as "shown" in
-	// reconnect-feedback.json — only real swipe decisions (boost/suppress/delete)
-	// should go there. This way unswiped candidates stay in the pool and can be
-	// re-pushed in future batches instead of being locked out for 30 days.
-	if (!state.pushed) state.pushed = {};
-	const nowUnix = Math.floor(Date.now() / 1000);
-	for (const p of people) {
-		const email = p.email.trim().toLowerCase();
-		state.pushed[email] = nowUnix;
-	}
-	// Clean up pushed entries older than 7 days (they can be re-pushed after a week)
-	const sevenDaysAgo = nowUnix - 7 * 86400;
-	for (const [email, ts] of Object.entries(state.pushed)) {
-		if (ts < sevenDaysAgo) delete state.pushed[email];
-	}
-	saveState(state);
-	console.log(`tracked ${people.length} candidates in push history (7-day dedup)`);
 
 	writeDailyNoteLine(candidates.length);
 	console.log(`pushed ${candidates.length} candidates for ${batch_date}`);
