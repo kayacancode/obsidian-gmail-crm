@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -1372,9 +1372,15 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
     // Re-engage candidates, with human feedback applied:
     // - boost/suppress/delete: permanently excluded (user made a decision)
     // - shown: excluded for 30 days (unswiped candidates resurface after cooldown)
+    // - NAME-level exclusion: the index holds duplicate rows for the same human
+    //   (2,007 names with 2+ rows as of 2026-07; canonical ids unpopulated), so
+    //   a swipe on any row retires every row sharing that person's name —
+    //   otherwise the same face keeps coming back under a different email.
     let now_unix = unix_seconds();
     const SHOWN_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
-    let mut people: Vec<(ContactRow, u8)> = rows(&index)
+    let all_rows = rows(&index);
+    let swiped_names = swiped_name_set(&all_rows, &feedback);
+    let mut people: Vec<(ContactRow, u8)> = all_rows
         .into_iter()
         .filter_map(|row| {
             let entry = feedback_entry_for(&feedback, &row);
@@ -1388,6 +1394,9 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
                 } else {
                     return None; // boost/suppress/delete — permanent exclusion
                 }
+            }
+            if swiped_names.contains(&normalized_person_name(&row.contact.name)) {
+                return None; // duplicate row of an already-swiped human
             }
             let score = infer_score(&row.contact);
             if score.quadrant != "re-engage" {
@@ -1459,6 +1468,34 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
 }
 
 // Look up a human feedback entry for a contact by its email or any alias.
+// Lowercased, whitespace-collapsed person name for duplicate-row matching.
+fn normalized_person_name(name: &str) -> String {
+    name.split_whitespace()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// Names of every human with a decisive swipe (boost/suppress/delete — not
+// "shown"). Used to retire ALL duplicate rows of a swiped person. Limitation:
+// deleted contacts leave the cache entirely, so their names can't be recovered
+// here and same-name duplicates of deleted humans stay in the pool.
+fn swiped_name_set(all_rows: &[ContactRow], feedback: &FeedbackStore) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if feedback.entries.is_empty() {
+        return names;
+    }
+    for row in all_rows {
+        if feedback_entry_for(feedback, row).is_some_and(|e| e.action != "shown") {
+            let name = normalized_person_name(&row.contact.name);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
 // A human swipe shifts the people score everywhere, not just the deck:
 // boost adds its delta, suppress subtracts it, clamped to 0..=100.
 fn apply_feedback_delta(combined: u8, entry: Option<&FeedbackEntry>) -> u8 {
@@ -5311,6 +5348,40 @@ mod tests {
         assert!(store.entries.remove("x@y.com").is_some());
         write_feedback(&path, &store).unwrap();
         assert!(read_feedback(&path).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn swiped_name_set_retires_duplicate_rows() {
+        let mut entries = HashMap::new();
+        entries.insert(
+            "steve@primary.vc".to_string(),
+            FeedbackEntry { action: "boost".into(), delta: 10, updated_unix: 1 },
+        );
+        entries.insert(
+            "seen@only.com".to_string(),
+            FeedbackEntry { action: "shown".into(), delta: 0, updated_unix: 1 },
+        );
+        let feedback = FeedbackStore { schema_version: 1, updated_at_unix: 1, entries };
+
+        let row = |name: &str, email: &str| ContactRow {
+            email: email.to_string(),
+            contact: Contact {
+                name: name.to_string(),
+                email: email.to_string(),
+                ..empty_contact()
+            },
+        };
+        let all = vec![
+            row("Steve Schlafman", "steve@primary.vc"),   // swiped
+            row("Steve Schlafman", "steve@lerer.com"),    // duplicate row, not swiped
+            row("Seen Person", "seen@only.com"),          // shown-only: not decisive
+            row("Someone Else", "else@x.com"),
+        ];
+        let names = swiped_name_set(&all, &feedback);
+        assert!(names.contains("steve schlafman"));
+        assert!(!names.contains("seen person"), "'shown' is not a decision");
+        assert!(!names.contains("someone else"));
+        assert_eq!(normalized_person_name("  Steve   SCHLAFMAN "), "steve schlafman");
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
