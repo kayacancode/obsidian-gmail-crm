@@ -5,32 +5,36 @@ A names-only, Tinder-style swipe UI for reviewing daily reconnect suggestions, b
 ## How it fits together
 
 ```
-Botwick machine (source of truth)          Cloudflare (this app)          John's phone
-  peoplegraph reconnect --limit 5  ──POST /api/sync (names+ids)──►  Worker + D1  ──►  swipe UI
-  peoplegraph feedback (apply)     ◄──GET /api/decisions───────────              ◄──  right/left/🗑
+Botwick machine (source of truth)             Cloudflare (this app)          John's phone
+  peoplegraph reconnect (full pool)  ──POST /api/sync (diff)──►  Worker + D1  ──►  swipe UI
+  apply swipes (overlay / delete)    ◄──GET /api/decisions──────              ◄──  right/left/🗑
 ```
 
 **Privacy:** this app never receives emails or message content. The Botwick bridge
-assigns each candidate an **opaque id** and keeps the `id → email` map locally; D1
-only ever stores names + display fields. That's why the page can be near-public.
+derives a **stable opaque id** per contact (HMAC of the email with a salt that never
+leaves the machine) and keeps the `id → email` map locally; D1 only ever stores ids +
+display fields. Because ids are stable, a swipe recorded on any day excludes that
+contact from the deck forever.
 
 ## Swipe semantics
 
-| Gesture | Action sent | Effect (applied by Botwick via `peoplegraph feedback`) |
+| Gesture | Action sent | Effect (applied by the bridge on pull) |
 |---|---|---|
-| Swipe right / ♥ / → | `boost` | keep + raise score |
-| Swipe left / ✕ / ← | `suppress` | hide from future suggestions + lower score |
-| 🗑 (confirm) | `delete` | remove from the cache + add to `reconnect-blocklist.json` |
+| Swipe right / ♥ / → | `boost` | out of the deck forever + people score raised globally |
+| Swipe left / ✕ / ← | `suppress` | out of the deck forever + people score lowered globally |
+| 🗑 (confirm) | `delete` | removed from the cache + added to `reconnect-blocklist.json` |
+
+Mistake? `peoplegraph feedback --email X --action clear` un-retires a contact.
 
 ## Endpoints
 
 - `GET /` — swipe UI (static)
 - `GET /api/config` — public, returns the Google client id for sign-in
-- `GET /api/candidates` — pending candidates (names only) — **public read**
+- `GET /api/candidates` — unswiped pool, top 500 by score, `{total, candidates[]}` — **requires Google sign-in** (allowlisted email)
 - `POST /api/swipe` `{id, action}` — **requires Google sign-in** (allowlisted email)
-- `POST /api/sync` `{batch_date, candidates[], replace?}` — **SYNC_TOKEN bearer** (Botwick push)
-- `GET /api/decisions?applied=0` — **SYNC_TOKEN** (Botwick pull)
-- `POST /api/decisions/ack` `{ids[]}` — **SYNC_TOKEN** (mark applied)
+- `POST /api/sync` `{upserts[], remove_ids[], reset?}` — **SYNC_TOKEN bearer** (bridge diff push)
+- `GET /api/decisions?applied=0` — **SYNC_TOKEN** (bridge pull)
+- `POST /api/decisions/ack` `{ids[]}` — **SYNC_TOKEN** (mark applied; also prunes the candidates)
 
 ## One-time setup
 
