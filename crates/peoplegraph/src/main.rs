@@ -1559,13 +1559,12 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
 }
 
 // Short, human-facing re-engagement reason built from hard signals only.
-fn reconnect_nudge(contact: &Contact, days: Option<i64>) -> String {
+// Short, human-facing re-engagement reason built from STABLE signals only.
+// Recency ("last contact N days ago") is rendered by the UI from last_contact;
+// keeping day counts out of the nudge keeps its content hash stable across
+// days, which is what makes the bridge's diff sync cheap.
+fn reconnect_nudge(contact: &Contact, _days: Option<i64>) -> String {
     let mut parts: Vec<String> = Vec::new();
-    match days {
-        Some(d) if d >= 60 => parts.push(format!("No contact in {} months", (d / 30).max(2))),
-        Some(d) => parts.push(format!("Last contact {d} days ago")),
-        None => parts.push("No recorded contact".to_string()),
-    }
     if contact.total_exchanges >= 20 {
         parts.push(format!(
             "previously active ({} emails)",
@@ -1576,6 +1575,9 @@ fn reconnect_nudge(contact: &Contact, days: Option<i64>) -> String {
         parts.push(format!("role: {role}"));
     } else if let Some(company) = display_company(contact) {
         parts.push(format!("at {company}"));
+    }
+    if parts.is_empty() {
+        return "Dormant relationship — worth a reconnect".to_string();
     }
     parts.join(" — ")
 }
@@ -5201,6 +5203,21 @@ mod tests {
             headers.get("authorization"),
             Some(&"Bearer token".to_string())
         );
+    }
+
+    #[test]
+    fn nudge_has_no_day_counts() {
+        let contact = Contact {
+            name: "Test Person".to_string(),
+            total_exchanges: 25,
+            ..empty_contact()
+        };
+        let nudge = reconnect_nudge(&contact, Some(120));
+        assert!(!nudge.contains("120"), "nudge must not embed day counts: {nudge}");
+        assert!(!nudge.to_lowercase().contains("month"), "no month counts either: {nudge}");
+        assert!(nudge.contains("previously active"), "stable facts stay: {nudge}");
+        let no_signal = Contact { name: "Quiet Person".to_string(), ..empty_contact() };
+        assert!(!reconnect_nudge(&no_signal, None).is_empty(), "nudge never empty");
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
