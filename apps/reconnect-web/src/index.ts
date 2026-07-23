@@ -30,7 +30,7 @@ export default {
 
 		try {
 			if (pathname === "/api/candidates" && request.method === "GET") {
-				return await listCandidates(env);
+				return await listCandidates(request, env);
 			}
 			if (pathname === "/api/swipe" && request.method === "POST") {
 				return await swipe(request, env);
@@ -61,7 +61,12 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 // GET /api/candidates — pending (undecided) candidates from the latest batch.
-async function listCandidates(env: Env): Promise<Response> {
+// Requires Google sign-in (allowlisted email): the list exposes names, companies
+// and nudges, i.e. relationship intelligence — not for anonymous viewers.
+async function listCandidates(request: Request, env: Env): Promise<Response> {
+	const auth = await requireGoogleUser(request, env);
+	if ("error" in auth) return json({ error: auth.error }, 401);
+
 	const latest = await env.DB.prepare(
 		"SELECT batch_date FROM candidates ORDER BY batch_date DESC LIMIT 1"
 	).first<{ batch_date: string }>();
