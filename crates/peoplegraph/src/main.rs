@@ -552,10 +552,18 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
             )
         }),
         Commands::Score(args) => with_index(cli, command, start, |index| {
-            score_person(index, &args.email, start)
+            let feedback = match load_feedback(cli) {
+                Ok(store) => store,
+                Err(message) => return fail(command, "feedback_unreadable", message, start),
+            };
+            score_person(index, &feedback, &args.email, start)
         }),
         Commands::WhoKnows(args) => with_index(cli, command, start, |index| {
-            who_knows(index, &args.company, args.limit, start)
+            let feedback = match load_feedback(cli) {
+                Ok(store) => store,
+                Err(message) => return fail(command, "feedback_unreadable", message, start),
+            };
+            who_knows(index, &feedback, &args.company, args.limit, start)
         }),
         Commands::Reconnect(args) => reconnect(cli, command, args, start),
         Commands::Feedback(args) => feedback(cli, command, args, start),
@@ -1245,7 +1253,7 @@ fn find_person(
     )
 }
 
-fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
+fn score_person(index: &ContactIndex, feedback: &FeedbackStore, email: &str, start: Instant) -> Response {
     let email_norm = email.trim().to_ascii_lowercase();
     let Some(row) = find_by_email_or_alias(index, &email_norm) else {
         return fail(
@@ -1257,6 +1265,8 @@ fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
     };
 
     let score = infer_score(&row.contact);
+    let entry = feedback_entry_for(feedback, &row);
+    let effective = apply_feedback_delta(score.combined, entry);
     ok(
         "score",
         json!({
@@ -1264,6 +1274,12 @@ fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
             "name": &row.contact.name,
             "canonical_id": &row.contact.canonical_id,
             "score": score,
+            "effective_score": effective,
+            "manual_adjustment": entry.map(|e| match e.action.as_str() {
+                "boost" => e.delta as i16,
+                "suppress" => -(e.delta as i16),
+                _ => 0,
+            }).unwrap_or(0),
             "score_source": score_source(&row.contact),
             "signals": contact_signals(&row.contact),
         }),
@@ -1278,19 +1294,22 @@ fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
     )
 }
 
-fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) -> Response {
+fn who_knows(index: &ContactIndex, feedback: &FeedbackStore, company: &str, limit: usize, start: Instant) -> Response {
     let company_norm = normalize_company(company);
-    let mut people: Vec<ContactRow> = rows(index)
+    let mut people: Vec<(ContactRow, u8)> = rows(index)
         .into_iter()
         .filter(|row| company_matches(&row.contact, &company_norm))
+        .map(|row| {
+            let entry = feedback_entry_for(feedback, &row);
+            let effective = apply_feedback_delta(infer_score(&row.contact).combined, entry);
+            (row, effective)
+        })
         .collect();
 
     people.sort_by(|a, b| {
-        infer_score(&b.contact)
-            .combined
-            .cmp(&infer_score(&a.contact).combined)
-            .then_with(|| b.contact.total_exchanges.cmp(&a.contact.total_exchanges))
-            .then_with(|| a.contact.name.cmp(&b.contact.name))
+        b.1.cmp(&a.1)
+            .then_with(|| b.0.contact.total_exchanges.cmp(&a.0.contact.total_exchanges))
+            .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
     let total = people.len();
@@ -1298,7 +1317,7 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
     let returned_people: Vec<Value> = people
         .into_iter()
         .take(limit)
-        .map(|row| {
+        .map(|(row, effective)| {
             let score = infer_score(&row.contact);
             let company = display_company(&row.contact);
             let company_source = company_source(&row.contact, company.as_deref());
@@ -1311,6 +1330,7 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
                 "domain": &row.contact.domain,
                 "canonical_id": &row.contact.canonical_id,
                 "score": score,
+                "effective_score": effective,
                 "score_source": score_source(&row.contact),
                 "last_contact": &row.contact.last_contact,
                 "total_exchanges": row.contact.total_exchanges,
@@ -1324,7 +1344,7 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
         json!({
             "company": company,
             "people": returned_people,
-            "ranked_by": "combined_score_desc",
+            "ranked_by": "effective_score_desc",
         }),
         json!({
             "matched": total,
@@ -1439,6 +1459,22 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
 }
 
 // Look up a human feedback entry for a contact by its email or any alias.
+// A human swipe shifts the people score everywhere, not just the deck:
+// boost adds its delta, suppress subtracts it, clamped to 0..=100.
+fn apply_feedback_delta(combined: u8, entry: Option<&FeedbackEntry>) -> u8 {
+    match entry.map(|e| (e.action.as_str(), e.delta)) {
+        Some(("boost", delta)) => combined.saturating_add(delta).min(100),
+        Some(("suppress", delta)) => combined.saturating_sub(delta),
+        _ => combined,
+    }
+}
+
+// Resolve and read the feedback overlay for read-only score surfaces.
+fn load_feedback(cli: &Cli) -> Result<FeedbackStore, String> {
+    let cache_path = resolve_cache_path(cli.cache.as_deref())?;
+    read_feedback(&feedback_path(&cache_path))
+}
+
 fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<&'a FeedbackEntry> {
     let mut keys = vec![
         row.email.trim().to_ascii_lowercase(),
@@ -5218,6 +5254,19 @@ mod tests {
         assert!(nudge.contains("previously active"), "stable facts stay: {nudge}");
         let no_signal = Contact { name: "Quiet Person".to_string(), ..empty_contact() };
         assert!(!reconnect_nudge(&no_signal, None).is_empty(), "nudge never empty");
+    }
+
+    #[test]
+    fn apply_feedback_delta_boost_suppress_clamp() {
+        let boost = FeedbackEntry { action: "boost".into(), delta: 10, updated_unix: 0 };
+        let suppress = FeedbackEntry { action: "suppress".into(), delta: 10, updated_unix: 0 };
+        let delete = FeedbackEntry { action: "delete".into(), delta: 0, updated_unix: 0 };
+        assert_eq!(apply_feedback_delta(50, Some(&boost)), 60);
+        assert_eq!(apply_feedback_delta(95, Some(&boost)), 100, "clamped at 100");
+        assert_eq!(apply_feedback_delta(50, Some(&suppress)), 40);
+        assert_eq!(apply_feedback_delta(5, Some(&suppress)), 0, "clamped at 0");
+        assert_eq!(apply_feedback_delta(50, Some(&delete)), 50, "delete is not a score signal");
+        assert_eq!(apply_feedback_delta(50, None), 50);
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
