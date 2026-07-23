@@ -31,10 +31,13 @@ Worker (Kaya's); section C runs on the source-of-truth machine (John's / "Botwic
    git fetch && git checkout reconnect-stable-ids
    cp ~/.peoplegraph/reconnect-web-state.json{,.v1.bak} 2>/dev/null || true   # keep a rollback copy
    ```
-6. Rebuild/install the CLI (the cron must run THIS build):
+6. Install the CLI (the cron must run THIS build). Do NOT use
+   `scripts/install-peoplegraph.sh` — it downloads the latest GitHub *release*
+   (0.3.4), which predates these fixes. Use the prebuilt arm64 binary committed
+   on this branch (or `cargo build --release` if Rust is installed):
    ```bash
-   bash scripts/install-peoplegraph.sh   # or: cargo build --release + copy onto the cron's PATH
-   peoplegraph version
+   cp bin/peoplegraph ~/.local/bin/peoplegraph
+   peoplegraph version   # MUST print 0.3.7
    ```
 7. Feedback file sanity (this is the check that would have caught the July incident):
    ```bash
