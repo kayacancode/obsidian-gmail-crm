@@ -57,7 +57,8 @@
 		const countEl = document.getElementById("count");
 		let idToken = null;       // Google ID token (required to swipe)
 		let queue = [];           // pending candidates
-		let total = 0;
+		let total = 0;            // pool size on the server (may exceed one 500-row page)
+		let seen = new Set();     // ids currently or previously in the queue this session
 
 		// The GIS client loads async; wait for it instead of racing it (the old
 		// code checked window.google once and dead-ended on "Sign-in unavailable"
@@ -111,14 +112,29 @@
 				if (window.google?.accounts?.id) google.accounts.id.prompt();
 				return;
 			}
-			const data = await resp.json().catch(() => ({ candidates: [] }));
-			queue = data.candidates || [];
-			total = queue.length;
+			const data = await resp.json().catch(() => ({ total: 0, candidates: [] }));
+			queue = (data.candidates || []).filter(c => !seen.has(c.id));
+			queue.forEach(c => seen.add(c.id));
+			total = data.total ?? queue.length;
 			render();
 		}
 
+		// The server caps responses at 500; when the local queue runs low and the
+		// pool has more, append the next slice (already-decided ids never come back).
+		async function refill() {
+			if (!idToken || queue.length >= 20 || seen.size >= total) return;
+			const resp = await fetch("/api/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
+			if (!resp || !resp.ok) return;
+			const data = await resp.json().catch(() => null);
+			if (!data) return;
+			total = data.total ?? total;
+			for (const c of data.candidates || []) {
+				if (!seen.has(c.id)) { seen.add(c.id); queue.push(c); }
+			}
+		}
+
 		function render() {
-			countEl.textContent = total ? `${total - queue.length + (queue.length?1:0)} / ${total}` : "";
+			countEl.textContent = total ? `${Math.min(seen.size - queue.length + 1, total)} / ${total}` : "";
 			if (queue.length === 0) {
 				actionsEl.hidden = true;
 				stage.innerHTML = `<div class="empty">Nobody to reconnect with right now — you're clear. 🎉</div>`;
@@ -127,9 +143,12 @@
 			}
 			const c = queue[0];
 			actionsEl.hidden = false;
-			const last = c.days_since == null ? "No recorded contact"
-				: c.days_since === 0 ? "Last contact today"
-				: `Last contact ${c.days_since} day${c.days_since === 1 ? "" : "s"} ago`;
+			const days = c.last_contact
+				? Math.max(0, Math.floor((Date.now() - new Date(c.last_contact + "T00:00:00")) / 86400000))
+				: null;
+			const last = days == null ? "No recorded contact"
+				: days === 0 ? "Last contact today"
+				: `Last contact ${days} day${days === 1 ? "" : "s"} ago`;
 			const card = document.createElement("div");
 			card.className = "card";
 			card.innerHTML = `
@@ -150,25 +169,50 @@
 			wireDrag(card);
 		}
 
+		function showNotice(msg) {
+			const el = document.createElement("div");
+			el.className = "gate";
+			el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid #2c313c;border-radius:10px;padding:10px 16px;font-size:.85rem;z-index:10;";
+			el.textContent = msg;
+			document.body.appendChild(el);
+			setTimeout(() => el.remove(), 2500);
+		}
+
 		async function decide(action) {
 			const c = queue[0];
 			if (!c) return;
-			if (!idToken) { alert("Sign in with Google to record swipes."); return; }
-			// optimistic: pop the card immediately
+			if (!idToken) { renderGate(); return; }
+			// optimistic: pop the card immediately, but ALWAYS restore it on failure
 			queue.shift();
 			render();
+			refill();
 			try {
 				const r = await fetch("/api/swipe", {
 					method: "POST",
 					headers: { "content-type": "application/json", "authorization": "Bearer " + idToken },
 					body: JSON.stringify({ id: c.id, action }),
 				});
-				if (!r.ok) {
-					const e = await r.json().catch(() => ({}));
-					if (r.status === 401) { alert("Sign-in required / not authorized."); }
-					else { console.warn("swipe failed", e); }
+				if (r.status === 401) {
+					// Token expired mid-session: put the card back, re-auth, nothing lost.
+					queue.unshift(c);
+					idToken = null;
+					renderGate();
+					if (window.google?.accounts?.id) google.accounts.id.prompt();
+					return;
 				}
-			} catch (e) { console.warn(e); }
+				if (r.status === 404) {
+					// Contact left the pool since we loaded (re-engaged or removed) — skipping is correct.
+					showNotice(`${c.name} is no longer in the pool — skipped`);
+					return;
+				}
+				if (!r.ok) {
+					queue.unshift(c); render();
+					showNotice("Swipe not saved — try again");
+				}
+			} catch (e) {
+				queue.unshift(c); render();
+				showNotice("Offline? Swipe not saved — try again");
+			}
 		}
 
 		// right swipe -> boost (keep), left -> suppress
