@@ -143,9 +143,11 @@
 			}
 			const c = queue[0];
 			actionsEl.hidden = false;
-			const days = c.last_contact
-				? Math.max(0, Math.floor((Date.now() - new Date(c.last_contact + "T00:00:00")) / 86400000))
-				: null;
+			// last_contact may be a bare date (YYYY-MM-DD) or a full ISO timestamp
+			const ts = c.last_contact
+				? Date.parse(c.last_contact.includes("T") ? c.last_contact : c.last_contact + "T00:00:00")
+				: NaN;
+			const days = Number.isFinite(ts) ? Math.max(0, Math.floor((Date.now() - ts) / 86400000)) : null;
 			const last = days == null ? "No recorded contact"
 				: days === 0 ? "Last contact today"
 				: `Last contact ${days} day${days === 1 ? "" : "s"} ago`;
