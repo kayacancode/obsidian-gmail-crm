@@ -135,7 +135,7 @@ struct FeedbackArgs {
     #[arg(long)]
     email: String,
 
-    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist) | shown (mark as surfaced, 30-day cooldown)
+    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist) | shown (mark as surfaced, 30-day cooldown) | clear (undo a swipe: remove overlay + blocklist entries)
     #[arg(long)]
     action: String,
 
@@ -1489,11 +1489,11 @@ fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<
 // Record a human swipe decision. WRITE — local source-of-truth machine only.
 fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instant) -> Response {
     let action = args.action.trim().to_ascii_lowercase();
-    if !matches!(action.as_str(), "boost" | "suppress" | "delete" | "shown") {
+    if !matches!(action.as_str(), "boost" | "suppress" | "delete" | "shown" | "clear") {
         return fail(
             command,
             "invalid_action",
-            format!("unknown action '{}': use boost|suppress|delete|shown", args.action),
+            format!("unknown action '{}': use boost|suppress|delete|shown|clear", args.action),
             start,
         );
     }
@@ -1506,6 +1506,38 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
         Ok(path) => path,
         Err(message) => return fail(command, "cache_not_found", message, start),
     };
+
+    // clear: undo a swipe — drop the overlay entry (and the blocklist entry if
+    // the contact had been deleted) so the contact can re-enter the pool.
+    if action == "clear" {
+        let fb_path = feedback_path(&cache_path);
+        let mut store = match read_feedback(&fb_path) {
+            Ok(store) => store,
+            Err(message) => return fail(command, "feedback_unreadable", message, start),
+        };
+        let cleared = store.entries.remove(&email).is_some();
+        store.updated_at_unix = unix_seconds();
+        if let Err(message) = write_feedback(&fb_path, &store) {
+            return fail(command, "write_failed", message, start);
+        }
+        let bl_path = blocklist_path(&cache_path);
+        if let Ok(content) = fs::read_to_string(&bl_path) {
+            if let Ok(mut blocklist) = serde_json::from_str::<Vec<String>>(&content) {
+                let before = blocklist.len();
+                blocklist.retain(|e| !e.eq_ignore_ascii_case(&email));
+                if blocklist.len() != before {
+                    if let Err(message) = write_json_value(&bl_path, &json!(blocklist)) {
+                        return fail(command, "write_failed", message, start);
+                    }
+                }
+            }
+        }
+        return ok(
+            command,
+            json!({ "email": email, "action": "clear", "cleared": cleared }),
+            json!({ "ms": elapsed_ms(start) }),
+        );
+    }
 
     // delete: pull the contact out of the cache (raw JSON, preserving unknown
     // fields) and add the email to the blocklist so future syncs skip it.
@@ -5267,6 +5299,18 @@ mod tests {
         assert_eq!(apply_feedback_delta(5, Some(&suppress)), 0, "clamped at 0");
         assert_eq!(apply_feedback_delta(50, Some(&delete)), 50, "delete is not a score signal");
         assert_eq!(apply_feedback_delta(50, None), 50);
+    }
+
+    #[test]
+    fn feedback_clear_removes_entry() {
+        let path = tmp_file(
+            "clearme.json",
+            r#"{"schemaVersion":1,"updatedAtUnix":1,"entries":{"x@y.com":{"action":"boost","delta":10,"updatedUnix":1}}}"#,
+        );
+        let mut store = read_feedback(&path).unwrap();
+        assert!(store.entries.remove("x@y.com").is_some());
+        write_feedback(&path, &store).unwrap();
+        assert!(read_feedback(&path).unwrap().entries.is_empty());
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
