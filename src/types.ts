@@ -21,6 +21,11 @@ export interface GmailCrmSettings {
 	stalenessUpdateInterval: number; // 0 = only on sync, otherwise hours between auto-updates
 	excludeCategories: string; // comma-separated Gmail categories to skip (promotions,social,updates,forums)
 	excludeLabels: string; // comma-separated Gmail labels to skip (e.g. shop@,service@)
+	// betaworks os score push
+	betaworksOsUrl: string; // e.g. https://betaworks-os.<acct>.workers.dev — empty disables
+	betaworksPartnerEmail: string; // identity shown in betaworks os ("john@betaworks.com")
+	betaworksSalienceKey: string; // Salience API key, used to authenticate the push
+	autoPushScores: boolean; // push after each staleness update
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -47,6 +52,10 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	stalenessUpdateInterval: 0, // 0 = only after sync, not on its own timer
 	excludeCategories: "promotions,social", // skip promo and social by default
 	excludeLabels: "", // user-configured labels to skip
+	betaworksOsUrl: "",
+	betaworksPartnerEmail: "",
+	betaworksSalienceKey: "",
+	autoPushScores: true,
 };
 
 export interface ContactScore {

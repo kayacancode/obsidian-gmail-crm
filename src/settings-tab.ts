@@ -202,6 +202,58 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// betaworks os section
+		new Setting(containerEl).setName("betaworks os").setHeading();
+
+		new Setting(containerEl)
+			.setName("betaworks os URL")
+			.setDesc("Deployment to push relationship scores to. Empty disables pushing.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.betaworksOsUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.betaworksOsUrl = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Partner email")
+			.setDesc("Your betaworks identity, e.g. john@betaworks.com.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.betaworksPartnerEmail)
+					.onChange(async (value) => {
+						this.plugin.settings.betaworksPartnerEmail = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Salience API key")
+			.setDesc("Authenticates the push (same key you use in betaworks os).")
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text
+					.setValue(this.plugin.settings.betaworksSalienceKey)
+					.onChange(async (value) => {
+						this.plugin.settings.betaworksSalienceKey = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Auto-push after scoring")
+			.setDesc("Push scores to betaworks os whenever staleness scores update.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoPushScores)
+					.onChange(async (value) => {
+						this.plugin.settings.autoPushScores = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
 		// Notes section
 		new Setting(containerEl).setName("Contact notes").setHeading();
 

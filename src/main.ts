@@ -12,6 +12,7 @@ import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
 import { computeStaleness } from "./staleness";
+import { pushScoresToBetaworks, type ScoredPage } from "./betaworks-push";
 import { syncCalendarData } from "./calendar-sync";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
@@ -126,6 +127,13 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "update-staleness",
 			name: "Update staleness scores",
 			callback: () => { void this.updateStaleness(); },
+		});
+
+		// Command: push scores to betaworks os
+		this.addCommand({
+			id: "push-betaworks-scores",
+			name: "Push scores to betaworks os",
+			callback: () => { void this.pushBetaworksScores(); },
 		});
 
 		// Command: review local merge queue
@@ -672,10 +680,12 @@ export default class GmailCrmPlugin extends Plugin {
 
 			let done = 0;
 			let staleCount = 0;
+			const scoredPages: ScoredPage[] = [];
 			for (const [name, page] of Object.entries(pages)) {
 				done++;
 				const relationships = graph[name] ?? [];
 				const staleness = computeStaleness(page, relationships);
+				scoredPages.push({ page, staleness });
 				this.updateContactScore(page, staleness, scoreUpdatedAt);
 
 				if (staleness.label === "stale" || staleness.label === "dormant") {
@@ -706,11 +716,70 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 
 			notice.setMessage(`Scored ${count} contacts — ${staleCount} going stale`);
+
+			if (
+				this.settings.autoPushScores &&
+				this.settings.betaworksOsUrl &&
+				this.settings.betaworksPartnerEmail &&
+				this.settings.betaworksSalienceKey
+			) {
+				try {
+					const pushed = await pushScoresToBetaworks(
+						{
+							url: this.settings.betaworksOsUrl,
+							partnerEmail: this.settings.betaworksPartnerEmail,
+							salienceKey: this.settings.betaworksSalienceKey,
+						},
+						scoredPages
+					);
+					notice.setMessage(`Scored ${count} contacts — pushed ${pushed} to betaworks os`);
+				} catch (e: unknown) {
+					// Push failures never block scoring.
+					const msg = e instanceof Error ? e.message : String(e);
+					console.error("[Gmail CRM] betaworks os push failed", e);
+					new Notice(`betaworks os push failed: ${msg}`);
+				}
+			}
 			setTimeout(() => notice.hide(), 4000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Staleness update failed: ${msg}`);
+		}
+	}
+
+	async pushBetaworksScores() {
+		if (
+			!this.settings.betaworksOsUrl ||
+			!this.settings.betaworksPartnerEmail ||
+			!this.settings.betaworksSalienceKey
+		) {
+			new Notice("Set the betaworks os URL, partner email, and Salience key in settings first");
+			return;
+		}
+		const notice = new Notice("Pushing scores to betaworks os...", 0);
+		try {
+			const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+			const pages = await engine.loadPeoplePages();
+			const graph = engine.buildGraph(pages, this.contactIndex);
+			const scoredPages: ScoredPage[] = Object.entries(pages).map(([name, page]) => ({
+				page,
+				staleness: computeStaleness(page, graph[name] ?? []),
+			}));
+			const pushed = await pushScoresToBetaworks(
+				{
+					url: this.settings.betaworksOsUrl,
+					partnerEmail: this.settings.betaworksPartnerEmail,
+					salienceKey: this.settings.betaworksSalienceKey,
+				},
+				scoredPages
+			);
+			notice.setMessage(`Pushed ${pushed} contacts to betaworks os`);
+			setTimeout(() => notice.hide(), 4000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`betaworks os push failed: ${msg}`);
 		}
 	}
 
