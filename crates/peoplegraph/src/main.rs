@@ -363,9 +363,9 @@ struct ContactEdge {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FeedbackStore {
-    #[serde(default = "one")]
+    #[serde(default = "one", alias = "schema_version")]
     schema_version: u32,
-    #[serde(default)]
+    #[serde(default, alias = "updated_at_unix")]
     updated_at_unix: u64,
     #[serde(default)]
     entries: HashMap<String, FeedbackEntry>,
@@ -377,7 +377,7 @@ struct FeedbackEntry {
     action: String, // "boost" | "suppress" | "delete" | "shown"
     #[serde(default)]
     delta: u8,
-    #[serde(default)]
+    #[serde(default, alias = "updated_unix")]
     updated_unix: u64,
 }
 
@@ -1343,7 +1343,10 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let feedback = read_feedback(&feedback_path(&cache_path));
+    let feedback = match read_feedback(&feedback_path(&cache_path)) {
+        Ok(store) => store,
+        Err(message) => return fail(command, "feedback_unreadable", message, start),
+    };
     let min_score = args.min_score;
 
     // Re-engage candidates, with human feedback applied:
@@ -1523,7 +1526,10 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
 
     // Record the overlay entry for every action (a delete leaves a tombstone).
     let fb_path = feedback_path(&cache_path);
-    let mut store = read_feedback(&fb_path);
+    let mut store = match read_feedback(&fb_path) {
+        Ok(store) => store,
+        Err(message) => return fail(command, "feedback_unreadable", message, start),
+    };
     let now = unix_seconds();
     let delta = if action == "delete" || action == "shown" { 0 } else { args.delta.min(100) };
     store.entries.insert(
@@ -2771,15 +2777,29 @@ fn blocklist_path(cache_path: &Path) -> PathBuf {
         .join("reconnect-blocklist.json")
 }
 
-fn read_feedback(path: &Path) -> FeedbackStore {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<FeedbackStore>(&content).ok())
-        .unwrap_or_else(|| FeedbackStore {
-            schema_version: 1,
-            updated_at_unix: unix_seconds(),
-            entries: HashMap::new(),
-        })
+// Missing file -> empty store (normal on first run). Present-but-unparseable
+// file -> hard error: a silently empty store un-excludes every swiped contact,
+// which is exactly the 2026-07-22 "everyone reappeared" incident.
+fn read_feedback(path: &Path) -> Result<FeedbackStore, String> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FeedbackStore {
+                schema_version: 1,
+                updated_at_unix: unix_seconds(),
+                entries: HashMap::new(),
+            })
+        }
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    let mut store: FeedbackStore = serde_json::from_str(&content)
+        .map_err(|err| format!("malformed feedback file {}: {err}", path.display()))?;
+    store.entries = store
+        .entries
+        .into_iter()
+        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value))
+        .collect();
+    Ok(store)
 }
 
 fn write_feedback(path: &Path, store: &FeedbackStore) -> Result<(), String> {
@@ -5183,6 +5203,49 @@ mod tests {
         );
     }
 
+    fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("pg-test-{}-{}", std::process::id(), name));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn read_feedback_accepts_legacy_snake_case() {
+        let path = tmp_file(
+            "legacy.json",
+            r#"{"schema_version":1,"updated_at_unix":1750000000,
+                "entries":{"Alice@Example.com":{"action":"boost","delta":10,"updated_unix":1750000000}}}"#,
+        );
+        let store = read_feedback(&path).expect("legacy file must parse");
+        let entry = store.entries.get("alice@example.com").expect("key must be lowercased");
+        assert_eq!(entry.action, "boost");
+        assert_eq!(entry.updated_unix, 1750000000);
+    }
+
+    #[test]
+    fn read_feedback_accepts_camel_case() {
+        let path = tmp_file(
+            "camel.json",
+            r#"{"schemaVersion":1,"updatedAtUnix":1750000000,
+                "entries":{"bob@example.com":{"action":"suppress","delta":10,"updatedUnix":1750000000}}}"#,
+        );
+        let store = read_feedback(&path).expect("camelCase file must parse");
+        assert_eq!(store.entries.get("bob@example.com").unwrap().action, "suppress");
+    }
+
+    #[test]
+    fn read_feedback_missing_file_is_empty_store() {
+        let path = std::env::temp_dir().join("pg-test-definitely-missing.json");
+        let store = read_feedback(&path).expect("missing file is not an error");
+        assert!(store.entries.is_empty());
+    }
+
+    #[test]
+    fn read_feedback_malformed_file_is_a_hard_error() {
+        let path = tmp_file("broken.json", "{ not json ");
+        assert!(read_feedback(&path).is_err(), "malformed feedback must not become an empty store");
+    }
+
     fn empty_contact() -> Contact {
         Contact {
             name: String::new(),
@@ -5210,6 +5273,9 @@ mod tests {
             relationship_recency: None,
             combined_score: None,
             quadrant: None,
+            open_count: 0,
+            last_open_at: None,
+            open_engagement: None,
         }
     }
 }
