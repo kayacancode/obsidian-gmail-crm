@@ -7,10 +7,12 @@
  * maps them back to emails on its own machine.
  *
  * Auth:
- *  - Reads (GET /api/candidates) are public — names only, low sensitivity.
- *  - Writes (POST /api/swipe) require a Google ID token whose email is in
- *    ALLOWED_EMAILS (John + Kaya).
+ *  - Reads (GET /api/candidates) and writes (POST /api/swipe) require a Google
+ *    ID token whose email is in ALLOWED_EMAILS (John + Kaya).
  *  - Machine sync (/api/sync, /api/decisions) requires the SYNC_TOKEN bearer.
+ *
+ * Ids are STABLE (HMAC of email, salted on the bridge machine): a decision on
+ * an id excludes that contact from /api/candidates forever, across every push.
  */
 
 interface Env {
@@ -60,29 +62,26 @@ export default {
 	},
 } satisfies ExportedHandler<Env>;
 
-// GET /api/candidates — pending (undecided) candidates from the latest batch.
-// Requires Google sign-in (allowlisted email): the list exposes names, companies
-// and nudges, i.e. relationship intelligence — not for anonymous viewers.
+// GET /api/candidates — the unswiped pool, best first. Google allowlist gated:
+// names/companies/nudges are relationship intelligence, not for anonymous viewers.
 async function listCandidates(request: Request, env: Env): Promise<Response> {
 	const auth = await requireGoogleUser(request, env);
 	if ("error" in auth) return json({ error: auth.error }, 401);
 
-	const latest = await env.DB.prepare(
-		"SELECT batch_date FROM candidates ORDER BY batch_date DESC LIMIT 1"
-	).first<{ batch_date: string }>();
-	if (!latest) return json({ batch_date: null, candidates: [] });
+	const totalRow = await env.DB.prepare(
+		`SELECT COUNT(*) AS n FROM candidates c LEFT JOIN decisions d ON d.id = c.id WHERE d.id IS NULL`
+	).first<{ n: number }>();
 
 	const rows = await env.DB.prepare(
-		`SELECT c.id, c.name, c.company, c.days_since, c.score, c.nudge
+		`SELECT c.id, c.name, c.company, c.last_contact, c.score, c.nudge
 		   FROM candidates c
 		   LEFT JOIN decisions d ON d.id = c.id
-		  WHERE c.batch_date = ? AND d.id IS NULL
-		  ORDER BY c.score DESC`
-	)
-		.bind(latest.batch_date)
-		.all();
+		  WHERE d.id IS NULL
+		  ORDER BY c.score DESC
+		  LIMIT 500`
+	).all();
 
-	return json({ batch_date: latest.batch_date, candidates: rows.results ?? [] });
+	return json({ total: totalRow?.n ?? 0, candidates: rows.results ?? [] });
 }
 
 // POST /api/swipe { id, action } — requires Google sign-in (allowlisted email).
@@ -118,54 +117,42 @@ async function swipe(request: Request, env: Env): Promise<Response> {
 	return json({ ok: true, id: body.id, action: body.action });
 }
 
-// POST /api/sync { batch_date, candidates:[...], replace? } — Botwick push.
+// POST /api/sync { upserts, remove_ids, reset? } — bridge diff push.
 async function sync(request: Request, env: Env): Promise<Response> {
 	if (!checkSyncToken(request, env)) return json({ error: "unauthorized" }, 401);
 
 	const body = (await request.json().catch(() => null)) as
-		| { batch_date?: string; replace?: boolean; candidates?: CandidateInput[] }
+		| { upserts?: CandidateInput[]; remove_ids?: string[]; reset?: boolean }
 		| null;
-	if (!body?.batch_date || !Array.isArray(body.candidates)) {
-		return json({ error: "bad_request", message: "need batch_date + candidates[]" }, 400);
+	if (!body || (!Array.isArray(body.upserts) && !Array.isArray(body.remove_ids) && !body.reset)) {
+		return json({ error: "bad_request", message: "need upserts[] and/or remove_ids[] (or reset)" }, 400);
 	}
+	const upserts = body.upserts ?? [];
+	const removeIds = body.remove_ids ?? [];
 
 	const stmts: D1PreparedStatement[] = [];
-	if (body.replace) {
-		// Clear this batch's candidates (and their decisions) before re-inserting.
-		stmts.push(
-			env.DB.prepare(
-				"DELETE FROM decisions WHERE id IN (SELECT id FROM candidates WHERE batch_date = ?)"
-			).bind(body.batch_date)
-		);
-		stmts.push(env.DB.prepare("DELETE FROM candidates WHERE batch_date = ?").bind(body.batch_date));
-	}
+	if (body.reset) stmts.push(env.DB.prepare("DELETE FROM candidates"));
 
 	const now = nowSeconds();
 	const insert = env.DB.prepare(
-		`INSERT INTO candidates (id, name, company, days_since, score, nudge, batch_date, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO candidates (id, name, company, last_contact, score, nudge, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
-		   name = excluded.name, company = excluded.company, days_since = excluded.days_since,
-		   score = excluded.score, nudge = excluded.nudge, batch_date = excluded.batch_date`
+		   name = excluded.name, company = excluded.company, last_contact = excluded.last_contact,
+		   score = excluded.score, nudge = excluded.nudge, updated_at = excluded.updated_at`
 	);
-	for (const c of body.candidates) {
+	for (const c of upserts) {
 		if (!c?.id || !c?.name) continue;
-		stmts.push(
-			insert.bind(
-				c.id,
-				c.name,
-				c.company ?? null,
-				c.days_since ?? null,
-				c.score ?? null,
-				c.nudge ?? null,
-				body.batch_date,
-				now
-			)
-		);
+		stmts.push(insert.bind(c.id, c.name, c.company ?? null, c.last_contact ?? null, c.score ?? null, c.nudge ?? null, now));
 	}
+	const remove = env.DB.prepare("DELETE FROM candidates WHERE id = ?");
+	for (const id of removeIds) stmts.push(remove.bind(id));
 
-	if (stmts.length) await env.DB.batch(stmts);
-	return json({ ok: true, inserted: body.candidates.length, batch_date: body.batch_date });
+	// D1 batches are transactional; chunk to stay well under statement limits.
+	for (let i = 0; i < stmts.length; i += 100) {
+		await env.DB.batch(stmts.slice(i, i + 100));
+	}
+	return json({ ok: true, upserted: upserts.length, removed: removeIds.length, reset: !!body.reset });
 }
 
 // GET /api/decisions?applied=0 — Botwick pulls decisions to apply locally.
@@ -192,6 +179,11 @@ async function ackDecisions(request: Request, env: Env): Promise<Response> {
 	await env.DB.prepare(`UPDATE decisions SET applied = 1 WHERE id IN (${placeholders})`)
 		.bind(...body.ids)
 		.run();
+	// Applied contacts leave the pool for good; prune them from candidates now
+	// (the bridge's next remove_ids would catch them anyway — belt and braces).
+	await env.DB.prepare(`DELETE FROM candidates WHERE id IN (${placeholders})`)
+		.bind(...body.ids)
+		.run();
 	return json({ ok: true, acked: body.ids.length });
 }
 
@@ -199,7 +191,7 @@ interface CandidateInput {
 	id: string;
 	name: string;
 	company?: string | null;
-	days_since?: number | null;
+	last_contact?: string | null;
 	score?: number | null;
 	nudge?: string | null;
 }
