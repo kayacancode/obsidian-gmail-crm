@@ -3,7 +3,7 @@
 <head>
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-	<title>Reconnect</title>
+	<title>Merge review</title>
 	<script src="https://accounts.google.com/gsi/client" async defer></script>
 	<style>
 		:root { --bg:#0f1115; --card:#1a1d24; --muted:#8a90a0; --text:#eef0f5; --accent:#6ca2dc; --good:#4ec98b; --bad:#e0656f; }
@@ -11,24 +11,24 @@
 		body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; align-items:center; }
 		header { width:100%; max-width:480px; display:flex; align-items:center; justify-content:space-between; padding:16px; }
 		header h1 { font-size:1.1rem; margin:0; letter-spacing:.02em; }
+		header h1 a { font-size:.75rem; color:var(--muted); text-decoration:none; }
 		#count { color:var(--muted); font-size:.85rem; }
 		main { flex:1; width:100%; max-width:480px; padding:0 16px; display:flex; flex-direction:column; justify-content:center; }
-		.card { position:relative; background:var(--card); border:1px solid #262a33; border-radius:18px; padding:28px 24px; min-height:300px; display:flex; flex-direction:column; gap:10px; touch-action:none; user-select:none; transition:transform .15s ease, opacity .15s ease; }
-		.card .name { font-size:1.9rem; font-weight:700; line-height:1.1; }
-		.card .company { color:var(--muted); font-size:1rem; }
-		.card .last { color:var(--muted); font-size:.9rem; margin-top:6px; }
-		.pills { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+		.card { position:relative; background:var(--card); border:1px solid #262a33; border-radius:18px; padding:24px 20px; min-height:320px; display:flex; flex-direction:column; gap:12px; touch-action:none; user-select:none; transition:transform .15s ease, opacity .15s ease; }
+		.question { text-align:center; color:var(--muted); font-size:.85rem; }
 		.pill { font-size:.72rem; padding:2px 8px; border-radius:10px; background:#262a33; color:var(--muted); }
-		.nudge { margin-top:auto; padding:12px; border-radius:10px; background:rgba(108,162,220,.12); font-size:.92rem; line-height:1.4; }
-		.stamp { position:absolute; top:20px; font-size:1.4rem; font-weight:800; letter-spacing:.08em; padding:4px 10px; border-radius:8px; border:3px solid; opacity:0; }
-		.stamp.keep { right:20px; color:var(--good); border-color:var(--good); transform:rotate(12deg); }
-		.stamp.skip { left:20px; color:var(--bad); border-color:var(--bad); transform:rotate(-12deg); }
+		.pair { display:flex; gap:12px; }
+		.person { flex:1; background:rgba(108,162,220,.07); border-radius:12px; padding:14px 12px; display:flex; flex-direction:column; gap:6px; }
+		.person .name { font-size:1.05rem; font-weight:700; line-height:1.15; }
+		.person .meta { color:var(--muted); font-size:.8rem; }
+		.stamp { position:absolute; top:20px; font-size:1.2rem; font-weight:800; letter-spacing:.08em; padding:4px 10px; border-radius:8px; border:3px solid; opacity:0; z-index:2; }
+		.stamp.merge { right:20px; color:var(--good); border-color:var(--good); transform:rotate(12deg); }
+		.stamp.keep { left:20px; color:var(--bad); border-color:var(--bad); transform:rotate(-12deg); }
 		.actions { display:flex; align-items:center; justify-content:center; gap:18px; padding:22px 0 32px; }
-		.btn { width:60px; height:60px; border-radius:50%; border:1px solid #2c313c; background:var(--card); color:var(--text); font-size:1.5rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:transform .1s; }
+		.btn { width:60px; height:60px; border-radius:50%; border:1px solid #2c313c; background:var(--card); color:var(--text); font-size:1.4rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:transform .1s; }
 		.btn:active { transform:scale(.92); }
 		.btn.good { color:var(--good); border-color:var(--good); }
 		.btn.bad { color:var(--bad); border-color:var(--bad); }
-		.btn.del { width:46px; height:46px; font-size:1.1rem; color:var(--muted); }
 		.hint { color:var(--muted); font-size:.75rem; text-align:center; padding-bottom:16px; }
 		.empty { text-align:center; color:var(--muted); padding:60px 20px; }
 		#signin { display:flex; justify-content:flex-end; }
@@ -37,32 +37,28 @@
 </head>
 <body>
 	<header>
-		<h1>☀️ Reconnect <a href="/merge" style="font-size:.75rem;color:var(--muted);text-decoration:none;">🧬 merge review</a></h1>
+		<h1>🧬 Merge review <a href="/">☀️ reconnect</a></h1>
 		<span id="count"></span>
 	</header>
 	<main>
 		<div id="signin"></div>
 		<div id="stage"></div>
 		<div class="actions" id="actions" hidden>
-			<button class="btn bad" id="b-skip" title="Suppress — don't show again (left)">✕</button>
-			<button class="btn del" id="b-del" title="Delete from database forever">🗑</button>
-			<button class="btn good" id="b-keep" title="Good contact — keep & boost (right)">♥</button>
+			<button class="btn bad" id="b-keep" title="Different people — keep separate (left)">⇹</button>
+			<button class="btn good" id="b-merge" title="Same person — merge (right)">⧉</button>
 		</div>
-		<div class="hint">swipe right = keep · left = suppress · 🗑 = remove forever · ← / → keys work too</div>
+		<div class="hint">swipe right = same person (merge) · left = different people · ← / → keys work too</div>
 	</main>
 
 	<script>
 		const stage = document.getElementById("stage");
 		const actionsEl = document.getElementById("actions");
 		const countEl = document.getElementById("count");
-		let idToken = null;       // Google ID token (required to swipe)
-		let queue = [];           // pending candidates
-		let total = 0;            // pool size on the server (may exceed one 500-row page)
-		let seen = new Set();     // ids currently or previously in the queue this session
+		let idToken = null;
+		let queue = [];
+		let total = 0;
+		let seen = new Set();
 
-		// The GIS client loads async; wait for it instead of racing it (the old
-		// code checked window.google once and dead-ended on "Sign-in unavailable"
-		// if it hadn't arrived yet — the "hangs on auth" symptom).
 		function waitForGoogle(timeoutMs = 10000) {
 			return new Promise((resolve) => {
 				if (window.google?.accounts?.id) return resolve(true);
@@ -92,21 +88,20 @@
 				callback: (resp) => { idToken = resp.credential; load(); },
 			});
 			google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "large" });
-			google.accounts.id.prompt(); // show One Tap as well as the button
+			google.accounts.id.prompt();
 			renderGate();
 		}
 
 		function renderGate() {
 			actionsEl.hidden = true;
 			countEl.textContent = "";
-			stage.innerHTML = `<div class="gate">Sign in with Google to view your reconnect list.</div>`;
+			stage.innerHTML = `<div class="gate">Sign in with Google to review possible duplicates.</div>`;
 		}
 
 		async function load() {
 			if (!idToken) { renderGate(); return; }
-			const resp = await fetch("/api/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
+			const resp = await fetch("/api/merge/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
 			if (!resp || resp.status === 401) {
-				// Token likely expired (Google ID tokens last ~1h) — drop it and re-prompt.
 				idToken = null;
 				renderGate();
 				if (window.google?.accounts?.id) google.accounts.id.prompt();
@@ -119,11 +114,9 @@
 			render();
 		}
 
-		// The server caps responses at 500; when the local queue runs low and the
-		// pool has more, append the next slice (already-decided ids never come back).
 		async function refill() {
 			if (!idToken || queue.length >= 20 || seen.size >= total) return;
-			const resp = await fetch("/api/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
+			const resp = await fetch("/api/merge/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
 			if (!resp || !resp.ok) return;
 			const data = await resp.json().catch(() => null);
 			if (!data) return;
@@ -133,39 +126,49 @@
 			}
 		}
 
+		function personHtml(name, company, domain, lastContact, exchanges) {
+			const ts = lastContact ? Date.parse(lastContact.includes("T") ? lastContact : lastContact + "T00:00:00") : NaN;
+			const days = Number.isFinite(ts) ? Math.max(0, Math.floor((Date.now() - ts) / 86400000)) : null;
+			const bits = [];
+			if (company) bits.push(company);
+			if (domain) bits.push(domain);
+			if (days != null) bits.push(`last contact ${days}d ago`);
+			if (exchanges != null) bits.push(`${exchanges} emails`);
+			const wrap = document.createElement("div");
+			wrap.className = "person";
+			const n = document.createElement("div"); n.className = "name"; n.textContent = name;
+			wrap.appendChild(n);
+			for (const b of bits) {
+				const m = document.createElement("div"); m.className = "meta"; m.textContent = b;
+				wrap.appendChild(m);
+			}
+			return wrap;
+		}
+
 		function render() {
 			countEl.textContent = total ? `${Math.min(seen.size - queue.length + 1, total)} / ${total}` : "";
 			if (queue.length === 0) {
 				actionsEl.hidden = true;
-				stage.innerHTML = `<div class="empty">Nobody to reconnect with right now — you're clear. 🎉</div>`;
+				stage.innerHTML = `<div class="empty">No duplicate pairs to review. 🎉</div>`;
 				countEl.textContent = "";
 				return;
 			}
 			const c = queue[0];
 			actionsEl.hidden = false;
-			// last_contact may be a bare date (YYYY-MM-DD) or a full ISO timestamp
-			const ts = c.last_contact
-				? Date.parse(c.last_contact.includes("T") ? c.last_contact : c.last_contact + "T00:00:00")
-				: NaN;
-			const days = Number.isFinite(ts) ? Math.max(0, Math.floor((Date.now() - ts) / 86400000)) : null;
-			const last = days == null ? "No recorded contact"
-				: days === 0 ? "Last contact today"
-				: `Last contact ${days} day${days === 1 ? "" : "s"} ago`;
 			const card = document.createElement("div");
 			card.className = "card";
 			card.innerHTML = `
-				<div class="stamp keep">KEEP</div>
-				<div class="stamp skip">SKIP</div>
-				<div class="name"></div>
-				<div class="company"></div>
-				<div class="last"></div>
-				<div class="pills">${c.score != null ? `<span class="pill">score ${c.score}</span>` : ""}</div>
-				${c.nudge ? `<div class="nudge"></div>` : ""}
+				<div class="stamp merge">MERGE</div>
+				<div class="stamp keep">KEEP APART</div>
+				<div class="question">Same person?</div>
+				<div class="pair"></div>
+				<div class="question"><span class="pill"></span></div>
 			`;
-			card.querySelector(".name").textContent = c.name;
-			card.querySelector(".company").textContent = c.company || "";
-			card.querySelector(".last").textContent = last;
-			if (c.nudge) card.querySelector(".nudge").textContent = c.nudge;
+			const pair = card.querySelector(".pair");
+			pair.appendChild(personHtml(c.name_a, c.company_a, c.domain_a, c.last_contact_a, c.exchanges_a));
+			pair.appendChild(personHtml(c.name_b, c.company_b, c.domain_b, c.last_contact_b, c.exchanges_b));
+			const pill = card.querySelector(".pill");
+			pill.textContent = `${c.confidence != null ? Math.round(c.confidence * 100) + "% match" : ""}${c.reasons ? " · " + c.reasons.replaceAll(",", ", ").replaceAll("_", " ") : ""}`;
 			stage.innerHTML = "";
 			stage.appendChild(card);
 			wireDrag(card);
@@ -184,18 +187,16 @@
 			const c = queue[0];
 			if (!c) return;
 			if (!idToken) { renderGate(); return; }
-			// optimistic: pop the card immediately, but ALWAYS restore it on failure
 			queue.shift();
 			render();
 			refill();
 			try {
-				const r = await fetch("/api/swipe", {
+				const r = await fetch("/api/merge/swipe", {
 					method: "POST",
 					headers: { "content-type": "application/json", "authorization": "Bearer " + idToken },
 					body: JSON.stringify({ id: c.id, action }),
 				});
 				if (r.status === 401) {
-					// Token expired mid-session: put the card back, re-auth, nothing lost.
 					queue.unshift(c);
 					idToken = null;
 					renderGate();
@@ -203,50 +204,44 @@
 					return;
 				}
 				if (r.status === 404) {
-					// Contact left the pool since we loaded (re-engaged or removed) — skipping is correct.
-					showNotice(`${c.name} is no longer in the pool — skipped`);
+					showNotice("Pair already resolved — skipped");
 					return;
 				}
 				if (!r.ok) {
 					queue.unshift(c); render();
-					showNotice("Swipe not saved — try again");
+					showNotice("Not saved — try again");
 				}
 			} catch (e) {
 				queue.unshift(c); render();
-				showNotice("Offline? Swipe not saved — try again");
+				showNotice("Offline? Not saved — try again");
 			}
 		}
 
-		// right swipe -> boost (keep), left -> suppress
-		document.getElementById("b-keep").onclick = () => decide("boost");
-		document.getElementById("b-skip").onclick = () => decide("suppress");
-		document.getElementById("b-del").onclick = () => {
-			const c = queue[0]; if (!c) return;
-			if (confirm(`Delete ${c.name} from the database forever?`)) decide("delete");
-		};
+		document.getElementById("b-merge").onclick = () => decide("merge");
+		document.getElementById("b-keep").onclick = () => decide("keep");
 		document.addEventListener("keydown", (e) => {
-			if (e.key === "ArrowRight") decide("boost");
-			else if (e.key === "ArrowLeft") decide("suppress");
+			if (e.key === "ArrowRight") decide("merge");
+			else if (e.key === "ArrowLeft") decide("keep");
 		});
 
 		function wireDrag(card) {
 			let startX = 0, dx = 0, dragging = false;
-			const keep = card.querySelector(".stamp.keep");
-			const skip = card.querySelector(".stamp.skip");
+			const mergeStamp = card.querySelector(".stamp.merge");
+			const keepStamp = card.querySelector(".stamp.keep");
 			const down = (x) => { dragging = true; startX = x; };
 			const move = (x) => {
 				if (!dragging) return;
 				dx = x - startX;
 				card.style.transform = `translateX(${dx}px) rotate(${dx / 25}deg)`;
-				keep.style.opacity = dx > 0 ? Math.min(1, dx / 120) : 0;
-				skip.style.opacity = dx < 0 ? Math.min(1, -dx / 120) : 0;
+				mergeStamp.style.opacity = dx > 0 ? Math.min(1, dx / 120) : 0;
+				keepStamp.style.opacity = dx < 0 ? Math.min(1, -dx / 120) : 0;
 			};
 			const up = () => {
 				if (!dragging) return;
 				dragging = false;
-				if (dx > 120) decide("boost");
-				else if (dx < -120) decide("suppress");
-				else { card.style.transform = ""; keep.style.opacity = 0; skip.style.opacity = 0; }
+				if (dx > 120) decide("merge");
+				else if (dx < -120) decide("keep");
+				else { card.style.transform = ""; mergeStamp.style.opacity = 0; keepStamp.style.opacity = 0; }
 				dx = 0;
 			};
 			card.addEventListener("pointerdown", (e) => { card.setPointerCapture(e.pointerId); down(e.clientX); });
