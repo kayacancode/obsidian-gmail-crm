@@ -323,14 +323,18 @@ async function mergePush({ force = false } = {}) {
 	}
 
 	const applied = pg(["apply-duplicates", "--min-confidence", AUTO_MERGE_CONFIDENCE]);
-	if (!applied.ok) die(`apply-duplicates failed: ${JSON.stringify(applied.error || applied)}`);
+	if (!applied.ok) throw new Error(`apply-duplicates failed: ${JSON.stringify(applied.error || applied)}`);
 	console.log(`auto-merged ${applied.data?.applied_pairs ?? 0} corroborated pairs`);
 
 	const res = pg(["suggest-duplicates", "--min-confidence", REVIEW_MIN_CONFIDENCE, "--limit", "2000"]);
-	if (!res.ok) die(`suggest-duplicates failed: ${JSON.stringify(res.error || res)}`);
+	if (!res.ok) throw new Error(`suggest-duplicates failed: ${JSON.stringify(res.error || res)}`);
 	const suggestions = (res.data?.suggestions ?? []).filter((s) => s.confidence < 0.94);
+	const reviewable = suggestions.filter((s) => (s.primary.name || "").trim() && (s.duplicate.name || "").trim());
+	if (reviewable.length !== suggestions.length) {
+		console.log(`skipped ${suggestions.length - reviewable.length} nameless pairs`);
+	}
 
-	const pool = suggestions.map((s) => {
+	const pool = reviewable.map((s) => {
 		const id = pairId(state.salt, s.primary.email, s.duplicate.email);
 		state.mergeMap[id] = {
 			a: s.primary.email.trim().toLowerCase(),
@@ -349,6 +353,8 @@ async function mergePush({ force = false } = {}) {
 		};
 		return { id, h: hashValues([row.confidence, row.reasons, row.name_a, row.name_b, row.company_a, row.company_b]), s: 0, row };
 	});
+
+	saveState(state); // persist mergeMap before pushing — a crash mid-push must not orphan live pairs
 
 	const reset = Object.keys(state.lastMergePush).length === 0;
 	const { upserts, removeIds, next } = diffPool(state.lastMergePush, pool);

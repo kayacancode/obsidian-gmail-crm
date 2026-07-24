@@ -2071,7 +2071,7 @@ fn apply_duplicates(
                 continue;
             }
             if let Some((confidence, _reasons)) = duplicate_confidence(left, right)
-                && confidence >= min_confidence
+                && round_confidence(confidence) >= min_confidence
             {
                 let (primary, duplicate) = primary_duplicate(left, right);
                 pairs.push((confidence, primary.email.clone(), duplicate.email.clone()));
@@ -4859,6 +4859,18 @@ mod tests {
     fn formats_unix_seconds_as_utc_iso() {
         assert_eq!(unix_to_utc_iso(0), "1970-01-01T00:00:00Z");
         assert_eq!(unix_to_utc_iso(1_778_864_760), "2026-05-15T17:06:00Z");
+    }
+
+    #[test]
+    fn round_confidence_boundary_matches_review_band_cutoff() {
+        // suggest_duplicates reports round_confidence(confidence), so
+        // apply_duplicates must gate on the same rounded value or a raw
+        // confidence in [0.935, 0.94) would be neither auto-merged nor
+        // surfaced in the review band.
+        assert_eq!(round_confidence(0.9351), 0.94);
+        assert_eq!(round_confidence(0.9349), 0.93);
+        assert!(round_confidence(0.9351) >= 0.94);
+        assert!(round_confidence(0.9349) < 0.94);
     }
 
     #[test]

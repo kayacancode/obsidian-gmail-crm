@@ -7,7 +7,7 @@
 
 ## B. John's machine
 4. cd ~/obsidian-gmail-crm && git fetch && git checkout contact-dedup && git pull
-5. shasum -a 256 bin/peoplegraph   # must match 75eb4be300ba873eb1b61195756fb754493d89b21d9c0b556356b68082ce2b54 (the hash in the PR description)
+5. shasum -a 256 bin/peoplegraph   # must match 3ac0c519b2680381f923204ffb9cbce2f225d50f6c996ad37196d95a7d51d334 (the hash in the PR description)
    rm -f ~/.local/bin/peoplegraph && cp bin/peoplegraph ~/.local/bin/peoplegraph
    codesign --force --sign - ~/.local/bin/peoplegraph && hash -r
    peoplegraph version   # 0.3.9
