@@ -1416,6 +1416,8 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
             .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
+    let (people, deduped_rows) = dedupe_rows_by_name(people);
+
     let total = people.len();
     let limit = args.limit.max(1);
     let returned_people: Vec<Value> = people
@@ -1457,6 +1459,7 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
         json!({
             "matched": total,
             "returned": returned,
+            "deduped_rows": deduped_rows,
             "min_score": min_score,
             "contact_count": index.contacts.len(),
             "schema_version": index.schema_version,
@@ -1494,6 +1497,26 @@ fn swiped_name_set(all_rows: &[ContactRow], feedback: &FeedbackStore) -> HashSet
         }
     }
     names
+}
+
+// The index holds multiple rows per human; the deck should deal ONE card per
+// person. Input is sorted best-first, so keeping the first occurrence keeps
+// the highest-ranked row. Empty names never collapse (they're not comparable).
+fn dedupe_rows_by_name(people: Vec<(ContactRow, u8)>) -> (Vec<(ContactRow, u8)>, usize) {
+    let mut seen = HashSet::new();
+    let before = people.len();
+    let deduped: Vec<(ContactRow, u8)> = people
+        .into_iter()
+        .filter(|(row, _)| {
+            let name = normalized_person_name(&row.contact.name);
+            if name.is_empty() {
+                return true;
+            }
+            seen.insert(name)
+        })
+        .collect();
+    let dropped = before - deduped.len();
+    (deduped, dropped)
 }
 
 // A human swipe shifts the people score everywhere, not just the deck:
@@ -5382,6 +5405,26 @@ mod tests {
         assert!(!names.contains("seen person"), "'shown' is not a decision");
         assert!(!names.contains("someone else"));
         assert_eq!(normalized_person_name("  Steve   SCHLAFMAN "), "steve schlafman");
+    }
+
+    #[test]
+    fn reconnect_pool_keeps_one_row_per_name() {
+        let row = |name: &str, email: &str| ContactRow {
+            email: email.to_string(),
+            contact: Contact { name: name.to_string(), email: email.to_string(), ..empty_contact() },
+        };
+        // already sorted best-first, as reconnect() guarantees before calling
+        let people = vec![
+            (row("Lenka GrayDevitt", "lenka@a.com"), 80u8),
+            (row("Lenka GrayDevitt", "lenka@b.com"), 60u8),
+            (row("Solo Person", "solo@c.com"), 50u8),
+            (row("", "noname@d.com"), 40u8),   // empty names never collapse
+            (row("", "noname@e.com"), 30u8),
+        ];
+        let (deduped, dropped) = dedupe_rows_by_name(people);
+        assert_eq!(dropped, 1);
+        let emails: Vec<&str> = deduped.iter().map(|(r, _)| r.email.as_str()).collect();
+        assert_eq!(emails, vec!["lenka@a.com", "solo@c.com", "noname@d.com", "noname@e.com"]);
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
