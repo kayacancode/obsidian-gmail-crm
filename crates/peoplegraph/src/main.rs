@@ -2088,7 +2088,7 @@ fn apply_duplicates(
         .iter()
         .map(|members| {
             json!({
-                "canonical_id": canonical_id_for_merge(&index, &members[0], members.get(1).map(String::as_str).unwrap_or(&members[0])),
+                "canonical_id": canonical_id_for_group(&index, members),
                 "members": members,
             })
         })
@@ -2109,11 +2109,7 @@ fn apply_duplicates(
     };
     let canonical_synced_at = unix_seconds_iso();
     for members in &groups {
-        let canonical_id = canonical_id_for_merge(
-            &index,
-            &members[0],
-            members.get(1).map(String::as_str).unwrap_or(&members[0]),
-        );
+        let canonical_id = canonical_id_for_group(&index, members);
         // Union of every member's aliases, accumulated pairwise.
         let mut aliases: Vec<String> = Vec::new();
         for member in members {
@@ -3000,6 +2996,20 @@ fn canonical_id_for_merge(index: &ContactIndex, a_email: &str, b_email: &str) ->
                 .filter(|id| !id.is_empty())
         })
         .unwrap_or_else(|| format!("local:{a_email}"))
+}
+
+// The group's identity anchor: the first existing canonical id on ANY member
+// (not just the first two), else mint a local id from the primary member.
+fn canonical_id_for_group(index: &ContactIndex, members: &[String]) -> String {
+    members
+        .iter()
+        .find_map(|member| {
+            find_by_email_or_alias(index, member)
+                .and_then(|row| row.contact.canonical_id)
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+        })
+        .unwrap_or_else(|| format!("local:{}", members[0]))
 }
 
 fn merge_aliases(index: &ContactIndex, a_email: &str, b_email: &str) -> Vec<String> {
@@ -5170,6 +5180,56 @@ mod tests {
         assert_eq!(
             canonical_id_for_merge(&index, "a@example.com", "b@example.com"),
             "local:a@example.com"
+        );
+    }
+
+    #[test]
+    fn canonical_id_for_group_honors_existing_id_from_any_member() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "a@x.com".to_string(),
+            Contact {
+                email: "a@x.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "b@x.com".to_string(),
+            Contact {
+                email: "b@x.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "e@x.com".to_string(),
+            Contact {
+                email: "e@x.com".to_string(),
+                canonical_id: Some("local:existing-e-identity".to_string()),
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        let members = vec![
+            "a@x.com".to_string(),
+            "b@x.com".to_string(),
+            "e@x.com".to_string(),
+        ];
+        assert_eq!(
+            canonical_id_for_group(&index, &members),
+            "local:existing-e-identity"
+        );
+
+        let members_no_canonical = vec!["a@x.com".to_string(), "b@x.com".to_string()];
+        assert_eq!(
+            canonical_id_for_group(&index, &members_no_canonical),
+            "local:a@x.com"
         );
     }
 
