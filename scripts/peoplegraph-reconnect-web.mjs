@@ -102,7 +102,9 @@ async function api(path, { method = "GET", body } = {}) {
 	return data;
 }
 
-async function push() {
+// forceReset: wipe the Worker's candidates table before uploading (recovery
+// tool — e.g. after a rogue bridge with a different salt polluted the pool).
+async function push({ forceReset = false } = {}) {
 	const state = loadState();
 
 	// Full re-engage pool. The CLI excludes anyone with a feedback entry, so
@@ -125,8 +127,9 @@ async function push() {
 		return { id, h: contentHash(row), s: row.score, row };
 	});
 
-	const reset = Object.keys(state.lastPush).length === 0;
-	const { upserts, removeIds, next } = diffPool(state.lastPush, pool);
+	const reset = forceReset || Object.keys(state.lastPush).length === 0;
+	// On a forced reset the server side starts empty, so everything must upload.
+	const { upserts, removeIds, next } = diffPool(forceReset ? {} : state.lastPush, pool);
 
 	if (!upserts.length && !removeIds.length && !reset) {
 		console.log("pool unchanged — nothing to push");
@@ -304,7 +307,7 @@ Usage:
   node scripts/peoplegraph-reconnect-web.mjs <command>
 
 Commands:
-  push   compute today's candidates, sync to the Worker, link the daily note
+  push   sync the unswiped pool to the Worker (--reset wipes server rows first)
   pull   fetch swipe decisions, apply via 'peoplegraph feedback', ack them
   run    pull then push (recommended daily cron)
   help   show this
@@ -317,8 +320,9 @@ if (cmd === "help" || cmd === "-h" || cmd === "--help") {
 	help();
 } else {
 	requireEnv();
-	if (cmd === "push") await push();
+	const forceReset = process.argv.includes("--reset");
+	if (cmd === "push") await push({ forceReset });
 	else if (cmd === "pull") await pull();
-	else if (cmd === "run") { await pull(); await push(); }
+	else if (cmd === "run") { await pull(); await push({ forceReset }); }
 	else { help(); process.exit(1); }
 }
