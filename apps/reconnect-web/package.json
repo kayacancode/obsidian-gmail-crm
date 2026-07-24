@@ -10,6 +10,7 @@
     "db:init": "wrangler d1 execute reconnect --file ./schema.sql",
     "db:init:remote": "wrangler d1 execute reconnect --remote --file ./schema.sql",
     "db:migrate:remote": "wrangler d1 execute reconnect --remote --file ./migrations/0002-stable-ids.sql",
+    "db:migrate:0003": "wrangler d1 execute reconnect --remote --file ./migrations/0003-merge-review.sql",
     "smoke": "bash scripts/smoke.sh"
   },
   "devDependencies": {

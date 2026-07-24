@@ -46,6 +46,21 @@ export default {
 			if (pathname === "/api/decisions/ack" && request.method === "POST") {
 				return await ackDecisions(request, env);
 			}
+			if (pathname === "/api/merge/candidates" && request.method === "GET") {
+				return await listMergeCandidates(request, env);
+			}
+			if (pathname === "/api/merge/swipe" && request.method === "POST") {
+				return await mergeSwipe(request, env);
+			}
+			if (pathname === "/api/merge/sync" && request.method === "POST") {
+				return await mergeSync(request, env);
+			}
+			if (pathname === "/api/merge/decisions" && request.method === "GET") {
+				return await listMergeDecisions(request, env);
+			}
+			if (pathname === "/api/merge/decisions/ack" && request.method === "POST") {
+				return await ackMergeDecisions(request, env);
+			}
 			if (pathname === "/api/config" && request.method === "GET") {
 				// Public, non-secret config the UI needs to start Google sign-in.
 				return json({ googleClientId: env.GOOGLE_CLIENT_ID });
@@ -184,6 +199,124 @@ async function ackDecisions(request: Request, env: Env): Promise<Response> {
 	await env.DB.prepare(`DELETE FROM candidates WHERE id IN (${placeholders})`)
 		.bind(...body.ids)
 		.run();
+	return json({ ok: true, acked: body.ids.length });
+}
+
+const MERGE_ACTIONS = new Set(["merge", "keep"]);
+
+interface MergePairInput {
+	id: string;
+	confidence?: number | null;
+	reasons?: string | null;
+	name_a: string; company_a?: string | null; domain_a?: string | null;
+	last_contact_a?: string | null; exchanges_a?: number | null;
+	name_b: string; company_b?: string | null; domain_b?: string | null;
+	last_contact_b?: string | null; exchanges_b?: number | null;
+}
+
+// GET /api/merge/candidates — undecided pairs, most confident first.
+async function listMergeCandidates(request: Request, env: Env): Promise<Response> {
+	const auth = await requireGoogleUser(request, env);
+	if ("error" in auth) return json({ error: auth.error }, 401);
+	const totalRow = await env.DB.prepare(
+		`SELECT COUNT(*) AS n FROM merge_candidates m LEFT JOIN merge_decisions d ON d.id = m.id WHERE d.id IS NULL`
+	).first<{ n: number }>();
+	const rows = await env.DB.prepare(
+		`SELECT m.* FROM merge_candidates m
+		   LEFT JOIN merge_decisions d ON d.id = m.id
+		  WHERE d.id IS NULL
+		  ORDER BY m.confidence DESC
+		  LIMIT 500`
+	).all();
+	return json({ total: totalRow?.n ?? 0, candidates: rows.results ?? [] });
+}
+
+// POST /api/merge/swipe { id, action: merge|keep }
+async function mergeSwipe(request: Request, env: Env): Promise<Response> {
+	const auth = await requireGoogleUser(request, env);
+	if ("error" in auth) return json({ error: auth.error }, 401);
+	const body = (await request.json().catch(() => null)) as { id?: string; action?: string } | null;
+	if (!body?.id || !body.action || !MERGE_ACTIONS.has(body.action)) {
+		return json({ error: "bad_request", message: "need id + action in {merge,keep}" }, 400);
+	}
+	const exists = await env.DB.prepare("SELECT id FROM merge_candidates WHERE id = ?").bind(body.id).first();
+	if (!exists) return json({ error: "unknown_pair" }, 404);
+	await env.DB.prepare(
+		`INSERT INTO merge_decisions (id, action, decided_by, decided_at, applied)
+		 VALUES (?, ?, ?, ?, 0)
+		 ON CONFLICT(id) DO UPDATE SET
+		   action = excluded.action, decided_by = excluded.decided_by,
+		   decided_at = excluded.decided_at, applied = 0`
+	).bind(body.id, body.action, auth.email, nowSeconds()).run();
+	return json({ ok: true, id: body.id, action: body.action });
+}
+
+// POST /api/merge/sync { upserts, remove_ids, reset? }
+async function mergeSync(request: Request, env: Env): Promise<Response> {
+	if (!checkSyncToken(request, env)) return json({ error: "unauthorized" }, 401);
+	const body = (await request.json().catch(() => null)) as
+		| { upserts?: MergePairInput[]; remove_ids?: string[]; reset?: boolean }
+		| null;
+	if (!body || (!Array.isArray(body.upserts) && !Array.isArray(body.remove_ids) && !body.reset)) {
+		return json({ error: "bad_request", message: "need upserts[] and/or remove_ids[] (or reset)" }, 400);
+	}
+	const upserts = body.upserts ?? [];
+	const removeIds = body.remove_ids ?? [];
+	const stmts: D1PreparedStatement[] = [];
+	if (body.reset) stmts.push(env.DB.prepare("DELETE FROM merge_candidates"));
+	const now = nowSeconds();
+	const insert = env.DB.prepare(
+		`INSERT INTO merge_candidates (id, confidence, reasons,
+		   name_a, company_a, domain_a, last_contact_a, exchanges_a,
+		   name_b, company_b, domain_b, last_contact_b, exchanges_b, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   confidence = excluded.confidence, reasons = excluded.reasons,
+		   name_a = excluded.name_a, company_a = excluded.company_a, domain_a = excluded.domain_a,
+		   last_contact_a = excluded.last_contact_a, exchanges_a = excluded.exchanges_a,
+		   name_b = excluded.name_b, company_b = excluded.company_b, domain_b = excluded.domain_b,
+		   last_contact_b = excluded.last_contact_b, exchanges_b = excluded.exchanges_b,
+		   updated_at = excluded.updated_at`
+	);
+	for (const p of upserts) {
+		if (!p?.id || !p?.name_a || !p?.name_b) continue;
+		stmts.push(insert.bind(
+			p.id, p.confidence ?? null, p.reasons ?? null,
+			p.name_a, p.company_a ?? null, p.domain_a ?? null, p.last_contact_a ?? null, p.exchanges_a ?? null,
+			p.name_b, p.company_b ?? null, p.domain_b ?? null, p.last_contact_b ?? null, p.exchanges_b ?? null,
+			now
+		));
+	}
+	const remove = env.DB.prepare("DELETE FROM merge_candidates WHERE id = ?");
+	for (const id of removeIds) stmts.push(remove.bind(id));
+	for (let i = 0; i < stmts.length; i += 100) {
+		await env.DB.batch(stmts.slice(i, i + 100));
+	}
+	return json({ ok: true, upserted: upserts.length, removed: removeIds.length, reset: !!body.reset });
+}
+
+// GET /api/merge/decisions?applied=0
+async function listMergeDecisions(request: Request, env: Env): Promise<Response> {
+	if (!checkSyncToken(request, env)) return json({ error: "unauthorized" }, 401);
+	const url = new URL(request.url);
+	const onlyPending = url.searchParams.get("applied") !== "1";
+	const query = onlyPending
+		? "SELECT id, action, decided_by, decided_at, applied FROM merge_decisions WHERE applied = 0 ORDER BY decided_at"
+		: "SELECT id, action, decided_by, decided_at, applied FROM merge_decisions ORDER BY decided_at";
+	const rows = await env.DB.prepare(query).all();
+	return json({ decisions: rows.results ?? [] });
+}
+
+// POST /api/merge/decisions/ack { ids } — mark applied + prune the pairs.
+async function ackMergeDecisions(request: Request, env: Env): Promise<Response> {
+	if (!checkSyncToken(request, env)) return json({ error: "unauthorized" }, 401);
+	const body = (await request.json().catch(() => null)) as { ids?: string[] } | null;
+	if (!Array.isArray(body?.ids) || body.ids.length === 0) {
+		return json({ error: "bad_request", message: "need ids[]" }, 400);
+	}
+	const placeholders = body.ids.map(() => "?").join(",");
+	await env.DB.prepare(`UPDATE merge_decisions SET applied = 1 WHERE id IN (${placeholders})`).bind(...body.ids).run();
+	await env.DB.prepare(`DELETE FROM merge_candidates WHERE id IN (${placeholders})`).bind(...body.ids).run();
 	return json({ ok: true, acked: body.ids.length });
 }
 
