@@ -27,7 +27,7 @@ Botwick machine (source of truth)              Cloudflare                  owner
 - Bridge env (default `~/.peoplegraph/reconnect-web.env`):
   - `RECONNECT_WEB_URL` / `RECONNECT_PUBLIC_URL` — the Worker URL
   - `RECONNECT_SYNC_TOKEN` — matches the Worker's `SYNC_TOKEN` secret
-  - `PEOPLEGRAPH_CACHE`, `PEOPLEGRAPH_BIN`, `RECONNECT_LIMIT` (default 5), `RECONNECT_STATE`
+  - `PEOPLEGRAPH_CACHE`, `PEOPLEGRAPH_BIN`, `RECONNECT_STATE` (holds the id salt + map + last-push hashes — do not delete casually)
   - optional `RECONNECT_DAILY_NOTE` — today's daily note to append the link to
 
 ## The daily job (preferred path: the bridge)
@@ -39,8 +39,8 @@ source ~/.peoplegraph/reconnect-web.env
 node scripts/peoplegraph-reconnect-web.mjs run     # = pull (apply yesterday's swipes) then push (post today's)
 ```
 
-- `push` — runs `peoplegraph reconnect --limit N`, assigns opaque ids (kept in `RECONNECT_STATE`), POSTs names to `/api/sync`, and appends a single click-through line to the daily note.
-- `pull` — GETs `/api/decisions`, maps each opaque id back to its email locally, applies it with `peoplegraph feedback`, and acks.
+- `push` — runs `peoplegraph reconnect` for the full unswiped pool, derives **stable opaque ids** (HMAC of email; salt kept in `RECONNECT_STATE`, never leaves the machine), and POSTs only the **diff** (upserts/removes) to `/api/sync`, plus a single click-through line to the daily note. Stable ids mean a swipe on any day excludes that contact from the deck forever.
+- `pull` — GETs `/api/decisions`, maps each stable id back to its email locally, applies boost/suppress to the feedback overlay directly and routes `delete` through `peoplegraph feedback` (cache removal + blocklist), then acks.
 
 Cron it once a day on the machine with the cache:
 
@@ -52,22 +52,24 @@ Cron it once a day on the machine with the cache:
 
 The web app records one of three actions; the bridge applies each via `peoplegraph feedback`:
 
-| Swipe | action | `peoplegraph feedback` effect |
+| Swipe | action | effect |
 |---|---|---|
-| right / ♥ | `boost` | keep + raise the contact's effective score |
-| left / ✕ | `suppress` | hide from future reconnect suggestions + lower score |
+| right / ♥ | `boost` | out of the deck forever + people score raised globally (`score`, `who-knows`, …) |
+| left / ✕ | `suppress` | out of the deck forever + people score lowered globally |
 | 🗑 (confirm) | `delete` | remove the contact from the cache + add to `reconnect-blocklist.json` |
 
 ```bash
 peoplegraph --cache "$PEOPLEGRAPH_CACHE" feedback --email <email> --action boost|suppress|delete
+# undo a mistaken swipe (also un-blocklists a deleted contact):
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" feedback --email <email> --action clear
 ```
 
-`reconnect` honors this overlay (`reconnect-feedback.json`) on its next run: suppressed/deleted are excluded, boosted rank higher. This is what makes the swipes shape future suggestions instead of being a one-time filter.
+`reconnect` honors this overlay (`reconnect-feedback.json`): ANY entry excludes the contact from the pool. If the overlay file is malformed the CLI now fails loudly (`feedback_unreadable`) instead of silently treating it as empty — never delete the file to "fix" that; repair the JSON.
 
 ## Core rules
 
 - **Suggestions come only from the `re-engage` quadrant** (strong + dormant). Don't invent candidates or pull from other quadrants.
-- Keep it small — default 5/day. This is a nudge, not a CRM dump.
+- The deck is the **whole unswiped pool, best first** — the owner swipes as much or as little as they like; the rest waits. The daily push is a cheap diff, not a re-upload.
 - The `nudge` string from `reconnect` is the human-facing reason; you may rephrase it warmly but never fabricate facts (last-contact timing, email counts, role) beyond what the CLI returns.
 - `feedback` is a **local write** — it only runs on the source-of-truth machine, never over `--remote`.
 - If nothing is in re-engage after filtering, push nothing and skip the daily-note line. Don't post an empty batch every morning.

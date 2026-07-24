@@ -5,41 +5,41 @@
  * Dependency-free. Runs on the source-of-truth machine (it needs local
  * `peoplegraph` for both the read and the writes).
  *
- *   push  — compute today's re-engage candidates, assign opaque ids (kept in a
- *           local id->email map so emails never leave the machine), POST them to
- *           the Worker, and drop a one-line click-through into the daily note.
+ *   push  — compute the full unswiped re-engage pool, derive STABLE opaque ids
+ *           (HMAC of email with a local salt; same contact -> same id forever),
+ *           and sync only the DIFF (upserts/removes) to the Worker.
  *   pull  — fetch swipe decisions from the Worker, map id->email locally, apply
- *           each via `peoplegraph feedback`, then ack them.
- *   run   — pull (apply yesterday's swipes) then push (post today's).
+ *           them (boost/suppress -> feedback overlay, delete -> CLI removal +
+ *           blocklist), then ack them.
+ *   run   — pull (apply swipes) then push (sync today's pool).
+ *
+ * State file (RECONNECT_STATE) schema v2:
+ *   { version: 2, salt, map: {id -> email}, lastPush: {id -> {h, s}} }
+ * salt + map never leave this machine; lastPush drives the diff. Deleting the
+ * state file is safe: the next push resets the Worker and re-uploads the pool.
  *
  * Env:
  *   RECONNECT_WEB_URL        Worker base URL, e.g. https://reconnect-web.<acct>.workers.dev   (required)
  *   RECONNECT_SYNC_TOKEN     matches the Worker's SYNC_TOKEN secret                            (required)
  *   PEOPLEGRAPH_CACHE        path to contact-index.json (passed to peoplegraph --cache)        (required)
  *   PEOPLEGRAPH_BIN          peoplegraph binary (default: "peoplegraph")
- *   RECONNECT_LIMIT          candidates per batch (default: 5)
- *   RECONNECT_STATE          id->email map file (default: ~/.peoplegraph/reconnect-web-state.json)
+ *   RECONNECT_STATE          state file: salt + id->email map + last-push hashes
+ *                            (default: ~/.peoplegraph/reconnect-web-state.json)
  *   RECONNECT_DAILY_NOTE     optional path to today's daily note to append the link line
  *   RECONNECT_PUBLIC_URL     public URL used in the daily-note link (default: RECONNECT_WEB_URL)
  */
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { stableId, contentHash, diffPool, migrateState } from "./lib/reconnect-sync.mjs";
 
 const env = process.env;
 const WEB_URL = (env.RECONNECT_WEB_URL || "").replace(/\/$/, "");
 const SYNC_TOKEN = env.RECONNECT_SYNC_TOKEN || "";
 const CACHE = env.PEOPLEGRAPH_CACHE || "";
 const BIN = env.PEOPLEGRAPH_BIN || "peoplegraph";
-const RAW_LIMIT = Number(env.RECONNECT_LIMIT || "500");
-const MAX_LIMIT = Number(env.RECONNECT_MAX_LIMIT || "500");
-const LIMIT = Math.min(RAW_LIMIT, MAX_LIMIT);
-if (RAW_LIMIT > MAX_LIMIT) {
-	console.error(`warning: RECONNECT_LIMIT=${RAW_LIMIT} exceeds MAX (${MAX_LIMIT}); capped. Every pushed candidate gets a 30-day "shown" cooldown, so over-pushing silently drains the re-engage pool. Lower RECONNECT_LIMIT to what the human actually swipes per day, or raise RECONNECT_MAX_LIMIT explicitly.`);
-}
 const STATE_PATH = env.RECONNECT_STATE || join(homedir(), ".peoplegraph", "reconnect-web-state.json");
 const DAILY_NOTE = env.RECONNECT_DAILY_NOTE || "";
 const PUBLIC_URL = (env.RECONNECT_PUBLIC_URL || WEB_URL).replace(/\/$/, "");
@@ -64,12 +64,11 @@ function todayStamp() {
 }
 
 function loadState() {
-	if (!existsSync(STATE_PATH)) return { batch_date: null, map: {} };
-	try {
-		return JSON.parse(readFileSync(STATE_PATH, "utf8"));
-	} catch {
-		return { batch_date: null, map: {} };
+	let raw = null;
+	if (existsSync(STATE_PATH)) {
+		try { raw = JSON.parse(readFileSync(STATE_PATH, "utf8")); } catch { raw = null; }
 	}
+	return migrateState(raw);
 }
 
 function saveState(state) {
@@ -103,43 +102,55 @@ async function api(path, { method = "GET", body } = {}) {
 	return data;
 }
 
-async function push() {
+// forceReset: wipe the Worker's candidates table before uploading (recovery
+// tool — e.g. after a rogue bridge with a different salt polluted the pool).
+async function push({ forceReset = false } = {}) {
 	const state = loadState();
 
-	// Push ALL reconnect candidates — no limit, no dedup.
-	// The swipe app marks unswiped ones as "unseen" so the user sees what's new.
+	// Full re-engage pool. The CLI excludes anyone with a feedback entry, so
+	// this is exactly the not-yet-swiped set; the Worker sees only diffs.
 	const res = pg(["reconnect", "--limit", "5000"]);
 	if (!res.ok) die(`peoplegraph reconnect failed: ${JSON.stringify(res.error || res)}`);
 	const people = res.data?.people ?? [];
 
-	const batch_date = todayStamp();
-	state.batch_date = batch_date;
-	if (!state.map) state.map = {}; // keep old mappings so pull can resolve them
-
-	const candidates = people.map((p) => {
-		const id = randomUUID();
-		state.map[id] = p.email; // email stays local; only id leaves the machine
-		return {
+	const pool = people.map((p) => {
+		const id = stableId(state.salt, p.email);
+		state.map[id] = p.email.trim().toLowerCase(); // merged, never clobbered
+		const row = {
 			id,
 			name: p.name,
 			company: p.company ?? null,
-			days_since: p.days_since_contact ?? null,
-			score: p.effective_score ?? p.score?.combined ?? null,
+			last_contact: p.last_contact ?? null,
+			score: p.effective_score ?? p.score?.combined ?? 0,
 			nudge: p.nudge ?? null,
 		};
+		return { id, h: contentHash(row), s: row.score, row };
 	});
 
-	// Push in chunks to avoid D1 batch limits (Worker does one DB.batch per sync)
-	const CHUNK = 500;
-	for (let i = 0; i < candidates.length; i += CHUNK) {
-		const chunk = candidates.slice(i, i + CHUNK);
-		// Only replace on the first chunk to clear old batch; subsequent chunks append
-		await api("/api/sync", { method: "POST", body: { batch_date, replace: i === 0, candidates: chunk } });
+	const reset = forceReset || Object.keys(state.lastPush).length === 0;
+	// On a forced reset the server side starts empty, so everything must upload.
+	const { upserts, removeIds, next } = diffPool(forceReset ? {} : state.lastPush, pool);
+
+	if (!upserts.length && !removeIds.length && !reset) {
+		console.log("pool unchanged — nothing to push");
+	} else {
+		const CHUNK = 400;
+		for (let i = 0; i < Math.max(upserts.length, 1); i += CHUNK) {
+			await api("/api/sync", {
+				method: "POST",
+				body: {
+					upserts: upserts.slice(i, i + CHUNK),
+					remove_ids: i === 0 ? removeIds : [],
+					reset: reset && i === 0, // first chunk of a fresh state clears the table
+				},
+			});
+		}
 	}
+	state.lastPush = next;
 	saveState(state);
 
-	writeDailyNoteLine(candidates.length);
-	console.log(`pushed ${candidates.length} candidates for ${batch_date}`);
+	writeDailyNoteLine(pool.length);
+	console.log(`pool ${pool.length} candidates (${upserts.length} upserted, ${removeIds.length} removed)`);
 
 	// Output only the top 20 candidate details as JSON for the Telegram preview.
 	// The full set is in the swipe app already.
@@ -150,7 +161,7 @@ async function push() {
 		days_since: p.days_since_contact ?? null,
 		nudge: p.nudge ?? null,
 	}))));
-	console.log(`TOTAL_CANDIDATES:${candidates.length}`);
+	console.log(`TOTAL_CANDIDATES:${pool.length}`);
 }
 
 function writeDailyNoteLine(count) {
@@ -229,7 +240,10 @@ async function pull() {
 	for (const d of decisions) {
 		const email = state.map?.[d.id];
 		if (!email) {
-			console.warn(`skip ${d.id}: no local email mapping (stale id?)`);
+			// Ids are stable and the map is permanent, so this only fires for
+			// pre-migration ids. Ack once (with a warning) instead of looping forever.
+			console.warn(`ack ${d.id} without applying: no local email mapping (pre-migration id?)`);
+			acked.push(d.id);
 			continue;
 		}
 		if (!["boost", "suppress", "delete"].includes(d.action)) {
@@ -237,9 +251,18 @@ async function pull() {
 			continue;
 		}
 
-		// Write to feedback JSON directly
-		const delta = d.action === "delete" ? 0 : 10;
-		fb.entries[email] = { action: d.action, delta, updatedUnix: nowUnix };
+		if (d.action === "delete") {
+			// Gone-gone: the CLI removes the contact from the cache AND blocklists
+			// the email so future Gmail syncs can't resurrect it.
+			const res = pg(["feedback", "--email", email, "--action", "delete"]);
+			if (!res.ok) {
+				console.warn(`delete failed for ${email}: ${JSON.stringify(res.error || res)}`);
+				continue; // not acked -> retried next run
+			}
+		} else {
+			// boost/suppress: write the overlay directly (fast path, no index load)
+			fb.entries[email.trim().toLowerCase()] = { action: d.action, delta: 10, updatedUnix: nowUnix };
+		}
 		acked.push(d.id);
 		console.log(`applied ${d.action} -> ${email}`);
 
@@ -271,8 +294,7 @@ async function pull() {
 		}
 	}
 
-	// Clean up applied IDs from the local map to prevent unbounded growth
-	for (const id of acked) delete state.map[id];
+	// Ids are stable: the map is the permanent id->email dictionary, never pruned.
 	saveState(state);
 
 	console.log(`applied ${acked.length}/${decisions.length} decisions`);
@@ -285,7 +307,7 @@ Usage:
   node scripts/peoplegraph-reconnect-web.mjs <command>
 
 Commands:
-  push   compute today's candidates, sync to the Worker, link the daily note
+  push   sync the unswiped pool to the Worker (--reset wipes server rows first)
   pull   fetch swipe decisions, apply via 'peoplegraph feedback', ack them
   run    pull then push (recommended daily cron)
   help   show this
@@ -298,8 +320,9 @@ if (cmd === "help" || cmd === "-h" || cmd === "--help") {
 	help();
 } else {
 	requireEnv();
-	if (cmd === "push") await push();
+	const forceReset = process.argv.includes("--reset");
+	if (cmd === "push") await push({ forceReset });
 	else if (cmd === "pull") await pull();
-	else if (cmd === "run") { await pull(); await push(); }
+	else if (cmd === "run") { await pull(); await push({ forceReset }); }
 	else { help(); process.exit(1); }
 }

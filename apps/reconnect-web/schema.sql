@@ -1,26 +1,25 @@
--- Reconnect swipe app — D1 schema.
--- Privacy: no emails or message content are ever stored here. Botwick keeps the
--- opaque id -> email map locally; this DB only holds names + display fields.
+-- Reconnect swipe app — D1 schema (v2: stable ids, no batches).
+-- Privacy: no emails or message content are ever stored here. The bridge keeps
+-- the salt + id -> email map locally; this DB only holds opaque ids + display fields.
 
 CREATE TABLE IF NOT EXISTS candidates (
-  id           TEXT PRIMARY KEY,      -- opaque id assigned by Botwick (not an email)
+  id           TEXT PRIMARY KEY,      -- stable opaque id (HMAC of email, salt local to the bridge)
   name         TEXT NOT NULL,
   company      TEXT,
-  days_since   INTEGER,
+  last_contact TEXT,                  -- YYYY-MM-DD of last real contact (UI renders recency)
   score        INTEGER,
   nudge        TEXT,
-  batch_date   TEXT NOT NULL,         -- YYYY-MM-DD this candidate was pushed
-  created_at   INTEGER NOT NULL       -- unix seconds
+  updated_at   INTEGER NOT NULL       -- unix seconds of last upsert
 );
 
-CREATE INDEX IF NOT EXISTS idx_candidates_batch ON candidates (batch_date);
+CREATE INDEX IF NOT EXISTS idx_candidates_score ON candidates (score DESC);
 
 CREATE TABLE IF NOT EXISTS decisions (
-  id           TEXT PRIMARY KEY,      -- references candidates.id (one decision per candidate)
+  id           TEXT PRIMARY KEY,      -- references candidates.id (one decision per contact, forever)
   action       TEXT NOT NULL,         -- 'boost' (right) | 'suppress' (left) | 'delete'
   decided_by   TEXT,                  -- google email of the swiper
   decided_at   INTEGER NOT NULL,      -- unix seconds
-  applied      INTEGER NOT NULL DEFAULT 0  -- 0 until the Botwick bridge applies it
+  applied      INTEGER NOT NULL DEFAULT 0  -- 0 until the bridge applies it locally
 );
 
 CREATE INDEX IF NOT EXISTS idx_decisions_applied ON decisions (applied);

@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -135,7 +135,7 @@ struct FeedbackArgs {
     #[arg(long)]
     email: String,
 
-    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist) | shown (mark as surfaced, 30-day cooldown)
+    /// boost (keep + raise score) | suppress (hide + lower score) | delete (remove from cache + blocklist) | shown (mark as surfaced, 30-day cooldown) | clear (undo a swipe: remove overlay + blocklist entries)
     #[arg(long)]
     action: String,
 
@@ -363,9 +363,9 @@ struct ContactEdge {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FeedbackStore {
-    #[serde(default = "one")]
+    #[serde(default = "one", alias = "schema_version")]
     schema_version: u32,
-    #[serde(default)]
+    #[serde(default, alias = "updated_at_unix")]
     updated_at_unix: u64,
     #[serde(default)]
     entries: HashMap<String, FeedbackEntry>,
@@ -377,7 +377,7 @@ struct FeedbackEntry {
     action: String, // "boost" | "suppress" | "delete" | "shown"
     #[serde(default)]
     delta: u8,
-    #[serde(default)]
+    #[serde(default, alias = "updated_unix")]
     updated_unix: u64,
 }
 
@@ -552,10 +552,18 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
             )
         }),
         Commands::Score(args) => with_index(cli, command, start, |index| {
-            score_person(index, &args.email, start)
+            let feedback = match load_feedback(cli) {
+                Ok(store) => store,
+                Err(message) => return fail(command, "feedback_unreadable", message, start),
+            };
+            score_person(index, &feedback, &args.email, start)
         }),
         Commands::WhoKnows(args) => with_index(cli, command, start, |index| {
-            who_knows(index, &args.company, args.limit, start)
+            let feedback = match load_feedback(cli) {
+                Ok(store) => store,
+                Err(message) => return fail(command, "feedback_unreadable", message, start),
+            };
+            who_knows(index, &feedback, &args.company, args.limit, start)
         }),
         Commands::Reconnect(args) => reconnect(cli, command, args, start),
         Commands::Feedback(args) => feedback(cli, command, args, start),
@@ -1245,7 +1253,7 @@ fn find_person(
     )
 }
 
-fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
+fn score_person(index: &ContactIndex, feedback: &FeedbackStore, email: &str, start: Instant) -> Response {
     let email_norm = email.trim().to_ascii_lowercase();
     let Some(row) = find_by_email_or_alias(index, &email_norm) else {
         return fail(
@@ -1257,6 +1265,8 @@ fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
     };
 
     let score = infer_score(&row.contact);
+    let entry = feedback_entry_for(feedback, &row);
+    let effective = apply_feedback_delta(score.combined, entry);
     ok(
         "score",
         json!({
@@ -1264,6 +1274,12 @@ fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
             "name": &row.contact.name,
             "canonical_id": &row.contact.canonical_id,
             "score": score,
+            "effective_score": effective,
+            "manual_adjustment": entry.map(|e| match e.action.as_str() {
+                "boost" => e.delta as i16,
+                "suppress" => -(e.delta as i16),
+                _ => 0,
+            }).unwrap_or(0),
             "score_source": score_source(&row.contact),
             "signals": contact_signals(&row.contact),
         }),
@@ -1278,19 +1294,22 @@ fn score_person(index: &ContactIndex, email: &str, start: Instant) -> Response {
     )
 }
 
-fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) -> Response {
+fn who_knows(index: &ContactIndex, feedback: &FeedbackStore, company: &str, limit: usize, start: Instant) -> Response {
     let company_norm = normalize_company(company);
-    let mut people: Vec<ContactRow> = rows(index)
+    let mut people: Vec<(ContactRow, u8)> = rows(index)
         .into_iter()
         .filter(|row| company_matches(&row.contact, &company_norm))
+        .map(|row| {
+            let entry = feedback_entry_for(feedback, &row);
+            let effective = apply_feedback_delta(infer_score(&row.contact).combined, entry);
+            (row, effective)
+        })
         .collect();
 
     people.sort_by(|a, b| {
-        infer_score(&b.contact)
-            .combined
-            .cmp(&infer_score(&a.contact).combined)
-            .then_with(|| b.contact.total_exchanges.cmp(&a.contact.total_exchanges))
-            .then_with(|| a.contact.name.cmp(&b.contact.name))
+        b.1.cmp(&a.1)
+            .then_with(|| b.0.contact.total_exchanges.cmp(&a.0.contact.total_exchanges))
+            .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
     let total = people.len();
@@ -1298,7 +1317,7 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
     let returned_people: Vec<Value> = people
         .into_iter()
         .take(limit)
-        .map(|row| {
+        .map(|(row, effective)| {
             let score = infer_score(&row.contact);
             let company = display_company(&row.contact);
             let company_source = company_source(&row.contact, company.as_deref());
@@ -1311,6 +1330,7 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
                 "domain": &row.contact.domain,
                 "canonical_id": &row.contact.canonical_id,
                 "score": score,
+                "effective_score": effective,
                 "score_source": score_source(&row.contact),
                 "last_contact": &row.contact.last_contact,
                 "total_exchanges": row.contact.total_exchanges,
@@ -1324,7 +1344,7 @@ fn who_knows(index: &ContactIndex, company: &str, limit: usize, start: Instant) 
         json!({
             "company": company,
             "people": returned_people,
-            "ranked_by": "combined_score_desc",
+            "ranked_by": "effective_score_desc",
         }),
         json!({
             "matched": total,
@@ -1343,15 +1363,24 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let feedback = read_feedback(&feedback_path(&cache_path));
+    let feedback = match read_feedback(&feedback_path(&cache_path)) {
+        Ok(store) => store,
+        Err(message) => return fail(command, "feedback_unreadable", message, start),
+    };
     let min_score = args.min_score;
 
     // Re-engage candidates, with human feedback applied:
     // - boost/suppress/delete: permanently excluded (user made a decision)
     // - shown: excluded for 30 days (unswiped candidates resurface after cooldown)
+    // - NAME-level exclusion: the index holds duplicate rows for the same human
+    //   (2,007 names with 2+ rows as of 2026-07; canonical ids unpopulated), so
+    //   a swipe on any row retires every row sharing that person's name —
+    //   otherwise the same face keeps coming back under a different email.
     let now_unix = unix_seconds();
     const SHOWN_COOLDOWN_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
-    let mut people: Vec<(ContactRow, u8)> = rows(&index)
+    let all_rows = rows(&index);
+    let swiped_names = swiped_name_set(&all_rows, &feedback);
+    let mut people: Vec<(ContactRow, u8)> = all_rows
         .into_iter()
         .filter_map(|row| {
             let entry = feedback_entry_for(&feedback, &row);
@@ -1365,6 +1394,9 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
                 } else {
                     return None; // boost/suppress/delete — permanent exclusion
                 }
+            }
+            if swiped_names.contains(&normalized_person_name(&row.contact.name)) {
+                return None; // duplicate row of an already-swiped human
             }
             let score = infer_score(&row.contact);
             if score.quadrant != "re-engage" {
@@ -1436,6 +1468,50 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
 }
 
 // Look up a human feedback entry for a contact by its email or any alias.
+// Lowercased, whitespace-collapsed person name for duplicate-row matching.
+fn normalized_person_name(name: &str) -> String {
+    name.split_whitespace()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// Names of every human with a decisive swipe (boost/suppress/delete — not
+// "shown"). Used to retire ALL duplicate rows of a swiped person. Limitation:
+// deleted contacts leave the cache entirely, so their names can't be recovered
+// here and same-name duplicates of deleted humans stay in the pool.
+fn swiped_name_set(all_rows: &[ContactRow], feedback: &FeedbackStore) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if feedback.entries.is_empty() {
+        return names;
+    }
+    for row in all_rows {
+        if feedback_entry_for(feedback, row).is_some_and(|e| e.action != "shown") {
+            let name = normalized_person_name(&row.contact.name);
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
+// A human swipe shifts the people score everywhere, not just the deck:
+// boost adds its delta, suppress subtracts it, clamped to 0..=100.
+fn apply_feedback_delta(combined: u8, entry: Option<&FeedbackEntry>) -> u8 {
+    match entry.map(|e| (e.action.as_str(), e.delta)) {
+        Some(("boost", delta)) => combined.saturating_add(delta).min(100),
+        Some(("suppress", delta)) => combined.saturating_sub(delta),
+        _ => combined,
+    }
+}
+
+// Resolve and read the feedback overlay for read-only score surfaces.
+fn load_feedback(cli: &Cli) -> Result<FeedbackStore, String> {
+    let cache_path = resolve_cache_path(cli.cache.as_deref())?;
+    read_feedback(&feedback_path(&cache_path))
+}
+
 fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<&'a FeedbackEntry> {
     let mut keys = vec![
         row.email.trim().to_ascii_lowercase(),
@@ -1450,11 +1526,11 @@ fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<
 // Record a human swipe decision. WRITE — local source-of-truth machine only.
 fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instant) -> Response {
     let action = args.action.trim().to_ascii_lowercase();
-    if !matches!(action.as_str(), "boost" | "suppress" | "delete" | "shown") {
+    if !matches!(action.as_str(), "boost" | "suppress" | "delete" | "shown" | "clear") {
         return fail(
             command,
             "invalid_action",
-            format!("unknown action '{}': use boost|suppress|delete|shown", args.action),
+            format!("unknown action '{}': use boost|suppress|delete|shown|clear", args.action),
             start,
         );
     }
@@ -1467,6 +1543,38 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
         Ok(path) => path,
         Err(message) => return fail(command, "cache_not_found", message, start),
     };
+
+    // clear: undo a swipe — drop the overlay entry (and the blocklist entry if
+    // the contact had been deleted) so the contact can re-enter the pool.
+    if action == "clear" {
+        let fb_path = feedback_path(&cache_path);
+        let mut store = match read_feedback(&fb_path) {
+            Ok(store) => store,
+            Err(message) => return fail(command, "feedback_unreadable", message, start),
+        };
+        let cleared = store.entries.remove(&email).is_some();
+        store.updated_at_unix = unix_seconds();
+        if let Err(message) = write_feedback(&fb_path, &store) {
+            return fail(command, "write_failed", message, start);
+        }
+        let bl_path = blocklist_path(&cache_path);
+        if let Ok(content) = fs::read_to_string(&bl_path) {
+            if let Ok(mut blocklist) = serde_json::from_str::<Vec<String>>(&content) {
+                let before = blocklist.len();
+                blocklist.retain(|e| !e.eq_ignore_ascii_case(&email));
+                if blocklist.len() != before {
+                    if let Err(message) = write_json_value(&bl_path, &json!(blocklist)) {
+                        return fail(command, "write_failed", message, start);
+                    }
+                }
+            }
+        }
+        return ok(
+            command,
+            json!({ "email": email, "action": "clear", "cleared": cleared }),
+            json!({ "ms": elapsed_ms(start) }),
+        );
+    }
 
     // delete: pull the contact out of the cache (raw JSON, preserving unknown
     // fields) and add the email to the blocklist so future syncs skip it.
@@ -1523,7 +1631,10 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
 
     // Record the overlay entry for every action (a delete leaves a tombstone).
     let fb_path = feedback_path(&cache_path);
-    let mut store = read_feedback(&fb_path);
+    let mut store = match read_feedback(&fb_path) {
+        Ok(store) => store,
+        Err(message) => return fail(command, "feedback_unreadable", message, start),
+    };
     let now = unix_seconds();
     let delta = if action == "delete" || action == "shown" { 0 } else { args.delta.min(100) };
     store.entries.insert(
@@ -1553,13 +1664,12 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
 }
 
 // Short, human-facing re-engagement reason built from hard signals only.
-fn reconnect_nudge(contact: &Contact, days: Option<i64>) -> String {
+// Short, human-facing re-engagement reason built from STABLE signals only.
+// Recency ("last contact N days ago") is rendered by the UI from last_contact;
+// keeping day counts out of the nudge keeps its content hash stable across
+// days, which is what makes the bridge's diff sync cheap.
+fn reconnect_nudge(contact: &Contact, _days: Option<i64>) -> String {
     let mut parts: Vec<String> = Vec::new();
-    match days {
-        Some(d) if d >= 60 => parts.push(format!("No contact in {} months", (d / 30).max(2))),
-        Some(d) => parts.push(format!("Last contact {d} days ago")),
-        None => parts.push("No recorded contact".to_string()),
-    }
     if contact.total_exchanges >= 20 {
         parts.push(format!(
             "previously active ({} emails)",
@@ -1570,6 +1680,9 @@ fn reconnect_nudge(contact: &Contact, days: Option<i64>) -> String {
         parts.push(format!("role: {role}"));
     } else if let Some(company) = display_company(contact) {
         parts.push(format!("at {company}"));
+    }
+    if parts.is_empty() {
+        return "Dormant relationship — worth a reconnect".to_string();
     }
     parts.join(" — ")
 }
@@ -2771,15 +2884,29 @@ fn blocklist_path(cache_path: &Path) -> PathBuf {
         .join("reconnect-blocklist.json")
 }
 
-fn read_feedback(path: &Path) -> FeedbackStore {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<FeedbackStore>(&content).ok())
-        .unwrap_or_else(|| FeedbackStore {
-            schema_version: 1,
-            updated_at_unix: unix_seconds(),
-            entries: HashMap::new(),
-        })
+// Missing file -> empty store (normal on first run). Present-but-unparseable
+// file -> hard error: a silently empty store un-excludes every swiped contact,
+// which is exactly the 2026-07-22 "everyone reappeared" incident.
+fn read_feedback(path: &Path) -> Result<FeedbackStore, String> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(FeedbackStore {
+                schema_version: 1,
+                updated_at_unix: unix_seconds(),
+                entries: HashMap::new(),
+            })
+        }
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    let mut store: FeedbackStore = serde_json::from_str(&content)
+        .map_err(|err| format!("malformed feedback file {}: {err}", path.display()))?;
+    store.entries = store
+        .entries
+        .into_iter()
+        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value))
+        .collect();
+    Ok(store)
 }
 
 fn write_feedback(path: &Path, store: &FeedbackStore) -> Result<(), String> {
@@ -5183,6 +5310,123 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nudge_has_no_day_counts() {
+        let contact = Contact {
+            name: "Test Person".to_string(),
+            total_exchanges: 25,
+            ..empty_contact()
+        };
+        let nudge = reconnect_nudge(&contact, Some(120));
+        assert!(!nudge.contains("120"), "nudge must not embed day counts: {nudge}");
+        assert!(!nudge.to_lowercase().contains("month"), "no month counts either: {nudge}");
+        assert!(nudge.contains("previously active"), "stable facts stay: {nudge}");
+        let no_signal = Contact { name: "Quiet Person".to_string(), ..empty_contact() };
+        assert!(!reconnect_nudge(&no_signal, None).is_empty(), "nudge never empty");
+    }
+
+    #[test]
+    fn apply_feedback_delta_boost_suppress_clamp() {
+        let boost = FeedbackEntry { action: "boost".into(), delta: 10, updated_unix: 0 };
+        let suppress = FeedbackEntry { action: "suppress".into(), delta: 10, updated_unix: 0 };
+        let delete = FeedbackEntry { action: "delete".into(), delta: 0, updated_unix: 0 };
+        assert_eq!(apply_feedback_delta(50, Some(&boost)), 60);
+        assert_eq!(apply_feedback_delta(95, Some(&boost)), 100, "clamped at 100");
+        assert_eq!(apply_feedback_delta(50, Some(&suppress)), 40);
+        assert_eq!(apply_feedback_delta(5, Some(&suppress)), 0, "clamped at 0");
+        assert_eq!(apply_feedback_delta(50, Some(&delete)), 50, "delete is not a score signal");
+        assert_eq!(apply_feedback_delta(50, None), 50);
+    }
+
+    #[test]
+    fn feedback_clear_removes_entry() {
+        let path = tmp_file(
+            "clearme.json",
+            r#"{"schemaVersion":1,"updatedAtUnix":1,"entries":{"x@y.com":{"action":"boost","delta":10,"updatedUnix":1}}}"#,
+        );
+        let mut store = read_feedback(&path).unwrap();
+        assert!(store.entries.remove("x@y.com").is_some());
+        write_feedback(&path, &store).unwrap();
+        assert!(read_feedback(&path).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn swiped_name_set_retires_duplicate_rows() {
+        let mut entries = HashMap::new();
+        entries.insert(
+            "steve@primary.vc".to_string(),
+            FeedbackEntry { action: "boost".into(), delta: 10, updated_unix: 1 },
+        );
+        entries.insert(
+            "seen@only.com".to_string(),
+            FeedbackEntry { action: "shown".into(), delta: 0, updated_unix: 1 },
+        );
+        let feedback = FeedbackStore { schema_version: 1, updated_at_unix: 1, entries };
+
+        let row = |name: &str, email: &str| ContactRow {
+            email: email.to_string(),
+            contact: Contact {
+                name: name.to_string(),
+                email: email.to_string(),
+                ..empty_contact()
+            },
+        };
+        let all = vec![
+            row("Steve Schlafman", "steve@primary.vc"),   // swiped
+            row("Steve Schlafman", "steve@lerer.com"),    // duplicate row, not swiped
+            row("Seen Person", "seen@only.com"),          // shown-only: not decisive
+            row("Someone Else", "else@x.com"),
+        ];
+        let names = swiped_name_set(&all, &feedback);
+        assert!(names.contains("steve schlafman"));
+        assert!(!names.contains("seen person"), "'shown' is not a decision");
+        assert!(!names.contains("someone else"));
+        assert_eq!(normalized_person_name("  Steve   SCHLAFMAN "), "steve schlafman");
+    }
+
+    fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("pg-test-{}-{}", std::process::id(), name));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn read_feedback_accepts_legacy_snake_case() {
+        let path = tmp_file(
+            "legacy.json",
+            r#"{"schema_version":1,"updated_at_unix":1750000000,
+                "entries":{"Alice@Example.com":{"action":"boost","delta":10,"updated_unix":1750000000}}}"#,
+        );
+        let store = read_feedback(&path).expect("legacy file must parse");
+        let entry = store.entries.get("alice@example.com").expect("key must be lowercased");
+        assert_eq!(entry.action, "boost");
+        assert_eq!(entry.updated_unix, 1750000000);
+    }
+
+    #[test]
+    fn read_feedback_accepts_camel_case() {
+        let path = tmp_file(
+            "camel.json",
+            r#"{"schemaVersion":1,"updatedAtUnix":1750000000,
+                "entries":{"bob@example.com":{"action":"suppress","delta":10,"updatedUnix":1750000000}}}"#,
+        );
+        let store = read_feedback(&path).expect("camelCase file must parse");
+        assert_eq!(store.entries.get("bob@example.com").unwrap().action, "suppress");
+    }
+
+    #[test]
+    fn read_feedback_missing_file_is_empty_store() {
+        let path = std::env::temp_dir().join("pg-test-definitely-missing.json");
+        let store = read_feedback(&path).expect("missing file is not an error");
+        assert!(store.entries.is_empty());
+    }
+
+    #[test]
+    fn read_feedback_malformed_file_is_a_hard_error() {
+        let path = tmp_file("broken.json", "{ not json ");
+        assert!(read_feedback(&path).is_err(), "malformed feedback must not become an empty store");
+    }
+
     fn empty_contact() -> Contact {
         Contact {
             name: String::new(),
@@ -5210,6 +5454,9 @@ mod tests {
             relationship_recency: None,
             combined_score: None,
             quadrant: None,
+            open_count: 0,
+            last_open_at: None,
+            open_engagement: None,
         }
     }
 }
