@@ -7,10 +7,10 @@
 
 ## B. John's machine
 4. cd ~/obsidian-gmail-crm && git fetch && git checkout contact-dedup && git pull
-5. shasum -a 256 bin/peoplegraph   # must match 3ac0c519b2680381f923204ffb9cbce2f225d50f6c996ad37196d95a7d51d334 (the hash in the PR description)
+5. shasum -a 256 bin/peoplegraph   # must match f048d2f198c3cdb927a7ef7d8d13619cfbe9946d5ec908f70806818df83e2061 (the hash in the PR description)
    rm -f ~/.local/bin/peoplegraph && cp bin/peoplegraph ~/.local/bin/peoplegraph
    codesign --force --sign - ~/.local/bin/peoplegraph && hash -r
-   peoplegraph version   # 0.3.9
+   peoplegraph version   # 0.3.10
 6. DRY RUN FIRST — eyeball what would auto-merge (send the output to Kaya/John):
    set -a; source ~/.peoplegraph/reconnect-web.env; set +a
    peoplegraph --cache "$PEOPLEGRAPH_CACHE" apply-duplicates --dry-run \

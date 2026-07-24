@@ -2016,6 +2016,63 @@ fn suggest_duplicates(
     )
 }
 
+// Auto-merge safety guard: "same display name + same domain" is NOT proof of
+// the same human — org-named rows (contact name = the company) give different
+// people identical names (e.g. three colleagues all displayed as the firm).
+// Require the email local-parts to corroborate: one a variant of the other,
+// or both derivable from the contact name (tokens, initials, initial+lastname).
+// Pairs that fail simply stay unmerged — never wrongly fused.
+fn locals_corroborate(a_email: &str, b_email: &str, names: &[&str]) -> bool {
+    let a = compact_normalize(&email_local(a_email));
+    let b = compact_normalize(&email_local(b_email));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a.contains(&b) || b.contains(&a) {
+        return true;
+    }
+    if jaro_winkler(&a, &b) >= 0.90 {
+        return true;
+    }
+    let mut tokens: Vec<String> = Vec::new();
+    for name in names {
+        for token in normalize(name).split_whitespace().map(compact_normalize) {
+            if !token.is_empty() && !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+    }
+    local_matches_name(&a, &tokens) && local_matches_name(&b, &tokens)
+}
+
+// Does an email local-part look like it was derived from this person's name?
+// Accepts any single name token, any ordered pair of tokens concatenated,
+// the all-token initials, or first-initial + a later token (dfrankel).
+fn local_matches_name(local: &str, tokens: &[String]) -> bool {
+    if tokens.iter().any(|token| local == *token) {
+        return true;
+    }
+    for (i, first) in tokens.iter().enumerate() {
+        for second in tokens.iter().skip(i + 1) {
+            if local == format!("{first}{second}") || local == format!("{second}{first}") {
+                return true;
+            }
+        }
+    }
+    let initials: String = tokens.iter().filter_map(|token| token.chars().next()).collect();
+    if initials.len() >= 2 && local == initials {
+        return true;
+    }
+    if let Some(first_initial) = tokens.first().and_then(|token| token.chars().next()) {
+        for token in tokens.iter().skip(1) {
+            if local == format!("{first_initial}{token}") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 // Transitive union of pair emails: (a,b) + (b,e) -> [a,b,e]. Order of members
 // is first-seen so group[0] is the highest-confidence primary.
 fn group_pairs(pairs: &[(String, String)]) -> Vec<Vec<String>> {
@@ -2059,6 +2116,7 @@ fn apply_duplicates(
 
     // Same scan as suggest-duplicates, but collect only the auto-merge tier.
     let mut pairs: Vec<(f64, String, String)> = Vec::new();
+    let mut demoted_pairs = 0usize;
     for (left_index, left) in contact_rows.iter().enumerate() {
         for right in contact_rows.iter().skip(left_index + 1) {
             if already_canonicalized_together(left, right) {
@@ -2070,10 +2128,22 @@ fn apply_duplicates(
             if skip_default_duplicate_candidate(left, right) {
                 continue;
             }
-            if let Some((confidence, _reasons)) = duplicate_confidence(left, right)
+            if let Some((confidence, reasons)) = duplicate_confidence(left, right)
                 && round_confidence(confidence) >= min_confidence
             {
                 let (primary, duplicate) = primary_duplicate(left, right);
+                // A shared alias is definitive; anything else must survive the
+                // local-part corroboration guard or it stays unmerged.
+                let corroborated = reasons.iter().any(|r| r == "shared_email_or_alias")
+                    || locals_corroborate(
+                        &primary.email,
+                        &duplicate.email,
+                        &[&primary.contact.name, &duplicate.contact.name],
+                    );
+                if !corroborated {
+                    demoted_pairs += 1;
+                    continue;
+                }
                 pairs.push((confidence, primary.email.clone(), duplicate.email.clone()));
             }
         }
@@ -2097,7 +2167,7 @@ fn apply_duplicates(
     if args.dry_run {
         return ok(
             command,
-            json!({ "dry_run": true, "applied_pairs": 0, "groups": groups_json }),
+            json!({ "dry_run": true, "applied_pairs": 0, "demoted_pairs": demoted_pairs, "groups": groups_json }),
             json!({ "matched": pair_emails.len(), "groups": groups.len(), "ms": elapsed_ms(start) }),
         );
     }
@@ -2145,7 +2215,7 @@ fn apply_duplicates(
 
     ok(
         command,
-        json!({ "dry_run": false, "applied_pairs": pair_emails.len(), "groups": groups_json }),
+        json!({ "dry_run": false, "applied_pairs": pair_emails.len(), "demoted_pairs": demoted_pairs, "groups": groups_json }),
         json!({ "matched": pair_emails.len(), "groups": groups.len(), "ms": elapsed_ms(start) }),
     )
 }
@@ -5673,6 +5743,27 @@ mod tests {
         assert_eq!(dropped, 1);
         let emails: Vec<&str> = deduped.iter().map(|(r, _)| r.email.as_str()).collect();
         assert_eq!(emails, vec!["lenka@a.com", "solo@c.com", "noname@d.com", "noname@e.com"]);
+    }
+
+    #[test]
+    fn locals_corroborate_blocks_org_named_different_humans() {
+        // Real cases from the 2026-07-24 dry run: different people sharing an
+        // org display name must NOT corroborate...
+        let org = |a: &str, b: &str, name: &str| locals_corroborate(a, b, &[name, name]);
+        assert!(!org("tkawaja@lumapartners.com", "dms1@lumapartners.com", "LUMA Partners"));
+        assert!(!org("michael@the-vines.com", "frances@the-vines.com", "The Vines"));
+        assert!(!org("belle.raab@aduroadvisors.com", "compliance@aduroadvisors.com", "Aduro Advisors"));
+        assert!(!org("arjen@capitalonstage.com", "events@capitalonstage.com", "Capital On Stage"));
+        assert!(!org("taxes@angel.co", "venture@angel.co", "AngelList"));
+        // ...while genuinely-same-person patterns survive:
+        assert!(org("your-advocate@sequoia.com", "youradvocate@sequoia.com", "Sequoia")); // variant
+        assert!(org("portfoliomanager@b.com", "porfoliomanager@b.com", "Bespoke")); // typo (jaro-winkler)
+        assert!(org("ts@spintacap.com", "todd.schneider@spintacap.com", "Todd Schneider")); // initials + full
+        assert!(org("myanover@caa.com", "michael.yanover@caa.com", "Michael Yanover")); // m+last
+        assert!(org("david@foundercollective.com", "dfrankel@foundercollective.com", "David Frankel"));
+        assert!(org("saar@crv.com", "sgur@crv.com", "Saar Gur"));
+        assert!(org("s@wlessin.com", "sam@wlessin.com", "Sam Lessin")); // containment
+        assert!(org("freddie@chameleon.co", "freddie.laker@chameleon.co", "Freddie Laker"));
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
