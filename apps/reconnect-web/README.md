@@ -23,8 +23,10 @@ contact from the deck forever.
 | Swipe right / ♥ / → | `boost` | out of the deck forever + people score raised globally |
 | Swipe left / ✕ / ← | `suppress` | out of the deck forever + people score lowered globally |
 | 🗑 (confirm) | `delete` | removed from the cache + added to `reconnect-blocklist.json` |
+| (on `/merge`) Swipe right / ♥ / → | `merge` | pair merged into one canonical contact (unioned aliases) |
+| (on `/merge`) Swipe left / ✕ / ← | `keep` | pair marked "not a duplicate" — never suggested again |
 
-Mistake? `peoplegraph feedback --email X --action clear` un-retires a contact.
+Mistake? `peoplegraph feedback --email X --action clear` un-retires a contact. (Merge decisions are separate — see `apply-duplicates`/`apply-merge` in the CLI; there's no "undo" swipe for `/merge` yet, so review the dry-run preview before pushing.)
 
 ## Endpoints
 
@@ -35,6 +37,12 @@ Mistake? `peoplegraph feedback --email X --action clear` un-retires a contact.
 - `POST /api/sync` `{upserts[], remove_ids[], reset?}` — **SYNC_TOKEN bearer** (bridge diff push)
 - `GET /api/decisions?applied=0` — **SYNC_TOKEN** (bridge pull)
 - `POST /api/decisions/ack` `{ids[]}` — **SYNC_TOKEN** (mark applied; also prunes the candidates)
+- `GET /` `/merge` — duplicate-pair swipe UI (static)
+- `GET /api/merge/candidates` — undecided pairs, top 500 by confidence, `{total, candidates[]}` — **requires Google sign-in** (allowlisted email)
+- `POST /api/merge/swipe` `{id, action: merge|keep}` — **requires Google sign-in** (allowlisted email)
+- `POST /api/merge/sync` `{upserts[], remove_ids[], reset?}` — **SYNC_TOKEN bearer** (bridge diff push of the 0.88-0.93 review band; pairs >=0.94 confidence are auto-merged locally and never reach this table)
+- `GET /api/merge/decisions?applied=0` — **SYNC_TOKEN** (bridge pull)
+- `POST /api/merge/decisions/ack` `{ids[]}` — **SYNC_TOKEN** (mark applied; also prunes the pair)
 
 ## One-time setup
 
