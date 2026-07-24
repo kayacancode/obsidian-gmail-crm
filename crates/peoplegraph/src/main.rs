@@ -70,6 +70,8 @@ enum Commands {
     ContactCard(ContactCardArgs),
     /// Suggest duplicate/contact-fragment rows to review for canonical identity cleanup.
     SuggestDuplicates(SuggestDuplicatesArgs),
+    /// Auto-apply high-confidence duplicate merges in one batch pass.
+    ApplyDuplicates(ApplyDuplicatesArgs),
     /// Import another Gmail CRM contact cache into source-aware staging.
     ImportCache(ImportCacheArgs),
     /// Suggest source-aware merges from imported caches into the source-of-truth cache.
@@ -165,6 +167,20 @@ struct SuggestDuplicatesArgs {
 
     #[arg(long, default_value_t = 0.82)]
     min_confidence: f64,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ApplyDuplicatesArgs {
+    /// Only auto-merge at/above this confidence (corroborated tier).
+    #[arg(long, default_value_t = 0.94)]
+    min_confidence: f64,
+
+    /// Print what would merge without writing anything.
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -575,6 +591,7 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         }),
         Commands::ContactCard(args) => contact_card(cli, command, args, start),
         Commands::SuggestDuplicates(args) => suggest_duplicates(cli, command, args, start),
+        Commands::ApplyDuplicates(args) => apply_duplicates(cli, command, args, start),
         Commands::ImportCache(args) => import_cache(cli, command, args, start),
         Commands::SuggestExternalMerges(args) => suggest_external_merges(cli, command, args, start),
         Commands::MergeQueue(args) => merge_queue(cli, command, args, start),
@@ -731,6 +748,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::ApplyMerge(_)
         | Commands::DismissMerge(_)
         | Commands::ProposeMerge(_)
+        | Commands::ApplyDuplicates(_)
         | Commands::Feedback(_)
         | Commands::Serve(_) => None,
     }
@@ -1995,6 +2013,144 @@ fn suggest_duplicates(
             "user_email": &index.user_email,
             "ms": elapsed_ms(start)
         }),
+    )
+}
+
+// Transitive union of pair emails: (a,b) + (b,e) -> [a,b,e]. Order of members
+// is first-seen so group[0] is the highest-confidence primary.
+fn group_pairs(pairs: &[(String, String)]) -> Vec<Vec<String>> {
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    for (a, b) in pairs {
+        let ia = groups.iter().position(|g| g.iter().any(|m| m == a));
+        let ib = groups.iter().position(|g| g.iter().any(|m| m == b));
+        match (ia, ib) {
+            (None, None) => groups.push(vec![a.clone(), b.clone()]),
+            (Some(i), None) => groups[i].push(b.clone()),
+            (None, Some(j)) => groups[j].push(a.clone()),
+            (Some(i), Some(j)) if i != j => {
+                let (keep, drain) = (i.min(j), i.max(j));
+                let moved = groups.remove(drain);
+                for m in moved {
+                    if !groups[keep].contains(&m) {
+                        groups[keep].push(m);
+                    }
+                }
+            }
+            (Some(_), Some(_)) => {} // already same group
+        }
+    }
+    groups
+}
+
+fn apply_duplicates(
+    cli: &Cli,
+    command: &'static str,
+    args: &ApplyDuplicatesArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let queue_path = merge_queue_path(&cache_path);
+    let mut queue = read_merge_queue(&queue_path);
+    let min_confidence = args.min_confidence.clamp(0.0, 1.0);
+    let contact_rows = rows(&index);
+
+    // Same scan as suggest-duplicates, but collect only the auto-merge tier.
+    let mut pairs: Vec<(f64, String, String)> = Vec::new();
+    for (left_index, left) in contact_rows.iter().enumerate() {
+        for right in contact_rows.iter().skip(left_index + 1) {
+            if already_canonicalized_together(left, right) {
+                continue;
+            }
+            if queue_pair_status(&queue, &left.email, &right.email).is_some() {
+                continue;
+            }
+            if skip_default_duplicate_candidate(left, right) {
+                continue;
+            }
+            if let Some((confidence, _reasons)) = duplicate_confidence(left, right)
+                && confidence >= min_confidence
+            {
+                let (primary, duplicate) = primary_duplicate(left, right);
+                pairs.push((confidence, primary.email.clone(), duplicate.email.clone()));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
+    pairs.truncate(args.limit.max(1));
+    let pair_emails: Vec<(String, String)> =
+        pairs.iter().map(|(_, a, b)| (a.clone(), b.clone())).collect();
+    let groups = group_pairs(&pair_emails);
+
+    let groups_json: Vec<Value> = groups
+        .iter()
+        .map(|members| {
+            json!({
+                "canonical_id": canonical_id_for_merge(&index, &members[0], members.get(1).map(String::as_str).unwrap_or(&members[0])),
+                "members": members,
+            })
+        })
+        .collect();
+
+    if args.dry_run {
+        return ok(
+            command,
+            json!({ "dry_run": true, "applied_pairs": 0, "groups": groups_json }),
+            json!({ "matched": pair_emails.len(), "groups": groups.len(), "ms": elapsed_ms(start) }),
+        );
+    }
+
+    // ONE cache read/write for the whole batch.
+    let mut index_json = match read_json_value(&cache_path) {
+        Ok(value) => value,
+        Err(message) => return fail(command, "cache_read_failed", message, start),
+    };
+    let canonical_synced_at = unix_seconds_iso();
+    for members in &groups {
+        let canonical_id = canonical_id_for_merge(
+            &index,
+            &members[0],
+            members.get(1).map(String::as_str).unwrap_or(&members[0]),
+        );
+        // Union of every member's aliases, accumulated pairwise.
+        let mut aliases: Vec<String> = Vec::new();
+        for member in members {
+            push_unique_email(&mut aliases, member);
+            for alias in merge_aliases(&index, &members[0], member) {
+                push_unique_email(&mut aliases, &alias);
+            }
+        }
+        for member in members {
+            let Some(key) = contact_key_for_email(&index, member) else {
+                continue;
+            };
+            if let Err(message) = apply_canonical_to_contact(
+                &mut index_json,
+                &key,
+                &canonical_id,
+                &aliases,
+                &canonical_synced_at,
+            ) {
+                return fail(command, "cache_write_failed", message, start);
+            }
+        }
+    }
+    if let Err(message) = write_json_value(&cache_path, &index_json) {
+        return fail(command, "cache_write_failed", message, start);
+    }
+    for (_, a, b) in &pairs {
+        mark_merge_applied(&mut queue, &index, a, b);
+    }
+    if let Err(message) = write_merge_queue(&queue_path, &queue) {
+        return fail(command, "queue_write_failed", message, start);
+    }
+
+    ok(
+        command,
+        json!({ "dry_run": false, "applied_pairs": pair_emails.len(), "groups": groups_json }),
+        json!({ "matched": pair_emails.len(), "groups": groups.len(), "ms": elapsed_ms(start) }),
     )
 }
 
@@ -4456,6 +4612,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::GetEdges(_) => "get-edges",
         Commands::ContactCard(_) => "contact-card",
         Commands::SuggestDuplicates(_) => "suggest-duplicates",
+        Commands::ApplyDuplicates(_) => "apply-duplicates",
         Commands::ImportCache(_) => "import-cache",
         Commands::SuggestExternalMerges(_) => "suggest-external-merges",
         Commands::MergeQueue(_) => "merge-queue",
@@ -4531,6 +4688,12 @@ fn describe_payload() -> Value {
                 "name": "suggest-duplicates",
                 "usage": "peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82",
                 "status": "implemented"
+            },
+            {
+                "name": "apply-duplicates",
+                "usage": "peoplegraph apply-duplicates --min-confidence 0.94 [--dry-run]",
+                "status": "implemented_local_cache_write",
+                "notes": "Auto-merges corroborated duplicate pairs (default >=0.94 confidence) with transitive grouping, writing canonical ids and unioned aliases for every group member in a single cache read/write pass. --dry-run previews groups without writing. Queue-idempotent: applied pairs are marked in the merge queue so re-running reports 0 newly applied. WRITE command — local source-of-truth machine only, not exposed over --remote."
             },
             {
                 "name": "import-cache",
@@ -4964,6 +5127,19 @@ mod tests {
                 "old@2389.ai".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn group_pairs_is_transitive() {
+        let pairs = vec![
+            ("a@x.com".to_string(), "b@x.com".to_string()),
+            ("c@y.com".to_string(), "d@y.com".to_string()),
+            ("b@x.com".to_string(), "e@x.com".to_string()), // joins group 1 via b
+        ];
+        let groups = group_pairs(&pairs);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], vec!["a@x.com", "b@x.com", "e@x.com"]);
+        assert_eq!(groups[1], vec!["c@y.com", "d@y.com"]);
     }
 
     #[test]
