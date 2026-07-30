@@ -324,11 +324,17 @@ async function mergePush({ force = false } = {}) {
 
 	const applied = pg(["apply-duplicates", "--min-confidence", AUTO_MERGE_CONFIDENCE]);
 	if (!applied.ok) throw new Error(`apply-duplicates failed: ${JSON.stringify(applied.error || applied)}`);
-	console.log(`auto-merged ${applied.data?.applied_pairs ?? 0} corroborated pairs`);
+	console.log(
+		`auto-merged ${applied.data?.applied_pairs ?? 0} corroborated pairs` +
+			` (${applied.data?.demoted_pairs ?? 0} demoted by guard)`,
+	);
 
-	const res = pg(["suggest-duplicates", "--min-confidence", REVIEW_MIN_CONFIDENCE, "--limit", "2000"]);
+	// Ask for far more than the review band needs: guard-demoted pairs score
+	// >= 0.94 and sort first, so a small limit returns only pairs the < 0.94
+	// filter below then discards — leaving the real review band crowded out.
+	const res = pg(["suggest-duplicates", "--min-confidence", REVIEW_MIN_CONFIDENCE, "--limit", "20000"]);
 	if (!res.ok) throw new Error(`suggest-duplicates failed: ${JSON.stringify(res.error || res)}`);
-	const suggestions = (res.data?.suggestions ?? []).filter((s) => s.confidence < 0.94);
+	const suggestions = (res.data?.suggestions ?? []).filter((s) => s.confidence < 0.94).slice(0, 2000);
 	const reviewable = suggestions.filter((s) => (s.primary.name || "").trim() && (s.duplicate.name || "").trim());
 	if (reviewable.length !== suggestions.length) {
 		console.log(`skipped ${suggestions.length - reviewable.length} nameless pairs`);
