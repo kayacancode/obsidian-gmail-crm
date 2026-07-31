@@ -138,12 +138,22 @@ The CLI auto-discovers the active Gmail CRM cache when run near a vault, or you 
 
 Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. That machine owns the source-of-truth `.obsidian/plugins/gmail-crm/contact-index.json`.
 
-1. Install PeopleGraph:
+1. Install PeopleGraph from the in-repo binary. Do **not** use `brew install peoplegraph`
+   or `scripts/install-peoplegraph.sh` on this machine — both resolve to published releases
+   that lag the repo (the install script currently serves 0.3.4), and running a stale binary
+   here silently reintroduces already-fixed swipe and dedup bugs:
 
    ```bash
-   brew tap kayacancode/tap
-   brew install peoplegraph
+   cd ~/obsidian-gmail-crm && git pull
+   rm -f ~/.local/bin/peoplegraph
+   cp bin/peoplegraph ~/.local/bin/peoplegraph
+   codesign --force --sign - ~/.local/bin/peoplegraph
+   hash -r
+   peoplegraph version   # confirm this matches the repo before continuing
    ```
+
+   Replace the file rather than overwriting in place; overwriting a signed binary that is
+   in use gets it killed by macOS (`zsh: killed peoplegraph`).
 
 2. In Obsidian, run the plugin sync commands so the cache is current:
 
