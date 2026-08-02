@@ -21,6 +21,7 @@ export interface GmailCrmSettings {
 	stalenessUpdateInterval: number; // 0 = only on sync, otherwise hours between auto-updates
 	excludeCategories: string; // comma-separated Gmail categories to skip (promotions,social,updates,forums)
 	excludeLabels: string; // comma-separated Gmail labels to skip (e.g. shop@,service@)
+	debugScoring: boolean; // log a line per contact while scoring (slow on large vaults)
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -47,6 +48,7 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	stalenessUpdateInterval: 0, // 0 = only after sync, not on its own timer
 	excludeCategories: "promotions,social", // skip promo and social by default
 	excludeLabels: "", // user-configured labels to skip
+	debugScoring: false,
 };
 
 export interface ContactScore {

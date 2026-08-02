@@ -356,6 +356,18 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Debug scoring")
+			.setDesc("Log every contact's score inputs to the console. Useful for tuning; slow and memory-hungry on large vaults.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.debugScoring)
+					.onChange(async (value) => {
+						this.plugin.settings.debugScoring = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Staleness update schedule")
 			.setDesc("Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.")
 			.addDropdown((drop) =>
