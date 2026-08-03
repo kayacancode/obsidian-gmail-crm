@@ -28,6 +28,9 @@ import type {
 } from "./types";
 import { CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS } from "./types";
 
+/** Grace period before a catch-up sync, so launch isn't competing with indexing. */
+const STARTUP_SYNC_DELAY_MS = 60_000;
+
 type MergeQueue = {
 	schemaVersion?: number;
 	updatedAtUnix?: number;
@@ -156,7 +159,25 @@ export default class GmailCrmPlugin extends Plugin {
 		if (this.settings.refreshToken) {
 			this.startAutoSync();
 			this.resetStalenessTimer();
+			this.scheduleOverdueSync();
 		}
+	}
+
+	/**
+	 * The interval timer only fires after a full interval of continuous uptime and
+	 * restarts from zero on every load, so on a machine that is restarted — or
+	 * where Obsidian is opened briefly — a long cadence never fires at all. Catch
+	 * up on startup instead, using the persisted completion time.
+	 */
+	private scheduleOverdueSync() {
+		const intervalMs = this.settings.syncIntervalMinutes * 60_000;
+		const elapsed = Date.now() - this.settings.lastSyncAt;
+		if (elapsed < intervalMs) return;
+		// Delayed so a launch isn't competing with vault indexing.
+		const timer = window.setTimeout(() => {
+			void this.syncContacts();
+		}, STARTUP_SYNC_DELAY_MS);
+		this.registerInterval(timer);
 	}
 
 	onunload() {
@@ -219,7 +240,7 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	private startAutoSync() {
+	startAutoSync() {
 		if (this.syncInterval !== null) {
 			window.clearInterval(this.syncInterval);
 		}
@@ -306,6 +327,11 @@ export default class GmailCrmPlugin extends Plugin {
 					console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
 				}
 			}
+
+			// Recorded before scoring so a long scoring pass can't make the next
+			// startup think the sync is still overdue and immediately redo it.
+			this.settings.lastSyncAt = Date.now();
+			await this.saveSettings();
 
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 

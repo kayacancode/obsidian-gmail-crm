@@ -151,17 +151,36 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Sync interval")
-			.setDesc("How often to re-sync metadata (minutes)")
-			.addSlider((slider) =>
-				slider
-					.setLimits(15, 480, 15)
-					.setValue(this.plugin.settings.syncIntervalMinutes)
-					.setDynamicTooltip()
-					.onChange(async (value) => {
-						this.plugin.settings.syncIntervalMinutes = value;
-						await this.plugin.saveSettings();
-					})
-			);
+			.setDesc(
+				"How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch — so a long interval still happens on a machine that gets restarted. On daily or weekly, raise \"Max messages to scan\" above the volume you receive in that window, or older messages fall outside it and are never scanned."
+			)
+			.addDropdown((dd) => {
+				const choices: [number, string][] = [
+					[15, "Every 15 minutes"],
+					[30, "Every 30 minutes"],
+					[60, "Hourly"],
+					[240, "Every 4 hours"],
+					[480, "Every 8 hours"],
+					[1440, "Daily"],
+					[10080, "Weekly"],
+				];
+				for (const [minutes, label] of choices) {
+					dd.addOption(String(minutes), label);
+				}
+				// Preserve a previously-set slider value that isn't one of the presets.
+				const current = this.plugin.settings.syncIntervalMinutes;
+				if (!choices.some(([minutes]) => minutes === current)) {
+					dd.addOption(String(current), `Every ${current} minutes`);
+				}
+				dd.setValue(String(current));
+				dd.onChange(async (value) => {
+					this.plugin.settings.syncIntervalMinutes = Number(value);
+					await this.plugin.saveSettings();
+					// Restart the timer, otherwise the new cadence only takes effect
+					// after Obsidian is reloaded.
+					this.plugin.startAutoSync();
+				});
+			});
 
 		new Setting(containerEl)
 			.setName("Max messages to scan")

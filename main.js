@@ -59,7 +59,8 @@ var init_types = __esm({
       // skip promo and social by default
       excludeLabels: "",
       // user-configured labels to skip
-      debugScoring: false
+      debugScoring: false,
+      lastSyncAt: 0
     };
   }
 });
@@ -727,12 +728,32 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Sync").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc("How often to re-sync metadata (minutes)").addSlider(
-      (slider) => slider.setLimits(15, 480, 15).setValue(this.plugin.settings.syncIntervalMinutes).setDynamicTooltip().onChange(async (value) => {
-        this.plugin.settings.syncIntervalMinutes = value;
+    new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc(
+      'How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "Max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.'
+    ).addDropdown((dd) => {
+      const choices = [
+        [15, "Every 15 minutes"],
+        [30, "Every 30 minutes"],
+        [60, "Hourly"],
+        [240, "Every 4 hours"],
+        [480, "Every 8 hours"],
+        [1440, "Daily"],
+        [10080, "Weekly"]
+      ];
+      for (const [minutes, label] of choices) {
+        dd.addOption(String(minutes), label);
+      }
+      const current = this.plugin.settings.syncIntervalMinutes;
+      if (!choices.some(([minutes]) => minutes === current)) {
+        dd.addOption(String(current), `Every ${current} minutes`);
+      }
+      dd.setValue(String(current));
+      dd.onChange(async (value) => {
+        this.plugin.settings.syncIntervalMinutes = Number(value);
         await this.plugin.saveSettings();
-      })
-    );
+        this.plugin.startAutoSync();
+      });
+    });
     new import_obsidian2.Setting(containerEl).setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "All" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
       for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4, 25e3, 5e4]) {
         dd.addOption(String(n), String(n));
@@ -2626,6 +2647,7 @@ function escapeHtml(s) {
 
 // src/main.ts
 init_types();
+var STARTUP_SYNC_DELAY_MS = 6e4;
 var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
@@ -2728,7 +2750,23 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
     if (this.settings.refreshToken) {
       this.startAutoSync();
       this.resetStalenessTimer();
+      this.scheduleOverdueSync();
     }
+  }
+  /**
+   * The interval timer only fires after a full interval of continuous uptime and
+   * restarts from zero on every load, so on a machine that is restarted — or
+   * where Obsidian is opened briefly — a long cadence never fires at all. Catch
+   * up on startup instead, using the persisted completion time.
+   */
+  scheduleOverdueSync() {
+    const intervalMs = this.settings.syncIntervalMinutes * 6e4;
+    const elapsed = Date.now() - this.settings.lastSyncAt;
+    if (elapsed < intervalMs) return;
+    const timer = window.setTimeout(() => {
+      void this.syncContacts();
+    }, STARTUP_SYNC_DELAY_MS);
+    this.registerInterval(timer);
   }
   onunload() {
     if (this.syncInterval !== null) {
@@ -2860,6 +2898,8 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
           console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
         }
       }
+      this.settings.lastSyncAt = Date.now();
+      await this.saveSettings();
       notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
       if (this.settings.autoUpdateStaleness) {
         await this.updateStaleness();
