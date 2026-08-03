@@ -6,6 +6,58 @@ import type {
 	Contact,
 } from "./types";
 
+interface NameTrieNode {
+	children: Map<string, NameTrieNode>;
+	name?: string;
+}
+
+/** Character trie over every candidate name, built once per graph pass. */
+function buildNameTrie(names: string[]): NameTrieNode {
+	const root: NameTrieNode = { children: new Map() };
+	for (const name of names) {
+		let node = root;
+		// Indexed by UTF-16 code unit, not code point: the scan below advances one
+		// code unit at a time, so an astral character (emoji, CJK Ext-B) keyed as a
+		// single 2-unit edge would be unreachable and its name silently unmatchable.
+		for (let position = 0; position < name.length; position++) {
+			const char = name[position];
+			let next = node.children.get(char);
+			if (!next) {
+				next = { children: new Map() };
+				node.children.set(char, next);
+			}
+			node = next;
+		}
+		node.name = name;
+	}
+	return root;
+}
+
+/**
+ * Every name that occurs as a substring of `content`, found in one pass.
+ *
+ * This replaces testing each page against every other name in the vault, which
+ * is O(pages x names) substring searches — about 545 million at 23k people, on
+ * the main thread, which freezes Obsidian outright. Walking a trie from each
+ * position costs O(content length) instead, independent of how many people are
+ * in the vault, and matches the same substrings the original scan did:
+ * case-sensitive, no word-boundary requirement.
+ */
+function findMentionedNames(content: string, root: NameTrieNode): Set<string> {
+	const found = new Set<string>();
+	for (let start = 0; start < content.length; start++) {
+		let node = root.children.get(content[start]);
+		let cursor = start + 1;
+		while (node) {
+			if (node.name !== undefined) found.add(node.name);
+			if (cursor >= content.length) break;
+			node = node.children.get(content[cursor]);
+			cursor++;
+		}
+	}
+	return found;
+}
+
 export class RelationshipEngine {
 	private vault: Vault;
 	private peopleFolder: string;
@@ -123,6 +175,12 @@ export class RelationshipEngine {
 			graph[name] = [];
 		}
 
+		// Only multi-word names are eligible for text mentions, same as before.
+		const multiWordNames = Array.from(allNames).filter((n) => n.includes(" "));
+		const nameOrder = new Map<string, number>();
+		multiWordNames.forEach((name, position) => nameOrder.set(name, position));
+		const nameTrie = buildNameTrie(multiWordNames);
+
 		for (const [name, page] of Object.entries(pages)) {
 			// Wiki link edges
 			for (const link of page.wikiLinks) {
@@ -153,16 +211,20 @@ export class RelationshipEngine {
 			}
 
 			// Text mentions of full names
-			for (const otherName of allNames) {
+			const wikiLinks = new Set(page.wikiLinks);
+			const mentioned = findMentionedNames(page.content, nameTrie);
+			// Sorted back into vault order so edge order matches the original scan.
+			const ordered = Array.from(mentioned).sort(
+				(a, b) => (nameOrder.get(a) ?? 0) - (nameOrder.get(b) ?? 0)
+			);
+			for (const otherName of ordered) {
 				if (otherName === name) continue;
-				if (page.wikiLinks.includes(otherName)) continue;
-				if (otherName.includes(" ") && page.content.includes(otherName)) {
-					graph[name].push({
-						target: otherName,
-						type: "text_mention",
-						context: "Mentioned in notes",
-					});
-				}
+				if (wikiLinks.has(otherName)) continue;
+				graph[name].push({
+					target: otherName,
+					type: "text_mention",
+					context: "Mentioned in notes",
+				});
 			}
 		}
 

@@ -57,8 +57,10 @@ var init_types = __esm({
       // 0 = only after sync, not on its own timer
       excludeCategories: "promotions,social",
       // skip promo and social by default
-      excludeLabels: ""
+      excludeLabels: "",
       // user-configured labels to skip
+      debugScoring: false,
+      lastSyncAt: 0
     };
   }
 });
@@ -726,12 +728,32 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Sync").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc("How often to re-sync metadata (minutes)").addSlider(
-      (slider) => slider.setLimits(15, 480, 15).setValue(this.plugin.settings.syncIntervalMinutes).setDynamicTooltip().onChange(async (value) => {
-        this.plugin.settings.syncIntervalMinutes = value;
+    new import_obsidian2.Setting(containerEl).setName("Sync interval").setDesc(
+      'How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "Max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.'
+    ).addDropdown((dd) => {
+      const choices = [
+        [15, "Every 15 minutes"],
+        [30, "Every 30 minutes"],
+        [60, "Hourly"],
+        [240, "Every 4 hours"],
+        [480, "Every 8 hours"],
+        [1440, "Daily"],
+        [10080, "Weekly"]
+      ];
+      for (const [minutes, label] of choices) {
+        dd.addOption(String(minutes), label);
+      }
+      const current = this.plugin.settings.syncIntervalMinutes;
+      if (!choices.some(([minutes]) => minutes === current)) {
+        dd.addOption(String(current), `Every ${current} minutes`);
+      }
+      dd.setValue(String(current));
+      dd.onChange(async (value) => {
+        this.plugin.settings.syncIntervalMinutes = Number(value);
         await this.plugin.saveSettings();
-      })
-    );
+        this.plugin.startAutoSync();
+      });
+    });
     new import_obsidian2.Setting(containerEl).setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "All" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
       for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4, 25e3, 5e4]) {
         dd.addOption(String(n), String(n));
@@ -833,6 +855,12 @@ var GmailCrmSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian2.Setting(containerEl).setName("Debug scoring").setDesc("Log every contact's score inputs to the console. Useful for tuning; slow and memory-hungry on large vaults.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.debugScoring).onChange(async (value) => {
+        this.plugin.settings.debugScoring = value;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian2.Setting(containerEl).setName("Staleness update schedule").setDesc("Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.").addDropdown(
       (drop) => drop.addOption("0", "Only after sync").addOption("6", "Every 6 hours").addOption("12", "Every 12 hours").addOption("24", "Every day").addOption("48", "Every 2 days").addOption("168", "Every week").setValue(String(this.plugin.settings.stalenessUpdateInterval)).onChange(async (value) => {
         this.plugin.settings.stalenessUpdateInterval = parseInt(value);
@@ -911,6 +939,37 @@ function startOAuthCallbackServer() {
 
 // src/relationships.ts
 var import_obsidian3 = require("obsidian");
+function buildNameTrie(names) {
+  const root = { children: /* @__PURE__ */ new Map() };
+  for (const name of names) {
+    let node = root;
+    for (let position = 0; position < name.length; position++) {
+      const char = name[position];
+      let next = node.children.get(char);
+      if (!next) {
+        next = { children: /* @__PURE__ */ new Map() };
+        node.children.set(char, next);
+      }
+      node = next;
+    }
+    node.name = name;
+  }
+  return root;
+}
+function findMentionedNames(content, root) {
+  const found = /* @__PURE__ */ new Set();
+  for (let start = 0; start < content.length; start++) {
+    let node = root.children.get(content[start]);
+    let cursor = start + 1;
+    while (node) {
+      if (node.name !== void 0) found.add(node.name);
+      if (cursor >= content.length) break;
+      node = node.children.get(content[cursor]);
+      cursor++;
+    }
+  }
+  return found;
+}
 var RelationshipEngine = class {
   constructor(vault, peopleFolder) {
     this.vault = vault;
@@ -995,6 +1054,10 @@ var RelationshipEngine = class {
     for (const name of allNames) {
       graph[name] = [];
     }
+    const multiWordNames = Array.from(allNames).filter((n) => n.includes(" "));
+    const nameOrder = /* @__PURE__ */ new Map();
+    multiWordNames.forEach((name, position) => nameOrder.set(name, position));
+    const nameTrie = buildNameTrie(multiWordNames);
     for (const [name, page] of Object.entries(pages)) {
       for (const link of page.wikiLinks) {
         if (allNames.has(link) && link !== name) {
@@ -1020,16 +1083,22 @@ var RelationshipEngine = class {
           });
         }
       }
-      for (const otherName of allNames) {
-        if (otherName === name) continue;
-        if (page.wikiLinks.includes(otherName)) continue;
-        if (otherName.includes(" ") && page.content.includes(otherName)) {
-          graph[name].push({
-            target: otherName,
-            type: "text_mention",
-            context: "Mentioned in notes"
-          });
+      const wikiLinks = new Set(page.wikiLinks);
+      const mentioned = findMentionedNames(page.content, nameTrie);
+      const ordered = Array.from(mentioned).sort(
+        (a, b) => {
+          var _a2, _b2;
+          return ((_a2 = nameOrder.get(a)) != null ? _a2 : 0) - ((_b2 = nameOrder.get(b)) != null ? _b2 : 0);
         }
+      );
+      for (const otherName of ordered) {
+        if (otherName === name) continue;
+        if (wikiLinks.has(otherName)) continue;
+        graph[name].push({
+          target: otherName,
+          type: "text_mention",
+          context: "Mentioned in notes"
+        });
       }
     }
     const meetingAttendees = {};
@@ -1421,6 +1490,13 @@ COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merg
 };
 
 // src/staleness.ts
+var scoringDebugEnabled = false;
+function setScoringDebug(enabled) {
+  scoringDebugEnabled = enabled;
+}
+function logScoring(name, details) {
+  console.log(`[Gmail CRM] Scoring: ${name}`, details);
+}
 function computeStaleness(page, relationships) {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i;
   const gmail = page.gmailStats;
@@ -1474,7 +1550,7 @@ function computeStaleness(page, relationships) {
   const momentumScore = computeMomentumScore(gmail, daysSinceContact);
   const quadrant = assignQuadrant(strengthScore, momentumScore, gmail);
   const combinedScore = Math.round((strengthScore + momentumScore) / 2);
-  console.log(`[Gmail CRM] Scoring: ${page.name}`, {
+  if (scoringDebugEnabled) logScoring(page.name, {
     // Raw inputs
     totalExchanges,
     sent: (_a = gmail == null ? void 0 : gmail.sentCount) != null ? _a : 0,
@@ -2571,12 +2647,16 @@ function escapeHtml(s) {
 
 // src/main.ts
 init_types();
+var STARTUP_SYNC_DELAY_MS = 6e4;
 var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.contactIndex = null;
     this.messageCache = null;
+    /** Address -> contact map for getContactByEmail; rebuilt when the index is replaced. */
+    this.contactLookup = null;
+    this.contactLookupSource = null;
     this.syncInterval = null;
     this.stalenessInterval = null;
   }
@@ -2670,7 +2750,23 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
     if (this.settings.refreshToken) {
       this.startAutoSync();
       this.resetStalenessTimer();
+      this.scheduleOverdueSync();
     }
+  }
+  /**
+   * The interval timer only fires after a full interval of continuous uptime and
+   * restarts from zero on every load, so on a machine that is restarted — or
+   * where Obsidian is opened briefly — a long cadence never fires at all. Catch
+   * up on startup instead, using the persisted completion time.
+   */
+  scheduleOverdueSync() {
+    const intervalMs = this.settings.syncIntervalMinutes * 6e4;
+    const elapsed = Date.now() - this.settings.lastSyncAt;
+    if (elapsed < intervalMs) return;
+    const timer = window.setTimeout(() => {
+      void this.syncContacts();
+    }, STARTUP_SYNC_DELAY_MS);
+    this.registerInterval(timer);
   }
   onunload() {
     if (this.syncInterval !== null) {
@@ -2682,11 +2778,13 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    setScoringDebug(this.settings.debugScoring);
   }
   async saveSettings() {
     var _a;
     await this.saveData(this.settings);
     (_a = this.gmailApi) == null ? void 0 : _a.updateSettings(this.settings);
+    setScoringDebug(this.settings.debugScoring);
   }
   getEffectiveClientId() {
     if (this.settings.useCustomOAuth && this.settings.clientId) {
@@ -2762,18 +2860,16 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
         },
         this.contactIndex,
         this.messageCache,
-        // Progressive checkpoint: flush to disk + score + create pages every 2000 messages
+        // Progressive checkpoint every 2000 messages: flush to disk only, so a
+        // crash mid-sync doesn't lose progress. Page writing and scoring are
+        // derived from the index and run once after the sync instead — doing
+        // them per checkpoint meant a large mailbox triggered dozens of full
+        // scoring passes over every contact.
         async (checkpointIndex, checkpointCache) => {
           this.contactIndex = checkpointIndex;
           this.messageCache = checkpointCache;
           await this.saveContactIndex();
           await this.saveMessageCache();
-          if (this.settings.createContactNotes) {
-            await this.writeContactNotes();
-          }
-          if (this.settings.autoUpdateStaleness) {
-            await this.updateStaleness();
-          }
           const count = Object.keys(checkpointIndex.contacts).length;
           console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
         }
@@ -2802,6 +2898,8 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
           console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
         }
       }
+      this.settings.lastSyncAt = Date.now();
+      await this.saveSettings();
       notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
       if (this.settings.autoUpdateStaleness) {
         await this.updateStaleness();
@@ -2882,7 +2980,7 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
     this.contactIndex.schemaVersion = CONTACT_INDEX_SCHEMA_VERSION;
     (_b = (_a = this.contactIndex).edges) != null ? _b : _a.edges = [];
     const path = this.getIndexPath();
-    const content = JSON.stringify(this.contactIndex, null, 2);
+    const content = JSON.stringify(this.contactIndex);
     await this.app.vault.adapter.write((0, import_obsidian9.normalizePath)(path), content);
   }
   getIndexPath() {
@@ -3244,18 +3342,33 @@ ${relSection}
     return fallback ? fallback.toLowerCase() : null;
   }
   getContactByEmail(email) {
-    var _a;
+    var _a, _b;
     if (!this.contactIndex) return null;
     const lower = email.toLowerCase();
     const direct = this.contactIndex.contacts[lower];
     if (direct) return direct;
-    for (const contact of Object.values(this.contactIndex.contacts)) {
-      if (contact.email.toLowerCase() === lower) return contact;
-      if ((_a = contact.aliases) == null ? void 0 : _a.some((alias) => alias.toLowerCase() === lower)) {
-        return contact;
+    if (!this.contactLookup || this.contactLookupSource !== this.contactIndex.contacts) {
+      this.rebuildContactLookup();
+    }
+    return (_b = (_a = this.contactLookup) == null ? void 0 : _a.get(lower)) != null ? _b : null;
+  }
+  /**
+   * Maps every known address (primary + aliases) to its contact. First writer
+   * wins, matching the original scan order so lookups resolve identically.
+   */
+  rebuildContactLookup() {
+    var _a, _b, _c, _d, _e, _f;
+    const lookup = /* @__PURE__ */ new Map();
+    for (const contact of Object.values((_b = (_a = this.contactIndex) == null ? void 0 : _a.contacts) != null ? _b : {})) {
+      const primary = (_c = contact.email) == null ? void 0 : _c.toLowerCase();
+      if (primary && !lookup.has(primary)) lookup.set(primary, contact);
+      for (const alias of (_d = contact.aliases) != null ? _d : []) {
+        const key = alias == null ? void 0 : alias.toLowerCase();
+        if (key && !lookup.has(key)) lookup.set(key, contact);
       }
     }
-    return null;
+    this.contactLookup = lookup;
+    this.contactLookupSource = (_f = (_e = this.contactIndex) == null ? void 0 : _e.contacts) != null ? _f : null;
   }
   parseRoleCompany(role) {
     if (!role) return { role: null, company: null };

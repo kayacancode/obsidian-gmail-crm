@@ -11,7 +11,7 @@ import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
-import { computeStaleness } from "./staleness";
+import { computeStaleness, setScoringDebug } from "./staleness";
 import { syncCalendarData } from "./calendar-sync";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
@@ -27,6 +27,9 @@ import type {
 	RelationshipGraph,
 } from "./types";
 import { CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS } from "./types";
+
+/** Grace period before a catch-up sync, so launch isn't competing with indexing. */
+const STARTUP_SYNC_DELAY_MS = 60_000;
 
 type MergeQueue = {
 	schemaVersion?: number;
@@ -51,6 +54,9 @@ export default class GmailCrmPlugin extends Plugin {
 	private gmailApi!: GmailApi;
 	private contactIndex: ContactIndex | null = null;
 	private messageCache: MessageCache | null = null;
+	/** Address -> contact map for getContactByEmail; rebuilt when the index is replaced. */
+	private contactLookup: Map<string, Contact> | null = null;
+	private contactLookupSource: Record<string, Contact> | null = null;
 	private syncInterval: number | null = null;
 	private stalenessInterval: number | null = null;
 
@@ -153,7 +159,25 @@ export default class GmailCrmPlugin extends Plugin {
 		if (this.settings.refreshToken) {
 			this.startAutoSync();
 			this.resetStalenessTimer();
+			this.scheduleOverdueSync();
 		}
+	}
+
+	/**
+	 * The interval timer only fires after a full interval of continuous uptime and
+	 * restarts from zero on every load, so on a machine that is restarted — or
+	 * where Obsidian is opened briefly — a long cadence never fires at all. Catch
+	 * up on startup instead, using the persisted completion time.
+	 */
+	private scheduleOverdueSync() {
+		const intervalMs = this.settings.syncIntervalMinutes * 60_000;
+		const elapsed = Date.now() - this.settings.lastSyncAt;
+		if (elapsed < intervalMs) return;
+		// Delayed so a launch isn't competing with vault indexing.
+		const timer = window.setTimeout(() => {
+			void this.syncContacts();
+		}, STARTUP_SYNC_DELAY_MS);
+		this.registerInterval(timer);
 	}
 
 	onunload() {
@@ -167,11 +191,13 @@ export default class GmailCrmPlugin extends Plugin {
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		setScoringDebug(this.settings.debugScoring);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 		this.gmailApi?.updateSettings(this.settings);
+		setScoringDebug(this.settings.debugScoring);
 	}
 
 	getEffectiveClientId(): string {
@@ -214,7 +240,7 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	private startAutoSync() {
+	startAutoSync() {
 		if (this.syncInterval !== null) {
 			window.clearInterval(this.syncInterval);
 		}
@@ -257,18 +283,16 @@ export default class GmailCrmPlugin extends Plugin {
 				},
 				this.contactIndex,
 				this.messageCache,
-				// Progressive checkpoint: flush to disk + score + create pages every 2000 messages
+				// Progressive checkpoint every 2000 messages: flush to disk only, so a
+				// crash mid-sync doesn't lose progress. Page writing and scoring are
+				// derived from the index and run once after the sync instead — doing
+				// them per checkpoint meant a large mailbox triggered dozens of full
+				// scoring passes over every contact.
 				async (checkpointIndex, checkpointCache) => {
 					this.contactIndex = checkpointIndex;
 					this.messageCache = checkpointCache;
 					await this.saveContactIndex();
 					await this.saveMessageCache();
-					if (this.settings.createContactNotes) {
-						await this.writeContactNotes();
-					}
-					if (this.settings.autoUpdateStaleness) {
-						await this.updateStaleness();
-					}
 					const count = Object.keys(checkpointIndex.contacts).length;
 					console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
 				}
@@ -303,6 +327,11 @@ export default class GmailCrmPlugin extends Plugin {
 					console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
 				}
 			}
+
+			// Recorded before scoring so a long scoring pass can't make the next
+			// startup think the sync is still overdue and immediately redo it.
+			this.settings.lastSyncAt = Date.now();
+			await this.saveSettings();
 
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 
@@ -392,7 +421,9 @@ export default class GmailCrmPlugin extends Plugin {
 		this.contactIndex.schemaVersion = CONTACT_INDEX_SCHEMA_VERSION;
 		this.contactIndex.edges ??= [];
 		const path = this.getIndexPath();
-		const content = JSON.stringify(this.contactIndex, null, 2);
+		// Not pretty-printed: indentation roughly doubles a 25MB+ index, and this
+		// string is built synchronously on the main thread at every checkpoint.
+		const content = JSON.stringify(this.contactIndex);
 		await this.app.vault.adapter.write(normalizePath(path), content);
 	}
 
@@ -825,13 +856,34 @@ export default class GmailCrmPlugin extends Plugin {
 		const direct = this.contactIndex.contacts[lower];
 		if (direct) return direct;
 
-		for (const contact of Object.values(this.contactIndex.contacts)) {
-			if (contact.email.toLowerCase() === lower) return contact;
-			if (contact.aliases?.some((alias) => alias.toLowerCase() === lower)) {
-				return contact;
+		// Fall back to a prebuilt address map. Scanning every contact here used to
+		// allocate a fresh 23k-entry array per miss, and this runs once per page
+		// plus twice per edge during scoring.
+		// Keyed on the contacts object, not the index wrapper: sync allocates a new
+		// wrapper per checkpoint while reusing (and appending to) the same contacts
+		// object, so guarding on the wrapper would miss those additions.
+		if (!this.contactLookup || this.contactLookupSource !== this.contactIndex.contacts) {
+			this.rebuildContactLookup();
+		}
+		return this.contactLookup?.get(lower) ?? null;
+	}
+
+	/**
+	 * Maps every known address (primary + aliases) to its contact. First writer
+	 * wins, matching the original scan order so lookups resolve identically.
+	 */
+	private rebuildContactLookup() {
+		const lookup = new Map<string, Contact>();
+		for (const contact of Object.values(this.contactIndex?.contacts ?? {})) {
+			const primary = contact.email?.toLowerCase();
+			if (primary && !lookup.has(primary)) lookup.set(primary, contact);
+			for (const alias of contact.aliases ?? []) {
+				const key = alias?.toLowerCase();
+				if (key && !lookup.has(key)) lookup.set(key, contact);
 			}
 		}
-		return null;
+		this.contactLookup = lookup;
+		this.contactLookupSource = this.contactIndex?.contacts ?? null;
 	}
 
 	private parseRoleCompany(role: string | null): { role: string | null; company: string | null } {
