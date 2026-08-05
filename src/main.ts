@@ -31,6 +31,9 @@ import { CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS } from "./types";
 /** Grace period before a catch-up sync, so launch isn't competing with indexing. */
 const STARTUP_SYNC_DELAY_MS = 60_000;
 
+/** Pages scored between yields back to the UI thread. */
+const SCORING_BATCH_SIZE = 50;
+
 type MergeQueue = {
 	schemaVersion?: number;
 	updatedAtUnix?: number;
@@ -715,19 +718,35 @@ export default class GmailCrmPlugin extends Plugin {
 
 				const file = this.app.vault.getAbstractFileByPath(page.path);
 				if (file instanceof TFile) {
-					await fm.updateFrontmatter(file, page, staleness, relationships);
+					// page.content came from loadPeoplePages; passing it through avoids
+					// re-reading each file twice more. Both writers skip untouched files,
+					// so an unchanged page now costs no I/O at all.
+					const updated = await fm.updateFrontmatter(
+						file,
+						page,
+						staleness,
+						relationships,
+						page.content
+					);
 					const contact = this.getContactForPage(page);
 					if (contact?.canonicalId) {
-						await fm.setCanonicalLink(file, {
-							canonicalId: contact.canonicalId,
-							aliases: contact.aliases,
-							syncedAt: contact.lastCanonicalSync,
-						});
+						await fm.setCanonicalLink(
+							file,
+							{
+								canonicalId: contact.canonicalId,
+								aliases: contact.aliases,
+								syncedAt: contact.lastCanonicalSync,
+							},
+							updated
+						);
 					}
 				}
 
-				if (done % 20 === 0) {
+				if (done % SCORING_BATCH_SIZE === 0) {
 					notice.setMessage(`Scoring ${done}/${count}...`);
+					// Hand control back to Obsidian so it can repaint. Without this the
+					// renderer is blocked for the whole pass and the window goes white.
+					await new Promise((resolve) => window.setTimeout(resolve, 0));
 				}
 			}
 

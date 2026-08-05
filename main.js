@@ -1931,9 +1931,15 @@ var FrontmatterManager = class {
     }
     return `"[[${this.companiesFolder}/${safeName}|${safeName}]]"`;
   }
-  async updateFrontmatter(file, page, staleness, relationships) {
+  /**
+   * Pass `cachedContent` when the caller already has the file text — scoring
+   * reads every page up front, so re-reading here doubles the I/O for nothing.
+   * Returns the resulting content so a follow-up edit can chain off it rather
+   * than reading the file a third time.
+   */
+  async updateFrontmatter(file, page, staleness, relationships, cachedContent) {
     var _a, _b;
-    const content = await this.vault.read(file);
+    const content = cachedContent != null ? cachedContent : await this.vault.read(file);
     const crm = {
       staleness_score: staleness.score,
       staleness_label: staleness.label,
@@ -2008,6 +2014,7 @@ var FrontmatterManager = class {
     if (withStatus !== content) {
       await this.vault.modify(file, withStatus);
     }
+    return withStatus;
   }
   updateRelationshipStatus(content, page, staleness, relationships) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
@@ -2107,9 +2114,9 @@ ${content}`;
     }
     return { role, company: null };
   }
-  async setCanonicalLink(file, link) {
+  async setCanonicalLink(file, link, cachedContent) {
     var _a;
-    const content = await this.vault.read(file);
+    const content = cachedContent != null ? cachedContent : await this.vault.read(file);
     const fields = {
       canonical_id: link.canonicalId,
       last_canonical_sync: (_a = link.syncedAt) != null ? _a : (/* @__PURE__ */ new Date()).toISOString()
@@ -2119,6 +2126,7 @@ ${content}`;
     if (updated !== content) {
       await this.vault.modify(file, updated);
     }
+    return updated;
   }
   mergeFrontmatter(content, fields) {
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -2648,6 +2656,7 @@ function escapeHtml(s) {
 // src/main.ts
 init_types();
 var STARTUP_SYNC_DELAY_MS = 6e4;
+var SCORING_BATCH_SIZE = 50;
 var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
@@ -3231,18 +3240,29 @@ ${relSection}
         }
         const file = this.app.vault.getAbstractFileByPath(page.path);
         if (file instanceof import_obsidian9.TFile) {
-          await fm.updateFrontmatter(file, page, staleness, relationships);
+          const updated = await fm.updateFrontmatter(
+            file,
+            page,
+            staleness,
+            relationships,
+            page.content
+          );
           const contact = this.getContactForPage(page);
           if (contact == null ? void 0 : contact.canonicalId) {
-            await fm.setCanonicalLink(file, {
-              canonicalId: contact.canonicalId,
-              aliases: contact.aliases,
-              syncedAt: contact.lastCanonicalSync
-            });
+            await fm.setCanonicalLink(
+              file,
+              {
+                canonicalId: contact.canonicalId,
+                aliases: contact.aliases,
+                syncedAt: contact.lastCanonicalSync
+              },
+              updated
+            );
           }
         }
-        if (done % 20 === 0) {
+        if (done % SCORING_BATCH_SIZE === 0) {
           notice.setMessage(`Scoring ${done}/${count}...`);
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
         }
       }
       if (this.contactIndex) {

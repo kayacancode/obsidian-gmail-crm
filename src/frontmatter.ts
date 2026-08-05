@@ -138,13 +138,20 @@ export class FrontmatterManager {
 		return `"[[${this.companiesFolder}/${safeName}|${safeName}]]"`;
 	}
 
+	/**
+	 * Pass `cachedContent` when the caller already has the file text — scoring
+	 * reads every page up front, so re-reading here doubles the I/O for nothing.
+	 * Returns the resulting content so a follow-up edit can chain off it rather
+	 * than reading the file a third time.
+	 */
 	async updateFrontmatter(
 		file: TFile,
 		page: PersonPage,
 		staleness: StalenessScore,
-		relationships: Relationship[]
-	): Promise<void> {
-		const content = await this.vault.read(file);
+		relationships: Relationship[],
+		cachedContent?: string
+	): Promise<string> {
+		const content = cachedContent ?? (await this.vault.read(file));
 
 		const crm: CrmFrontmatter = {
 			staleness_score: staleness.score,
@@ -240,6 +247,7 @@ export class FrontmatterManager {
 		if (withStatus !== content) {
 			await this.vault.modify(file, withStatus);
 		}
+		return withStatus;
 	}
 
 	private updateRelationshipStatus(
@@ -366,9 +374,10 @@ export class FrontmatterManager {
 
 	async setCanonicalLink(
 		file: TFile,
-		link: { canonicalId: string; aliases?: string[]; syncedAt?: string }
-	): Promise<void> {
-		const content = await this.vault.read(file);
+		link: { canonicalId: string; aliases?: string[]; syncedAt?: string },
+		cachedContent?: string
+	): Promise<string> {
+		const content = cachedContent ?? (await this.vault.read(file));
 		const fields: CrmFrontmatter = {
 			canonical_id: link.canonicalId,
 			last_canonical_sync: link.syncedAt ?? new Date().toISOString(),
@@ -378,6 +387,7 @@ export class FrontmatterManager {
 		if (updated !== content) {
 			await this.vault.modify(file, updated);
 		}
+		return updated;
 	}
 
 	private mergeFrontmatter(content: string, fields: CrmFrontmatter): string {
