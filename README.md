@@ -157,6 +157,18 @@ Run **Gmail CRM: Sync calendar** to pull meeting history from Google Calendar. T
 
 Calendar data feeds into the strength score (up to 20 bonus points) and can override the quadrant assignment — if you've shared 2+ calendar events with someone, they're treated as a strong relationship regardless of email volume.
 
+## PeopleGraph CLI (optional)
+
+The plugin works on its own, but a companion CLI — `peoplegraph` — lets you (and your coding agents) query the contact index from the terminal: fuzzy person lookup, relationship scores, "who do I know at X", reconnect candidates, and duplicate/merge review.
+
+Install the latest release binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/main/scripts/install-peoplegraph.sh | bash
+```
+
+This installs the binary to `~/.local/bin/peoplegraph` and an agent skill to `~/.claude/skills/peoplegraph/` so Claude Code and similar agents know how to drive it. The CLI auto-discovers `contact-index.json` in your Obsidian vault; override with `--cache <path>` or `PEOPLEGRAPH_CACHE`. Run `peoplegraph --help` or `peoplegraph describe` for the full command surface.
+
 ## Commands
 
 | Command | Description |

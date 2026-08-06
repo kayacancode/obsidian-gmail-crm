@@ -58,6 +58,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -71,6 +73,7 @@ jobs:
             cp "$dir/$name" "release/$name"
             chmod +x "release/$name"
           done
+          cp skills/peoplegraph/SKILL.md release/peoplegraph-SKILL.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
