@@ -1,18 +1,29 @@
 ---
 name: gmail-crm
-description: Query the Gmail CRM contact graph from the peoplegraph CLI — find people, check relationship scores, see who you know at a company, and surface reconnect candidates. Read-only querying works without importing any contacts into the Obsidian vault.
+description: Answer any question about the owner's people and relationships — who they know somewhere, how strong or stale a relationship is, when they last spoke to someone, who to reconnect with, or who could make an intro. Queries the Gmail CRM contact graph through the read-only peoplegraph CLI; needs no contacts in the Obsidian vault.
 tags: [gmail, crm, contacts, peoplegraph, relationships, obsidian]
 triggers:
   - who do I know
+  - do we know anyone at
   - find person
   - contact score
   - people score
-  - reconnect
   - relationship strength
   - who knows
   - people at company
   - contact graph
-version: 2
+  - reconnect
+  - who should I reach out to
+  - who should I email
+  - who am I losing touch with
+  - when did I last talk to
+  - last contact with
+  - how well do I know
+  - what's my relationship with
+  - can anyone intro me
+  - warm intro
+  - follow up with
+version: 3
 ---
 
 # Gmail CRM — Agent Skill
@@ -137,13 +148,23 @@ rather than summing.
 
 ## Common tasks
 
-**"Who should I reconnect with?"** → `peoplegraph reconnect --limit 10`, then read each
-`nudge` for a conversation starter.
+The owner asks in plain language; map it to a command rather than guessing or answering
+from memory. Always answer from command output — never state a score, a date, or whether
+someone is known without running a query first.
 
-**"Do we know anyone at [company]?"** → `peoplegraph who-knows --company "[company]"`.
+| They ask | Run |
+|---|---|
+| "Who should I reconnect with?" / "who am I losing touch with?" | `reconnect --limit 10` — read each `nudge` as the reason |
+| "Do we know anyone at Sequoia?" / "who do I know at X?" | `who-knows --company "Sequoia"` |
+| "What's my relationship with Jane?" / "how well do I know her?" | `find-person "Jane"` for the address, then `score <email>` |
+| "When did I last talk to Jane?" | `find-person "Jane"` — read `last_contact` |
+| "Who could intro me to someone at Acme?" | `who-knows --company "Acme"` — the top-scoring contacts are the warmest paths |
+| "Should I follow up with anyone this week?" | `reconnect --limit 20 --min-score 30` |
+| "Tell me about Jane before my call" | `contact-card <email>`, plus `score <email>` for the full picture |
 
-**"What's my relationship with [person]?"** → `peoplegraph find-person "[name]"` to get the
-address, then `peoplegraph score <email>` for the full card.
+Answer conversationally with the numbers behind it — "you and Jane are in re-engage: 47
+emails, but nothing since March" beats dumping raw JSON. When a name is ambiguous,
+`find-person` returns every match; ask which one rather than picking.
 
 **"Draft a re-engagement email"** → get the score card, use the `nudge` and any
 `recent_subjects` for relevance. You have metadata only — never claim to know what was
