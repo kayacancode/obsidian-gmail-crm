@@ -23,6 +23,7 @@ export interface GmailCrmSettings {
 	excludeLabels: string; // comma-separated Gmail labels to skip (e.g. shop@,service@)
 	debugScoring: boolean; // log a line per contact while scoring (slow on large vaults)
 	lastSyncAt: number; // epoch ms of the last completed sync; 0 = never
+	lastScoredAt: number; // epoch ms of the last scoring pass; pages touched since then get rewritten
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -51,6 +52,7 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	excludeLabels: "", // user-configured labels to skip
 	debugScoring: false,
 	lastSyncAt: 0,
+	lastScoredAt: 0,
 };
 
 export interface ContactScore {
@@ -105,6 +107,9 @@ export interface Contact {
 	relationshipRecency?: number;
 	combinedScore?: number;
 	quadrant?: "nurture" | "re-engage" | "developing" | "deprioritize";
+	// Relationship-graph edge count from the last full pass. Persisted so the
+	// incremental pass can score without rebuilding the graph.
+	connections?: number;
 }
 
 export interface ContactEdge {

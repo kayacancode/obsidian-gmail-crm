@@ -192,8 +192,14 @@ export class FrontmatterManager {
 		}
 
 		if (page.gmailStats) {
-			crm.last_contact = page.gmailStats.lastContact.split("T")[0];
-			crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+			// Guarded: a single contact record missing either date would otherwise
+			// throw and abort the entire scoring pass.
+			if (page.gmailStats.lastContact) {
+				crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+			}
+			if (page.gmailStats.firstContact) {
+				crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+			}
 			crm.total_exchanges = page.gmailStats.totalExchanges;
 			crm.sent = page.gmailStats.sentCount;
 			crm.received = page.gmailStats.receivedCount;
@@ -308,14 +314,21 @@ export class FrontmatterManager {
 			lines.push("");
 		}
 
-		// Connections
+		// Connections. The incremental scoring pass knows how many connections a
+		// person has but not who they are — it never builds the graph — so fall
+		// back to the bare count rather than emitting empty wiki links.
 		if (relationships.length > 0) {
-			const names = relationships
-				.slice(0, 5)
-				.map((r) => `[[${r.target}]]`)
-				.join(", ");
-			const suffix = relationships.length > 5 ? ` + ${relationships.length - 5} more` : "";
-			lines.push(`**${relationships.length} connections:** ${names}${suffix}`);
+			const named = relationships.filter((r) => r?.target);
+			if (named.length > 0) {
+				const names = named
+					.slice(0, 5)
+					.map((r) => `[[${r.target}]]`)
+					.join(", ");
+				const suffix = named.length > 5 ? ` + ${named.length - 5} more` : "";
+				lines.push(`**${named.length} connections:** ${names}${suffix}`);
+			} else {
+				lines.push(`**${relationships.length} connections**`);
+			}
 			lines.push("");
 		}
 

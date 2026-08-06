@@ -60,7 +60,8 @@ var init_types = __esm({
       excludeLabels: "",
       // user-configured labels to skip
       debugScoring: false,
-      lastSyncAt: 0
+      lastSyncAt: 0,
+      lastScoredAt: 0
     };
   }
 });
@@ -1971,8 +1972,12 @@ var FrontmatterManager = class {
       crm.company = await this.resolveCompany(rawCompany);
     }
     if (page.gmailStats) {
-      crm.last_contact = page.gmailStats.lastContact.split("T")[0];
-      crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+      if (page.gmailStats.lastContact) {
+        crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+      }
+      if (page.gmailStats.firstContact) {
+        crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+      }
       crm.total_exchanges = page.gmailStats.totalExchanges;
       crm.sent = page.gmailStats.sentCount;
       crm.received = page.gmailStats.receivedCount;
@@ -2061,9 +2066,14 @@ var FrontmatterManager = class {
       lines.push("");
     }
     if (relationships.length > 0) {
-      const names = relationships.slice(0, 5).map((r) => `[[${r.target}]]`).join(", ");
-      const suffix = relationships.length > 5 ? ` + ${relationships.length - 5} more` : "";
-      lines.push(`**${relationships.length} connections:** ${names}${suffix}`);
+      const named = relationships.filter((r) => r == null ? void 0 : r.target);
+      if (named.length > 0) {
+        const names = named.slice(0, 5).map((r) => `[[${r.target}]]`).join(", ");
+        const suffix = named.length > 5 ? ` + ${named.length - 5} more` : "";
+        lines.push(`**${named.length} connections:** ${names}${suffix}`);
+      } else {
+        lines.push(`**${relationships.length} connections**`);
+      }
       lines.push("");
     }
     if (staleness.nudge) {
@@ -2657,6 +2667,8 @@ function escapeHtml(s) {
 init_types();
 var STARTUP_SYNC_DELAY_MS = 6e4;
 var SCORING_BATCH_SIZE = 50;
+var INCREMENTAL_BATCH_SIZE = 500;
+var SCORE_DRIFT_THRESHOLD = 3;
 var GmailCrmPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
@@ -2737,6 +2749,13 @@ var GmailCrmPlugin = class extends import_obsidian9.Plugin {
       name: "Update staleness scores",
       callback: () => {
         void this.updateStaleness();
+      }
+    });
+    this.addCommand({
+      id: "rescore-all",
+      name: "Rescore all contacts (full rebuild)",
+      callback: () => {
+        void this.rescoreAllContacts();
       }
     });
     this.addCommand({
@@ -3218,7 +3237,12 @@ ${relSection}
       new import_obsidian9.Notice(`Enrichment failed: ${msg}`);
     }
   }
-  async updateStaleness() {
+  /**
+   * Full pass: reads every people page, rebuilds the relationship graph, and
+   * rewrites every page's frontmatter. Correct but O(vault) in file reads, so
+   * it is a manual command rather than the post-sync default.
+   */
+  async rescoreAllContacts() {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
     const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
@@ -3234,7 +3258,7 @@ ${relSection}
         done++;
         const relationships = (_a = graph[name]) != null ? _a : [];
         const staleness = computeStaleness(page, relationships);
-        this.updateContactScore(page, staleness, scoreUpdatedAt);
+        this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
         if (staleness.label === "stale" || staleness.label === "dormant") {
           staleCount++;
         }
@@ -3269,6 +3293,8 @@ ${relSection}
         this.contactIndex.edges = this.buildContactEdges(pages, graph);
         await this.saveContactIndex();
       }
+      this.settings.lastScoredAt = Date.now();
+      await this.saveSettings();
       notice.setMessage(`Scored ${count} contacts \u2014 ${staleCount} going stale`);
       setTimeout(() => notice.hide(), 4e3);
     } catch (e) {
@@ -3277,7 +3303,169 @@ ${relSection}
       new import_obsidian9.Notice(`Staleness update failed: ${msg}`);
     }
   }
-  updateContactScore(page, staleness, updatedAt) {
+  /**
+   * Incremental pass. The swipe deck and CLI read contact-index.json, not the
+   * vault, so every contact is rescored and the index stays exact; what gets
+   * skipped is the page write, which is where the cost lives. Scoring runs off
+   * the index alone — no page reads, no graph rebuild — so a 23k-contact vault
+   * costs a few thousand file reads instead of 23k.
+   */
+  async updateStaleness() {
+    var _a;
+    if (!this.contactIndex) {
+      new import_obsidian9.Notice("No contact index yet \u2014 run a sync first.");
+      return;
+    }
+    if (this.settings.lastScoredAt === 0) {
+      new import_obsidian9.Notice("First scoring run \u2014 doing a full rebuild, then incremental from here.");
+      await this.rescoreAllContacts();
+      return;
+    }
+    const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
+    const notice = new import_obsidian9.Notice("Computing staleness scores...", 0);
+    try {
+      const filesByName = this.buildPeoplePageMap();
+      const contacts = Object.values(this.contactIndex.contacts);
+      const count = contacts.length;
+      const scoreUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const lastScoredAt = this.settings.lastScoredAt;
+      let done = 0;
+      let rewritten = 0;
+      for (const contact of contacts) {
+        done++;
+        const page = this.synthesizePage(contact);
+        const relationships = new Array((_a = contact.connections) != null ? _a : 0);
+        const previous = contact.score;
+        const staleness = computeStaleness(page, relationships);
+        this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
+        const file = this.lookupPeoplePage(filesByName, contact);
+        if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt)) {
+          const content = await this.app.vault.read(file);
+          const updated = await fm.updateFrontmatter(
+            file,
+            page,
+            staleness,
+            relationships,
+            content
+          );
+          if (contact.canonicalId) {
+            await fm.setCanonicalLink(
+              file,
+              {
+                canonicalId: contact.canonicalId,
+                aliases: contact.aliases,
+                syncedAt: contact.lastCanonicalSync
+              },
+              updated
+            );
+          }
+          rewritten++;
+        }
+        if (done % INCREMENTAL_BATCH_SIZE === 0) {
+          notice.setMessage(`Scoring ${done}/${count}...`);
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+      }
+      await this.saveContactIndex();
+      this.settings.lastScoredAt = Date.now();
+      await this.saveSettings();
+      notice.setMessage(
+        `Scored ${count.toLocaleString()} contacts \u2014 ${rewritten.toLocaleString()} pages updated`
+      );
+      setTimeout(() => notice.hide(), 4e3);
+    } catch (e) {
+      notice.hide();
+      const msg = e instanceof Error ? e.message : String(e);
+      new import_obsidian9.Notice(`Staleness update failed: ${msg}`);
+    }
+  }
+  /**
+   * Name -> file over the people folder, from Obsidian's in-memory file list.
+   * Deliberately does not read any file: reading 23k pages is the cost this
+   * whole path exists to avoid.
+   */
+  buildPeoplePageMap() {
+    const files = /* @__PURE__ */ new Map();
+    const folder = this.app.vault.getAbstractFileByPath(
+      (0, import_obsidian9.normalizePath)(this.settings.peopleFolder)
+    );
+    if (!(folder instanceof import_obsidian9.TFolder)) return files;
+    for (const child of folder.children) {
+      if (!(child instanceof import_obsidian9.TFile) || child.extension !== "md") continue;
+      if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
+      const name = child.basename.replace(/^p-\s*/, "").toLowerCase();
+      if (!files.has(name)) files.set(name, child);
+    }
+    return files;
+  }
+  lookupPeoplePage(files, contact) {
+    var _a, _b;
+    const name = (_a = contact.name) == null ? void 0 : _a.trim().toLowerCase();
+    if (!name) return null;
+    const direct = files.get(name);
+    if (direct) return direct;
+    const safe = name.replace(/[\\/:*?"<>|]/g, "_");
+    return (_b = files.get(safe)) != null ? _b : null;
+  }
+  /**
+   * Page frontmatter is only worth rewriting when a reader would see a
+   * different value, or when the user has edited the page since the scores in
+   * it were written and it may no longer agree with the index.
+   */
+  needsPageRewrite(previous, staleness, file, lastScoredAt) {
+    if (!previous) return true;
+    if (previous.label !== staleness.label) return true;
+    if (previous.quadrant !== staleness.quadrant) return true;
+    if (file.stat.mtime > lastScoredAt) return true;
+    const moved = (before, after) => Math.abs(after - before) >= SCORE_DRIFT_THRESHOLD;
+    return moved(previous.staleness, staleness.score) || moved(previous.combined, staleness.combinedScore) || moved(previous.strength, staleness.strengthScore) || moved(previous.momentum, staleness.momentumScore);
+  }
+  /**
+   * A PersonPage carrying just what scoring and frontmatter writing read off
+   * the index. Body-derived fields (wiki links, meetings, role, introducer)
+   * would require reading the file, so they stay empty; see the class comment
+   * on updateStaleness for why that trade is worth it.
+   */
+  synthesizePage(contact) {
+    var _a, _b, _c;
+    return {
+      name: contact.name,
+      path: "",
+      content: "",
+      wikiLinks: [],
+      email: contact.email,
+      emails: contact.email ? [contact.email.toLowerCase()] : [],
+      role: null,
+      introducer: null,
+      meetings: [],
+      howKnown: null,
+      keyContext: null,
+      gmailStats: {
+        totalExchanges: contact.totalExchanges,
+        sentCount: contact.sentCount,
+        receivedCount: contact.receivedCount,
+        lastContact: contact.lastContact,
+        firstContact: contact.firstContact,
+        subjects: (_a = contact.subjects) != null ? _a : [],
+        lastSubject: (_b = contact.lastSubject) != null ? _b : "",
+        domain: (_c = contact.domain) != null ? _c : "",
+        threadCount: contact.threadCount,
+        maxThreadDepth: contact.maxThreadDepth,
+        backAndForthThreads: contact.backAndForthThreads,
+        rsvpOnlyThreads: contact.rsvpOnlyThreads,
+        lastThreadDepth: contact.lastThreadDepth,
+        calendarMeetings: contact.calendarMeetings,
+        calendarAccepted: contact.calendarAccepted,
+        calendarLastMeeting: contact.calendarLastMeeting,
+        calendarOrganizedByThem: contact.calendarOrganizedByThem,
+        calendarMeetingsLast90d: contact.calendarMeetingsLast90d,
+        openCount: contact.openCount,
+        lastOpenAt: contact.lastOpenAt,
+        openEngagement: contact.openEngagement
+      }
+    };
+  }
+  updateContactScore(page, staleness, updatedAt, relationships) {
     const contact = this.getContactForPage(page);
     if (!contact) return;
     const roleCompany = this.parseRoleCompany(page.role);
@@ -3303,6 +3491,7 @@ ${relSection}
     contact.relationshipRecency = staleness.relationshipRecency;
     contact.combinedScore = staleness.combinedScore;
     contact.quadrant = staleness.quadrant;
+    contact.connections = relationships.length;
   }
   buildContactEdges(pages, graph) {
     var _a, _b, _c, _d;
