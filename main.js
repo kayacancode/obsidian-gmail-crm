@@ -1826,50 +1826,89 @@ async function pushScoresToBetaworks(config, scored) {
 var import_obsidian6 = require("obsidian");
 var MAX_EDGE_CONTEXTS = 5;
 var MAX_CONTEXT_CHARS = 120;
+var MAX_NODES = 1500;
+var BYTE_BUDGET = 16e5;
+var MIN_NODES = 200;
 async function buildGraphPayload(contacts, edges, salt) {
-  const idByEmail = /* @__PURE__ */ new Map();
-  const nodes = [];
+  var _a, _b;
+  const byEmail = /* @__PURE__ */ new Map();
   for (const c of contacts) {
     const email = c.email.toLowerCase();
-    if (idByEmail.has(email)) continue;
-    const id = await opaqueId(salt, email);
-    idByEmail.set(email, id);
-    nodes.push({
-      id,
-      name: c.name,
-      company: c.company,
-      quadrant: c.staleness.quadrant,
-      combined: c.staleness.combinedScore,
-      strength: c.staleness.strengthScore,
-      momentum: c.staleness.momentumScore,
-      label: c.staleness.label,
-      lastContact: c.lastContact
-    });
+    if (!byEmail.has(email)) byEmail.set(email, c);
   }
   const merged = /* @__PURE__ */ new Map();
   for (const e of edges) {
-    const source = idByEmail.get(e.sourceEmail.toLowerCase());
-    const target = idByEmail.get(e.targetEmail.toLowerCase());
-    if (!source || !target || source === target) continue;
-    const [a, b] = source < target ? [source, target] : [target, source];
+    const s = e.sourceEmail.toLowerCase();
+    const t = e.targetEmail.toLowerCase();
+    if (s === t || !byEmail.has(s) || !byEmail.has(t)) continue;
+    const [a, b] = s < t ? [s, t] : [t, s];
     const key = `${a}|${b}`;
     let entry = merged.get(key);
     if (!entry) {
-      entry = { source: a, target: b, weight: 0, types: [], contexts: [], contextSet: /* @__PURE__ */ new Set(), typeSet: /* @__PURE__ */ new Set() };
+      entry = { a, b, weight: 0, typeSet: /* @__PURE__ */ new Set(), contextSet: /* @__PURE__ */ new Set() };
       merged.set(key, entry);
     }
     entry.weight += 1;
     entry.typeSet.add(e.type);
     if (e.context) entry.contextSet.add(e.context.slice(0, MAX_CONTEXT_CHARS));
   }
-  const edgesOut = [...merged.values()].map((e) => ({
-    source: e.source,
-    target: e.target,
-    weight: e.weight,
-    types: [...e.typeSet].sort(),
-    contexts: [...e.contextSet].slice(0, MAX_EDGE_CONTEXTS)
-  }));
-  return { pushedAt: (/* @__PURE__ */ new Date()).toISOString(), nodes, edges: edgesOut };
+  const wdeg = /* @__PURE__ */ new Map();
+  for (const m of merged.values()) {
+    wdeg.set(m.a, ((_a = wdeg.get(m.a)) != null ? _a : 0) + m.weight);
+    wdeg.set(m.b, ((_b = wdeg.get(m.b)) != null ? _b : 0) + m.weight);
+  }
+  const byConnectivity = [...byEmail.keys()].sort((x, y) => {
+    var _a2, _b2;
+    return ((_a2 = wdeg.get(y)) != null ? _a2 : 0) - ((_b2 = wdeg.get(x)) != null ? _b2 : 0);
+  });
+  const idByEmail = /* @__PURE__ */ new Map();
+  async function idFor(email) {
+    let id = idByEmail.get(email);
+    if (!id) {
+      id = await opaqueId(salt, email);
+      idByEmail.set(email, id);
+    }
+    return id;
+  }
+  let cap = MAX_NODES;
+  let ctxPerEdge = MAX_EDGE_CONTEXTS;
+  for (; ; ) {
+    const kept = byEmail.size <= cap ? byConnectivity : byConnectivity.slice(0, cap).filter((email) => {
+      var _a2;
+      return ((_a2 = wdeg.get(email)) != null ? _a2 : 0) > 0;
+    });
+    const keptSet = new Set(kept);
+    const nodes = [];
+    for (const email of kept) {
+      const c = byEmail.get(email);
+      nodes.push({
+        id: await idFor(email),
+        name: c.name,
+        company: c.company,
+        quadrant: c.staleness.quadrant,
+        combined: c.staleness.combinedScore,
+        strength: c.staleness.strengthScore,
+        momentum: c.staleness.momentumScore,
+        label: c.staleness.label,
+        lastContact: c.lastContact
+      });
+    }
+    const edgesOut = [];
+    for (const m of merged.values()) {
+      if (!keptSet.has(m.a) || !keptSet.has(m.b)) continue;
+      edgesOut.push({
+        source: await idFor(m.a),
+        target: await idFor(m.b),
+        weight: m.weight,
+        types: [...m.typeSet].sort(),
+        contexts: [...m.contextSet].slice(0, ctxPerEdge)
+      });
+    }
+    const payload = { pushedAt: (/* @__PURE__ */ new Date()).toISOString(), nodes, edges: edgesOut };
+    if (JSON.stringify(payload).length <= BYTE_BUDGET || cap <= MIN_NODES) return payload;
+    cap = Math.max(MIN_NODES, Math.floor(cap * 0.7));
+    ctxPerEdge = 3;
+  }
 }
 async function pushGraphToWeb(config, payload) {
   const res = await (0, import_obsidian6.requestUrl)({
@@ -3564,7 +3603,10 @@ ${relSection}
         { url: this.settings.graphPushUrl, token: this.settings.graphPushToken },
         payload
       );
-      notice.setMessage(`Pushed ${pushed.nodes} people, ${pushed.edges} connections \u2014 open ${this.settings.graphPushUrl} to view`);
+      const pruned = contacts.length - pushed.nodes;
+      notice.setMessage(
+        pruned > 0 ? `Pushed your ${pushed.nodes} most-connected people (${pruned} without ties left out), ${pushed.edges} connections \u2014 open ${this.settings.graphPushUrl} to view` : `Pushed ${pushed.nodes} people, ${pushed.edges} connections \u2014 open ${this.settings.graphPushUrl} to view`
+      );
       setTimeout(() => notice.hide(), 6e3);
     } catch (e) {
       notice.hide();

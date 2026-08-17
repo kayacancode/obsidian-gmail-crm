@@ -51,45 +51,45 @@ export interface GraphPayload {
 
 const MAX_EDGE_CONTEXTS = 5;
 const MAX_CONTEXT_CHARS = 120;
+// The worker rejects pushes near D1's 2MB row cap, and the viewer's force
+// layout has no business rendering 23k nodes anyway. Push the connected graph:
+// everyone with at least one tie, capped by connectivity, shrunk until the
+// serialized payload fits the budget.
+const MAX_NODES = 1500;
+const BYTE_BUDGET = 1_600_000;
+const MIN_NODES = 200;
 
-/** Build the push payload. Pure given its inputs; hashing is Web Crypto. */
+/**
+ * Build the push payload. Pure given its inputs; hashing is Web Crypto.
+ *
+ * Small vaults (fewer contacts than the cap) keep everyone, isolates included.
+ * Large vaults keep only the most-connected people, so compare the returned
+ * node count to `contacts.length` to report what was pruned.
+ */
 export async function buildGraphPayload(
 	contacts: GraphContactInput[],
 	edges: ContactEdge[],
 	salt: string
 ): Promise<GraphPayload> {
-	const idByEmail = new Map<string, string>();
-	const nodes: GraphNodeOut[] = [];
+	const byEmail = new Map<string, GraphContactInput>();
 	for (const c of contacts) {
 		const email = c.email.toLowerCase();
-		if (idByEmail.has(email)) continue; // one node per email
-		const id = await opaqueId(salt, email);
-		idByEmail.set(email, id);
-		nodes.push({
-			id,
-			name: c.name,
-			company: c.company,
-			quadrant: c.staleness.quadrant,
-			combined: c.staleness.combinedScore,
-			strength: c.staleness.strengthScore,
-			momentum: c.staleness.momentumScore,
-			label: c.staleness.label,
-			lastContact: c.lastContact,
-		});
+		if (!byEmail.has(email)) byEmail.set(email, c); // one node per email
 	}
 
 	// Merge directed typed edges into one undirected edge per pair; the number
 	// of underlying relationship edges is the connection strength.
-	const merged = new Map<string, GraphEdgeOut & { contextSet: Set<string>; typeSet: Set<string> }>();
+	interface MergedEdge { a: string; b: string; weight: number; typeSet: Set<string>; contextSet: Set<string> }
+	const merged = new Map<string, MergedEdge>();
 	for (const e of edges) {
-		const source = idByEmail.get(e.sourceEmail.toLowerCase());
-		const target = idByEmail.get(e.targetEmail.toLowerCase());
-		if (!source || !target || source === target) continue;
-		const [a, b] = source < target ? [source, target] : [target, source];
+		const s = e.sourceEmail.toLowerCase();
+		const t = e.targetEmail.toLowerCase();
+		if (s === t || !byEmail.has(s) || !byEmail.has(t)) continue;
+		const [a, b] = s < t ? [s, t] : [t, s];
 		const key = `${a}|${b}`;
 		let entry = merged.get(key);
 		if (!entry) {
-			entry = { source: a, target: b, weight: 0, types: [], contexts: [], contextSet: new Set(), typeSet: new Set() };
+			entry = { a, b, weight: 0, typeSet: new Set(), contextSet: new Set() };
 			merged.set(key, entry);
 		}
 		entry.weight += 1;
@@ -97,15 +97,63 @@ export async function buildGraphPayload(
 		if (e.context) entry.contextSet.add(e.context.slice(0, MAX_CONTEXT_CHARS));
 	}
 
-	const edgesOut: GraphEdgeOut[] = [...merged.values()].map((e) => ({
-		source: e.source,
-		target: e.target,
-		weight: e.weight,
-		types: [...e.typeSet].sort(),
-		contexts: [...e.contextSet].slice(0, MAX_EDGE_CONTEXTS),
-	}));
+	const wdeg = new Map<string, number>();
+	for (const m of merged.values()) {
+		wdeg.set(m.a, (wdeg.get(m.a) ?? 0) + m.weight);
+		wdeg.set(m.b, (wdeg.get(m.b) ?? 0) + m.weight);
+	}
+	const byConnectivity = [...byEmail.keys()].sort((x, y) => (wdeg.get(y) ?? 0) - (wdeg.get(x) ?? 0));
 
-	return { pushedAt: new Date().toISOString(), nodes, edges: edgesOut };
+	const idByEmail = new Map<string, string>();
+	async function idFor(email: string): Promise<string> {
+		let id = idByEmail.get(email);
+		if (!id) { id = await opaqueId(salt, email); idByEmail.set(email, id); }
+		return id;
+	}
+
+	let cap = MAX_NODES;
+	let ctxPerEdge = MAX_EDGE_CONTEXTS;
+	for (;;) {
+		// Under the cap, everyone fits (isolates included). Over it, only the
+		// connected make the cut — an isolate can't out-rank a connected node.
+		const kept = byEmail.size <= cap
+			? byConnectivity
+			: byConnectivity.slice(0, cap).filter((email) => (wdeg.get(email) ?? 0) > 0);
+		const keptSet = new Set(kept);
+
+		const nodes: GraphNodeOut[] = [];
+		for (const email of kept) {
+			const c = byEmail.get(email)!;
+			nodes.push({
+				id: await idFor(email),
+				name: c.name,
+				company: c.company,
+				quadrant: c.staleness.quadrant,
+				combined: c.staleness.combinedScore,
+				strength: c.staleness.strengthScore,
+				momentum: c.staleness.momentumScore,
+				label: c.staleness.label,
+				lastContact: c.lastContact,
+			});
+		}
+
+		const edgesOut: GraphEdgeOut[] = [];
+		for (const m of merged.values()) {
+			if (!keptSet.has(m.a) || !keptSet.has(m.b)) continue;
+			edgesOut.push({
+				source: await idFor(m.a),
+				target: await idFor(m.b),
+				weight: m.weight,
+				types: [...m.typeSet].sort(),
+				contexts: [...m.contextSet].slice(0, ctxPerEdge),
+			});
+		}
+
+		const payload: GraphPayload = { pushedAt: new Date().toISOString(), nodes, edges: edgesOut };
+		if (JSON.stringify(payload).length <= BYTE_BUDGET || cap <= MIN_NODES) return payload;
+		cap = Math.max(MIN_NODES, Math.floor(cap * 0.7));
+		ctxPerEdge = 3;
+	}
 }
 
 /** POST the payload. Returns {nodes, edges} counts confirmed by the server. */

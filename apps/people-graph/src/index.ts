@@ -25,8 +25,9 @@ interface Env {
 	TOKEN_SECRET: string;
 }
 
-// Keep pushes bounded: a few thousand contacts with edges fits comfortably.
-const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+// D1 caps a row at 2MB, so that's the real ceiling; leave headroom under it.
+// The plugin (0.8.1+) prunes to the connected graph and stays well below this.
+const MAX_PAYLOAD_BYTES = 1_900_000;
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -78,7 +79,7 @@ async function push(request: Request, env: Env): Promise<Response> {
 
 	const raw = await request.text();
 	if (raw.length > MAX_PAYLOAD_BYTES) {
-		return json({ error: "too_large", message: `payload over ${MAX_PAYLOAD_BYTES} bytes` }, 413);
+		return json({ error: "too_large", message: `payload over ${MAX_PAYLOAD_BYTES} bytes — update the plugin to 0.8.1+, which pushes only the connected graph` }, 413);
 	}
 
 	let body: { pushedAt?: string; nodes?: unknown[]; edges?: unknown[] } | null = null;

@@ -906,7 +906,12 @@ export default class GmailCrmPlugin extends Plugin {
 				{ url: this.settings.graphPushUrl, token: this.settings.graphPushToken },
 				payload
 			);
-			notice.setMessage(`Pushed ${pushed.nodes} people, ${pushed.edges} connections — open ${this.settings.graphPushUrl} to view`);
+			const pruned = contacts.length - pushed.nodes;
+			notice.setMessage(
+				pruned > 0
+					? `Pushed your ${pushed.nodes} most-connected people (${pruned} without ties left out), ${pushed.edges} connections — open ${this.settings.graphPushUrl} to view`
+					: `Pushed ${pushed.nodes} people, ${pushed.edges} connections — open ${this.settings.graphPushUrl} to view`
+			);
 			setTimeout(() => notice.hide(), 6000);
 		} catch (e: unknown) {
 			notice.hide();
