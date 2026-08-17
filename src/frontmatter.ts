@@ -138,13 +138,20 @@ export class FrontmatterManager {
 		return `"[[${this.companiesFolder}/${safeName}|${safeName}]]"`;
 	}
 
+	/**
+	 * Pass `cachedContent` when the caller already has the file text — scoring
+	 * reads every page up front, so re-reading here doubles the I/O for nothing.
+	 * Returns the resulting content so a follow-up edit can chain off it rather
+	 * than reading the file a third time.
+	 */
 	async updateFrontmatter(
 		file: TFile,
 		page: PersonPage,
 		staleness: StalenessScore,
-		relationships: Relationship[]
-	): Promise<void> {
-		const content = await this.vault.read(file);
+		relationships: Relationship[],
+		cachedContent?: string
+	): Promise<string> {
+		const content = cachedContent ?? (await this.vault.read(file));
 
 		const crm: CrmFrontmatter = {
 			staleness_score: staleness.score,
@@ -185,8 +192,14 @@ export class FrontmatterManager {
 		}
 
 		if (page.gmailStats) {
-			crm.last_contact = page.gmailStats.lastContact.split("T")[0];
-			crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+			// Guarded: a single contact record missing either date would otherwise
+			// throw and abort the entire scoring pass.
+			if (page.gmailStats.lastContact) {
+				crm.last_contact = page.gmailStats.lastContact.split("T")[0];
+			}
+			if (page.gmailStats.firstContact) {
+				crm.first_contact = page.gmailStats.firstContact.split("T")[0];
+			}
 			crm.total_exchanges = page.gmailStats.totalExchanges;
 			crm.sent = page.gmailStats.sentCount;
 			crm.received = page.gmailStats.receivedCount;
@@ -240,6 +253,7 @@ export class FrontmatterManager {
 		if (withStatus !== content) {
 			await this.vault.modify(file, withStatus);
 		}
+		return withStatus;
 	}
 
 	private updateRelationshipStatus(
@@ -300,14 +314,21 @@ export class FrontmatterManager {
 			lines.push("");
 		}
 
-		// Connections
+		// Connections. The incremental scoring pass knows how many connections a
+		// person has but not who they are — it never builds the graph — so fall
+		// back to the bare count rather than emitting empty wiki links.
 		if (relationships.length > 0) {
-			const names = relationships
-				.slice(0, 5)
-				.map((r) => `[[${r.target}]]`)
-				.join(", ");
-			const suffix = relationships.length > 5 ? ` + ${relationships.length - 5} more` : "";
-			lines.push(`**${relationships.length} connections:** ${names}${suffix}`);
+			const named = relationships.filter((r) => r?.target);
+			if (named.length > 0) {
+				const names = named
+					.slice(0, 5)
+					.map((r) => `[[${r.target}]]`)
+					.join(", ");
+				const suffix = named.length > 5 ? ` + ${named.length - 5} more` : "";
+				lines.push(`**${named.length} connections:** ${names}${suffix}`);
+			} else {
+				lines.push(`**${relationships.length} connections**`);
+			}
 			lines.push("");
 		}
 
@@ -366,9 +387,10 @@ export class FrontmatterManager {
 
 	async setCanonicalLink(
 		file: TFile,
-		link: { canonicalId: string; aliases?: string[]; syncedAt?: string }
-	): Promise<void> {
-		const content = await this.vault.read(file);
+		link: { canonicalId: string; aliases?: string[]; syncedAt?: string },
+		cachedContent?: string
+	): Promise<string> {
+		const content = cachedContent ?? (await this.vault.read(file));
 		const fields: CrmFrontmatter = {
 			canonical_id: link.canonicalId,
 			last_canonical_sync: link.syncedAt ?? new Date().toISOString(),
@@ -378,6 +400,7 @@ export class FrontmatterManager {
 		if (updated !== content) {
 			await this.vault.modify(file, updated);
 		}
+		return updated;
 	}
 
 	private mergeFrontmatter(content: string, fields: CrmFrontmatter): string {

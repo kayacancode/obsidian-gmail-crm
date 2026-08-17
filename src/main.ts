@@ -11,7 +11,7 @@ import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
-import { computeStaleness } from "./staleness";
+import { computeStaleness, setScoringDebug } from "./staleness";
 import { pushScoresToBetaworks, type ScoredPage } from "./betaworks-push";
 import {
 	buildGraphPayload,
@@ -31,9 +31,26 @@ import type {
 	MessageCache,
 	ContactEdge,
 	PersonPage,
+	Relationship,
 	RelationshipGraph,
 } from "./types";
 import { CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS } from "./types";
+
+/** Grace period before a catch-up sync, so launch isn't competing with indexing. */
+const STARTUP_SYNC_DELAY_MS = 60_000;
+
+/** Pages scored between yields back to the UI thread. */
+const SCORING_BATCH_SIZE = 50;
+
+/**
+ * Contacts scored between yields in the incremental pass. Much larger than the
+ * full pass's batch because most iterations are pure arithmetic over the index
+ * with no file I/O, so yielding every 50 would cost more than it buys.
+ */
+const INCREMENTAL_BATCH_SIZE = 500;
+
+/** Score movement, in points, below which a page rewrite isn't worth the I/O. */
+const SCORE_DRIFT_THRESHOLD = 3;
 
 type MergeQueue = {
 	schemaVersion?: number;
@@ -58,6 +75,9 @@ export default class GmailCrmPlugin extends Plugin {
 	private gmailApi!: GmailApi;
 	private contactIndex: ContactIndex | null = null;
 	private messageCache: MessageCache | null = null;
+	/** Address -> contact map for getContactByEmail; rebuilt when the index is replaced. */
+	private contactLookup: Map<string, Contact> | null = null;
+	private contactLookupSource: Record<string, Contact> | null = null;
 	private syncInterval: number | null = null;
 	private stalenessInterval: number | null = null;
 
@@ -149,6 +169,13 @@ export default class GmailCrmPlugin extends Plugin {
 			callback: () => { void this.pushPeopleGraph(); },
 		});
 
+		// Command: full rescore, including a rebuilt relationship graph
+		this.addCommand({
+			id: "rescore-all",
+			name: "Rescore all contacts (full rebuild)",
+			callback: () => { void this.rescoreAllContacts(); },
+		});
+
 		// Command: review local merge queue
 		this.addCommand({
 			id: "review-merge-queue",
@@ -174,7 +201,25 @@ export default class GmailCrmPlugin extends Plugin {
 		if (this.settings.refreshToken) {
 			this.startAutoSync();
 			this.resetStalenessTimer();
+			this.scheduleOverdueSync();
 		}
+	}
+
+	/**
+	 * The interval timer only fires after a full interval of continuous uptime and
+	 * restarts from zero on every load, so on a machine that is restarted — or
+	 * where Obsidian is opened briefly — a long cadence never fires at all. Catch
+	 * up on startup instead, using the persisted completion time.
+	 */
+	private scheduleOverdueSync() {
+		const intervalMs = this.settings.syncIntervalMinutes * 60_000;
+		const elapsed = Date.now() - this.settings.lastSyncAt;
+		if (elapsed < intervalMs) return;
+		// Delayed so a launch isn't competing with vault indexing.
+		const timer = window.setTimeout(() => {
+			void this.syncContacts();
+		}, STARTUP_SYNC_DELAY_MS);
+		this.registerInterval(timer);
 	}
 
 	onunload() {
@@ -188,11 +233,13 @@ export default class GmailCrmPlugin extends Plugin {
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		setScoringDebug(this.settings.debugScoring);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 		this.gmailApi?.updateSettings(this.settings);
+		setScoringDebug(this.settings.debugScoring);
 	}
 
 	getEffectiveClientId(): string {
@@ -235,7 +282,7 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	private startAutoSync() {
+	startAutoSync() {
 		if (this.syncInterval !== null) {
 			window.clearInterval(this.syncInterval);
 		}
@@ -278,18 +325,16 @@ export default class GmailCrmPlugin extends Plugin {
 				},
 				this.contactIndex,
 				this.messageCache,
-				// Progressive checkpoint: flush to disk + score + create pages every 2000 messages
+				// Progressive checkpoint every 2000 messages: flush to disk only, so a
+				// crash mid-sync doesn't lose progress. Page writing and scoring are
+				// derived from the index and run once after the sync instead — doing
+				// them per checkpoint meant a large mailbox triggered dozens of full
+				// scoring passes over every contact.
 				async (checkpointIndex, checkpointCache) => {
 					this.contactIndex = checkpointIndex;
 					this.messageCache = checkpointCache;
 					await this.saveContactIndex();
 					await this.saveMessageCache();
-					if (this.settings.createContactNotes) {
-						await this.writeContactNotes();
-					}
-					if (this.settings.autoUpdateStaleness) {
-						await this.updateStaleness();
-					}
 					const count = Object.keys(checkpointIndex.contacts).length;
 					console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
 				}
@@ -324,6 +369,11 @@ export default class GmailCrmPlugin extends Plugin {
 					console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
 				}
 			}
+
+			// Recorded before scoring so a long scoring pass can't make the next
+			// startup think the sync is still overdue and immediately redo it.
+			this.settings.lastSyncAt = Date.now();
+			await this.saveSettings();
 
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 
@@ -413,7 +463,9 @@ export default class GmailCrmPlugin extends Plugin {
 		this.contactIndex.schemaVersion = CONTACT_INDEX_SCHEMA_VERSION;
 		this.contactIndex.edges ??= [];
 		const path = this.getIndexPath();
-		const content = JSON.stringify(this.contactIndex, null, 2);
+		// Not pretty-printed: indentation roughly doubles a 25MB+ index, and this
+		// string is built synchronously on the main thread at every checkpoint.
+		const content = JSON.stringify(this.contactIndex);
 		await this.app.vault.adapter.write(normalizePath(path), content);
 	}
 
@@ -680,7 +732,12 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	async updateStaleness() {
+	/**
+	 * Full pass: reads every people page, rebuilds the relationship graph, and
+	 * rewrites every page's frontmatter. Correct but O(vault) in file reads, so
+	 * it is a manual command rather than the post-sync default.
+	 */
+	async rescoreAllContacts() {
 		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
 		const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
 		const notice = new Notice("Computing staleness scores...", 0);
@@ -699,7 +756,7 @@ export default class GmailCrmPlugin extends Plugin {
 				const relationships = graph[name] ?? [];
 				const staleness = computeStaleness(page, relationships);
 				scoredPages.push({ page, staleness });
-				this.updateContactScore(page, staleness, scoreUpdatedAt);
+				this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
 
 				if (staleness.label === "stale" || staleness.label === "dormant") {
 					staleCount++;
@@ -707,19 +764,35 @@ export default class GmailCrmPlugin extends Plugin {
 
 				const file = this.app.vault.getAbstractFileByPath(page.path);
 				if (file instanceof TFile) {
-					await fm.updateFrontmatter(file, page, staleness, relationships);
+					// page.content came from loadPeoplePages; passing it through avoids
+					// re-reading each file twice more. Both writers skip untouched files,
+					// so an unchanged page now costs no I/O at all.
+					const updated = await fm.updateFrontmatter(
+						file,
+						page,
+						staleness,
+						relationships,
+						page.content
+					);
 					const contact = this.getContactForPage(page);
 					if (contact?.canonicalId) {
-						await fm.setCanonicalLink(file, {
-							canonicalId: contact.canonicalId,
-							aliases: contact.aliases,
-							syncedAt: contact.lastCanonicalSync,
-						});
+						await fm.setCanonicalLink(
+							file,
+							{
+								canonicalId: contact.canonicalId,
+								aliases: contact.aliases,
+								syncedAt: contact.lastCanonicalSync,
+							},
+							updated
+						);
 					}
 				}
 
-				if (done % 20 === 0) {
+				if (done % SCORING_BATCH_SIZE === 0) {
 					notice.setMessage(`Scoring ${done}/${count}...`);
+					// Hand control back to Obsidian so it can repaint. Without this the
+					// renderer is blocked for the whole pass and the window goes white.
+					await new Promise((resolve) => window.setTimeout(resolve, 0));
 				}
 			}
 
@@ -727,6 +800,9 @@ export default class GmailCrmPlugin extends Plugin {
 				this.contactIndex.edges = this.buildContactEdges(pages, graph);
 				await this.saveContactIndex();
 			}
+
+			this.settings.lastScoredAt = Date.now();
+			await this.saveSettings();
 
 			notice.setMessage(`Scored ${count} contacts — ${staleCount} going stale`);
 
@@ -839,10 +915,210 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Incremental pass. The swipe deck and CLI read contact-index.json, not the
+	 * vault, so every contact is rescored and the index stays exact; what gets
+	 * skipped is the page write, which is where the cost lives. Scoring runs off
+	 * the index alone — no page reads, no graph rebuild — so a 23k-contact vault
+	 * costs a few thousand file reads instead of 23k.
+	 */
+	async updateStaleness() {
+		if (!this.contactIndex) {
+			new Notice("No contact index yet — run a sync first.");
+			return;
+		}
+
+		// The incremental pass trusts each contact's stored `connections` count. On
+		// an index written before that field existed it would read as zero for
+		// everyone, scoring the whole vault as having no relationships. Do one full
+		// pass first to populate it; every run after this is incremental.
+		if (this.settings.lastScoredAt === 0) {
+			new Notice("First scoring run — doing a full rebuild, then incremental from here.");
+			await this.rescoreAllContacts();
+			return;
+		}
+
+		const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
+		const notice = new Notice("Computing staleness scores...", 0);
+
+		try {
+			const filesByName = this.buildPeoplePageMap();
+			const contacts = Object.values(this.contactIndex.contacts);
+			const count = contacts.length;
+			const scoreUpdatedAt = new Date().toISOString();
+			const lastScoredAt = this.settings.lastScoredAt;
+
+			let done = 0;
+			let rewritten = 0;
+			for (const contact of contacts) {
+				done++;
+
+				const page = this.synthesizePage(contact);
+				// Only `.length` is read off this array by computeStaleness, so the
+				// persisted edge count stands in for the edges themselves.
+				const relationships = new Array<Relationship>(contact.connections ?? 0);
+				const previous = contact.score;
+				const staleness = computeStaleness(page, relationships);
+				this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
+
+				const file = this.lookupPeoplePage(filesByName, contact);
+				if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt)) {
+					const content = await this.app.vault.read(file);
+					const updated = await fm.updateFrontmatter(
+						file,
+						page,
+						staleness,
+						relationships,
+						content
+					);
+					if (contact.canonicalId) {
+						await fm.setCanonicalLink(
+							file,
+							{
+								canonicalId: contact.canonicalId,
+								aliases: contact.aliases,
+								syncedAt: contact.lastCanonicalSync,
+							},
+							updated
+						);
+					}
+					rewritten++;
+				}
+
+				if (done % INCREMENTAL_BATCH_SIZE === 0) {
+					notice.setMessage(`Scoring ${done}/${count}...`);
+					// Hand control back to Obsidian so it can repaint. Without this the
+					// renderer is blocked for the whole pass and the window goes white.
+					await new Promise((resolve) => window.setTimeout(resolve, 0));
+				}
+			}
+
+			// Edges are only derivable from the relationship graph, which this pass
+			// deliberately does not build — leave the last full pass's edges alone.
+			await this.saveContactIndex();
+
+			this.settings.lastScoredAt = Date.now();
+			await this.saveSettings();
+
+			notice.setMessage(
+				`Scored ${count.toLocaleString()} contacts — ${rewritten.toLocaleString()} pages updated`
+			);
+			setTimeout(() => notice.hide(), 4000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Staleness update failed: ${msg}`);
+		}
+	}
+
+	/**
+	 * Name -> file over the people folder, from Obsidian's in-memory file list.
+	 * Deliberately does not read any file: reading 23k pages is the cost this
+	 * whole path exists to avoid.
+	 */
+	private buildPeoplePageMap(): Map<string, TFile> {
+		const files = new Map<string, TFile>();
+		const folder = this.app.vault.getAbstractFileByPath(
+			normalizePath(this.settings.peopleFolder)
+		);
+		if (!(folder instanceof TFolder)) return files;
+
+		for (const child of folder.children) {
+			if (!(child instanceof TFile) || child.extension !== "md") continue;
+			// Plugin-generated dashboards are not people.
+			if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
+			const name = child.basename.replace(/^p-\s*/, "").toLowerCase();
+			if (!files.has(name)) files.set(name, child);
+		}
+		return files;
+	}
+
+	private lookupPeoplePage(files: Map<string, TFile>, contact: Contact): TFile | null {
+		const name = contact.name?.trim().toLowerCase();
+		if (!name) return null;
+		const direct = files.get(name);
+		if (direct) return direct;
+		// Page creation sanitises filesystem-illegal characters out of the name, so
+		// a contact like "Dr. X / Y" lives under the sanitised basename.
+		const safe = name.replace(/[\\/:*?"<>|]/g, "_");
+		return files.get(safe) ?? null;
+	}
+
+	/**
+	 * Page frontmatter is only worth rewriting when a reader would see a
+	 * different value, or when the user has edited the page since the scores in
+	 * it were written and it may no longer agree with the index.
+	 */
+	private needsPageRewrite(
+		previous: Contact["score"],
+		staleness: StalenessScore,
+		file: TFile,
+		lastScoredAt: number
+	): boolean {
+		if (!previous) return true;
+		if (previous.label !== staleness.label) return true;
+		if (previous.quadrant !== staleness.quadrant) return true;
+		if (file.stat.mtime > lastScoredAt) return true;
+
+		const moved = (before: number, after: number) => Math.abs(after - before) >= SCORE_DRIFT_THRESHOLD;
+		return (
+			moved(previous.staleness, staleness.score) ||
+			moved(previous.combined, staleness.combinedScore) ||
+			moved(previous.strength, staleness.strengthScore) ||
+			moved(previous.momentum, staleness.momentumScore)
+		);
+	}
+
+	/**
+	 * A PersonPage carrying just what scoring and frontmatter writing read off
+	 * the index. Body-derived fields (wiki links, meetings, role, introducer)
+	 * would require reading the file, so they stay empty; see the class comment
+	 * on updateStaleness for why that trade is worth it.
+	 */
+	private synthesizePage(contact: Contact): PersonPage {
+		return {
+			name: contact.name,
+			path: "",
+			content: "",
+			wikiLinks: [],
+			email: contact.email,
+			emails: contact.email ? [contact.email.toLowerCase()] : [],
+			role: null,
+			introducer: null,
+			meetings: [],
+			howKnown: null,
+			keyContext: null,
+			gmailStats: {
+				totalExchanges: contact.totalExchanges,
+				sentCount: contact.sentCount,
+				receivedCount: contact.receivedCount,
+				lastContact: contact.lastContact,
+				firstContact: contact.firstContact,
+				subjects: contact.subjects ?? [],
+				lastSubject: contact.lastSubject ?? "",
+				domain: contact.domain ?? "",
+				threadCount: contact.threadCount,
+				maxThreadDepth: contact.maxThreadDepth,
+				backAndForthThreads: contact.backAndForthThreads,
+				rsvpOnlyThreads: contact.rsvpOnlyThreads,
+				lastThreadDepth: contact.lastThreadDepth,
+				calendarMeetings: contact.calendarMeetings,
+				calendarAccepted: contact.calendarAccepted,
+				calendarLastMeeting: contact.calendarLastMeeting,
+				calendarOrganizedByThem: contact.calendarOrganizedByThem,
+				calendarMeetingsLast90d: contact.calendarMeetingsLast90d,
+				openCount: contact.openCount,
+				lastOpenAt: contact.lastOpenAt,
+				openEngagement: contact.openEngagement,
+			},
+		};
+	}
+
 	private updateContactScore(
 		page: PersonPage,
 		staleness: StalenessScore,
-		updatedAt: string
+		updatedAt: string,
+		relationships: Relationship[]
 	): void {
 		const contact = this.getContactForPage(page);
 		if (!contact) return;
@@ -872,6 +1148,9 @@ export default class GmailCrmPlugin extends Plugin {
 		contact.relationshipRecency = staleness.relationshipRecency;
 		contact.combinedScore = staleness.combinedScore;
 		contact.quadrant = staleness.quadrant;
+		// Persisted so the incremental pass can reproduce the edge count without
+		// rebuilding the relationship graph.
+		contact.connections = relationships.length;
 	}
 
 	private buildContactEdges(
@@ -950,13 +1229,34 @@ export default class GmailCrmPlugin extends Plugin {
 		const direct = this.contactIndex.contacts[lower];
 		if (direct) return direct;
 
-		for (const contact of Object.values(this.contactIndex.contacts)) {
-			if (contact.email.toLowerCase() === lower) return contact;
-			if (contact.aliases?.some((alias) => alias.toLowerCase() === lower)) {
-				return contact;
+		// Fall back to a prebuilt address map. Scanning every contact here used to
+		// allocate a fresh 23k-entry array per miss, and this runs once per page
+		// plus twice per edge during scoring.
+		// Keyed on the contacts object, not the index wrapper: sync allocates a new
+		// wrapper per checkpoint while reusing (and appending to) the same contacts
+		// object, so guarding on the wrapper would miss those additions.
+		if (!this.contactLookup || this.contactLookupSource !== this.contactIndex.contacts) {
+			this.rebuildContactLookup();
+		}
+		return this.contactLookup?.get(lower) ?? null;
+	}
+
+	/**
+	 * Maps every known address (primary + aliases) to its contact. First writer
+	 * wins, matching the original scan order so lookups resolve identically.
+	 */
+	private rebuildContactLookup() {
+		const lookup = new Map<string, Contact>();
+		for (const contact of Object.values(this.contactIndex?.contacts ?? {})) {
+			const primary = contact.email?.toLowerCase();
+			if (primary && !lookup.has(primary)) lookup.set(primary, contact);
+			for (const alias of contact.aliases ?? []) {
+				const key = alias?.toLowerCase();
+				if (key && !lookup.has(key)) lookup.set(key, contact);
 			}
 		}
-		return null;
+		this.contactLookup = lookup;
+		this.contactLookupSource = this.contactIndex?.contacts ?? null;
 	}
 
 	private parseRoleCompany(role: string | null): { role: string | null; company: string | null } {

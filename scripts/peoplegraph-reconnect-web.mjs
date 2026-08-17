@@ -11,12 +11,20 @@
  *   pull  — fetch swipe decisions from the Worker, map id->email locally, apply
  *           them (boost/suppress -> feedback overlay, delete -> CLI removal +
  *           blocklist), then ack them.
- *   run   — pull (apply swipes) then push (sync today's pool).
+ *   merge-push — auto-merge the >=0.94-confidence duplicate pairs locally via
+ *           `peoplegraph apply-duplicates`, then sync the 0.88-0.93 band to
+ *           the /merge review deck as stable pair cards (weekly unless --force).
+ *   merge-pull — fetch merge/keep verdicts from the /merge deck and apply them
+ *           via `peoplegraph apply-merge`/`dismiss-merge`, then ack them.
+ *   run   — pull, merge-pull, push, merge-push (merge steps wrapped in
+ *           try/catch so a merge-endpoint hiccup never blocks contact sync).
  *
  * State file (RECONNECT_STATE) schema v2:
- *   { version: 2, salt, map: {id -> email}, lastPush: {id -> {h, s}} }
- * salt + map never leave this machine; lastPush drives the diff. Deleting the
- * state file is safe: the next push resets the Worker and re-uploads the pool.
+ *   { version: 2, salt, map: {id -> email}, lastPush: {id -> {h, s}},
+ *     mergeMap: {id -> {a, b}}, lastMergePush: {id -> {h, s}}, lastMergeScanUnix }
+ * salt + map never leave this machine; lastPush/lastMergePush drive the diffs.
+ * Deleting the state file is safe: the next push resets the Worker and
+ * re-uploads the pool.
  *
  * Env:
  *   RECONNECT_WEB_URL        Worker base URL, e.g. https://reconnect-web.<acct>.workers.dev   (required)
@@ -33,7 +41,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { stableId, contentHash, diffPool, migrateState } from "./lib/reconnect-sync.mjs";
+import { stableId, contentHash, diffPool, migrateState, pairId, hashValues } from "./lib/reconnect-sync.mjs";
 
 const env = process.env;
 const WEB_URL = (env.RECONNECT_WEB_URL || "").replace(/\/$/, "");
@@ -102,7 +110,9 @@ async function api(path, { method = "GET", body } = {}) {
 	return data;
 }
 
-async function push() {
+// forceReset: wipe the Worker's candidates table before uploading (recovery
+// tool — e.g. after a rogue bridge with a different salt polluted the pool).
+async function push({ forceReset = false } = {}) {
 	const state = loadState();
 
 	// Full re-engage pool. The CLI excludes anyone with a feedback entry, so
@@ -125,8 +135,9 @@ async function push() {
 		return { id, h: contentHash(row), s: row.score, row };
 	});
 
-	const reset = Object.keys(state.lastPush).length === 0;
-	const { upserts, removeIds, next } = diffPool(state.lastPush, pool);
+	const reset = forceReset || Object.keys(state.lastPush).length === 0;
+	// On a forced reset the server side starts empty, so everything must upload.
+	const { upserts, removeIds, next } = diffPool(forceReset ? {} : state.lastPush, pool);
 
 	if (!upserts.length && !removeIds.length && !reset) {
 		console.log("pool unchanged — nothing to push");
@@ -297,6 +308,133 @@ async function pull() {
 	console.log(`applied ${acked.length}/${decisions.length} decisions`);
 }
 
+const MERGE_SCAN_INTERVAL_SECS = 7 * 86400; // pair scan is O(n^2) — weekly is plenty
+const AUTO_MERGE_CONFIDENCE = "0.94";
+const REVIEW_MIN_CONFIDENCE = "0.88";
+
+// merge-push: auto-merge the corroborated tier locally, then sync the
+// uncertain band (0.88-0.93) to the /merge review deck. Weekly unless --force.
+async function mergePush({ force = false } = {}) {
+	const state = loadState();
+	const nowUnix = Math.floor(Date.now() / 1000);
+	if (!force && nowUnix - state.lastMergeScanUnix < MERGE_SCAN_INTERVAL_SECS) {
+		console.log("merge scan ran recently — skipping (use merge-push --force to override)");
+		return;
+	}
+
+	const applied = pg(["apply-duplicates", "--min-confidence", AUTO_MERGE_CONFIDENCE]);
+	if (!applied.ok) throw new Error(`apply-duplicates failed: ${JSON.stringify(applied.error || applied)}`);
+	console.log(
+		`auto-merged ${applied.data?.applied_pairs ?? 0} corroborated pairs` +
+			` (${applied.data?.demoted_pairs ?? 0} demoted by guard)`,
+	);
+
+	// Ask for far more than the review band needs: guard-demoted pairs score
+	// >= 0.94 and sort first, so a small limit returns only pairs the < 0.94
+	// filter below then discards — leaving the real review band crowded out.
+	const res = pg(["suggest-duplicates", "--min-confidence", REVIEW_MIN_CONFIDENCE, "--limit", "20000"]);
+	if (!res.ok) throw new Error(`suggest-duplicates failed: ${JSON.stringify(res.error || res)}`);
+	const suggestions = (res.data?.suggestions ?? []).filter((s) => s.confidence < 0.94).slice(0, 2000);
+	const reviewable = suggestions.filter((s) => (s.primary.name || "").trim() && (s.duplicate.name || "").trim());
+	if (reviewable.length !== suggestions.length) {
+		console.log(`skipped ${suggestions.length - reviewable.length} nameless pairs`);
+	}
+
+	const pool = reviewable.map((s) => {
+		const id = pairId(state.salt, s.primary.email, s.duplicate.email);
+		state.mergeMap[id] = {
+			a: s.primary.email.trim().toLowerCase(),
+			b: s.duplicate.email.trim().toLowerCase(),
+		};
+		const row = {
+			id,
+			confidence: s.confidence,
+			reasons: (s.reasons ?? []).join(","),
+			name_a: s.primary.name, company_a: s.primary.company ?? null,
+			domain_a: s.primary.domain ?? null, last_contact_a: s.primary.last_contact ?? null,
+			exchanges_a: s.primary.total_exchanges ?? null,
+			name_b: s.duplicate.name, company_b: s.duplicate.company ?? null,
+			domain_b: s.duplicate.domain ?? null, last_contact_b: s.duplicate.last_contact ?? null,
+			exchanges_b: s.duplicate.total_exchanges ?? null,
+		};
+		return { id, h: hashValues([row.confidence, row.reasons, row.name_a, row.name_b, row.company_a, row.company_b]), s: 0, row };
+	});
+
+	saveState(state); // persist mergeMap before pushing — a crash mid-push must not orphan live pairs
+
+	const reset = Object.keys(state.lastMergePush).length === 0;
+	const { upserts, removeIds, next } = diffPool(state.lastMergePush, pool);
+	if (!upserts.length && !removeIds.length && !reset) {
+		console.log("merge pairs unchanged — nothing to push");
+	} else {
+		const CHUNK = 200;
+		for (let i = 0; i < Math.max(upserts.length, 1); i += CHUNK) {
+			await api("/api/merge/sync", {
+				method: "POST",
+				body: {
+					upserts: upserts.slice(i, i + CHUNK),
+					remove_ids: i === 0 ? removeIds : [],
+					reset: reset && i === 0,
+				},
+			});
+		}
+	}
+	state.lastMergePush = next;
+	state.lastMergeScanUnix = nowUnix;
+	saveState(state);
+	console.log(`merge review pool: ${pool.length} pairs (${upserts.length} upserted, ${removeIds.length} removed)`);
+}
+
+// merge-pull: apply human verdicts. right/'merge' -> apply-merge (canonical id
+// + unioned aliases); left/'keep' -> dismiss-merge (never suggested again).
+async function mergePull() {
+	const state = loadState();
+	const { decisions = [] } = await api("/api/merge/decisions?applied=0");
+	if (decisions.length === 0) {
+		console.log("no pending merge decisions");
+		return;
+	}
+	const acked = [];
+	for (const d of decisions) {
+		const pair = state.mergeMap?.[d.id];
+		if (!pair) {
+			console.warn(`ack merge ${d.id} without applying: no local pair mapping`);
+			acked.push(d.id);
+			continue;
+		}
+		if (d.action === "merge") {
+			const res = pg(["apply-merge", pair.a, pair.b]);
+			if (!res.ok) {
+				console.warn(`apply-merge failed for ${pair.a}+${pair.b}: ${JSON.stringify(res.error || res)}`);
+				continue; // not acked -> retried next run
+			}
+			console.log(`merged ${pair.a} + ${pair.b}`);
+		} else if (d.action === "keep") {
+			const res = pg(["dismiss-merge", pair.a, pair.b, "--reason", "not_duplicate"]);
+			if (!res.ok) {
+				console.warn(`dismiss-merge failed for ${pair.a}+${pair.b}: ${JSON.stringify(res.error || res)}`);
+				continue;
+			}
+			console.log(`kept apart ${pair.a} | ${pair.b}`);
+		} else {
+			console.warn(`skip merge ${d.id}: unknown action ${d.action}`);
+			continue;
+		}
+		acked.push(d.id);
+	}
+	if (acked.length) {
+		for (let i = 0; i < acked.length; i += 50) {
+			try {
+				await api("/api/merge/decisions/ack", { method: "POST", body: { ids: acked.slice(i, i + 50) } });
+			} catch (e) {
+				console.warn(`merge ack chunk failed: ${e.message}`);
+			}
+		}
+	}
+	saveState(state);
+	console.log(`applied ${acked.length}/${decisions.length} merge decisions`);
+}
+
 function help() {
 	console.log(`peoplegraph-reconnect-web — Botwick bridge for the Reconnect swipe app
 
@@ -304,10 +442,12 @@ Usage:
   node scripts/peoplegraph-reconnect-web.mjs <command>
 
 Commands:
-  push   compute today's candidates, sync to the Worker, link the daily note
-  pull   fetch swipe decisions, apply via 'peoplegraph feedback', ack them
-  run    pull then push (recommended daily cron)
-  help   show this
+  push        sync the unswiped pool to the Worker (--reset wipes server rows first)
+  pull        fetch swipe decisions, apply via 'peoplegraph feedback', ack them
+  merge-push  auto-merge >=0.94 pairs locally, sync 0.88-0.93 band to the /merge review deck (--force to bypass the weekly scan interval)
+  merge-pull  fetch merge/keep verdicts from the /merge deck, apply via apply-merge/dismiss-merge, ack them
+  run         pull, merge-pull, push, merge-push (recommended daily cron; merge steps wrapped in try/catch)
+  help        show this
 
 Required env: RECONNECT_WEB_URL, RECONNECT_SYNC_TOKEN, PEOPLEGRAPH_CACHE`);
 }
@@ -317,8 +457,17 @@ if (cmd === "help" || cmd === "-h" || cmd === "--help") {
 	help();
 } else {
 	requireEnv();
-	if (cmd === "push") await push();
+	const forceReset = process.argv.includes("--reset");
+	const force = process.argv.includes("--force");
+	if (cmd === "push") await push({ forceReset });
 	else if (cmd === "pull") await pull();
-	else if (cmd === "run") { await pull(); await push(); }
+	else if (cmd === "merge-push") await mergePush({ force });
+	else if (cmd === "merge-pull") await mergePull();
+	else if (cmd === "run") {
+		await pull();
+		try { await mergePull(); } catch (e) { console.warn(`merge-pull failed (contact sync unaffected): ${e.message}`); }
+		await push({ forceReset });
+		try { await mergePush({ force }); } catch (e) { console.warn(`merge-push failed (contact sync unaffected): ${e.message}`); }
+	}
 	else { help(); process.exit(1); }
 }

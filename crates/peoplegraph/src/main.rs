@@ -70,6 +70,8 @@ enum Commands {
     ContactCard(ContactCardArgs),
     /// Suggest duplicate/contact-fragment rows to review for canonical identity cleanup.
     SuggestDuplicates(SuggestDuplicatesArgs),
+    /// Auto-apply high-confidence duplicate merges in one batch pass.
+    ApplyDuplicates(ApplyDuplicatesArgs),
     /// Import another Gmail CRM contact cache into source-aware staging.
     ImportCache(ImportCacheArgs),
     /// Suggest source-aware merges from imported caches into the source-of-truth cache.
@@ -165,6 +167,20 @@ struct SuggestDuplicatesArgs {
 
     #[arg(long, default_value_t = 0.82)]
     min_confidence: f64,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ApplyDuplicatesArgs {
+    /// Only auto-merge at/above this confidence (corroborated tier).
+    #[arg(long, default_value_t = 0.94)]
+    min_confidence: f64,
+
+    /// Print what would merge without writing anything.
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+
+    #[arg(long, default_value_t = 1000)]
+    limit: usize,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -575,6 +591,7 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         }),
         Commands::ContactCard(args) => contact_card(cli, command, args, start),
         Commands::SuggestDuplicates(args) => suggest_duplicates(cli, command, args, start),
+        Commands::ApplyDuplicates(args) => apply_duplicates(cli, command, args, start),
         Commands::ImportCache(args) => import_cache(cli, command, args, start),
         Commands::SuggestExternalMerges(args) => suggest_external_merges(cli, command, args, start),
         Commands::MergeQueue(args) => merge_queue(cli, command, args, start),
@@ -731,6 +748,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::ApplyMerge(_)
         | Commands::DismissMerge(_)
         | Commands::ProposeMerge(_)
+        | Commands::ApplyDuplicates(_)
         | Commands::Feedback(_)
         | Commands::Serve(_) => None,
     }
@@ -1416,6 +1434,8 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
             .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
+    let (people, deduped_rows) = dedupe_rows_by_name(people);
+
     let total = people.len();
     let limit = args.limit.max(1);
     let returned_people: Vec<Value> = people
@@ -1457,6 +1477,7 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
         json!({
             "matched": total,
             "returned": returned,
+            "deduped_rows": deduped_rows,
             "min_score": min_score,
             "contact_count": index.contacts.len(),
             "schema_version": index.schema_version,
@@ -1494,6 +1515,26 @@ fn swiped_name_set(all_rows: &[ContactRow], feedback: &FeedbackStore) -> HashSet
         }
     }
     names
+}
+
+// The index holds multiple rows per human; the deck should deal ONE card per
+// person. Input is sorted best-first, so keeping the first occurrence keeps
+// the highest-ranked row. Empty names never collapse (they're not comparable).
+fn dedupe_rows_by_name(people: Vec<(ContactRow, u8)>) -> (Vec<(ContactRow, u8)>, usize) {
+    let mut seen = HashSet::new();
+    let before = people.len();
+    let deduped: Vec<(ContactRow, u8)> = people
+        .into_iter()
+        .filter(|(row, _)| {
+            let name = normalized_person_name(&row.contact.name);
+            if name.is_empty() {
+                return true;
+            }
+            seen.insert(name)
+        })
+        .collect();
+    let dropped = before - deduped.len();
+    (deduped, dropped)
 }
 
 // A human swipe shifts the people score everywhere, not just the deck:
@@ -1972,6 +2013,210 @@ fn suggest_duplicates(
             "user_email": &index.user_email,
             "ms": elapsed_ms(start)
         }),
+    )
+}
+
+// Auto-merge safety guard: "same display name + same domain" is NOT proof of
+// the same human — org-named rows (contact name = the company) give different
+// people identical names (e.g. three colleagues all displayed as the firm).
+// Require the email local-parts to corroborate: one a variant of the other,
+// or both derivable from the contact name (tokens, initials, initial+lastname).
+// Pairs that fail simply stay unmerged — never wrongly fused.
+fn locals_corroborate(a_email: &str, b_email: &str, names: &[&str]) -> bool {
+    let a = compact_normalize(&email_local(a_email));
+    let b = compact_normalize(&email_local(b_email));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a.contains(&b) || b.contains(&a) {
+        return true;
+    }
+    if jaro_winkler(&a, &b) >= 0.90 {
+        return true;
+    }
+    let mut tokens: Vec<String> = Vec::new();
+    for name in names {
+        for token in normalize(name).split_whitespace().map(compact_normalize) {
+            if !token.is_empty() && !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+    }
+    local_matches_name(&a, &tokens) && local_matches_name(&b, &tokens)
+}
+
+// Does an email local-part look like it was derived from this person's name?
+// Accepts any single name token, any ordered pair of tokens concatenated,
+// the all-token initials, or first-initial + a later token (dfrankel).
+fn local_matches_name(local: &str, tokens: &[String]) -> bool {
+    if tokens.iter().any(|token| local == *token) {
+        return true;
+    }
+    for (i, first) in tokens.iter().enumerate() {
+        for second in tokens.iter().skip(i + 1) {
+            if local == format!("{first}{second}") || local == format!("{second}{first}") {
+                return true;
+            }
+        }
+    }
+    let initials: String = tokens.iter().filter_map(|token| token.chars().next()).collect();
+    if initials.len() >= 2 && local == initials {
+        return true;
+    }
+    if let Some(first_initial) = tokens.first().and_then(|token| token.chars().next()) {
+        for token in tokens.iter().skip(1) {
+            if local == format!("{first_initial}{token}") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// Transitive union of pair emails: (a,b) + (b,e) -> [a,b,e]. Order of members
+// is first-seen so group[0] is the highest-confidence primary.
+fn group_pairs(pairs: &[(String, String)]) -> Vec<Vec<String>> {
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    for (a, b) in pairs {
+        let ia = groups.iter().position(|g| g.iter().any(|m| m == a));
+        let ib = groups.iter().position(|g| g.iter().any(|m| m == b));
+        match (ia, ib) {
+            (None, None) => groups.push(vec![a.clone(), b.clone()]),
+            (Some(i), None) => groups[i].push(b.clone()),
+            (None, Some(j)) => groups[j].push(a.clone()),
+            (Some(i), Some(j)) if i != j => {
+                let (keep, drain) = (i.min(j), i.max(j));
+                let moved = groups.remove(drain);
+                for m in moved {
+                    if !groups[keep].contains(&m) {
+                        groups[keep].push(m);
+                    }
+                }
+            }
+            (Some(_), Some(_)) => {} // already same group
+        }
+    }
+    groups
+}
+
+fn apply_duplicates(
+    cli: &Cli,
+    command: &'static str,
+    args: &ApplyDuplicatesArgs,
+    start: Instant,
+) -> Response {
+    let (cache_path, index) = match load_index(cli, command, start) {
+        Ok(loaded) => loaded,
+        Err(response) => return *response,
+    };
+    let queue_path = merge_queue_path(&cache_path);
+    let mut queue = read_merge_queue(&queue_path);
+    let min_confidence = args.min_confidence.clamp(0.0, 1.0);
+    let contact_rows = rows(&index);
+
+    // Same scan as suggest-duplicates, but collect only the auto-merge tier.
+    let mut pairs: Vec<(f64, String, String)> = Vec::new();
+    let mut demoted_pairs = 0usize;
+    for (left_index, left) in contact_rows.iter().enumerate() {
+        for right in contact_rows.iter().skip(left_index + 1) {
+            if already_canonicalized_together(left, right) {
+                continue;
+            }
+            if queue_pair_status(&queue, &left.email, &right.email).is_some() {
+                continue;
+            }
+            if skip_default_duplicate_candidate(left, right) {
+                continue;
+            }
+            if let Some((confidence, reasons)) = duplicate_confidence(left, right)
+                && round_confidence(confidence) >= min_confidence
+            {
+                let (primary, duplicate) = primary_duplicate(left, right);
+                // A shared alias is definitive; anything else must survive the
+                // local-part corroboration guard or it stays unmerged.
+                let corroborated = reasons.iter().any(|r| r == "shared_email_or_alias")
+                    || locals_corroborate(
+                        &primary.email,
+                        &duplicate.email,
+                        &[&primary.contact.name, &duplicate.contact.name],
+                    );
+                if !corroborated {
+                    demoted_pairs += 1;
+                    continue;
+                }
+                pairs.push((confidence, primary.email.clone(), duplicate.email.clone()));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
+    pairs.truncate(args.limit.max(1));
+    let pair_emails: Vec<(String, String)> =
+        pairs.iter().map(|(_, a, b)| (a.clone(), b.clone())).collect();
+    let groups = group_pairs(&pair_emails);
+
+    let groups_json: Vec<Value> = groups
+        .iter()
+        .map(|members| {
+            json!({
+                "canonical_id": canonical_id_for_group(&index, members),
+                "members": members,
+            })
+        })
+        .collect();
+
+    if args.dry_run {
+        return ok(
+            command,
+            json!({ "dry_run": true, "applied_pairs": 0, "demoted_pairs": demoted_pairs, "groups": groups_json }),
+            json!({ "matched": pair_emails.len(), "groups": groups.len(), "ms": elapsed_ms(start) }),
+        );
+    }
+
+    // ONE cache read/write for the whole batch.
+    let mut index_json = match read_json_value(&cache_path) {
+        Ok(value) => value,
+        Err(message) => return fail(command, "cache_read_failed", message, start),
+    };
+    let canonical_synced_at = unix_seconds_iso();
+    for members in &groups {
+        let canonical_id = canonical_id_for_group(&index, members);
+        // Union of every member's aliases, accumulated pairwise.
+        let mut aliases: Vec<String> = Vec::new();
+        for member in members {
+            push_unique_email(&mut aliases, member);
+            for alias in merge_aliases(&index, &members[0], member) {
+                push_unique_email(&mut aliases, &alias);
+            }
+        }
+        for member in members {
+            let Some(key) = contact_key_for_email(&index, member) else {
+                continue;
+            };
+            if let Err(message) = apply_canonical_to_contact(
+                &mut index_json,
+                &key,
+                &canonical_id,
+                &aliases,
+                &canonical_synced_at,
+            ) {
+                return fail(command, "cache_write_failed", message, start);
+            }
+        }
+    }
+    if let Err(message) = write_json_value(&cache_path, &index_json) {
+        return fail(command, "cache_write_failed", message, start);
+    }
+    for (_, a, b) in &pairs {
+        mark_merge_applied(&mut queue, &index, a, b);
+    }
+    if let Err(message) = write_merge_queue(&queue_path, &queue) {
+        return fail(command, "queue_write_failed", message, start);
+    }
+
+    ok(
+        command,
+        json!({ "dry_run": false, "applied_pairs": pair_emails.len(), "demoted_pairs": demoted_pairs, "groups": groups_json }),
+        json!({ "matched": pair_emails.len(), "groups": groups.len(), "ms": elapsed_ms(start) }),
     )
 }
 
@@ -2821,6 +3066,20 @@ fn canonical_id_for_merge(index: &ContactIndex, a_email: &str, b_email: &str) ->
                 .filter(|id| !id.is_empty())
         })
         .unwrap_or_else(|| format!("local:{a_email}"))
+}
+
+// The group's identity anchor: the first existing canonical id on ANY member
+// (not just the first two), else mint a local id from the primary member.
+fn canonical_id_for_group(index: &ContactIndex, members: &[String]) -> String {
+    members
+        .iter()
+        .find_map(|member| {
+            find_by_email_or_alias(index, member)
+                .and_then(|row| row.contact.canonical_id)
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+        })
+        .unwrap_or_else(|| format!("local:{}", members[0]))
 }
 
 fn merge_aliases(index: &ContactIndex, a_email: &str, b_email: &str) -> Vec<String> {
@@ -4433,6 +4692,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::GetEdges(_) => "get-edges",
         Commands::ContactCard(_) => "contact-card",
         Commands::SuggestDuplicates(_) => "suggest-duplicates",
+        Commands::ApplyDuplicates(_) => "apply-duplicates",
         Commands::ImportCache(_) => "import-cache",
         Commands::SuggestExternalMerges(_) => "suggest-external-merges",
         Commands::MergeQueue(_) => "merge-queue",
@@ -4508,6 +4768,12 @@ fn describe_payload() -> Value {
                 "name": "suggest-duplicates",
                 "usage": "peoplegraph suggest-duplicates --limit 25 --min-confidence 0.82",
                 "status": "implemented"
+            },
+            {
+                "name": "apply-duplicates",
+                "usage": "peoplegraph apply-duplicates --min-confidence 0.94 [--dry-run]",
+                "status": "implemented_local_cache_write",
+                "notes": "Auto-merges corroborated duplicate pairs (default >=0.94 confidence) with transitive grouping, writing canonical ids and unioned aliases for every group member in a single cache read/write pass. --dry-run previews groups without writing. Queue-idempotent: applied pairs are marked in the merge queue so re-running reports 0 newly applied. WRITE command — local source-of-truth machine only, not exposed over --remote."
             },
             {
                 "name": "import-cache",
@@ -4663,6 +4929,18 @@ mod tests {
     fn formats_unix_seconds_as_utc_iso() {
         assert_eq!(unix_to_utc_iso(0), "1970-01-01T00:00:00Z");
         assert_eq!(unix_to_utc_iso(1_778_864_760), "2026-05-15T17:06:00Z");
+    }
+
+    #[test]
+    fn round_confidence_boundary_matches_review_band_cutoff() {
+        // suggest_duplicates reports round_confidence(confidence), so
+        // apply_duplicates must gate on the same rounded value or a raw
+        // confidence in [0.935, 0.94) would be neither auto-merged nor
+        // surfaced in the review band.
+        assert_eq!(round_confidence(0.9351), 0.94);
+        assert_eq!(round_confidence(0.9349), 0.93);
+        assert!(round_confidence(0.9351) >= 0.94);
+        assert!(round_confidence(0.9349) < 0.94);
     }
 
     #[test]
@@ -4944,6 +5222,19 @@ mod tests {
     }
 
     #[test]
+    fn group_pairs_is_transitive() {
+        let pairs = vec![
+            ("a@x.com".to_string(), "b@x.com".to_string()),
+            ("c@y.com".to_string(), "d@y.com".to_string()),
+            ("b@x.com".to_string(), "e@x.com".to_string()), // joins group 1 via b
+        ];
+        let groups = group_pairs(&pairs);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], vec!["a@x.com", "b@x.com", "e@x.com"]);
+        assert_eq!(groups[1], vec!["c@y.com", "d@y.com"]);
+    }
+
+    #[test]
     fn canonical_id_defaults_to_local_primary_email() {
         let mut contacts = HashMap::new();
         contacts.insert(
@@ -4971,6 +5262,56 @@ mod tests {
         assert_eq!(
             canonical_id_for_merge(&index, "a@example.com", "b@example.com"),
             "local:a@example.com"
+        );
+    }
+
+    #[test]
+    fn canonical_id_for_group_honors_existing_id_from_any_member() {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "a@x.com".to_string(),
+            Contact {
+                email: "a@x.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "b@x.com".to_string(),
+            Contact {
+                email: "b@x.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "e@x.com".to_string(),
+            Contact {
+                email: "e@x.com".to_string(),
+                canonical_id: Some("local:existing-e-identity".to_string()),
+                ..empty_contact()
+            },
+        );
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        };
+
+        let members = vec![
+            "a@x.com".to_string(),
+            "b@x.com".to_string(),
+            "e@x.com".to_string(),
+        ];
+        assert_eq!(
+            canonical_id_for_group(&index, &members),
+            "local:existing-e-identity"
+        );
+
+        let members_no_canonical = vec!["a@x.com".to_string(), "b@x.com".to_string()];
+        assert_eq!(
+            canonical_id_for_group(&index, &members_no_canonical),
+            "local:a@x.com"
         );
     }
 
@@ -5382,6 +5723,47 @@ mod tests {
         assert!(!names.contains("seen person"), "'shown' is not a decision");
         assert!(!names.contains("someone else"));
         assert_eq!(normalized_person_name("  Steve   SCHLAFMAN "), "steve schlafman");
+    }
+
+    #[test]
+    fn reconnect_pool_keeps_one_row_per_name() {
+        let row = |name: &str, email: &str| ContactRow {
+            email: email.to_string(),
+            contact: Contact { name: name.to_string(), email: email.to_string(), ..empty_contact() },
+        };
+        // already sorted best-first, as reconnect() guarantees before calling
+        let people = vec![
+            (row("Lenka GrayDevitt", "lenka@a.com"), 80u8),
+            (row("Lenka GrayDevitt", "lenka@b.com"), 60u8),
+            (row("Solo Person", "solo@c.com"), 50u8),
+            (row("", "noname@d.com"), 40u8),   // empty names never collapse
+            (row("", "noname@e.com"), 30u8),
+        ];
+        let (deduped, dropped) = dedupe_rows_by_name(people);
+        assert_eq!(dropped, 1);
+        let emails: Vec<&str> = deduped.iter().map(|(r, _)| r.email.as_str()).collect();
+        assert_eq!(emails, vec!["lenka@a.com", "solo@c.com", "noname@d.com", "noname@e.com"]);
+    }
+
+    #[test]
+    fn locals_corroborate_blocks_org_named_different_humans() {
+        // Real cases from the 2026-07-24 dry run: different people sharing an
+        // org display name must NOT corroborate...
+        let org = |a: &str, b: &str, name: &str| locals_corroborate(a, b, &[name, name]);
+        assert!(!org("tkawaja@lumapartners.com", "dms1@lumapartners.com", "LUMA Partners"));
+        assert!(!org("michael@the-vines.com", "frances@the-vines.com", "The Vines"));
+        assert!(!org("belle.raab@aduroadvisors.com", "compliance@aduroadvisors.com", "Aduro Advisors"));
+        assert!(!org("arjen@capitalonstage.com", "events@capitalonstage.com", "Capital On Stage"));
+        assert!(!org("taxes@angel.co", "venture@angel.co", "AngelList"));
+        // ...while genuinely-same-person patterns survive:
+        assert!(org("your-advocate@sequoia.com", "youradvocate@sequoia.com", "Sequoia")); // variant
+        assert!(org("portfoliomanager@b.com", "porfoliomanager@b.com", "Bespoke")); // typo (jaro-winkler)
+        assert!(org("ts@spintacap.com", "todd.schneider@spintacap.com", "Todd Schneider")); // initials + full
+        assert!(org("myanover@caa.com", "michael.yanover@caa.com", "Michael Yanover")); // m+last
+        assert!(org("david@foundercollective.com", "dfrankel@foundercollective.com", "David Frankel"));
+        assert!(org("saar@crv.com", "sgur@crv.com", "Saar Gur"));
+        assert!(org("s@wlessin.com", "sam@wlessin.com", "Sam Lessin")); // containment
+        assert!(org("freddie@chameleon.co", "freddie.laker@chameleon.co", "Freddie Laker"));
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
