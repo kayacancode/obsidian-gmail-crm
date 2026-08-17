@@ -13,8 +13,7 @@
 		{
 			"binding": "DB",
 			"database_name": "people-graph",
-			// Fill in after `wrangler d1 create people-graph`.
-			"database_id": "TBD"
+			"database_id": "d4891902-f822-4abe-9fe2-5ae19138f339"
 		}
 	],
 	"vars": {
