@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-gmail-crm",
-	"version": "0.5.0",
-	"description": "Obsidian plugin \u2014 lightweight CRM from Gmail metadata",
+	"version": "0.8.0",
+	"description": "Obsidian plugin — lightweight CRM from Gmail metadata",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
