@@ -7,70 +7,119 @@
 	<script src="https://accounts.google.com/gsi/client" async defer></script>
 	<style>
 		:root {
-			--bg:#0f1115; --card:#1a1d24; --muted:#8a90a0; --text:#eef0f5; --line:#262a33;
-			/* Quadrant palette — aqua/blue/orange validated all-pairs on the dark
-			   surface (dataviz six-checks); deprioritize is a muted STATE, not a
-			   fourth competing hue: gray + dimmed + no glow. */
+			/* Star-chart ground: deep indigo, not neutral black — the graph reads as a sky */
+			--sky:#0b0e1a; --panel:#111527; --panel-edge:#232a44; --hairline:#1a2038;
+			--text:#e8ebf5; --muted:#7e87a8; --faint:#4a5273;
+			/* Quadrant palette — validated all-pairs on dark (dataviz six-checks);
+			   deprioritize is a dimmed state, not a fourth hue. */
 			--q-nurture:#199e70; --q-developing:#3987e5; --q-reengage:#d95926; --q-deprioritize:#7a7f8c;
+			--serif:ui-serif, "New York", Georgia, "Times New Roman", serif;
+			--sans:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+			--mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 		}
 		* { box-sizing:border-box; margin:0; padding:0; }
-		body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow:hidden; height:100vh; }
-		header { position:fixed; top:0; left:0; right:0; z-index:20; display:flex; align-items:center; gap:16px; padding:12px 16px; background:linear-gradient(to bottom, rgba(15,17,21,.95), rgba(15,17,21,0)); pointer-events:none; }
+		body { background:var(--sky); color:var(--text); font-family:var(--sans); overflow:hidden; height:100vh; }
+
+		header { position:fixed; top:0; left:0; right:0; z-index:20; display:flex; align-items:baseline; gap:18px; padding:18px 22px 30px; background:linear-gradient(to bottom, rgba(11,14,26,.96) 40%, rgba(11,14,26,0)); pointer-events:none; }
 		header > * { pointer-events:auto; }
-		header h1 { font-size:1.05rem; letter-spacing:.02em; font-weight:650; }
-		#meta { color:var(--muted); font-size:.8rem; }
-		#search { margin-left:auto; background:var(--card); border:1px solid var(--line); color:var(--text); border-radius:9px; padding:7px 12px; font-size:.85rem; width:210px; outline:none; display:none; }
-		#search:focus { border-color:#3d4351; }
+		#wordmark { font-family:var(--serif); font-size:1.25rem; font-weight:600; font-style:italic; letter-spacing:.01em; }
+		#wordmark .star { font-style:normal; color:var(--muted); margin-right:2px; }
+		#meta { color:var(--muted); font-size:.78rem; font-family:var(--mono); letter-spacing:.02em; }
+		#search { margin-left:auto; background:rgba(17,21,39,.85); border:1px solid var(--panel-edge); color:var(--text); border-radius:2px; padding:7px 12px; font-size:.85rem; font-family:var(--sans); width:220px; outline:none; display:none; }
+		#search::placeholder { color:var(--faint); }
+		#search:focus { border-color:#3a4570; }
 		#signin { display:flex; }
-		#legend { position:fixed; bottom:14px; left:14px; z-index:20; display:none; flex-direction:column; gap:6px; background:rgba(26,29,36,.9); border:1px solid var(--line); border-radius:10px; padding:10px 14px; font-size:.75rem; color:var(--muted); }
+
+		#legend { position:fixed; bottom:16px; left:18px; z-index:20; display:none; flex-direction:column; gap:7px; font-size:.72rem; color:var(--muted); font-family:var(--mono); letter-spacing:.02em; }
 		#legend .row { display:flex; align-items:center; gap:8px; }
-		#legend .dot { width:9px; height:9px; border-radius:50%; }
-		#legend .note { margin-top:2px; font-size:.68rem; }
-		svg { display:block; width:100vw; height:100vh; }
-		.gate { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; padding:24px; z-index:10; }
-		.gate p { color:var(--muted); max-width:420px; line-height:1.5; font-size:.92rem; }
-		.gate code { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:2px 6px; font-size:.82rem; }
-		.gate .token { background:var(--card); border:1px solid var(--line); border-radius:9px; padding:10px 14px; font-family:ui-monospace,Menlo,monospace; font-size:.78rem; word-break:break-all; max-width:520px; user-select:all; }
-		button.action { background:var(--card); border:1px solid #3d4351; color:var(--text); border-radius:9px; padding:9px 16px; font-size:.88rem; cursor:pointer; }
-		button.action:hover { border-color:#565e70; }
+		#legend .dot { width:8px; height:8px; border-radius:50%; }
+		#legend .note { margin-top:4px; color:var(--faint); }
+
+		svg#graph { display:block; width:100vw; height:100vh; }
+		.ring { fill:none; stroke:var(--hairline); stroke-width:1; }
 		.node { cursor:grab; }
 		.node:active { cursor:grabbing; }
-		.node circle { transition:filter .15s, opacity .15s; filter:drop-shadow(0 0 4px currentColor); }
-		.node.deprioritize circle { filter:none; opacity:.55; }
-		.node:hover circle { filter:drop-shadow(0 0 10px currentColor) brightness(1.35); opacity:1; }
-		.node text { fill:rgba(238,240,245,.85); font-size:10px; font-weight:500; pointer-events:none; text-anchor:middle; text-shadow:0 0 6px rgba(0,0,0,.9); transition:opacity .15s; }
+		.node circle.core { transition:opacity .15s; filter:drop-shadow(0 0 5px currentColor); }
+		.node.deprioritize circle.core { filter:none; opacity:.5; }
+		.node:hover circle.core { filter:drop-shadow(0 0 12px currentColor); opacity:1; }
+		.node text { fill:rgba(232,235,245,.82); font-size:10.5px; font-family:var(--sans); font-weight:500; pointer-events:none; text-anchor:middle; text-shadow:0 0 7px rgba(11,14,26,.95), 0 0 3px rgba(11,14,26,.95); transition:opacity .15s; }
 		.node.minor text { opacity:0; }
 		.node.minor:hover text, .node.focus text { opacity:1; }
-		.node.dim circle { opacity:.12; filter:none; }
+		.node.dim circle.core { opacity:.1; filter:none; }
 		.node.dim text { opacity:0; }
-		.link { stroke:rgba(200,205,255,.5); transition:stroke-opacity .15s; }
-		.link.dim { stroke-opacity:.04 !important; }
-		.link.hot { stroke:rgba(255,255,255,.85); stroke-opacity:1 !important; }
-		#tooltip { position:fixed; z-index:30; background:rgba(15,17,21,.96); color:var(--text); border:1px solid #3d4351; border-radius:10px; padding:12px 15px; font-size:12px; pointer-events:none; opacity:0; transition:opacity .12s; max-width:320px; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+		.link { stroke:#aeb8e8; transition:stroke-opacity .15s, stroke .15s; }
+		.link.dim { stroke-opacity:.03 !important; }
+		.link.hot { stroke:#e8ebf5; stroke-opacity:.95 !important; }
+
+		#tooltip { position:fixed; z-index:30; background:rgba(11,14,26,.97); border:1px solid var(--panel-edge); border-radius:2px; padding:10px 13px; font-size:12px; pointer-events:none; opacity:0; transition:opacity .12s; max-width:280px; }
 		#tooltip.visible { opacity:1; }
-		#tooltip .name { font-weight:650; font-size:13px; margin-bottom:2px; }
-		#tooltip .sub { color:var(--muted); font-size:11px; margin-bottom:6px; }
-		#tooltip .scores { display:flex; gap:10px; font-size:11px; margin-bottom:4px; }
-		#tooltip .scores b { font-weight:650; }
-		#tooltip .ctx { color:var(--muted); font-size:11px; line-height:1.45; margin-top:5px; border-top:1px solid var(--line); padding-top:5px; }
+		#tooltip .name { font-family:var(--serif); font-size:14px; font-weight:600; }
+		#tooltip .sub { color:var(--muted); font-size:11px; margin-top:2px; }
+		#tooltip .hint { color:var(--faint); font-size:10.5px; margin-top:6px; font-family:var(--mono); }
+
+		/* Dossier — the signature element: one person's ties, ranked by strength */
+		#dossier { position:fixed; top:0; right:0; bottom:0; width:340px; z-index:25; background:var(--panel); border-left:1px solid var(--panel-edge); transform:translateX(100%); transition:transform .22s ease-out; display:flex; flex-direction:column; }
+		#dossier.open { transform:translateX(0); }
+		#dossier .head { padding:22px 22px 16px; border-bottom:1px solid var(--hairline); }
+		#dossier .who { font-family:var(--serif); font-size:1.45rem; font-weight:600; line-height:1.15; }
+		#dossier .org { color:var(--muted); font-size:.85rem; margin-top:3px; }
+		#dossier .chips { display:flex; gap:8px; margin-top:10px; align-items:center; }
+		#dossier .chip { font-size:.68rem; font-family:var(--mono); letter-spacing:.04em; padding:3px 8px; border:1px solid var(--panel-edge); border-radius:2px; color:var(--muted); display:flex; align-items:center; gap:6px; }
+		#dossier .chip .dot { width:7px; height:7px; border-radius:50%; }
+		#dossier .scores { display:flex; gap:0; margin-top:14px; font-family:var(--mono); }
+		#dossier .scores > div { flex:1; }
+		#dossier .scores .v { font-size:1.15rem; }
+		#dossier .scores .k { font-size:.62rem; color:var(--faint); letter-spacing:.06em; text-transform:uppercase; margin-top:2px; }
+		#dossier .ties-label { padding:14px 22px 6px; font-size:.65rem; font-family:var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--faint); }
+		#dossier .ties { flex:1; overflow-y:auto; padding:0 12px 18px; }
+		.tie { display:block; width:100%; text-align:left; background:none; border:0; color:var(--text); padding:9px 10px; border-radius:2px; cursor:pointer; font-family:var(--sans); }
+		.tie:hover { background:rgba(35,42,68,.45); }
+		.tie .trow { display:flex; align-items:baseline; gap:8px; }
+		.tie .tname { font-size:.88rem; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+		.tie .tw { font-family:var(--mono); font-size:.72rem; color:var(--muted); }
+		.tie .bar { height:3px; background:var(--hairline); border-radius:2px; margin-top:5px; overflow:hidden; }
+		.tie .bar > i { display:block; height:100%; background:#aeb8e8; }
+		.tie .via { font-size:.7rem; color:var(--faint); margin-top:4px; line-height:1.4; }
+		#dossier .close { position:absolute; top:14px; right:14px; background:none; border:0; color:var(--faint); font-size:1.1rem; cursor:pointer; padding:4px 8px; }
+		#dossier .close:hover { color:var(--text); }
+
+		.gate { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:24px; z-index:10; }
+		.gate h2 { font-family:var(--serif); font-style:italic; font-weight:600; font-size:1.5rem; }
+		.gate p { color:var(--muted); max-width:430px; line-height:1.55; font-size:.92rem; }
+		.gate code { background:var(--panel); border:1px solid var(--panel-edge); border-radius:2px; padding:2px 6px; font-size:.82rem; font-family:var(--mono); }
+		.gate .token { background:var(--panel); border:1px solid var(--panel-edge); border-radius:2px; padding:10px 14px; font-family:var(--mono); font-size:.76rem; word-break:break-all; max-width:520px; user-select:all; }
+		button.action { background:var(--panel); border:1px solid #3a4570; color:var(--text); border-radius:2px; padding:9px 18px; font-size:.88rem; font-family:var(--sans); cursor:pointer; }
+		button.action:hover { border-color:#525d8f; }
+
+		:focus-visible { outline:2px solid #aeb8e8; outline-offset:2px; }
+		@media (prefers-reduced-motion: reduce) {
+			#dossier { transition:none; }
+			.node circle.core, .node text, .link, #tooltip { transition:none; }
+		}
+		@media (max-width: 720px) {
+			#dossier { width:100%; }
+			#search { width:140px; }
+			#meta { display:none; }
+		}
 	</style>
 </head>
 <body>
 	<header>
-		<h1>🕸 People Graph</h1>
+		<span id="wordmark"><span class="star">✳</span> People Graph</span>
 		<span id="meta"></span>
-		<input id="search" type="search" placeholder="Find a person…" autocomplete="off" />
+		<input id="search" type="search" placeholder="Find a person…" autocomplete="off" aria-label="Find a person" />
 		<div id="signin"></div>
 	</header>
 	<div id="legend">
 		<div class="row"><span class="dot" style="background:var(--q-nurture)"></span> nurture</div>
 		<div class="row"><span class="dot" style="background:var(--q-developing)"></span> developing</div>
 		<div class="row"><span class="dot" style="background:var(--q-reengage)"></span> re-engage</div>
-		<div class="row"><span class="dot" style="background:var(--q-deprioritize); opacity:.55"></span> deprioritize (dimmed)</div>
-		<div class="note">size = combined score · line weight = connection strength</div>
+		<div class="row"><span class="dot" style="background:var(--q-deprioritize); opacity:.5"></span> deprioritize (dimmed)</div>
+		<div class="note">size = score · line = tie strength · click a person to read their ties</div>
 	</div>
-	<svg id="graph"></svg>
+	<svg id="graph" role="img" aria-label="Force-directed graph of your contacts"></svg>
 	<div id="tooltip"></div>
+	<aside id="dossier" aria-label="Selected person's connections"></aside>
 	<div class="gate" id="gate"></div>
 
 	<script src="d3.v7.min.js"></script>
@@ -87,6 +136,7 @@
 		const metaEl = document.getElementById("meta");
 		const searchEl = document.getElementById("search");
 		const legendEl = document.getElementById("legend");
+		const dossierEl = document.getElementById("dossier");
 		const tooltip = d3.select("#tooltip");
 		let idToken = null;
 
@@ -121,7 +171,8 @@
 		}
 
 		function renderGate() {
-			gate.innerHTML = `<p>Sign in with Google to see your people graph.<br/>You only ever see the graph pushed from <em>your</em> vault.</p>`;
+			gate.style.display = "flex";
+			gate.innerHTML = `<h2>Your people, as a chart.</h2><p>Sign in with Google to see your graph. You only ever see the graph pushed from <em>your</em> vault.</p>`;
 		}
 
 		async function load() {
@@ -143,7 +194,7 @@
 		async function renderEmpty() {
 			gate.style.display = "flex";
 			gate.innerHTML = `
-				<p><b>No graph yet.</b></p>
+				<h2>No graph yet.</h2>
 				<p>Push one from Obsidian: settings → <em>Gmail CRM</em> → set the graph URL to this page and paste in a push token, then run the command <code>Push people graph to web</code>.</p>
 				<button class="action" id="mint">Get my push token</button>
 				<div id="tokenbox"></div>`;
@@ -162,6 +213,15 @@
 			const width = window.innerWidth, height = window.innerHeight;
 			const svg = d3.select("#graph").attr("width", width).attr("height", height);
 			svg.selectAll("*").remove();
+
+			// Graticule rings — the chart's ground. Drawn first, outside the zoom
+			// container, so they sit like paper behind the constellation.
+			const rings = svg.append("g");
+			const cx = width / 2, cy = height / 2;
+			for (const r of [180, 340, 520]) {
+				rings.append("circle").attr("class", "ring").attr("cx", cx).attr("cy", cy).attr("r", r).attr("opacity", 0.5);
+			}
+
 			const container = svg.append("g");
 			svg.call(d3.zoom().scaleExtent([0.15, 4]).on("zoom", (e) => container.attr("transform", e.transform)));
 
@@ -173,33 +233,31 @@
 			const maxWeight = Math.max(...links.map(l => l.weight || 1), 1);
 
 			const when = updatedAt ? new Date(updatedAt * 1000).toLocaleDateString() : null;
-			metaEl.textContent = `${nodes.length} people · ${links.length} connections${when ? ` · pushed ${when}` : ""}`;
+			metaEl.textContent = `${nodes.length} people · ${links.length} ties${when ? ` · pushed ${when}` : ""}`;
 			searchEl.style.display = "block";
 			legendEl.style.display = "flex";
 
-			const radius = d => 4 + Math.sqrt(Math.max(d.combined || 0, 1)) * 1.6; // ~5px..20px over 0–100
+			const radius = d => 4 + Math.sqrt(Math.max(d.combined || 0, 1)) * 1.6;
 
 			const sim = d3.forceSimulation(nodes)
 				.force("link", d3.forceLink(links).id(d => d.id)
 					.distance(d => 130 - (d.weight || 1) / maxWeight * 50)
 					.strength(d => 0.15 + (d.weight || 1) / maxWeight * 0.35))
 				.force("charge", d3.forceManyBody().strength(d => -120 - (d.combined || 0)))
-				.force("center", d3.forceCenter(width / 2, height / 2))
+				.force("center", d3.forceCenter(cx, cy))
 				.force("collision", d3.forceCollide().radius(d => radius(d) + 10))
-				.force("x", d3.forceX(width / 2).strength(0.04))
-				.force("y", d3.forceY(height / 2).strength(0.04))
+				.force("x", d3.forceX(cx).strength(0.04))
+				.force("y", d3.forceY(cy).strength(0.04))
 				.alphaDecay(0.05).velocityDecay(0.4);
 
-			// Pre-tick headlessly so the graph appears settled, not exploding.
 			const preTicks = Math.min(150, Math.max(60, 280 - nodes.length));
 			for (let i = 0; i < preTicks; i++) sim.tick();
 
 			const link = container.append("g").selectAll("line").data(links).join("line")
 				.attr("class", "link")
-				.attr("stroke-width", d => 1 + (d.weight || 1) / maxWeight * 3.5)
-				.attr("stroke-opacity", d => 0.25 + (d.weight || 1) / maxWeight * 0.6);
+				.attr("stroke-width", d => 0.75 + (d.weight || 1) / maxWeight * 3.25)
+				.attr("stroke-opacity", d => 0.18 + (d.weight || 1) / maxWeight * 0.62);
 
-			// Label the top ~40% of nodes by score; the rest label on hover/focus.
 			const scores = nodes.map(n => n.combined || 0).sort((a, b) => a - b);
 			const labelCut = scores[Math.floor(scores.length * 0.6)] ?? 0;
 
@@ -213,45 +271,81 @@
 					.on("end", (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
 
 			node.append("circle")
+				.attr("class", "core")
 				.attr("r", radius)
 				.attr("fill", d => QUADRANT_COLOR[d.quadrant] || QUADRANT_COLOR["deprioritize"])
 				.attr("color", d => QUADRANT_COLOR[d.quadrant] || QUADRANT_COLOR["deprioritize"]);
 
 			node.append("text")
-				.attr("dy", d => -radius(d) - 5)
+				.attr("dy", d => -radius(d) - 6)
 				.text(d => d.name.length > 22 ? d.name.slice(0, 20) + "…" : d.name);
 
-			const neighbors = new Map(nodes.map(n => [n.id, new Set([n.id])]));
-			for (const l of links) { neighbors.get(l.source.id)?.add(l.target.id); neighbors.get(l.target.id)?.add(l.source.id); }
+			const tiesById = new Map(nodes.map(n => [n.id, []]));
+			for (const l of links) {
+				tiesById.get(l.source.id).push({ other: l.target, weight: l.weight || 1, types: l.types || [], contexts: l.contexts || [] });
+				tiesById.get(l.target.id).push({ other: l.source, weight: l.weight || 1, types: l.types || [], contexts: l.contexts || [] });
+			}
 
 			let focusId = null;
 			function applyFocus() {
 				if (!focusId) {
 					node.classed("dim", false).classed("focus", false);
 					link.classed("dim", false).classed("hot", false);
+					dossierEl.classList.remove("open");
 					return;
 				}
-				const hood = neighbors.get(focusId) || new Set([focusId]);
+				const hood = new Set([focusId, ...(tiesById.get(focusId) || []).map(t => t.other.id)]);
 				node.classed("dim", d => !hood.has(d.id)).classed("focus", d => hood.has(d.id));
 				link.classed("hot", l => l.source.id === focusId || l.target.id === focusId)
 					.classed("dim", l => l.source.id !== focusId && l.target.id !== focusId);
+				renderDossier(nodeById.get(focusId));
+			}
+
+			function renderDossier(d) {
+				const ties = (tiesById.get(d.id) || []).slice().sort((a, b) => b.weight - a.weight);
+				const maxTie = ties.length ? ties[0].weight : 1;
+				const color = QUADRANT_COLOR[d.quadrant] || QUADRANT_COLOR["deprioritize"];
+				dossierEl.innerHTML = `
+					<button class="close" aria-label="Close">✕</button>
+					<div class="head">
+						<div class="who"></div>
+						<div class="org"></div>
+						<div class="chips">
+							<span class="chip"><span class="dot" style="background:${color}"></span>${escapeHtml(d.quadrant || "unscored")}</span>
+							${d.lastContact ? `<span class="chip">last contact ${escapeHtml(d.lastContact)}</span>` : ""}
+						</div>
+						<div class="scores">
+							<div><div class="v">${num(d.combined)}</div><div class="k">score</div></div>
+							<div><div class="v">${num(d.strength)}</div><div class="k">strength</div></div>
+							<div><div class="v">${num(d.momentum)}</div><div class="k">momentum</div></div>
+						</div>
+					</div>
+					<div class="ties-label">${ties.length} ${ties.length === 1 ? "tie" : "ties"}, strongest first</div>
+					<div class="ties">${ties.map((t, i) => `
+						<button class="tie" data-i="${i}">
+							<div class="trow"><span class="tname">${escapeHtml(t.other.name)}</span><span class="tw">×${t.weight}</span></div>
+							<div class="bar"><i style="width:${Math.max(8, Math.round(t.weight / maxTie * 100))}%"></i></div>
+							${t.contexts.length ? `<div class="via">via ${t.contexts.slice(0, 3).map(escapeHtml).join(" · ")}</div>` : ""}
+						</button>`).join("")}
+					</div>`;
+				dossierEl.querySelector(".who").textContent = d.name;
+				dossierEl.querySelector(".org").textContent = d.company || "";
+				dossierEl.querySelector(".close").onclick = () => { focusId = null; applyFocus(); };
+				dossierEl.querySelectorAll(".tie").forEach(btn => {
+					btn.onclick = () => { focusId = ties[+btn.dataset.i].other.id; applyFocus(); };
+				});
+				dossierEl.classList.add("open");
 			}
 
 			node.on("mouseenter", (event, d) => {
-				link.classed("hot", l => l.source.id === d.id || l.target.id === d.id);
-				const conns = links.filter(l => l.source.id === d.id || l.target.id === d.id)
-					.sort((a, b) => (b.weight || 1) - (a.weight || 1));
-				const names = conns.map(l => l.source.id === d.id ? l.target.name : l.source.name).slice(0, 5);
-				const contexts = [...new Set(conns.flatMap(l => l.contexts || []))].slice(0, 3);
+				if (!focusId) link.classed("hot", l => l.source.id === d.id || l.target.id === d.id);
+				const count = (tiesById.get(d.id) || []).length;
 				tooltip.classed("visible", true).html(`
 					<div class="name"></div>
 					<div class="sub"></div>
-					<div class="scores"><span>score <b>${num(d.combined)}</b></span><span>strength <b>${num(d.strength)}</b></span><span>momentum <b>${num(d.momentum)}</b></span></div>
-					<div class="sub">${escapeHtml(d.quadrant || "unscored")}${d.lastContact ? " · last contact " + escapeHtml(d.lastContact) : ""}</div>
-					${names.length ? `<div class="ctx">↔ ${names.map(escapeHtml).join(", ")}${conns.length > 5 ? "…" : ""}</div>` : ""}
-					${contexts.length ? `<div class="ctx">via: ${contexts.map(escapeHtml).join(" · ")}</div>` : ""}`);
+					<div class="hint">${count} ${count === 1 ? "tie" : "ties"} · click to read them</div>`);
 				tooltip.select(".name").text(d.name);
-				tooltip.select(".sub").text(d.company || "");
+				tooltip.select(".sub").text([d.company, d.quadrant].filter(Boolean).join(" · "));
 				placeTooltip(event);
 			})
 			.on("mousemove", placeTooltip)
@@ -265,7 +359,7 @@
 			svg.on("click", () => { focusId = null; applyFocus(); });
 
 			function placeTooltip(event) {
-				const pad = 14, tw = 330, th = 150;
+				const pad = 14, tw = 290, th = 90;
 				const x = Math.min(event.clientX + pad, window.innerWidth - tw);
 				const y = Math.min(event.clientY + pad, window.innerHeight - th);
 				tooltip.style("left", x + "px").style("top", y + "px");
@@ -279,6 +373,10 @@
 				applyFocus();
 			};
 
+			document.addEventListener("keydown", (e) => {
+				if (e.key === "Escape") { focusId = null; applyFocus(); searchEl.blur(); }
+			});
+
 			function paint() {
 				link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
 					.attr("x2", d => d.target.x).attr("y2", d => d.target.y);
@@ -291,7 +389,6 @@
 		function num(v) { return typeof v === "number" ? Math.round(v) : "–"; }
 		function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
-		window.addEventListener("resize", () => { /* graph re-centers on next load; zoom/pan covers resize */ });
 		boot();
 	</script>
 </body>
