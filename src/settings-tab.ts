@@ -254,6 +254,34 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// People graph web view section
+		new Setting(containerEl).setName("People graph web view").setHeading();
+
+		new Setting(containerEl)
+			.setName("Graph URL")
+			.setDesc("Deployment to push your people graph to. Empty disables pushing.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.graphPushUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.graphPushUrl = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Graph push token")
+			.setDesc("Mint it on the graph page after signing in — pushes are tied to your account.")
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text
+					.setValue(this.plugin.settings.graphPushToken)
+					.onChange(async (value) => {
+						this.plugin.settings.graphPushToken = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+
 		// Notes section
 		new Setting(containerEl).setName("Contact notes").setHeading();
 

@@ -26,6 +26,10 @@ export interface GmailCrmSettings {
 	betaworksPartnerEmail: string; // identity shown in betaworks os ("john@betaworks.com")
 	betaworksSalienceKey: string; // Salience API key, used to authenticate the push
 	autoPushScores: boolean; // push after each staleness update
+	// people graph web view (apps/people-graph)
+	graphPushUrl: string; // people-graph deployment URL — empty disables
+	graphPushToken: string; // push token minted on the web app
+	graphPushSalt: string; // vault-local salt for opaque node ids; auto-generated
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -56,6 +60,9 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	betaworksPartnerEmail: "",
 	betaworksSalienceKey: "",
 	autoPushScores: true,
+	graphPushUrl: "",
+	graphPushToken: "",
+	graphPushSalt: "", // generated on first push
 };
 
 export interface ContactScore {

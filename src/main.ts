@@ -13,6 +13,12 @@ import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
 import { computeStaleness } from "./staleness";
 import { pushScoresToBetaworks, type ScoredPage } from "./betaworks-push";
+import {
+	buildGraphPayload,
+	generateGraphSalt,
+	pushGraphToWeb,
+	type GraphContactInput,
+} from "./graph-push";
 import { syncCalendarData } from "./calendar-sync";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
@@ -134,6 +140,13 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "push-betaworks-scores",
 			name: "Push scores to betaworks os",
 			callback: () => { void this.pushBetaworksScores(); },
+		});
+
+		// Command: push people graph to the web viewer
+		this.addCommand({
+			id: "push-people-graph",
+			name: "Push people graph to web",
+			callback: () => { void this.pushPeopleGraph(); },
 		});
 
 		// Command: review local merge queue
@@ -780,6 +793,49 @@ export default class GmailCrmPlugin extends Plugin {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`betaworks os push failed: ${msg}`);
+		}
+	}
+
+	async pushPeopleGraph() {
+		if (!this.settings.graphPushUrl || !this.settings.graphPushToken) {
+			new Notice("Set the graph URL and push token in settings first (mint the token on the graph page)");
+			return;
+		}
+		if (!this.settings.graphPushSalt) {
+			this.settings.graphPushSalt = generateGraphSalt();
+			await this.saveSettings();
+		}
+		const notice = new Notice("Pushing people graph...", 0);
+		try {
+			const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+			const pages = await engine.loadPeoplePages();
+			const graph = engine.buildGraph(pages, this.contactIndex);
+
+			const contacts: GraphContactInput[] = [];
+			for (const [name, page] of Object.entries(pages)) {
+				const email = this.getEmailForPage(page);
+				if (!email) continue;
+				contacts.push({
+					email,
+					name,
+					company: this.getContactByEmail(email)?.company ?? null,
+					lastContact: page.gmailStats?.lastContact ?? null,
+					staleness: computeStaleness(page, graph[name] ?? []),
+				});
+			}
+			const edges = this.buildContactEdges(pages, graph);
+
+			const payload = await buildGraphPayload(contacts, edges, this.settings.graphPushSalt);
+			const pushed = await pushGraphToWeb(
+				{ url: this.settings.graphPushUrl, token: this.settings.graphPushToken },
+				payload
+			);
+			notice.setMessage(`Pushed ${pushed.nodes} people, ${pushed.edges} connections — open ${this.settings.graphPushUrl} to view`);
+			setTimeout(() => notice.hide(), 6000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`People graph push failed: ${msg}`);
 		}
 	}
 

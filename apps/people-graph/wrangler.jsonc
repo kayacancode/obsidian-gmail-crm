@@ -1,0 +1,29 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "people-graph",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-05-01",
+	"observability": { "enabled": true },
+	"assets": {
+		// Graph viewer UI. Served for any non-/api route.
+		"directory": "./public",
+		"binding": "ASSETS"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "people-graph",
+			// Fill in after `wrangler d1 create people-graph`.
+			"database_id": "TBD"
+		}
+	],
+	"vars": {
+		// Google OAuth client id for Google Identity Services sign-in.
+		// Same client as reconnect-web; the workers.dev origin of this app must
+		// be added to that client's authorized JavaScript origins.
+		"GOOGLE_CLIENT_ID": "726397126192-d5esd42caksfb95hcoh12vpuji8kv008.apps.googleusercontent.com"
+	}
+	// Secret (set via `wrangler secret put TOKEN_SECRET`): HMAC key for minting
+	// and verifying per-email push tokens. No allowlist: any Google account can
+	// sign in, mint a token, and push/view — but only its own graph.
+}
