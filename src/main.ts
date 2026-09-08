@@ -83,6 +83,8 @@ export default class GmailCrmPlugin extends Plugin {
 	private contactLookupSource: Record<string, Contact> | null = null;
 	private intelligence!: IntelligenceStore;
 	private intelligenceReady = false;
+	private intelligenceNotes: SourcedNote[] | null = null;
+	private intelligenceNotesLoad: Promise<SourcedNote[]> | null = null;
 	private syncInterval: number | null = null;
 	private stalenessInterval: number | null = null;
 
@@ -91,7 +93,7 @@ export default class GmailCrmPlugin extends Plugin {
 		this.intelligence = new IntelligenceStore(this.app.vault.adapter, normalizePath(`${this.app.vault.configDir}/plugins/gmail-crm/people-intelligence.json`));
 		try { await this.intelligence.load(); this.intelligenceReady = true; }
 		catch (error) { new Notice(`People intelligence: ${String(error)}`); }
-		this.registerView(PEOPLE_INTELLIGENCE_VIEW, leaf => new PeopleIntelligenceView(leaf, () => this.loadIntelligenceWorkspace(), {
+		this.registerView(PEOPLE_INTELLIGENCE_VIEW, leaf => new PeopleIntelligenceView(leaf, refreshNotes => this.loadIntelligenceWorkspace(refreshNotes), {
 			save: () => this.intelligence.save(),
 			openNote: path => { void this.app.workspace.openLinkText(path, "", true); },
 		}));
@@ -530,14 +532,22 @@ export default class GmailCrmPlugin extends Plugin {
 		await this.app.workspace.revealLeaf(leaf);
 	}
 
-	private async loadIntelligenceWorkspace() {
+	private async loadIntelligenceWorkspace(refreshNotes = true) {
 		if (!this.intelligenceReady) throw new Error("The local intelligence file could not be read. Existing data has been preserved; repair it and reload the plugin.");
-		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-		const pages = await engine.loadPeoplePages();
-		const notes: SourcedNote[] = [];
-		for (const page of Object.values(pages)) {
-			for (const email of page.emails) notes.push({ email, text: page.content, path: page.path });
+		if (!this.intelligenceNotes || refreshNotes) {
+			this.intelligenceNotesLoad ??= (async () => {
+				const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+				const pages = await engine.loadPeoplePages();
+				const notes: SourcedNote[] = [];
+				for (const page of Object.values(pages)) {
+					for (const email of page.emails) notes.push({ email, text: page.content, path: page.path });
+				}
+				this.intelligenceNotes = notes;
+				return notes;
+			})().finally(() => { this.intelligenceNotesLoad = null; });
+			await this.intelligenceNotesLoad;
 		}
+		const notes = this.intelligenceNotes ?? [];
 		const indexPath = this.getIndexPath();
 		const index: ContactIndex = await this.app.vault.adapter.exists(indexPath)
 			? JSON.parse(await this.app.vault.adapter.read(indexPath)) as ContactIndex
@@ -575,7 +585,7 @@ export default class GmailCrmPlugin extends Plugin {
 		const content = JSON.stringify(this.contactIndex);
 		await this.app.vault.adapter.write(normalizePath(path), content);
 		for (const leaf of this.app.workspace.getLeavesOfType(PEOPLE_INTELLIGENCE_VIEW)) {
-			if (leaf.view instanceof PeopleIntelligenceView) void leaf.view.refresh();
+			if (leaf.view instanceof PeopleIntelligenceView) void leaf.view.refresh(false);
 		}
 	}
 
@@ -1084,7 +1094,7 @@ export default class GmailCrmPlugin extends Plugin {
 				this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
 
 				const file = this.lookupPeoplePage(filesByName, contact);
-				if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt)) {
+				if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt, contact.photoUpdatedAt)) {
 					const content = await this.app.vault.read(file);
 					const updated = await fm.updateFrontmatter(
 						file,
@@ -1175,8 +1185,10 @@ export default class GmailCrmPlugin extends Plugin {
 		previous: Contact["score"],
 		staleness: StalenessScore,
 		file: TFile,
-		lastScoredAt: number
+		lastScoredAt: number,
+		photoUpdatedAt?: number
 	): boolean {
+		if ((photoUpdatedAt ?? 0) > lastScoredAt) return true;
 		if (!previous) return true;
 		if (previous.label !== staleness.label) return true;
 		if (previous.quadrant !== staleness.quadrant) return true;
@@ -1211,6 +1223,7 @@ export default class GmailCrmPlugin extends Plugin {
 			howKnown: null,
 			keyContext: null,
 			gmailStats: {
+				photoUrl: contact.photoUrl,
 				totalExchanges: contact.totalExchanges,
 				sentCount: contact.sentCount,
 				receivedCount: contact.receivedCount,

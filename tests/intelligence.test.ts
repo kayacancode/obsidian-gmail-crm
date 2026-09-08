@@ -402,3 +402,25 @@ test("one merged person never double-counts the same event through two aliases",
   )[0];
   assert.equal(p.events.length, 1);
 });
+
+import GmailCrmPlugin from '../src/main';
+import { TFile, TFolder } from 'obsidian';
+test('incremental scoring carries photos and rewrites when only the photo changed',()=>{
+ const plugin=Object.create(GmailCrmPlugin.prototype) as any;
+ const c=person('a@example.com',{photoUrl:'https://example.com/photo.jpg',photoUpdatedAt:200});
+ assert.equal(plugin.synthesizePage(c).gmailStats.photoUrl,c.photoUrl);
+ const previous={label:'warm',quadrant:'nurture',staleness:50,combined:50,strength:50,momentum:50};
+ const current={label:'warm',quadrant:'nurture',score:50,combinedScore:50,strengthScore:50,momentumScore:50};
+ assert.equal(plugin.needsPageRewrite(previous,current,{stat:{mtime:0}},100,c.photoUpdatedAt),true);
+ assert.equal(plugin.needsPageRewrite(previous,current,{stat:{mtime:0}},300,c.photoUpdatedAt),false);
+});
+test('automatic intelligence refresh reuses notes while manual refresh rereads them',async()=>{
+ const file=Object.assign(new TFile(),{extension:'md',basename:'p- Person',path:'People/Person.md'});
+ const folder=Object.assign(new TFolder(),{children:[file]});let reads=0;
+ const plugin=Object.create(GmailCrmPlugin.prototype) as any;
+ plugin.settings={...DEFAULT_SETTINGS,peopleFolder:'People'};plugin.intelligenceReady=true;plugin.intelligence={state:{version:1,events:[],goals:[],feedback:{}}};
+ plugin.app={vault:{configDir:'.obsidian',getAbstractFileByPath:()=>folder,read:async()=>{reads++;return '---\nemail: a@example.com\n---\nFounder';},adapter:{exists:async()=>false}}};
+ await plugin.loadIntelligenceWorkspace();assert.equal(reads,1);
+ await plugin.loadIntelligenceWorkspace(false);assert.equal(reads,1);
+ await plugin.loadIntelligenceWorkspace(true);assert.equal(reads,2);
+});

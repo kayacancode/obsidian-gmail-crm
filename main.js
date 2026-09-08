@@ -1877,11 +1877,11 @@ var PeopleIntelligenceView = class extends import_obsidian2.ItemView {
   async onOpen() {
     await this.refresh();
   }
-  async refresh() {
+  async refresh(refreshNotes = true) {
     const generation = ++this.generation;
     const root = this.contentEl;
     try {
-      const data = await this.loadData();
+      const data = await this.loadData(refreshNotes);
       if (generation !== this.generation) return;
       if (this.workspace) this.workspace.update(data);
       else
@@ -4274,6 +4274,8 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     this.contactLookup = null;
     this.contactLookupSource = null;
     this.intelligenceReady = false;
+    this.intelligenceNotes = null;
+    this.intelligenceNotesLoad = null;
     this.syncInterval = null;
     this.stalenessInterval = null;
     /** Scored snapshot from the last staleness update, reused by the manual push command. */
@@ -4288,7 +4290,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     } catch (error) {
       new import_obsidian13.Notice(`People intelligence: ${String(error)}`);
     }
-    this.registerView(PEOPLE_INTELLIGENCE_VIEW, (leaf) => new PeopleIntelligenceView(leaf, () => this.loadIntelligenceWorkspace(), {
+    this.registerView(PEOPLE_INTELLIGENCE_VIEW, (leaf) => new PeopleIntelligenceView(leaf, (refreshNotes) => this.loadIntelligenceWorkspace(refreshNotes), {
       save: () => this.intelligence.save(),
       openNote: (path) => {
         void this.app.workspace.openLinkText(path, "", true);
@@ -4698,18 +4700,28 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     if (!existing) await leaf.setViewState({ type: PEOPLE_INTELLIGENCE_VIEW, active: true });
     await this.app.workspace.revealLeaf(leaf);
   }
-  async loadIntelligenceWorkspace() {
-    var _a, _b;
+  async loadIntelligenceWorkspace(refreshNotes = true) {
+    var _a, _b, _c, _d;
     if (!this.intelligenceReady) throw new Error("The local intelligence file could not be read. Existing data has been preserved; repair it and reload the plugin.");
-    const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const pages = await engine.loadPeoplePages();
-    const notes = [];
-    for (const page of Object.values(pages)) {
-      for (const email of page.emails) notes.push({ email, text: page.content, path: page.path });
+    if (!this.intelligenceNotes || refreshNotes) {
+      (_a = this.intelligenceNotesLoad) != null ? _a : this.intelligenceNotesLoad = (async () => {
+        const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+        const pages = await engine.loadPeoplePages();
+        const notes2 = [];
+        for (const page of Object.values(pages)) {
+          for (const email of page.emails) notes2.push({ email, text: page.content, path: page.path });
+        }
+        this.intelligenceNotes = notes2;
+        return notes2;
+      })().finally(() => {
+        this.intelligenceNotesLoad = null;
+      });
+      await this.intelligenceNotesLoad;
     }
+    const notes = (_b = this.intelligenceNotes) != null ? _b : [];
     const indexPath = this.getIndexPath();
-    const index = await this.app.vault.adapter.exists(indexPath) ? JSON.parse(await this.app.vault.adapter.read(indexPath)) : (_a = this.contactIndex) != null ? _a : { schemaVersion: 1, userEmail: "", lastSync: "", contacts: {}, edges: [] };
-    (_b = index.edges) != null ? _b : index.edges = [];
+    const index = await this.app.vault.adapter.exists(indexPath) ? JSON.parse(await this.app.vault.adapter.read(indexPath)) : (_c = this.contactIndex) != null ? _c : { schemaVersion: 1, userEmail: "", lastSync: "", contacts: {}, edges: [] };
+    (_d = index.edges) != null ? _d : index.edges = [];
     return { index, notes, state: this.intelligence.state };
   }
   async loadContactIndex() {
@@ -4737,7 +4749,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     const content = JSON.stringify(this.contactIndex);
     await this.app.vault.adapter.write((0, import_obsidian13.normalizePath)(path), content);
     for (const leaf of this.app.workspace.getLeavesOfType(PEOPLE_INTELLIGENCE_VIEW)) {
-      if (leaf.view instanceof PeopleIntelligenceView) void leaf.view.refresh();
+      if (leaf.view instanceof PeopleIntelligenceView) void leaf.view.refresh(false);
     }
   }
   getIndexPath() {
@@ -5167,7 +5179,7 @@ ${relSection}
         const staleness = computeStaleness(page, relationships);
         this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
         const file = this.lookupPeoplePage(filesByName, contact);
-        if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt)) {
+        if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt, contact.photoUpdatedAt)) {
           const content = await this.app.vault.read(file);
           const updated = await fm.updateFrontmatter(
             file,
@@ -5240,7 +5252,8 @@ ${relSection}
    * different value, or when the user has edited the page since the scores in
    * it were written and it may no longer agree with the index.
    */
-  needsPageRewrite(previous, staleness, file, lastScoredAt) {
+  needsPageRewrite(previous, staleness, file, lastScoredAt, photoUpdatedAt) {
+    if ((photoUpdatedAt != null ? photoUpdatedAt : 0) > lastScoredAt) return true;
     if (!previous) return true;
     if (previous.label !== staleness.label) return true;
     if (previous.quadrant !== staleness.quadrant) return true;
@@ -5269,6 +5282,7 @@ ${relSection}
       howKnown: null,
       keyContext: null,
       gmailStats: {
+        photoUrl: contact.photoUrl,
         totalExchanges: contact.totalExchanges,
         sentCount: contact.sentCount,
         receivedCount: contact.receivedCount,
