@@ -21,11 +21,12 @@ export interface GmailCrmSettings {
 	stalenessUpdateInterval: number; // 0 = only on sync, otherwise hours between auto-updates
 	excludeCategories: string; // comma-separated Gmail categories to skip (promotions,social,updates,forums)
 	excludeLabels: string; // comma-separated Gmail labels to skip (e.g. shop@,service@)
-	// betaworks os score push
-	betaworksOsUrl: string; // e.g. https://betaworks-os.<acct>.workers.dev — empty disables
-	betaworksPartnerEmail: string; // identity shown in betaworks os ("john@betaworks.com")
-	betaworksSalienceKey: string; // Salience API key, used to authenticate the push
+	// Score push (POST snapshots to an external endpoint)
+	scorePushUrl: string; // base URL of the receiving server — empty disables
+	scorePushEmail: string; // identity sent with each push ("you@example.com")
+	scorePushApiKey: string; // sent as X-Api-Key to authenticate the push
 	autoPushScores: boolean; // push after each staleness update
+	fetchContactPhotos: boolean; // pull photos and titles from Google Contacts after each sync
 }
 
 export const CONTACT_INDEX_SCHEMA_VERSION = 1;
@@ -52,10 +53,11 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	stalenessUpdateInterval: 0, // 0 = only after sync, not on its own timer
 	excludeCategories: "promotions,social", // skip promo and social by default
 	excludeLabels: "", // user-configured labels to skip
-	betaworksOsUrl: "",
-	betaworksPartnerEmail: "",
-	betaworksSalienceKey: "",
+	scorePushUrl: "",
+	scorePushEmail: "",
+	scorePushApiKey: "",
 	autoPushScores: true,
+	fetchContactPhotos: false,
 };
 
 export interface ContactScore {
@@ -103,6 +105,12 @@ export interface Contact {
 	openCount?: number;         // total opens on recent outbound emails
 	lastOpenAt?: string;        // ISO timestamp of most recent open
 	openEngagement?: string;    // "none" | "sent_no_open" | "opened" | "multi_opened" | "replied"
+	// Google People API (contact photos): populated by people-photos sync
+	photoUrl?: string;        // profile or saved-contact photo, sized =s256-c
+	photoCheckedAt?: string;  // ISO timestamp of the last People API pass
+	photoUpdatedAt?: number;  // ms epoch when photoUrl last changed; drives page rewrites
+	orgName?: string;         // organization from the saved contact
+	orgTitle?: string;        // job title from the saved contact
 	role?: string;
 	company?: string;
 	score?: ContactScore;
@@ -200,6 +208,7 @@ export interface GmailStats {
 	lastThreadDepth?: number;
 	profileEmail?: string;
 	profileSourcePreferred?: boolean;
+	photoUrl?: string; // mirrored from Contact.photoUrl for page frontmatter
 	// Calendar meeting signals (mirrored from Contact for scoring)
 	calendarMeetings?: number;
 	calendarAccepted?: number;
