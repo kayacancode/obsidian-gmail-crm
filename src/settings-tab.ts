@@ -221,49 +221,61 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					})
 			);
 
-		// betaworks os section
-		new Setting(containerEl).setName("betaworks os").setHeading();
+		// Score push section
+		new Setting(containerEl)
+			.setName("Fetch contact photos")
+			.setDesc("After each sync, pull profile photos and job titles from Google Contacts. Adds a photo field to people pages and a logo to company pages. Needs a one-time reconnect to grant contacts access.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.fetchContactPhotos)
+					.onChange(async (value) => {
+						this.plugin.settings.fetchContactPhotos = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl).setName("Score push").setHeading();
 
 		new Setting(containerEl)
-			.setName("betaworks os URL")
-			.setDesc("Deployment to push relationship scores to. Empty disables pushing.")
+			.setName("Endpoint URL")
+			.setDesc("Server to push relationship scores to (receives POST /api/scores/push). Empty disables pushing.")
 			.addText((text) =>
 				text
-					.setValue(this.plugin.settings.betaworksOsUrl)
+					.setValue(this.plugin.settings.scorePushUrl)
 					.onChange(async (value) => {
-						this.plugin.settings.betaworksOsUrl = value.trim();
+						this.plugin.settings.scorePushUrl = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 
 		new Setting(containerEl)
-			.setName("Partner email")
-			.setDesc("Your betaworks identity, e.g. john@betaworks.com.")
+			.setName("Your email")
+			.setDesc("Identity sent with each push, e.g. you@example.com.")
 			.addText((text) =>
 				text
-					.setValue(this.plugin.settings.betaworksPartnerEmail)
+					.setValue(this.plugin.settings.scorePushEmail)
 					.onChange(async (value) => {
-						this.plugin.settings.betaworksPartnerEmail = value.trim();
+						this.plugin.settings.scorePushEmail = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 
 		new Setting(containerEl)
-			.setName("Salience API key")
-			.setDesc("Authenticates the push (same key you use in betaworks os).")
+			.setName("API key")
+			.setDesc("Sent as the X-Api-Key header to authenticate the push.")
 			.addText((text) => {
 				text.inputEl.type = "password";
 				text
-					.setValue(this.plugin.settings.betaworksSalienceKey)
+					.setValue(this.plugin.settings.scorePushApiKey)
 					.onChange(async (value) => {
-						this.plugin.settings.betaworksSalienceKey = value.trim();
+						this.plugin.settings.scorePushApiKey = value.trim();
 						await this.plugin.saveSettings();
 					});
 			});
 
 		new Setting(containerEl)
 			.setName("Auto-push after scoring")
-			.setDesc("Push scores to betaworks os whenever staleness scores update.")
+			.setDesc("Push scores to the endpoint whenever staleness scores update.")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.autoPushScores)

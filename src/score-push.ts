@@ -2,10 +2,10 @@ import { requestUrl } from "obsidian";
 import type { PersonPage } from "./types";
 import type { StalenessScore } from "./staleness";
 
-export interface BetaworksPushConfig {
+export interface ScorePushConfig {
 	url: string;
-	partnerEmail: string;
-	salienceKey: string;
+	ownerEmail: string;
+	apiKey: string;
 }
 
 export interface ScoredPage {
@@ -13,9 +13,13 @@ export interface ScoredPage {
 	staleness: StalenessScore;
 }
 
-/** POST a full score snapshot to betaworks os. Returns pushed contact count. */
-export async function pushScoresToBetaworks(
-	config: BetaworksPushConfig,
+/**
+ * POST a full score snapshot to the configured endpoint (`<url>/api/scores/push`).
+ * The endpoint receives `{ partner, pushedAt, contacts }` with the API key in `X-Api-Key`.
+ * Returns pushed contact count.
+ */
+export async function pushScores(
+	config: ScorePushConfig,
 	scored: ScoredPage[]
 ): Promise<number> {
 	const contacts = scored
@@ -36,17 +40,17 @@ export async function pushScoresToBetaworks(
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			"X-Api-Key": config.salienceKey,
+			"X-Api-Key": config.apiKey,
 		},
 		body: JSON.stringify({
-			partner: config.partnerEmail,
+			partner: config.ownerEmail,
 			pushedAt: new Date().toISOString(),
 			contacts,
 		}),
 		throw: false,
 	});
-	if (res.status !== 200) {
-		throw new Error(`betaworks os push failed (${res.status}): ${res.text}`);
+	if (res.status < 200 || res.status >= 300) {
+		throw new Error(`Score push failed (${res.status}): ${res.text}`);
 	}
 	return contacts.length;
 }

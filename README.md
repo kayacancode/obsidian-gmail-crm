@@ -344,3 +344,34 @@ This uses the metadata and existing page content — it does not read your email
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## People intelligence workspace
+
+Run **Gmail CRM: Open people intelligence** from the command palette, or select the **people** ribbon icon. This opens a native Obsidian tab alongside your existing Base and graph views.
+
+- **Attention:** reconnect candidates and recorded activity changes, with explanations and local Important/Later preferences.
+- **Timeline:** a 12-week grid of email metadata and mutually accepted calendar events. Select a cell for the underlying events.
+- **Goals:** add, edit, or remove goals with explicit keywords/phrases. The people × goals matrix distinguishes profile/note evidence from weaker subject hints. Each note match links to its source. This is transparent keyword matching, not semantic AI inference.
+- **Paths:** potential routes through contacts with two-way email history, supported by documented introductions or shared meetings. Note mentions alone never establish a route. These are possibilities to verify, not assurances that someone can introduce you.
+- **Graph:** a focused, clickable neighborhood with company, goal, activity, connection-type, and recent-contact filters. Solid lines represent introductions/shared meetings; dashed lines represent note references. Larger neighborhoods are limited to 16 visible neighbors, with the total shown.
+
+Every view uses the same person panel for relationship context, evidence, original note links, recent events, and Gmail thread links. Search/filter controls and graph nodes are keyboard accessible. Lists initially show 40 people and support loading more.
+
+### Data and history
+
+Run **Sync contacts** to begin retaining dated email metadata. Run **Sync calendar meeting data** to import up to one year of mutually accepted events. Run **Rescore all contacts (full rebuild)** to refresh the relationship edges used by paths/graph. Regular score updates retain the faster incremental pass. Use **Refresh** in the workspace to reread notes and the saved contact index, including CLI changes.
+
+History, goals, and preferences are saved locally in `.obsidian/plugins/gmail-crm/people-intelligence.json`, separately from `contact-index.json`, so older CLI tools cannot discard them. Writes are serialized through a temporary file. Existing email aliases attach history to the surviving contact after a merge; ambiguous aliases are excluded. Notes require an exact email or saved alias match—names alone do not establish identity.
+
+Existing aggregate totals are **never** turned into invented timeline events. Incremental Gmail sync records only newly fetched messages; a full re-sync can import older metadata within your configured message limit, and does rebuild the existing contact cache. Trend comparisons require 56 days since tracking began and compare recorded counts in two 28-day windows; they do not establish continuous mailbox coverage. Calendar events are accepted invitations, not proof of attendance. No email bodies are read and this workspace does not send messages or make external AI calls.
+
+### Development verification
+
+```bash
+npm run test:intelligence
+npx tsc --noEmit
+npm run build
+npm run preview:intelligence
+```
+
+The preview at `http://127.0.0.1:4178` runs the same renderer with clearly labeled synthetic people, stored separately in browser demo storage. It never opens a real vault. With Playwright available, run `node tests/intelligence.browser.mjs` while the preview is running. Set `PLAYWRIGHT_MODULE` to an external Playwright module path and `CHROME_EXECUTABLE` to a Chrome binary if needed. Browser checks exercise all views, goals persistence, source links, filters, graph/detail consistency, narrow layout, and empty data.

@@ -1,7 +1,10 @@
 import { Vault, TFile, normalizePath } from "obsidian";
 
+// __PEOPLE_FOLDER__ is replaced at write time. Without the folder scope the
+// base lists every note in the vault that happens to carry the field.
 const BASE_CONTENT = `filters:
   and:
+    - file.inFolder("__PEOPLE_FOLDER__")
     - staleness_label != null
 properties:
   note.email:
@@ -302,15 +305,16 @@ views:
 
 export async function createBaseView(vault: Vault, peopleFolder: string): Promise<string> {
 	const basePath = normalizePath(`${peopleFolder}/CRM.base`);
+	const content = BASE_CONTENT.replace(/__PEOPLE_FOLDER__/g, peopleFolder.replace(/"/g, ""));
 	const existing = vault.getAbstractFileByPath(basePath);
 	if (existing instanceof TFile) {
-		await vault.modify(existing, BASE_CONTENT);
+		await vault.modify(existing, content);
 	} else {
 		try {
-			await vault.create(basePath, BASE_CONTENT);
+			await vault.create(basePath, content);
 		} catch {
 			// File already exists but wasn't indexed yet
-			await vault.adapter.write(basePath, BASE_CONTENT);
+			await vault.adapter.write(basePath, content);
 		}
 	}
 	return basePath;
