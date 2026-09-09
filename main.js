@@ -905,14 +905,15 @@ var IntelligenceStore = class {
       );
     this.state = { ...value, events: mergeEvents([], value.events) };
   }
+  /**
+   * Saves are serialized, not staged through a temp file: Obsidian's
+   * FileSystemAdapter.rename throws "Destination file already exists!" rather
+   * than overwriting, so tmp+rename only ever works for the very first save.
+   */
   save() {
     const content = JSON.stringify(this.state);
     const write = this.pending.catch(() => {
-    }).then(async () => {
-      const temporary = `${this.path}.tmp`;
-      await this.adapter.write(temporary, content);
-      await this.adapter.rename(temporary, this.path);
-    });
+    }).then(() => this.adapter.write(this.path, content));
     this.pending = write;
     return write;
   }
@@ -3337,8 +3338,11 @@ var SOURCES = "sources=READ_SOURCE_TYPE_CONTACT&sources=READ_SOURCE_TYPE_PROFILE
 function logoUrlForDomain(domain) {
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`;
 }
-async function syncContactPhotos(settings, contacts, onProgress) {
-  var _a;
+var RATE_LIMIT_RETRIES = 3;
+var RATE_LIMIT_PAUSE_MS = 15e3;
+var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function syncContactPhotos(settings, contacts, onProgress, options = {}) {
+  var _a, _b, _c;
   if (!settings.accessToken) {
     throw new Error("Not connected to Google");
   }
@@ -3352,7 +3356,8 @@ async function syncContactPhotos(settings, contacts, onProgress) {
       var _a2;
       return (_a2 = resp.connections) != null ? _a2 : [];
     },
-    byEmail
+    byEmail,
+    (_a = options.sleep) != null ? _a : defaultSleep
   );
   onProgress == null ? void 0 : onProgress("Reading other contacts...");
   await listPages(
@@ -3362,13 +3367,14 @@ async function syncContactPhotos(settings, contacts, onProgress) {
       var _a2;
       return (_a2 = resp.otherContacts) != null ? _a2 : [];
     },
-    byEmail
+    byEmail,
+    (_b = options.sleep) != null ? _b : defaultSleep
   );
   const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
   const result = { checked: 0, withPhoto: 0, withOrg: 0 };
   for (const contact of Object.values(contacts)) {
     result.checked++;
-    const emails = [contact.email, ...(_a = contact.aliases) != null ? _a : []].map((e) => e.toLowerCase());
+    const emails = [contact.email, ...(_c = contact.aliases) != null ? _c : []].map((e) => e.toLowerCase());
     const rec = emails.map((e) => byEmail.get(e)).find((r) => r !== void 0);
     contact.photoCheckedAt = checkedAt;
     if ((rec == null ? void 0 : rec.photoUrl) && (rec.photoUrl !== contact.photoUrl || !contact.photoUpdatedAt)) {
@@ -3382,28 +3388,32 @@ async function syncContactPhotos(settings, contacts, onProgress) {
   }
   return result;
 }
-async function listPages(baseUrl, headers, pick, into) {
+async function listPages(baseUrl, headers, pick, into, sleep) {
   var _a;
   let pageToken;
   let pages = 0;
-  do {
+  let retries = 0;
+  while (pages < 200) {
     const url = pageToken ? `${baseUrl}&pageToken=${encodeURIComponent(pageToken)}` : baseUrl;
     const resp = await (0, import_obsidian9.requestUrl)({ url, headers, throw: false });
     if (resp.status === 401 || resp.status === 403) {
       throw new Error(`HTTP ${resp.status}: People API access denied. Reconnect your account to grant contacts access.`);
     }
-    if (resp.status === 429 && pages > 0) {
-      await new Promise((r) => setTimeout(r, 15e3));
+    if (resp.status === 429 && retries < RATE_LIMIT_RETRIES) {
+      retries++;
+      await sleep(RATE_LIMIT_PAUSE_MS);
       continue;
     }
     if (resp.status < 200 || resp.status >= 300) {
       throw new Error(`HTTP ${resp.status}: ${((_a = resp.text) != null ? _a : "").slice(0, 200)}`);
     }
+    retries = 0;
     const body = resp.json;
     for (const person of pick(body)) absorb(person, into);
-    pageToken = body.nextPageToken;
     pages++;
-  } while (pageToken && pages < 200);
+    pageToken = body.nextPageToken;
+    if (!pageToken) return;
+  }
 }
 function absorb(person, into) {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;

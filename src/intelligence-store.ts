@@ -8,7 +8,6 @@ interface Adapter {
   exists(path: string): Promise<boolean>;
   read(path: string): Promise<string>;
   write(path: string, data: string): Promise<void>;
-  rename(from: string, to: string): Promise<void>;
 }
 /** Kept outside contact-index.json so older CLI versions cannot erase history. */
 export class IntelligenceStore {
@@ -35,15 +34,16 @@ export class IntelligenceStore {
       );
     this.state = { ...value, events: mergeEvents([], value.events) };
   }
+  /**
+   * Saves are serialized, not staged through a temp file: Obsidian's
+   * FileSystemAdapter.rename throws "Destination file already exists!" rather
+   * than overwriting, so tmp+rename only ever works for the very first save.
+   */
   save(): Promise<void> {
     const content = JSON.stringify(this.state);
     const write = this.pending
       .catch(() => {})
-      .then(async () => {
-        const temporary = `${this.path}.tmp`;
-        await this.adapter.write(temporary, content);
-        await this.adapter.rename(temporary, this.path);
-      });
+      .then(() => this.adapter.write(this.path, content));
     this.pending = write;
     return write;
   }

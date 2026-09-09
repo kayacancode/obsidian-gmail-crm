@@ -165,12 +165,25 @@ const memoryAdapter = () => {
     write: async (p: string, v: string) => {
       files.set(p, v);
     },
+    // Obsidian's FileSystemAdapter refuses to rename over an existing file.
     rename: async (a: string, b: string) => {
+      if (files.has(b)) throw new Error("Destination file already exists!");
       files.set(b, files.get(a)!);
       files.delete(a);
     },
   };
 };
+test("store keeps saving after the first write when rename cannot overwrite", async () => {
+  const adapter = memoryAdapter();
+  const store = new IntelligenceStore(adapter, "state");
+  await store.record([event("1")]);
+  await store.record([event("2")]);
+  await store.replaceCalendar([]);
+  const reload = new IntelligenceStore(adapter, "state");
+  await reload.load();
+  assert.equal(reload.state.events.length, 2);
+  assert.equal(adapter.files.has("state.tmp"), false);
+});
 test("store persists goals, feedback and events across reloads with serialized saves", async () => {
   const adapter = memoryAdapter();
   const store = new IntelligenceStore(adapter, "state");
@@ -423,4 +436,55 @@ test('automatic intelligence refresh reuses notes while manual refresh rereads t
  await plugin.loadIntelligenceWorkspace();assert.equal(reads,1);
  await plugin.loadIntelligenceWorkspace(false);assert.equal(reads,1);
  await plugin.loadIntelligenceWorkspace(true);assert.equal(reads,2);
+});
+
+import { syncContactPhotos } from "../src/people-photos";
+const rateLimitedPeople = (failures: number) => {
+  let calls = 0;
+  (globalThis as any).requestHandler = () => {
+    calls++;
+    if (calls <= failures) return { status: 429, text: "quota", json: {} };
+    return { status: 200, text: "", json: { connections: [], otherContacts: [] } };
+  };
+  return () => calls;
+};
+test("photo sync retries a rate-limited first page and then succeeds", async () => {
+  const calls = rateLimitedPeople(2);
+  const waits: number[] = [];
+  try {
+    const result = await syncContactPhotos(
+      { ...DEFAULT_SETTINGS, accessToken: "token" },
+      { "a@example.com": person("a@example.com") },
+      undefined,
+      { sleep: async (ms) => { waits.push(ms); } },
+    );
+    assert.equal(result.checked, 1);
+    assert.equal(waits.length, 2);
+    assert.equal(calls(), 4); // two 429s, then connections, then other contacts
+  } finally {
+    delete (globalThis as any).requestHandler;
+  }
+});
+test("photo sync gives up on a persistent rate limit instead of looping", { timeout: 2000 }, async () => {
+  // First page succeeds and points at a second page that is rate limited forever.
+  let calls = 0;
+  (globalThis as any).requestHandler = () => {
+    calls++;
+    if (calls === 1) return { status: 200, text: "", json: { connections: [], nextPageToken: "p2" } };
+    return { status: 429, text: "quota", json: {} };
+  };
+  try {
+    await assert.rejects(
+      syncContactPhotos(
+        { ...DEFAULT_SETTINGS, accessToken: "token" },
+        {},
+        undefined,
+        { sleep: async () => {} },
+      ),
+      /429/,
+    );
+    assert.ok(calls <= 6, `expected bounded retries, got ${calls} requests`);
+  } finally {
+    delete (globalThis as any).requestHandler;
+  }
 });

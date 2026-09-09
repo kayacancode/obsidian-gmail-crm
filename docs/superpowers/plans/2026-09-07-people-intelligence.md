@@ -33,3 +33,7 @@ Run `node scripts/test-intelligence.mjs`, `npx tsc --noEmit`, and `npm run build
 ## 0.9.0 release integration
 
 Release branch is based on 0.8.1, preserving the web graph and incremental/full scoring split. Automatic intelligence refreshes reuse source notes and coalesce in-flight reads; manual refresh reloads them. Incremental scoring propagates photo changes. Release verification: 19 intelligence tests, 7 reconnect tests, typecheck and production build passed; merge review approved.
+
+## 0.9.1 hotfix
+
+Obsidian's `FileSystemAdapter.rename` throws `Destination file already exists!` instead of overwriting, so the store's tmp+rename save only ever succeeded once; every later Gmail sync, calendar sync, and goal edit aborted. Saves now write the file directly (serialized, like `contact-index.json`), and the test adapter refuses to rename over an existing file so this cannot hide again. The People API pager retried a rate-limited page every 15s forever; it now retries each page at most 3 times, including the first page, then fails the photo sync. 22 intelligence tests, typecheck and production build passed.
