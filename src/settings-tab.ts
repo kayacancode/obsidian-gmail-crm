@@ -313,6 +313,18 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					});
 			});
 
+		new Setting(containerEl)
+			.setName("Push people graph to web")
+			.setDesc("Upload your current people and connections to the graph URL above, then refresh the web page.")
+			.addButton((button) => button
+				.setButtonText("Push graph")
+				.setCta()
+				.onClick(async () => {
+					button.setDisabled(true).setButtonText("Pushing…");
+					try { await this.plugin.pushPeopleGraph(); }
+					finally { button.setDisabled(false).setButtonText("Push graph"); }
+				}));
+
 		// Notes section
 		new Setting(containerEl).setName("Contact notes").setHeading();
 

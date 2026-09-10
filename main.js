@@ -2087,6 +2087,14 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    new import_obsidian3.Setting(containerEl).setName("Push people graph to web").setDesc("Upload your current people and connections to the graph URL above, then refresh the web page.").addButton((button2) => button2.setButtonText("Push graph").setCta().onClick(async () => {
+      button2.setDisabled(true).setButtonText("Pushing\u2026");
+      try {
+        await this.plugin.pushPeopleGraph();
+      } finally {
+        button2.setDisabled(false).setButtonText("Push graph");
+      }
+    }));
     new import_obsidian3.Setting(containerEl).setName("Contact notes").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a people/ folder").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.createContactNotes).onChange(async (value) => {
