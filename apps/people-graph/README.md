@@ -89,3 +89,11 @@ Each view uses 3D coordinates, perspective projection, depth shading and orbit/z
 Mappings are described in each scene. Company/domain groups are not inferred employment; topic islands use frequent context words, not verified expertise; the globe is not geography. Time layouts show last-contact dates, not complete message history. Canvas point size reflects recorded degree.
 
 Run `npm run test:lab-browser` against the local static server, with Playwright available as documented above. It exercises all ten layouts, person evidence, shortlist interaction, camera controls, empty search, pagination, authentication gating, source switching and mobile overflow.
+
+## Material studies
+
+`/studio/` offers three distinct visual treatments: `?theme=architecture` (solid CSS 3D organization buildings), `?theme=editorial` (paper portrait collage), and `?theme=pastel` (portrait discs and translucent context cards based on the supplied wireframes). The existing ten-view lab remains available separately.
+
+All three use the shared search/graph model and explicit demo/private data switch. Demo portraits are locally generated SVG illustrations of fictional people. Real contacts display their approved photo URL or initials; illustrations are never assigned to real contacts. Architecture paginates six groups, the portrait scenes eight people. Building heights use normalized square-root counts to keep large organizations visible. Shortlists are in page memory only. Select groups/people, search recorded context, drag or use arrow-key camera controls, and switch themes without losing the current query or shortlist.
+
+`npm run test:studio-browser` covers all three views, scene selection, context cards, search, shortlist, camera controls, mobile overflow, invalid theme fallback, authentication gating, and private/demo separation. It uses mocked graph responses; existing backend authentication is unchanged.

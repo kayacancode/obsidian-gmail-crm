@@ -13,7 +13,8 @@
     "test": "node --test tests/model.test.mjs tests/lab.test.mjs && node tests/run-mail.mjs",
     "test:browser": "node tests/browser.mjs",
     "test:accounts-browser": "node tests/accounts-browser.mjs",
-    "test:lab-browser": "node tests/lab-browser.mjs"
+    "test:lab-browser": "node tests/lab-browser.mjs",
+    "test:studio-browser": "node tests/studio-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",
