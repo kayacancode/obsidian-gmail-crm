@@ -488,3 +488,10 @@ test("photo sync gives up on a persistent rate limit instead of looping", { time
     delete (globalThis as any).requestHandler;
   }
 });
+
+test('web graph photo fields reject arbitrary hosts and embedded credentials', async () => {
+ const { safeGraphPhoto } = await import('../src/graph-push');
+ assert.equal(safeGraphPhoto('https://evil.example/photo'), undefined);
+ assert.equal(safeGraphPhoto('https://user:pass@lh3.googleusercontent.com/photo'), undefined);
+ assert.equal(safeGraphPhoto('https://lh3.googleusercontent.com/photo'), 'https://lh3.googleusercontent.com/photo');
+});

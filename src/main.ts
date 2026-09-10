@@ -1020,7 +1020,9 @@ export default class GmailCrmPlugin extends Plugin {
 				contacts.push({
 					email,
 					name,
-					company: this.getContactByEmail(email)?.company ?? null,
+					company: this.getContactByEmail(email)?.company ?? this.getContactByEmail(email)?.orgName ?? null,
+					role: this.getContactByEmail(email)?.role ?? this.getContactByEmail(email)?.orgTitle,
+					photoUrl: this.getContactByEmail(email)?.photoUrl,
 					lastContact: page.gmailStats?.lastContact ?? null,
 					staleness: computeStaleness(page, graph[name] ?? []),
 				});

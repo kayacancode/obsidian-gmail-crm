@@ -117,9 +117,9 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 		.bind(auth.email)
 		.first<{ json: string; updated_at: number }>();
 
-	if (!row) return json({ graph: null });
-	return new Response(`{"updatedAt":${row.updated_at},"graph":${row.json}}`, {
-		headers: { "content-type": "application/json; charset=utf-8" },
+	if (!row) return json({ graph: null, account: auth.email });
+	return new Response(`{"account":${JSON.stringify(auth.email)},"updatedAt":${row.updated_at},"graph":${row.json}}`, {
+		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 }
 
@@ -204,6 +204,6 @@ function nowSeconds(): number {
 function json(data: unknown, status = 200): Response {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: { "content-type": "application/json; charset=utf-8" },
+		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
 	});
 }

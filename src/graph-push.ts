@@ -16,6 +16,8 @@ export interface GraphPushConfig {
 
 /** One contact, resolved by the caller (email + display fields + scores). */
 export interface GraphContactInput {
+	role?: string;
+	photoUrl?: string;
 	email: string;
 	name: string;
 	company: string | null;
@@ -24,6 +26,8 @@ export interface GraphContactInput {
 }
 
 export interface GraphNodeOut {
+	role?: string;
+	photoUrl?: string;
 	id: string;
 	name: string;
 	company: string | null;
@@ -127,6 +131,8 @@ export async function buildGraphPayload(
 			nodes.push({
 				id: await idFor(email),
 				name: c.name,
+				role: c.role?.slice(0, 200),
+				photoUrl: safeGraphPhoto(c.photoUrl),
 				company: c.company,
 				quadrant: c.staleness.quadrant,
 				combined: c.staleness.combinedScore,
@@ -191,4 +197,10 @@ async function opaqueId(salt: string, email: string): Promise<string> {
 
 function hex(bytes: Uint8Array): string {
 	return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Only Google-hosted contact photos; never arbitrary URLs or embedded credentials. */
+export function safeGraphPhoto(value?: string): string | undefined {
+	if (!value) return undefined;
+	try { const u = new URL(value); return u.protocol === "https:" && (u.hostname === "googleusercontent.com" || u.hostname.endsWith(".googleusercontent.com")) && !u.username && !u.password && !u.href.includes("@") ? u.href : undefined; } catch { return undefined; }
 }

@@ -3097,7 +3097,7 @@ var MAX_NODES = 1500;
 var BYTE_BUDGET = 16e5;
 var MIN_NODES = 200;
 async function buildGraphPayload(contacts, edges, salt) {
-  var _a, _b;
+  var _a, _b, _c;
   const byEmail = /* @__PURE__ */ new Map();
   for (const c of contacts) {
     const email = c.email.toLowerCase();
@@ -3151,6 +3151,8 @@ async function buildGraphPayload(contacts, edges, salt) {
       nodes.push({
         id: await idFor(email),
         name: c.name,
+        role: (_c = c.role) == null ? void 0 : _c.slice(0, 200),
+        photoUrl: safeGraphPhoto(c.photoUrl),
         company: c.company,
         quadrant: c.staleness.quadrant,
         combined: c.staleness.combinedScore,
@@ -3204,6 +3206,15 @@ async function opaqueId(salt, email) {
 }
 function hex(bytes) {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function safeGraphPhoto(value) {
+  if (!value) return void 0;
+  try {
+    const u = new URL(value);
+    return u.protocol === "https:" && (u.hostname === "googleusercontent.com" || u.hostname.endsWith(".googleusercontent.com")) && !u.username && !u.password && !u.href.includes("@") ? u.href : void 0;
+  } catch (e) {
+    return void 0;
+  }
 }
 
 // src/calendar-sync.ts
@@ -5109,7 +5120,7 @@ ${relSection}
     }
   }
   async pushPeopleGraph() {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     if (!this.settings.graphPushUrl || !this.settings.graphPushToken) {
       new import_obsidian13.Notice("Set the graph URL and push token in settings first (mint the token on the graph page)");
       return;
@@ -5130,9 +5141,11 @@ ${relSection}
         contacts.push({
           email,
           name,
-          company: (_b = (_a = this.getContactByEmail(email)) == null ? void 0 : _a.company) != null ? _b : null,
-          lastContact: (_d = (_c = page.gmailStats) == null ? void 0 : _c.lastContact) != null ? _d : null,
-          staleness: computeStaleness(page, (_e = graph[name]) != null ? _e : [])
+          company: (_d = (_c = (_a = this.getContactByEmail(email)) == null ? void 0 : _a.company) != null ? _c : (_b = this.getContactByEmail(email)) == null ? void 0 : _b.orgName) != null ? _d : null,
+          role: (_g = (_e = this.getContactByEmail(email)) == null ? void 0 : _e.role) != null ? _g : (_f = this.getContactByEmail(email)) == null ? void 0 : _f.orgTitle,
+          photoUrl: (_h = this.getContactByEmail(email)) == null ? void 0 : _h.photoUrl,
+          lastContact: (_j = (_i = page.gmailStats) == null ? void 0 : _i.lastContact) != null ? _j : null,
+          staleness: computeStaleness(page, (_k = graph[name]) != null ? _k : [])
         });
       }
       const edges = this.buildContactEdges(pages, graph);
