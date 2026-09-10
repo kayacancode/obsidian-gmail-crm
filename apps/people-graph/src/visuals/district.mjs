@@ -20,7 +20,7 @@ export class District {
     this.mats={stone:new THREE.MeshStandardMaterial({color:0xd5d9d7,roughness:.5,metalness:.15}),dark:new THREE.MeshStandardMaterial({color:0x303d45,roughness:.35,metalness:.65}),glass:new THREE.MeshPhysicalMaterial({color:0x24596c,metalness:.68,roughness:.16,clearcoat:1}),brass:new THREE.MeshStandardMaterial({color:0xb79c68,metalness:.8,roughness:.25}),light:new THREE.MeshStandardMaterial({color:0xffe5a9,emissive:0xffb35a,emissiveIntensity:.8}),leaf:new THREE.MeshStandardMaterial({color:0x466653,roughness:.95}),bark:new THREE.MeshStandardMaterial({color:0x74614c,roughness:1}),ground:new THREE.MeshStandardMaterial({color:0x1a2730,roughness:.65}),white:new THREE.MeshStandardMaterial({color:0xf0f0e7,roughness:.6}),person:new THREE.MeshStandardMaterial({color:0xd96c35,roughness:.7})};
     this.world=new THREE.Group();this.scene.add(this.world);this.ray=new THREE.Raycaster();let start;
     this.canvas.addEventListener('pointerdown',e=>start=[e.clientX,e.clientY]);
-    this.canvas.addEventListener('pointerup',e=>{if(!start||Math.hypot(e.clientX-start[0],e.clientY-start[1])>5)return;const r=this.canvas.getBoundingClientRect();this.ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),this.camera);const hit=this.ray.intersectObjects(this.pickables,false)[0];if(hit){const {group,person}=hit.object.userData;this.onSelect(group,this.selectedGroup===group?person:null);}});
+    this.canvas.addEventListener('pointerup',e=>{if(!start||Math.hypot(e.clientX-start[0],e.clientY-start[1])>5)return;const r=this.canvas.getBoundingClientRect();this.ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),this.camera);const hit=this.ray.intersectObjects(this.pickables,false)[0];if(hit){const {group,person}=hit.object.userData;this.onSelect(group,this.inside?person:null);}});
     this.canvas.addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','-','0'].includes(e.key)){e.preventDefault();if(e.key==='0')this.reset();else if(e.key==='+'||e.key==='-')this.zoom(e.key==='+'?.85:1.15);else this.rotate(e.key==='ArrowLeft'?-.15:e.key==='ArrowRight'?.15:0,e.key==='ArrowUp'?-.1:e.key==='ArrowDown'?.1:0);}});
     this.canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();host.dataset.lost='true';this.canvas.setAttribute('aria-label','3D rendering paused. Reload this page to restore it. Organization selection remains available below.');});
     this.resize=new ResizeObserver(()=>{const w=host.clientWidth,h=host.clientHeight;if(!w||!h)return;this.camera.aspect=w/h;this.camera.updateProjectionMatrix();this.renderer.setSize(w,h,false);this.draw();});this.resize.observe(host);
@@ -28,8 +28,9 @@ export class District {
   mesh(parent,geometry,material,x=0,y=0,z=0){const m=new THREE.Mesh(geometry,material);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;}
   box(parent,w,h,d,mat,x=0,y=0,z=0){return this.mesh(parent,new THREE.BoxGeometry(w,h,d),mat,x,y,z);}
   tree(parent,x,y,z,size=.45){this.mesh(parent,new THREE.CylinderGeometry(.035,.05,size,5),this.mats.bark,x,y+size/2,z);this.mesh(parent,new THREE.IcosahedronGeometry(size*.55,1),this.mats.leaf,x,y+size,z);}
-  clear(){this.world.traverse(o=>{if(o.geometry)o.geometry.dispose();});this.world.clear();this.pickables=[];this.groups.clear();}
+  clear(){for(const m of this.roomMaterials||[]){m.map?.dispose();m.dispose();}this.roomMaterials=[];this.world.traverse(o=>{if(o.geometry)o.geometry.dispose();});this.world.clear();this.pickables=[];this.groups.clear();}
   update(groups,selectedGroup,selectedPerson){
+    this.inside=false;this.controls.minDistance=9;this.controls.maxDistance=60;
     const previousGroup=this.selectedGroup;this.selectedGroup=selectedGroup;
     const key=JSON.stringify(groups.map(g=>[g.name,g.people.map(n=>n.id)]));
     if(key!==this.key){this.key=key;this.clear();const M=this.mats;
@@ -72,6 +73,32 @@ export class District {
     }
     this.draw();
   }
+  interior(name,people,floor,selected){
+    this.inside=true;this.controls.minDistance=5;this.controls.maxDistance=45;
+    const key=JSON.stringify(['interior',name,floor,people.map(n=>n.id)]);
+    if(this.key!==key){this.key=key;this.clear();const M=this.mats;
+      this.box(this.world,16,.22,12,M.stone,0,-.2,0);
+      this.box(this.world,16,5.8,.16,M.dark,0,2.8,-5.8);
+      for(const x of [-7.9,7.9]){this.box(this.world,.14,5.8,12,M.glass,x,2.8,0);for(let z=-5;z<=5;z+=2)this.box(this.world,.09,5.8,.08,M.brass,x,2.8,z);}
+      for(const x of [-7.5,7.5])this.box(this.world,.04,.025,11.3,M.light,x,0,0);
+      for(let x=-6;x<=6;x+=3)this.box(this.world,1.5,.04,.06,M.light,x,5.3,-5.65);
+      this.box(this.world,3.8,.65,1.3,M.dark,0,.3,2.5);this.box(this.world,3.8,.15,1.3,M.brass,0,.7,2.5);
+      for(const x of [-6.8,6.8]){this.box(this.world,.8,.55,.8,M.dark,x,.25,-4.8);this.tree(this.world,x,.5,-4.8,1.5);}
+      people.forEach((n,i)=>{
+        const x=(i%4-1.5)*3.3,z=i<4?-4.3:.1;
+        this.box(this.world,2.5,.1,1.2,M.brass,x,.05,z);
+        this.box(this.world,.13,1.5,.13,M.dark,x,.8,z);
+        const canvas=document.createElement('canvas');canvas.width=512;canvas.height=640;const ctx=canvas.getContext('2d');
+        ctx.fillStyle='#182b38';ctx.fillRect(0,0,512,640);ctx.fillStyle=['#6396a5','#bd9270','#788c77','#9395b4'][i%4];ctx.beginPath();ctx.arc(256,200,115,0,Math.PI*2);ctx.fill();ctx.fillStyle='#ffffff';ctx.textAlign='center';ctx.font='68px sans-serif';ctx.fillText(n.name.split(/\s+/).slice(0,2).map(w=>w[0]).join(''),256,225);
+        ctx.font='28px sans-serif';const words=n.name.split(' ');let line='',y=385;for(const word of words){if(ctx.measureText(line+word).width>450){ctx.fillText(line.trim(),256,y);line='';y+=38;}line+=word+' ';}ctx.fillText(line.trim(),256,y);ctx.fillStyle='#a9c2d1';ctx.font='20px sans-serif';ctx.fillText((n.role||'Explore connection').slice(0,35),256,520);ctx.font='16px monospace';ctx.fillText('SELECT TO EXPLORE',256,590);
+        const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
+        const mat=new THREE.MeshBasicMaterial({map:texture,side:THREE.DoubleSide});this.roomMaterials.push(mat);
+        const panel=this.mesh(this.world,new THREE.PlaneGeometry(2.3,2.9),mat,x,2.5,z);panel.userData={group:name,person:n.id};this.pickables.push(panel);
+      });
+      this.camera.position.set(0,5.4,Math.min(44,Math.max(13.8,22/(this.host.clientWidth/Math.max(1,this.host.clientHeight)))));this.controls.target.set(0,2,-1.1);this.controls.update();
+    }
+    this.selectedGroup=name;this.draw();
+  }
   optimize(){
     this.world.updateMatrixWorld(true);
     const keep=new Set([...this.pickables,...[...this.groups.values()].map(g=>g.halo)]),batches=new Map(),remove=[];
@@ -80,7 +107,7 @@ export class District {
     for(const [material,geometries]of batches){const merged=mergeGeometries(geometries,false);geometries.forEach(g=>g.dispose());if(merged)this.mesh(this.world,merged,material);}
   }
   draw(){if(this.host.clientWidth&&this.host.clientHeight&&!this.host.hidden)this.renderer.render(this.scene,this.camera);}
-  reset(){const narrow=this.host.clientWidth<600;this.camera.position.set(narrow?30:23,narrow?27:18,narrow?37:27);this.controls.target.set(0,3.3,0);this.controls.update();this.draw();}
+  reset(){if(this.inside){this.camera.position.set(0,5.4,Math.min(44,Math.max(13.8,22/(this.host.clientWidth/Math.max(1,this.host.clientHeight)))));this.controls.target.set(0,2,-1.1);this.controls.update();this.draw();return;}const narrow=this.host.clientWidth<600;this.camera.position.set(narrow?30:23,narrow?27:18,narrow?37:27);this.controls.target.set(0,3.3,0);this.controls.update();this.draw();}
   rotate(theta,phi=0){const v=this.camera.position.clone().sub(this.controls.target),s=new THREE.Spherical().setFromVector3(v);s.theta+=theta;s.phi=THREE.MathUtils.clamp(s.phi+phi,.2,1.5);this.camera.position.copy(new THREE.Vector3().setFromSpherical(s).add(this.controls.target));this.controls.update();this.draw();}
   zoom(factor){const v=this.camera.position.clone().sub(this.controls.target);v.setLength(THREE.MathUtils.clamp(v.length()*factor,9,60));this.camera.position.copy(v.add(this.controls.target));this.controls.update();this.draw();}
   dispose(){this.resize.disconnect();this.controls.dispose();this.clear();Object.values(this.mats).forEach(m=>m.dispose());this.environment.dispose();this.renderer.dispose();this.canvas.remove();}

@@ -101,3 +101,11 @@ All three use the shared search/graph model and explicit demo/private data switc
 The architecture study now uses a lazily loaded, locally bundled Three.js renderer with orbit/pinch/scroll controls, tower focus and raycast floor selection. It renders on demand and merges static details by material to reduce draw calls. Each displayed tower offers a sample of people through floor selection; its organization button opens the complete matching roster. Shapes and illuminated windows are artistic interpretations, not real properties or activity indicators. A WebGL failure preserves the organization buttons and context panel.
 
 Run `npm run build:district` after editing `src/visuals/district.mjs`; commit the generated `public/studio/district.bundle.mjs` and the Three.js license. `npm run deploy` rebuilds it automatically. `npm run test:district-browser` additionally checks rendering budget, 1,500-person framing, raycast selection, repeated data rebuild/disposal, theme switching and renderer-load fallback.
+
+### Inside a building
+
+Selecting a district tower or organization button now enters a company workspace. The 3D room displays eight portrait stations per directory floor. Selecting a station or directory row opens person details and shortlist actions. People/Context tabs and company-scoped search support exploration. Floors are a paginated directory, not inferred offices or teams.
+
+Back to district and browser Back/Forward restore the exterior/interior transition. Navigation uses opaque history keys with an in-memory route map; company names are not added to URLs. Source changes clear the interior, shortlist and route map. Theme changes leave the room. Missing WebGL still permits the company directory and context panel. Room textures and geometry are disposed when rebuilding.
+
+Run `npm run test:building-browser` for interior navigation, scoped search, directory floors, person/context selection, shortlist, mobile, history and source reset. The district renderer test also verifies raycast selection inside the room.

@@ -17,7 +17,8 @@
     "test:studio-browser": "node tests/studio-browser.mjs",
     "build:district": "node scripts/build-district.mjs",
     "test:district-browser": "node tests/district-browser.mjs",
-    "predeploy": "npm run build:district"
+    "predeploy": "npm run build:district",
+    "test:building-browser": "node tests/building-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",
