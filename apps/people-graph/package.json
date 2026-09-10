@@ -10,8 +10,9 @@
     "db:init": "wrangler d1 execute people-graph --file ./schema.sql",
     "db:init:remote": "wrangler d1 execute people-graph --remote --file ./schema.sql",
     "smoke": "bash scripts/smoke.sh",
-    "test": "node --test tests/model.test.mjs",
-    "test:browser": "node tests/browser.mjs"
+    "test": "node --test tests/model.test.mjs && node tests/run-mail.mjs",
+    "test:browser": "node tests/browser.mjs",
+    "test:accounts-browser": "node tests/accounts-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",

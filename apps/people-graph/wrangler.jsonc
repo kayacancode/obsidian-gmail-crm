@@ -2,6 +2,8 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "people-graph",
 	"main": "src/index.ts",
+	"durable_objects": {"bindings": [{"name": "MAIL", "class_name": "MailSync"}]},
+	"migrations": [{"tag": "mail-v1", "new_sqlite_classes": ["MailSync"]}],
 	"compatibility_date": "2025-05-01",
 	"observability": { "enabled": true },
 	"assets": {
@@ -20,6 +22,7 @@
 		// Google OAuth client id for Google Identity Services sign-in.
 		// Same client as reconnect-web; the workers.dev origin of this app must
 		// be added to that client's authorized JavaScript origins.
+		"APP_ORIGIN": "https://people-graph.kayarjones901.workers.dev",
 		"GOOGLE_CLIENT_ID": "726397126192-d5esd42caksfb95hcoh12vpuji8kv008.apps.googleusercontent.com"
 	}
 	// Secret (set via `wrangler secret put TOKEN_SECRET`): HMAC key for minting

@@ -2,20 +2,19 @@
 
 Spatial discovery viewer for the obsidian-gmail-crm people graph. Perspective orbit/zoom, person and company evidence cards, local drafts and shortlists, backed by the existing Google sign-in and per-user graph snapshot. The previous force-directed viewer remains at `/classic.html`. Cloudflare Worker + D1 + static assets; no frontend build step.
 
-**Multi-tenant:** the tenant key is a Google-verified email. Anyone can sign
-in; each account sees only the graph pushed from its own vault. No sharing.
+**Multi-tenant:** the tenant key is the Google-verified People sign-in email. Each owner can connect up to ten Google inboxes. Connected inboxes contribute to that owner's network; they do not change the People login identity.
 
-**Privacy:** contact email addresses never reach this Worker. The plugin
-hashes them with a vault-local salt into opaque node ids; the blob holds
-names, scores, edge weights, and edge contexts (e.g. meeting titles). The
-only email stored is the tenant's own sign-in address (the row key).
+**Privacy:** cloud import stores message IDs, participant addresses, names, subjects and dates in a per-owner Durable Object. Refresh grants are encrypted using a dedicated server secret. Message bodies and attachments are never requested. Browser graph responses use tenant-scoped opaque IDs and email-domain labels. The optional Obsidian snapshot uses its existing vault-hashed IDs. Disconnect removes an inbox's stored grants and imported contributions; it does not delete Gmail messages. Gmail deletions are not otherwise reconciled.
 
 ## Flow
 
-1. Open the page, sign in with Google, click **Get my push token**.
-2. In Obsidian → Gmail CRM settings, set **Graph push URL** to this app's URL
-   and paste the token into **Graph push token**.
-3. Run the command **Push people graph to web**, reload the page.
+1. Sign in to People and open **Accounts**.
+2. Choose **Last 90 days** or **All history**, then **Connect Google account** and approve access in Google.
+3. Import, relationship scoring and graph updates run automatically. Add another inbox the same way.
+
+Imports continue when the page closes. Connected accounts refresh hourly; the graph checks for updates every 15 seconds while visible. Sync now runs an incremental import; Import all history includes older messages. Failed requests retry with backoff, and revoked access prompts reconnection.
+
+After cloud contacts exist, the default graph uses connected email accounts. The original vault snapshot remains available with `/?source=obsidian`, and Connect Obsidian retains the legacy push-token flow. Sources are not merged because vault IDs cannot reliably be matched to mailbox identities.
 
 ## Setup (once)
 
@@ -30,6 +29,25 @@ npm run deploy
 Then add the deployed origin (e.g. `https://people-graph.<account>.workers.dev`)
 to the Google OAuth client's authorized JavaScript origins (same client as
 reconnect-web).
+
+## Enable Google inbox connections (one administrator setup)
+
+The existing web OAuth client must have Gmail API access and the callback below registered as an authorized redirect URI:
+
+`https://people-graph.kayarjones901.workers.dev/api/accounts/callback`
+
+Use the matching web-client secret (not the desktop plugin OAuth client). Set secrets interactively from this directory:
+
+```sh
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put MAIL_TOKEN_KEY
+```
+
+Use a fresh cryptographically random key for MAIL_TOKEN_KEY. Keep it stable: changing it makes existing encrypted grants unreadable and requires reconnecting inboxes. Never put either secret in source control or chat. APP_ORIGIN and GOOGLE_CLIENT_ID are configured in wrangler.jsonc. Deploy the MailSync SQLite Durable Object migration with the Worker. The Accounts connection button stays disabled until server configuration exists. Verify a real consent callback and completed import before considering inbox connections activated.
+
+The OAuth consent screen must permit the intended users and requested Gmail read scope. Its publication/verification settings are an administrator responsibility; browser fixture tests cannot validate them.
+
+Email scores use frequency, reciprocity and recency, independently of the optional vault's scoring model. Domain groups are not verified employers. Shared-email edges mean co-recipients, not confirmed introductions.
 
 ## Development
 

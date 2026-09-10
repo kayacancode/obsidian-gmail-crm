@@ -1,3 +1,7 @@
+import {makeSession,readSession,sessionCookie} from "./session";
+import {mailRoute,mailCallback} from "./mail-routes";
+import type {MailEnv} from "./mail-sync";
+export {MailSync} from "./mail-sync";
 /**
  * People graph viewer — Cloudflare Worker.
  *
@@ -18,7 +22,7 @@
  *    without a Google session.
  */
 
-interface Env {
+interface Env extends MailEnv {
 	DB: D1Database;
 	ASSETS: Fetcher;
 	GOOGLE_CLIENT_ID: string;
@@ -35,6 +39,22 @@ export default {
 		const { pathname } = url;
 
 		try {
+			if (pathname === "/api/session" && request.method === "POST") {
+				if (request.headers.get("origin") !== url.origin) return json({error:"invalid_origin"},403);
+				const user = await requireGoogleUser(request,env);
+				if ("error" in user) return json({error:user.error},401);
+				return Response.json({account:user.email},{headers:{"cache-control":"no-store","set-cookie":sessionCookie(await makeSession(user.email,env.TOKEN_SECRET))}});
+			}
+			if (pathname === "/api/session" && request.method === "DELETE") {
+				if (request.headers.get("origin") !== url.origin) return json({error:"invalid_origin"},403);
+				return Response.json({ok:true},{headers:{"cache-control":"no-store","set-cookie":sessionCookie("")}});
+			}
+			if (pathname === "/api/accounts/callback") return await mailCallback(request, env);
+			if (pathname.startsWith("/api/accounts")) {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await mailRoute(request, env, user.email);
+			}
 			if (pathname === "/api/config" && request.method === "GET") {
 				// Public, non-secret config the UI needs to start Google sign-in.
 				return json({ googleClientId: env.GOOGLE_CLIENT_ID });
@@ -113,6 +133,10 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 	const auth = await requireGoogleUser(request, env);
 	if ("error" in auth) return json({ error: auth.error }, 401);
 
+	if (new URL(request.url).searchParams.get("source") !== "obsidian") {
+		const graph = await env.MAIL.getByName(auth.email).graph();
+		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
+	}
 	const row = await env.DB.prepare("SELECT json, updated_at FROM graphs WHERE email = ?")
 		.bind(auth.email)
 		.first<{ json: string; updated_at: number }>();
@@ -144,7 +168,7 @@ async function requireGoogleUser(
 	env: Env
 ): Promise<{ email: string } | { error: string }> {
 	const token = bearer(request);
-	if (!token) return { error: "missing_token" };
+	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
 
 	const resp = await fetch(
 		`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`
