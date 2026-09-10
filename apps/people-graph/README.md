@@ -111,3 +111,13 @@ Back to district and browser Back/Forward restore the exterior/interior transiti
 Run `npm run test:building-browser` for interior navigation, scoped search, directory floors, person/context selection, shortlist, mobile, history and source reset. The district renderer test also verifies raycast selection inside the room.
 
 Interior people now use articulated, faceless miniature figures with colored clothing. They walk along bounded local paths, stop under the pointer or when selected, and show a small name label on hover/selection. They are illustrative representations, not inferred appearance or live presence. Movement can be paused and follows the browser's reduced-motion preference. Animation runs at a maximum of approximately 30 FPS only in a visible interior; exterior navigation, hidden tabs, context loss and disposal stop it. Run `npm run test:figures-browser` for animation, pause, selection, reduced-motion and cleanup checks.
+
+## People World
+
+`/world/` is a separate pixel-art town inspired by the Software World reference, with original Canvas graphics. Enter a company building to explore its office: desks, lounge, meeting table, and selectable characters. Directory buttons provide the same interactions as the canvas. Search recorded people/context, highlight connection participants, and build a session-only shortlist.
+
+Town pages contain up to 12 company groups; office pages contain up to 16 matching people. Buildings group recorded company labels or email domains. Character appearances, movement, furniture and locations are illustrative, not live presence. Context comes from attached graph snippets, not live events. Pause walking and reduced-motion preferences stop animation; hidden tabs stop rendering. Drag/arrow keys pan, scroll or +/- zoom, and Fit map resets framing.
+
+The fictional demo opens by default. Use my network loads the existing authenticated graph; expired sessions retain the labeled demo with a sign-in link. Private data stays in memory and is never placed in URLs or storage. Source changes clear routes, selections and shortlists. Browser Back/Forward supports office navigation within the page session.
+
+Run `npm run test:world-browser` against the static server with `PLAYWRIGHT_MODULE` pointing to Playwright when necessary. It checks navigation, person details, context, shortlist, search, source isolation, pagination, mobile/long labels, motion and canvas picking.
