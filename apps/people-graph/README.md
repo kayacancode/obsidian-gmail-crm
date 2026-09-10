@@ -104,8 +104,10 @@ Run `npm run build:district` after editing `src/visuals/district.mjs`; commit th
 
 ### Inside a building
 
-Selecting a district tower or organization button now enters a company workspace. The 3D room displays eight portrait stations per directory floor. Selecting a station or directory row opens person details and shortlist actions. People/Context tabs and company-scoped search support exploration. Floors are a paginated directory, not inferred offices or teams.
+Selecting a district tower or organization button now enters a company workspace. The 3D room displays eight selectable miniature people per directory floor. Selecting a figure or directory row opens person details and shortlist actions. People/Context tabs and company-scoped search support exploration. Floors are a paginated directory, not inferred offices or teams.
 
 Back to district and browser Back/Forward restore the exterior/interior transition. Navigation uses opaque history keys with an in-memory route map; company names are not added to URLs. Source changes clear the interior, shortlist and route map. Theme changes leave the room. Missing WebGL still permits the company directory and context panel. Room textures and geometry are disposed when rebuilding.
 
 Run `npm run test:building-browser` for interior navigation, scoped search, directory floors, person/context selection, shortlist, mobile, history and source reset. The district renderer test also verifies raycast selection inside the room.
+
+Interior people now use articulated, faceless miniature figures with colored clothing. They walk along bounded local paths, stop under the pointer or when selected, and show a small name label on hover/selection. They are illustrative representations, not inferred appearance or live presence. Movement can be paused and follows the browser's reduced-motion preference. Animation runs at a maximum of approximately 30 FPS only in a visible interior; exterior navigation, hidden tabs, context loss and disposal stop it. Run `npm run test:figures-browser` for animation, pause, selection, reduced-motion and cleanup checks.
