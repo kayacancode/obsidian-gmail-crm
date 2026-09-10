@@ -77,3 +77,15 @@ npm run test:browser
 ```
 
 Browser tests substitute Google and the graph API with test fixtures. They cover sign-in, expiry, server errors, first push setup, two-account isolation, draft/shortlist persistence, storage failure, search/evidence navigation, bounded scene, pagination, and mobile overflow. They do not replace a live Google OAuth check.
+
+## Ten-view spatial lab
+
+Open `/lab/` from **3D lab** in the viewer navigation. Each experiment has a direct URL, for example `/lab/?view=city`. Available view IDs: `galaxy`, `orbits`, `helix`, `city`, `sphere`, `bridges`, `terrain`, `islands`, `panel`, `tunnel`.
+
+The gallery defaults to clearly labeled fictional data. **Use my network** explicitly fetches the current signed-in owner's graph through the existing authenticated API. An expired session leaves the demo labeled as demo and offers a sign-in link. Private data is held in page memory; it is not added to URLs or browser storage. Refreshing the page starts the demo again. This experimental gallery does not poll for updates.
+
+Each view uses 3D coordinates, perspective projection, depth shading and orbit/zoom controls rendered locally on Canvas. Keyboard camera controls and an accessible person list accompany mouse/touch picking. Search uses recorded text through the shared model. A view displays up to 96 matching people with a paginated list; users can narrow the search. The scene fits large groups automatically. Panel shortlists are local to the open page session.
+
+Mappings are described in each scene. Company/domain groups are not inferred employment; topic islands use frequent context words, not verified expertise; the globe is not geography. Time layouts show last-contact dates, not complete message history. Canvas point size reflects recorded degree.
+
+Run `npm run test:lab-browser` against the local static server, with Playwright available as documented above. It exercises all ten layouts, person evidence, shortlist interaction, camera controls, empty search, pagination, authentication gating, source switching and mobile overflow.
