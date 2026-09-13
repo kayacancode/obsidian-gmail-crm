@@ -19,7 +19,7 @@ export function search(g,query){
   return {node,score,coverage:words.length?matched.size/words.length:1,reasons,missing:words.filter(w=>!matched.has(w))};
  }).filter(r=>!words.length||r.score>0).sort((a,b)=>b.coverage-a.coverage||b.score-a.score||g.ties.get(b.node.id).length-g.ties.get(a.node.id).length||a.node.name.localeCompare(b.node.name));
 }
-export function sceneData(g,results,limit=12){const people=results.slice(0,limit).map(r=>r.node),names=[...new Set(people.map(p=>p.company).filter(Boolean))];return {people,companies:names.slice(0,8).map(name=>({id:'company:'+name,name,isCompany:true})),total:results.length};}
+export function sceneData(g,results,limit=results.length){const people=results.slice(0,limit).map(r=>r.node),names=[...new Set(people.map(p=>p.company).filter(Boolean))];return {people,companies:names.slice(0,8).map(name=>({id:'company:'+name,name,isCompany:true})),total:results.length};}
 export function loadLocal(storage,account){try{const d=JSON.parse(storage.getItem('people-spatial:'+account)||'{}');return {shortlist:Array.isArray(d.shortlist)?d.shortlist.filter(s=>typeof s==='string').slice(0,1500):[],drafts:d.drafts&&typeof d.drafts==='object'&&!Array.isArray(d.drafts)?Object.fromEntries(Object.entries(d.drafts).filter(([k,v])=>typeof v==='string').slice(0,1500)): {}};}catch{return {shortlist:[],drafts:{}};}}
 export function saveLocal(storage,account,state){storage.setItem('people-spatial:'+account,JSON.stringify(state));}
 export function dateLabel(value){const d=new Date(value);return value&&Number.isFinite(d.getTime())?d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'Not recorded';}

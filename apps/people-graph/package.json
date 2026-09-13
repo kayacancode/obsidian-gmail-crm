@@ -20,7 +20,8 @@
     "predeploy": "npm run build:district",
     "test:building-browser": "node tests/building-browser.mjs",
     "test:figures-browser": "node tests/figures-browser.mjs",
-    "test:world-browser": "node tests/world-browser.mjs"
+    "test:world-browser": "node tests/world-browser.mjs",
+    "test:all-people-browser": "node tests/all-people-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",
