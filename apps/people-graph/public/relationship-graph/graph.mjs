@@ -5,6 +5,8 @@ import { rankSerendipity } from './discoveries.mjs';
 
 const CANVAS_NODE_LIMIT = 80;
 const DIRECTORY_PAGE_SIZE = 50;
+// Includes portrait, two-line label and the occasional Why now control at 75% zoom.
+const CANVAS_ROW_PITCH = 210;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function initials(name) {
@@ -25,16 +27,17 @@ function hash(value) {
   return result >>> 0;
 }
 
-function positionFor(node, index, total) {
+function positionFor(node, index, total, layout) {
   const seed = hash(node.id);
-  const columns = Math.max(3, Math.ceil(Math.sqrt(total * 1.7)));
+  const columns = Math.min(layout.columns, total);
   const column = index % columns;
   const row = Math.floor(index / columns);
-  const rows = Math.max(1, Math.ceil(total / columns));
+  const cellWidth = layout.usableWidth / Math.max(1, columns);
   return {
-    x: 90 + (column * 820) / Math.max(1, columns - 1) + ((seed & 255) / 255 - 0.5) * 54,
-    y: 145 + (row * 430) / Math.max(1, rows - 1) + (((seed >>> 8) & 255) / 255 - 0.5) * 48,
-    size: 70 + (seed % 58),
+    x: 32 + cellWidth * (column + .5) + ((seed & 255) / 255 - .5) * 12,
+    y: layout.top + 54 + row * CANVAS_ROW_PITCH + (((seed >>> 8) & 255) / 255 - .5) * 10,
+    size: 72 + (seed % 19),
+    labelWidth: Math.min(136, cellWidth - 24),
   };
 }
 
@@ -73,6 +76,7 @@ export function mountGraph(element, options = {}) {
   let camera = { x: 0, y: 0, zoom: 1 };
   let lens = validLens(options.lens ?? 'my');
   let activeThemeId = null;
+  let canvasThemeMembers = [];
   let relevancePersonId = null;
   let relevanceRequest = 0;
   let relevancePending = false;
@@ -180,7 +184,90 @@ export function mountGraph(element, options = {}) {
   const other = (edge, id) => edge.source === id ? edge.target : edge.source;
   const currentRoute = () => pathState?.result?.paths?.[pathState.index] ?? null;
 
+  function canvasLayout() {
+    const width = element.clientWidth || 1000;
+    const height = Math.max(800, (view?.innerHeight || 900) - 133);
+    // Reserve the detail rail on wide screens, and a real text/portrait gutter.
+    const usableWidth = Math.max(132, width - (width >= 1100 ? 380 : 64));
+    const top = width <= 700 ? 365 : 260;
+    const columns = Math.max(1, Math.floor(usableWidth / 140));
+    // First center + largest lower label footprint + bottom controls; count the
+    // first row explicitly so narrow screens still use the available second row.
+    const rows = Math.max(1, 1 + Math.floor((height - top - 54 - 96 - 72) / CANVAS_ROW_PITCH));
+    return { width, height, usableWidth, top, columns, capacity: Math.min(CANVAS_NODE_LIMIT, columns * rows) };
+  }
+
+  function rankedThemes() {
+    return relevanceGraph.relevance.themes.slice().sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  }
+
+  function promotedThemes() {
+    // Calendar boilerplate stays inspectable in the complete picker, but does not
+    // masquerade as a substantive topic on the map. Never invent replacement names.
+    return rankedThemes().filter(theme => !theme.components.every(c => c.sourceType === 'gmail_subject')
+      || !/^(?:updated invitation|invitation|accepted|declined|canceled|cancelled|reminder|new registration|thank you|hey|can t|you ve|would love|following up|got my|notes kaya|kaya s|today s|see what|how install|how enable|just fyi|time talk|time chat|finding time|nice chatting|great connecting|my apologies|week has|you guys|meet w|30 min|id\b)\b/i.test(theme.name))
+      .slice(0, 5);
+  }
+
+  function themeColor(id) {
+    return ['238 129 61', '53 153 142', '143 113 192'][hash(id) % 3];
+  }
+
+  function themeSource(theme) {
+    const types = new Set(theme.components.map(component => component.sourceType));
+    if (types.size === 1 && types.has('gmail_subject')) return 'Email subject';
+    if (types.has('gmail_body_derived')) return 'AI-extracted topic';
+    if (types.has('granola') || types.has('obsidian_note')) return 'Meeting / note theme';
+    if ([...types].every(type => type.startsWith('public_'))) return 'Public-source theme';
+    return 'Recorded theme';
+  }
+
+  function renderTopics() {
+    if (lens === 'off' || pathState) return null;
+    const themes = rankedThemes();
+    const section = make('section', 'rg-topic-bar');
+    section.setAttribute('aria-label', 'Topics and themes');
+    const heading = make('div', 'rg-topic-heading');
+    heading.append(make('h2', '', 'Topics & themes'));
+    const reset = button('All themes', 'clear-theme', 'rg-topic-reset');
+    reset.setAttribute('aria-pressed', String(!activeThemeId));
+    heading.append(reset);
+    const picker = make('select');
+    picker.dataset.action = 'browse-theme';
+    picker.setAttribute('aria-label', 'Browse all themes');
+    const placeholder = make('option', '', `Browse all ${themes.length} themes…`);
+    placeholder.value = '';picker.append(placeholder);
+    for (const theme of themes) {
+      const option = make('option', '', `${theme.name} · ${themeSource(theme)}`);
+      option.value = theme.themeId;option.selected = activeThemeId === theme.themeId;picker.append(option);
+    }
+    heading.append(picker);section.append(heading);
+    const onlySubjects = themes.length && themes.every(theme => theme.components.every(c => c.sourceType === 'gmail_subject'));
+    section.append(make('p', 'rg-topic-explanation', themes.length
+      ? onlySubjects ? 'Based on email subjects. Deeper topics need approved body analysis or synced meeting notes.' : 'Themes from your permitted sources. Choose one to see its people and evidence.'
+      : `No ${lens === 'firm' ? 'firm-shared' : lens === 'public' ? 'public-source' : 'evidence-backed'} themes yet in this view.`));
+    const chips = make('div', 'rg-topic-chips');
+    const promoted = promotedThemes();
+    const active = themes.find(theme => theme.themeId === activeThemeId);
+    if (active && !promoted.some(theme => theme.themeId === activeThemeId)) promoted.splice(4, 1, active);
+    for (const theme of promoted) {
+      const chip = button('', 'inspect-theme', 'rg-theme-label');
+      chip.dataset.themeId = theme.themeId;
+      chip.style.setProperty('--field-color', themeColor(theme.themeId));
+      chip.setAttribute('aria-label', `Why ${theme.name} is hot now`);
+      chip.setAttribute('aria-pressed', String(theme.themeId === activeThemeId));
+      chip.append(make('span', '', theme.name), make('small', '', `${themeSource(theme)} · ${theme.nodeIds.length} people`));
+      chips.append(chip);
+    }
+    section.append(chips);
+    return section;
+  }
+
   function visibleCanvasData() {
+    const limit = canvasLayout().capacity;
+    const members = new Set(canvasThemeMembers);
+    const prioritize = nodes => nodes.slice(limit).some(node => members.has(node.id))
+      ? nodes.sort((a,b) => Number(members.has(b.id)) - Number(members.has(a.id))) : nodes;
     if (currentRoute()) {
       const route = currentRoute();
       return {
@@ -192,13 +279,13 @@ export function mountGraph(element, options = {}) {
     }
     if (selectedId) {
       const allEdges = edgesByNode.get(selectedId) ?? [];
-      const visibleEdges = allEdges.slice(0, CANVAS_NODE_LIMIT - 1);
-      const relatedIds = new Set([selectedId, ...visibleEdges.map((edge) => other(edge, selectedId))]);
+      const visibleEdges = allEdges.slice(0, limit - 1);
+      const relatedIds = new Set([selectedId, ...members, ...visibleEdges.map((edge) => other(edge, selectedId))]);
       const matches = searchGraph(relevanceGraph, query);
-      const visibleNodes = matches
+      const visibleNodes = prioritize(matches
         .filter((node) => relatedIds.has(node.id))
-        .concat(matches.filter((node) => !relatedIds.has(node.id)))
-        .slice(0, CANVAS_NODE_LIMIT);
+        .concat(matches.filter((node) => !relatedIds.has(node.id))))
+        .slice(0, limit);
       const visibleIds = new Set(visibleNodes.map((node) => node.id));
       return {
         nodes: visibleNodes,
@@ -209,7 +296,7 @@ export function mountGraph(element, options = {}) {
       };
     }
     const matches = searchGraph(relevanceGraph, query);
-    return { nodes: matches.slice(0, CANVAS_NODE_LIMIT), edges: [], total: matches.length, isPath: false };
+    return { nodes: prioritize(matches).slice(0, limit), edges: [], total: matches.length, isPath: false };
   }
 
   function renderPortrait(node, index) {
@@ -231,13 +318,15 @@ export function mountGraph(element, options = {}) {
   }
 
   function renderCanvas() {
+    const layout = canvasLayout();
     const canvas = make('div', 'rg-canvas');
+    if (!currentRoute()) canvas.style.height = `${layout.height}px`;
     canvas.dataset.path = String(Boolean(currentRoute()));
     canvas.dataset.action = 'canvas';
     canvas.tabIndex = 0;
     canvas.setAttribute('aria-label', 'Relationship canvas. Drag or use arrow keys to move; use plus and minus to zoom.');
     const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('viewBox', '0 0 1000 780');
+    svg.setAttribute('viewBox', currentRoute() ? '0 0 1000 780' : `0 0 ${layout.width} ${layout.height}`);
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.setAttribute('aria-hidden', 'true');
     const lines = document.createElementNS(SVG_NS, 'g');
@@ -251,13 +340,18 @@ export function mountGraph(element, options = {}) {
       .map(node => ({ id: node.id, score: Math.max(0, ...personThemes(node.id).map(theme => theme.score)) }))
       .filter(item => item.score >= 80).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
       .slice(0, 3).map(item => item.id));
+    const badgeIds = new Set(data.nodes.filter(node => personThemes(node.id).length)
+      .sort((a,b) => Number(b.id === selectedId) - Number(a.id === selectedId)
+        || Math.max(...personThemes(b.id).map(t=>t.score)) - Math.max(...personThemes(a.id).map(t=>t.score)) || a.id.localeCompare(b.id))
+      .slice(0, 3).map(node=>node.id));
     data.nodes.forEach((node, index) => {
       const base = data.isPath
         ? { x: 120 + (index * 760) / Math.max(1, data.nodes.length - 1), y: 300, size: 106 }
-        : positionFor(node, index, data.nodes.length);
+        : positionFor(node, index, data.nodes.length, layout);
       const position = {
         x: base.x * camera.zoom + camera.x,
-        y: base.y * camera.zoom + camera.y,
+        y: data.isPath ? base.y * camera.zoom + camera.y
+          : layout.top + 54 + (base.y - layout.top - 54) * camera.zoom + camera.y,
         size: Math.max(54, base.size * camera.zoom),
       };
       positions.set(node.id, position);
@@ -279,12 +373,13 @@ export function mountGraph(element, options = {}) {
         }
         if (connector?.score > 0) nodeButton.dataset.connector = connector.evidenceClass;
       }
-      nodeButton.style.left = `${position.x / 10}%`;
-      nodeButton.style.top = `${position.y / 7.8}%`;
+      nodeButton.style.left = data.isPath ? `${position.x / 10}%` : `${position.x}px`;
+      nodeButton.style.top = data.isPath ? `${position.y / 7.8}%` : `${position.y}px`;
       nodeButton.style.width = `${position.size}px`;
       nodeButton.style.height = `${position.size}px`;
       nodeButton.style.setProperty('--route-index', String(index));
       nodeButton.style.setProperty('--route-y', `${195 + index * 160}px`);
+      nodeButton.style.setProperty('--label-width', `${(base.labelWidth || 136) * camera.zoom}px`);
       nodeButton.setAttribute('aria-label', `Explore ${node.name}`);
       nodeButton.setAttribute('aria-pressed', String(node.id === selectedId));
       nodeButton.append(renderPortrait(node, index));
@@ -292,13 +387,14 @@ export function mountGraph(element, options = {}) {
       label.append(make('small', '', [node.role, node.company].filter(Boolean).join(' · ') || node.type));
       nodeButton.append(label);
       nodeLayer.append(nodeButton);
-      if (lens !== 'off' && node.type === 'person' && personThemes(node.id).length) {
+      if (lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
         const theme = personThemes(node.id).slice().sort((a, b) => b.score - a.score)[0];
-        const badge = button('•', 'inspect-theme', 'rg-person-heat');
+        const badge = button('Why now', 'inspect-theme', 'rg-person-heat');
         badge.dataset.themeId = theme.themeId;
         badge.dataset.personId = node.id;
-        badge.style.left = `${position.x / 10}%`;
-        badge.style.top = `${position.y / 7.8}%`;
+        badge.style.left = data.isPath ? `${position.x / 10}%` : `${position.x}px`;
+        badge.style.top = data.isPath ? `${position.y / 7.8}%` : `${position.y}px`;
+        badge.dataset.context = nodeButton.dataset.context;
         badge.style.setProperty('--portrait-half', `${position.size / 2}px`);
         badge.setAttribute('aria-label', `Why ${node.name} is relevant to ${theme.name}`);
         nodeLayer.append(badge);
@@ -318,45 +414,36 @@ export function mountGraph(element, options = {}) {
       const edgeButton = button(edge.label, 'inspect-edge', 'rg-edge-label');
       edgeButton.dataset.edgeId = edge.id;
       edgeButton.dataset.uncertain = String(edge.kind !== 'personal');
-      edgeButton.style.left = `${((source.x + target.x) / 2) / 10}%`;
-      edgeButton.style.top = `${((source.y + target.y) / 2) / 7.8}%`;
+      edgeButton.style.left = data.isPath ? `${((source.x + target.x) / 2) / 10}%` : `${(source.x + target.x) / 2}px`;
+      edgeButton.style.top = data.isPath ? `${((source.y + target.y) / 2) / 7.8}%` : `${(source.y + target.y) / 2}px`;
       edgeButton.style.setProperty('--route-edge-y', `${275 + edgeIndex * 160}px`);
       edgeButton.setAttribute('aria-label', `${edge.label}: ${byId.get(edge.source).name} and ${byId.get(edge.target).name} — inspect source`);
       edgeButton.setAttribute('aria-pressed', String(edge.id === selectedEdgeId));
       edgeLayer.append(edgeButton);
     });
     const hiddenCount = Math.max(0, data.total - data.nodes.length);
-    if (lens !== 'off') {
+    if (lens !== 'off' && !data.isPath) {
       const fields = make('div', 'rg-theme-fields');
-      const labels = make('div', 'rg-theme-labels');
-      const scoredIds = new Set(relevanceGraph.relevance.themes.map(theme => theme.themeId));
+      const scoredIds = new Set(activeThemeId ? [activeThemeId] : promotedThemes().slice(0, 3).map(theme => theme.themeId));
       themeFields(relevanceGraph, data.nodes.map(node => ({ id: node.id, ...positions.get(node.id) })), lens)
         .filter(field => scoredIds.has(field.themeId)).forEach((field) => {
           const area = make('div', 'rg-theme-field');
           area.dataset.themeId = field.themeId;
           area.dataset.active = String(field.themeId === activeThemeId);
-          area.style.left = `${field.x / 10}%`;
-          area.style.top = `${field.y / 7.8}%`;
-          area.style.width = `${field.radius / 5}%`;
-          area.style.height = `${field.radius / 3.9}%`;
-          const colorIndex = graph.themes.map(theme => theme.id).sort().indexOf(field.themeId) % 3;
-          const fieldColor = ['175 130 85', '100 150 138', '149 130 164'][colorIndex];
-          area.style.setProperty('--field-color', fieldColor);
-          const label = button('', 'inspect-theme', 'rg-theme-label');
-          label.dataset.themeId = field.themeId;
-          label.style.setProperty('--field-color', fieldColor);
-          label.setAttribute('aria-label', `Why ${field.name} is hot now`);
-          label.setAttribute('aria-pressed', String(field.themeId === activeThemeId));
-          label.append(make('span', '', field.name), make('small', '', relevanceGraph.relevance.themes.find(theme => theme.themeId === field.themeId)?.reason));
-          // Labels occupy a compact band; the field itself stays centered on its people.
-          labels.append(label);
+          // Each topic paints local patches around its members, not one huge wash
+          // across everyone between them. Per-layer opacity bounds accumulation.
+          const color = themeColor(field.themeId);
+          area.style.opacity = String(.12 + field.score / 100 * .14);
+          area.style.backgroundImage = field.nodeIds.map(id => {
+            const point = positions.get(id);
+            return `radial-gradient(ellipse 100px 85px at ${point.x}px ${point.y}px, rgb(${color}) 0%, rgb(${color} / .55) 35%, transparent 78%)`;
+          }).join(',');
           fields.append(area);
         });
-      fields.append(labels);
       canvas.append(fields);
     }
     canvas.append(svg, nodeLayer, edgeLayer, make('p', 'rg-canvas-note', hiddenCount
-      ? `${data.nodes.length} shown on canvas · ${hiddenCount} more available in results`
+      ? `${data.nodes.length} spaced on canvas · ${hiddenCount} more in search & All results`
       : `${data.nodes.length} shown on canvas`));
     return canvas;
   }
@@ -672,6 +759,9 @@ export function mountGraph(element, options = {}) {
 
   function render(focusAction = null) {
     if (destroyed) return;
+    // Off removes the relevance layer without moving the last chosen people.
+    if (lens !== 'off') canvasThemeMembers = relevanceGraph.relevance.themes
+      .find(theme => theme.themeId === activeThemeId)?.nodeIds ?? [];
     root.dataset.demo = String(demoEnabled());
     root.replaceChildren();
     const header = make('header', 'rg-header');
@@ -706,12 +796,15 @@ export function mountGraph(element, options = {}) {
     const [pathBar, pathSummary] = renderPathControls();
     root.append(header);
     if (pathBar) root.append(pathBar);
-    root.append(renderCanvas());
+    const topics = renderTopics();
+    if (topics) root.append(topics);
+    const canvas = renderCanvas();
+    root.append(canvas);
     if (pathSummary) root.append(pathSummary);
     const bottom = make('div', 'rg-bottom');
     if (!pathState) bottom.append(renderTrail());
     bottom.append(renderNavigation());
-    root.append(bottom);
+    canvas.append(bottom);
     if (panelMode === 'why' && lens !== 'off') {
       const panel = renderWhyPanel();
       if (panel) root.append(panel);
@@ -743,6 +836,7 @@ export function mountGraph(element, options = {}) {
     if (destroyed || !byId.has(id)) return;
     invalidateRelevance();
     activeThemeId = null;
+    canvasThemeMembers = [];
     relevancePersonId = null;
     if (pathState && !pathState.to && id !== pathState.from && byId.get(id).type === 'person') {
       pathState.to = id;
@@ -782,6 +876,7 @@ export function mountGraph(element, options = {}) {
     if (!people.length) return;
     invalidateRelevance();
     activeThemeId = null;
+    canvasThemeMembers = [];
     const from = byId.get(selectedId)?.type === 'person' ? selectedId : people[0].id;
     pathRequest += 1;
     pathState = { from, to: '', result: null, index: 0, loading: false, error: null, camera: { ...camera } };
@@ -840,7 +935,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function zoom(multiplier, focusAction = null) {
-    camera.zoom = Math.max(0.45, Math.min(1.65, camera.zoom * multiplier));
+    camera.zoom = Math.max(0.75, Math.min(1.65, camera.zoom * multiplier));
     render(focusAction);
   }
 
@@ -849,7 +944,11 @@ export function mountGraph(element, options = {}) {
     const target = event.target.closest?.('[data-action]');
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
-    if (action === 'inspect-theme') {
+    if (action === 'clear-theme') {
+      invalidateRelevance();activeThemeId = null;relevancePersonId = null;
+      canvasThemeMembers = [];
+      panelMode = selectedId ? 'node' : null;render();
+    } else if (action === 'inspect-theme') {
       invalidateRelevance();
       activeThemeId = target.dataset.themeId;
       relevancePersonId = target.dataset.personId ?? null;
@@ -876,12 +975,13 @@ export function mountGraph(element, options = {}) {
     else if (action === 'inspect-edge') inspectEdge(target.dataset.edgeId);
     else if (action === 'start-path') startPath();
     else if (action === 'close-path') closePath();
-    else if (action === 'close-panel') { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
+    else if (action === 'close-panel') { invalidateRelevance(); activeThemeId = null; canvasThemeMembers = []; panelMode = null; selectedEdgeId = null; render(); }
     else if (action === 'save-trail' && trail.nodeIds.length) callbacks.onSaveTrail(cloneTrail(trail));
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
       invalidateRelevance();
       activeThemeId = null;
+      canvasThemeMembers = [];
       pathRequest += 1;
       selectedId = null;
       selectedEdgeId = null;
@@ -893,6 +993,7 @@ export function mountGraph(element, options = {}) {
     } else if (action === 'trail-back' && trail.nodeIds.length > 1) {
       invalidateRelevance();
       activeThemeId = null;
+      canvasThemeMembers = [];
       trail = { nodeIds: trail.nodeIds.slice(0, -1), edgeIds: trail.edgeIds.slice(0, -1) };
       selectedId = trail.nodeIds.at(-1);
       panelMode = 'node';
@@ -901,6 +1002,7 @@ export function mountGraph(element, options = {}) {
     } else if (action === 'trail-step') {
       invalidateRelevance();
       activeThemeId = null;
+      canvasThemeMembers = [];
       const index = Number(target.dataset.trailIndex);
       trail = { nodeIds: trail.nodeIds.slice(0, index + 1), edgeIds: trail.edgeIds.slice(0, index) };
       selectedId = trail.nodeIds.at(-1);
@@ -932,6 +1034,10 @@ export function mountGraph(element, options = {}) {
 
   function onChange(event) {
     const action = event.target.dataset?.action;
+    if (action === 'browse-theme') {
+      invalidateRelevance();activeThemeId = event.target.value || null;relevancePersonId = null;
+      panelMode = activeThemeId ? 'why' : selectedId ? 'node' : null;render('browse-theme');return;
+    }
     if (action === 'relevance-lens') {
       invalidateRelevance();
       lens = validLens(event.target.value);
@@ -952,7 +1058,7 @@ export function mountGraph(element, options = {}) {
   function onKeyDown(event) {
     if (event.key === 'Escape') {
       if (pathState) closePath();
-      else if (panelMode) { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
+      else if (panelMode) { invalidateRelevance(); activeThemeId = null; canvasThemeMembers = []; panelMode = null; selectedEdgeId = null; render(); }
       return;
     }
     if (!event.target.closest?.('.rg-canvas')) return;
@@ -1013,8 +1119,18 @@ export function mountGraph(element, options = {}) {
   root.addEventListener('wheel', onWheel, { passive: false });
   root.addEventListener('error', onImageError, true);
   root.addEventListener('toggle', onToggle, true);
-  const resizeObserver = typeof view?.ResizeObserver === 'function' ? new view.ResizeObserver(() => render()) : null;
+  let lastSize = `${element.clientWidth}:${view?.innerHeight}`;
+  function onResize() {
+    const size = `${element.clientWidth}:${view?.innerHeight}`;
+    // Expanding evidence/directory changes height, not the layout budget. Replacing
+    // controls in that case would discard the keyboard focus we just restored.
+    if (size === lastSize) return;
+    lastSize = size;
+    render();
+  }
+  const resizeObserver = typeof view?.ResizeObserver === 'function' ? new view.ResizeObserver(onResize) : null;
   resizeObserver?.observe(element);
+  view?.addEventListener('resize', onResize);
   render();
 
   return {
@@ -1077,6 +1193,7 @@ export function mountGraph(element, options = {}) {
       pathRequest += 1;
       invalidateRelevance();
       activeThemeId = null;
+      canvasThemeMembers = [];
       pathState = null;
       trail = cloneTrail(nextTrail);
       selectedId = trail.nodeIds.at(-1);
@@ -1091,6 +1208,7 @@ export function mountGraph(element, options = {}) {
       invalidateRelevance();
       pathRequest += 1;
       resizeObserver?.disconnect();
+      view?.removeEventListener('resize', onResize);
       root.removeEventListener('click', onClick);
       root.removeEventListener('input', onInput);
       root.removeEventListener('change', onChange);

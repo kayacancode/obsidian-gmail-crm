@@ -336,7 +336,7 @@ try {
   assert.equal(await why.getByRole('button', {name:'Mute',exact:true}).isDisabled(), true);
   await page.evaluate(() => window.heatPending.reject(new Error('sensitive backend detail')));
   await page.getByRole('status').filter({hasText:'Could not update relevance'}).waitFor();
-  assert.equal(await page.locator('.rg-theme-field').count(), 2, 'failed mutation preserves snapshot');
+  assert.equal(await page.locator('.rg-theme-field').count(), 1, 'failed mutation preserves the focused theme');
   assert.doesNotMatch(await page.locator('#graph').innerText(), /sensitive backend detail/);
   await why.getByRole('button', {name:'Correct',exact:true}).click();
   await page.getByLabel('Replacement theme').selectOption('health');

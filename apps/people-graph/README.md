@@ -55,6 +55,8 @@ Relevance heat is an advisory view of recent metadata and user-confirmed evidenc
 
 Connector rings summarize documented or inferred graph structure. They do not prove that anyone is close to the user, willing to help, or able to make an introduction. The system never sends outreach, emails or introduction requests; it only presents context for a person to review and act on themselves.
 
+The top **Topics & themes** strip labels each theme's source; all themes remain in its picker. Gmail's normal sync supplies subject-derived signals, not body-understood topics. The overview promotes up to five non-boilerplate themes and paints at most three localized fields; selecting a theme focuses one field and brings otherwise off-canvas members into view. Up to three labeled **Why now** controls expose evidence. Canvas capacity adapts to space for portraits, names and controls; the complete network remains in search and All results. **Off** removes heat without moving the current people.
+
 ## Development
 
 ```sh
@@ -69,6 +71,7 @@ Search the full authorized graph by recorded names, companies, roles and relatio
 The browser never writes the current graph or route to durable storage. API graph ownership must match the signed-in account, stale in-flight requests are ignored after account/source changes, and a sign-out is accepted only after the server confirms it.
 
 Run `npm run test:relationship-browser` against the local Worker for account races, session isolation, source transitions, errors, path restore and 320px layout coverage.
+Run `npm run test:readability-browser` for a 115-person/123-theme fixture, desktop/mobile spacing including long labels and zoom, bounded heat, off-canvas theme discovery, keyboard focus, and Off layout parity.
 
 ## Former spatial discovery (`/spatial`)
 
