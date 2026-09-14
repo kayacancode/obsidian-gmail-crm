@@ -369,6 +369,9 @@ export class RelationshipEngine {
 					if (contact.calendarLastMeeting && (!existing.calendarLastMeeting || contact.calendarLastMeeting > existing.calendarLastMeeting)) {
 						existing.calendarLastMeeting = contact.calendarLastMeeting;
 					}
+					if (!existing.photoUrl && contact.photoUrl) {
+						existing.photoUrl = contact.photoUrl;
+					}
 					if (preferredProfileSource && !existing.profileSourcePreferred) {
 						existing.domain = contact.domain ?? existing.domain;
 						existing.profileEmail = profileEmail;
@@ -387,6 +390,7 @@ export class RelationshipEngine {
 						subjects: contact.subjects ?? [],
 						lastSubject: contact.lastSubject ?? "",
 						domain: contact.domain ?? "",
+						photoUrl: contact.photoUrl,
 						threadCount: contact.threadCount,
 						maxThreadDepth: contact.maxThreadDepth,
 						backAndForthThreads: contact.backAndForthThreads,

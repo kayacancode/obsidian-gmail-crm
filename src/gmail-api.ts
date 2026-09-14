@@ -1,4 +1,5 @@
 import { requestUrl } from "obsidian";
+import type { Interaction } from "./intelligence-model";
 import type {
 	GmailCrmSettings,
 	GmailTokenResponse,
@@ -13,7 +14,14 @@ import { CONTACT_INDEX_SCHEMA_VERSION } from "./types";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-const SCOPES = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events.readonly";
+// contacts.* scopes feed people-photos.ts. Existing tokens lack them until the
+// user reconnects; People API answers 403 in the meantime and the sync skips.
+const SCOPES = [
+	"https://www.googleapis.com/auth/gmail.readonly",
+	"https://www.googleapis.com/auth/calendar.events.readonly",
+	"https://www.googleapis.com/auth/contacts.readonly",
+	"https://www.googleapis.com/auth/contacts.other.readonly",
+].join(" ");
 const REDIRECT_URI = "http://127.0.0.1:42813/callback";
 
 // Shared OAuth credentials for the Gmail CRM plugin (Desktop app type).
@@ -273,6 +281,11 @@ export class GmailApi {
 		return { Authorization: `Bearer ${this.settings.accessToken}` };
 	}
 
+	/** Refresh the access token if it is about to expire. For callers that hit Google APIs directly. */
+	async ensureFreshToken(): Promise<void> {
+		await this.getHeaders();
+	}
+
 	async getUserEmail(): Promise<string> {
 		const headers = await this.getHeaders();
 		const resp = await this.apiRequest({
@@ -357,7 +370,8 @@ export class GmailApi {
 		onProgress?: (done: number, total: number) => void,
 		existingIndex?: ContactIndex | null,
 		messageCache?: MessageCache | null,
-		onCheckpoint?: (index: ContactIndex, cache: MessageCache) => Promise<void>
+		onCheckpoint?: (index: ContactIndex, cache: MessageCache) => Promise<void>,
+		onInteractions?: (events: Interaction[]) => Promise<void>
 	): Promise<{ index: ContactIndex; cache: MessageCache }> {
 		const userEmail = await this.getUserEmail();
 
@@ -375,6 +389,7 @@ export class GmailApi {
 			? JSON.parse(JSON.stringify(existingIndex.contacts))
 			: {};
 		const edges = existingIndex?.edges ?? [];
+		let interactions: Interaction[] = [];
 
 		// Per-contact, per-thread state used to compute metadata pattern signals
 		// (back-and-forth, thread depth, RSVP-only). Keyed by contactEmail -> threadId.
@@ -405,7 +420,8 @@ export class GmailApi {
 			);
 
 			for (const msg of results) {
-				this.processMessage(msg, userEmail, contacts, threadStates);
+				const event = this.processMessage(msg, userEmail, contacts, threadStates);
+				if (event) interactions.push(event);
 			}
 			// Track processed IDs for incremental sync
 			for (const m of batch) processedIds.add(m.id);
@@ -428,6 +444,8 @@ export class GmailApi {
 					lastSync: new Date().toISOString(),
 					processedIds: [...processedIds],
 				};
+				await onInteractions?.(interactions);
+				interactions = [];
 				await onCheckpoint(checkpointIndex, checkpointCache);
 			}
 
@@ -479,6 +497,7 @@ export class GmailApi {
 			lastSync: new Date().toISOString(),
 		};
 
+		await onInteractions?.(interactions);
 		return {
 			index: {
 				schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
@@ -496,7 +515,7 @@ export class GmailApi {
 		userEmail: string,
 		contacts: Record<string, Contact>,
 		threadStates: Map<string, Map<string, ThreadState>>
-	) {
+	): Interaction | undefined {
 		const headers = msg.payload.headers;
 		const from = this.getHeader(headers, "From");
 		const to = this.getHeader(headers, "To");
@@ -517,12 +536,14 @@ export class GmailApi {
 				return;
 			}
 			this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
+			return { id: msg.id, email: toParsed.email, date, kind: "email", direction: "sent", title: subject, sourceId: threadId };
 		} else if (!isSent) {
 			if (this.isFiltered(fromParsed.email)) {
 				console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
 				return;
 			}
 			this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
+			return { id: msg.id, email: fromParsed.email, date, kind: "email", direction: "received", title: subject, sourceId: threadId };
 		}
 	}
 

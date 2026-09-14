@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-gmail-crm",
-	"version": "0.5.0",
+	"version": "0.9.2",
 	"description": "Obsidian plugin \u2014 lightweight CRM from Gmail metadata",
 	"main": "main.js",
 	"scripts": {
@@ -8,7 +8,9 @@
 		"build": "node esbuild.config.mjs production",
 		"build:peoplegraph": "cargo build --release --manifest-path crates/peoplegraph/Cargo.toml",
 		"package:peoplegraph": "node scripts/copy-peoplegraph.mjs",
-		"peoplegraph:telegram-review": "node scripts/peoplegraph-telegram-review.mjs"
+		"peoplegraph:telegram-review": "node scripts/peoplegraph-telegram-review.mjs",
+		"test:intelligence": "node scripts/test-intelligence.mjs",
+		"preview:intelligence": "node scripts/preview-intelligence.mjs"
 	},
 	"keywords": [
 		"obsidian",

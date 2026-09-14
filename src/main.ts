@@ -6,13 +6,24 @@ import {
 	normalizePath,
 } from "obsidian";
 import { GmailApi } from "./gmail-api";
-// Sidebar removed — using Obsidian Base view instead
+import { IntelligenceStore } from "./intelligence-store";
+import { PeopleIntelligenceView, PEOPLE_INTELLIGENCE_VIEW } from "./intelligence-view";
+import type { Interaction, SourcedNote } from "./intelligence-model";
 import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
 import { HarperSkill } from "./harper-skill";
 import { computeStaleness, setScoringDebug } from "./staleness";
+import { pushScores, type ScoredPage } from "./score-push";
+import {
+	buildGraphPayload,
+	generateGraphSalt,
+	pushGraphToWeb,
+	type GraphContactInput,
+} from "./graph-push";
+import { buildLocalThemeCandidates, type LocalThemeCandidate } from "./theme-candidates";
 import { syncCalendarData } from "./calendar-sync";
+import { syncContactPhotos } from "./people-photos";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
@@ -71,11 +82,24 @@ export default class GmailCrmPlugin extends Plugin {
 	/** Address -> contact map for getContactByEmail; rebuilt when the index is replaced. */
 	private contactLookup: Map<string, Contact> | null = null;
 	private contactLookupSource: Record<string, Contact> | null = null;
+	private intelligence!: IntelligenceStore;
+	private intelligenceReady = false;
+	private intelligenceNotes: SourcedNote[] | null = null;
+	private intelligenceNotesLoad: Promise<SourcedNote[]> | null = null;
 	private syncInterval: number | null = null;
 	private stalenessInterval: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
+		this.intelligence = new IntelligenceStore(this.app.vault.adapter, normalizePath(`${this.app.vault.configDir}/plugins/gmail-crm/people-intelligence.json`));
+		try { await this.intelligence.load(); this.intelligenceReady = true; }
+		catch (error) { new Notice(`People intelligence: ${String(error)}`); }
+		this.registerView(PEOPLE_INTELLIGENCE_VIEW, leaf => new PeopleIntelligenceView(leaf, refreshNotes => this.loadIntelligenceWorkspace(refreshNotes), {
+			save: () => this.intelligence.save(),
+			openNote: path => { void this.app.workspace.openLinkText(path, "", true); },
+		}));
+		this.addCommand({ id: "people-intelligence", name: "Open people intelligence", callback: () => { void this.openIntelligence(); } });
+		this.addRibbonIcon("users", "People intelligence", () => { void this.openIntelligence(); });
 
 		this.gmailApi = new GmailApi(this.settings, async (patch) => {
 			Object.assign(this.settings, patch);
@@ -134,6 +158,13 @@ export default class GmailCrmPlugin extends Plugin {
 			callback: () => { void this.enrichAllPeople(true); },
 		});
 
+		// Command: fetch contact photos and titles from Google Contacts
+		this.addCommand({
+			id: "fetch-contact-photos",
+			name: "Fetch contact photos from Google Contacts",
+			callback: () => { void this.fetchContactPhotos(); },
+		});
+
 		// Command: sync calendar meeting data
 		this.addCommand({
 			id: "sync-calendar",
@@ -146,6 +177,20 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "update-staleness",
 			name: "Update staleness scores",
 			callback: () => { void this.updateStaleness(); },
+		});
+
+		// Command: push scores to the configured endpoint
+		this.addCommand({
+			id: "push-scores",
+			name: "Push scores to endpoint",
+			callback: () => { void this.pushScoresToEndpoint(); },
+		});
+
+		// Command: push people graph to the web viewer
+		this.addCommand({
+			id: "push-people-graph",
+			name: "Push people graph to web",
+			callback: () => { void this.pushPeopleGraph(); },
 		});
 
 		// Command: full rescore, including a rebuilt relationship graph
@@ -211,7 +256,23 @@ export default class GmailCrmPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const data = ((await this.loadData()) ?? {}) as Record<string, unknown>;
+		// Migrate pre-0.5.1 score push keys.
+		const legacy: Array<[string, keyof GmailCrmSettings]> = [
+			["betaworksOsUrl", "scorePushUrl"],
+			["betaworksPartnerEmail", "scorePushEmail"],
+			["betaworksSalienceKey", "scorePushApiKey"],
+		];
+		let migrated = false;
+		for (const [oldKey, newKey] of legacy) {
+			if (oldKey in data) {
+				if (!(newKey in data)) data[newKey] = data[oldKey];
+				delete data[oldKey];
+				migrated = true;
+			}
+		}
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+		if (migrated) await this.saveSettings();
 		setScoringDebug(this.settings.debugScoring);
 	}
 
@@ -316,7 +377,8 @@ export default class GmailCrmPlugin extends Plugin {
 					await this.saveMessageCache();
 					const count = Object.keys(checkpointIndex.contacts).length;
 					console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
-				}
+				},
+				async events => { if (this.intelligenceReady) await this.intelligence.record(events); }
 			);
 
 			this.contactIndex = result.index;
@@ -337,7 +399,8 @@ export default class GmailCrmPlugin extends Plugin {
 				await syncCalendarData(
 					this.settings,
 					this.contactIndex.contacts,
-					this.contactIndex.userEmail
+					this.contactIndex.userEmail,
+				async events => { if (this.intelligenceReady) await this.intelligence.replaceCalendar(events); }
 				);
 				await this.saveContactIndex();
 			} catch (e: unknown) {
@@ -353,6 +416,22 @@ export default class GmailCrmPlugin extends Plugin {
 			// startup think the sync is still overdue and immediately redo it.
 			this.settings.lastSyncAt = Date.now();
 			await this.saveSettings();
+			// Contact photos and titles from Google Contacts (opt-in, non-fatal)
+			if (this.settings.fetchContactPhotos) {
+				notice.setMessage(`Synced ${contactCount} contacts — fetching photos...`);
+				try {
+					const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
+					await this.saveContactIndex();
+					console.log(`[Gmail CRM] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
+				} catch (e: unknown) {
+					const msg = e instanceof Error ? e.message : String(e);
+					if (msg.includes("401") || msg.includes("403")) {
+						new Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
+					} else {
+						console.warn(`[Gmail CRM] Photo sync skipped: ${msg}`);
+					}
+				}
+			}
 
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 
@@ -399,7 +478,8 @@ export default class GmailCrmPlugin extends Plugin {
 			await syncCalendarData(
 				this.settings,
 				this.contactIndex.contacts,
-				this.contactIndex.userEmail
+				this.contactIndex.userEmail,
+				async events => { if (this.intelligenceReady) await this.intelligence.replaceCalendar(events); }
 			);
 			await this.saveContactIndex();
 
@@ -416,6 +496,65 @@ export default class GmailCrmPlugin extends Plugin {
 				new Notice(`Calendar sync failed: ${msg}`);
 			}
 		}
+	}
+
+	async fetchContactPhotos() {
+		if (!this.settings.refreshToken) {
+			new Notice("Connect your account first in plugin settings");
+			return;
+		}
+		if (!this.contactIndex) {
+			new Notice("No contact index found. Run a contact sync first.");
+			return;
+		}
+		const notice = new Notice("Fetching contact photos...", 0);
+		try {
+			await this.gmailApi?.ensureFreshToken();
+			const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
+			await this.saveContactIndex();
+			notice.setMessage(`Photos: ${r.withPhoto} of ${r.checked} contacts have one, ${r.withOrg} have a title or company. Writing to pages...`);
+			await this.updateStaleness();
+			setTimeout(() => notice.hide(), 6000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			if (msg.includes("401") || msg.includes("403")) {
+				new Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
+			} else {
+				new Notice(`Photo sync failed: ${msg}`);
+			}
+		}
+	}
+
+	private async openIntelligence() {
+		const existing = this.app.workspace.getLeavesOfType(PEOPLE_INTELLIGENCE_VIEW)[0];
+		const leaf = existing ?? this.app.workspace.getLeaf("tab");
+		if (!existing) await leaf.setViewState({ type: PEOPLE_INTELLIGENCE_VIEW, active: true });
+		await this.app.workspace.revealLeaf(leaf);
+	}
+
+	private async loadIntelligenceWorkspace(refreshNotes = true) {
+		if (!this.intelligenceReady) throw new Error("The local intelligence file could not be read. Existing data has been preserved; repair it and reload the plugin.");
+		if (!this.intelligenceNotes || refreshNotes) {
+			this.intelligenceNotesLoad ??= (async () => {
+				const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+				const pages = await engine.loadPeoplePages();
+				const notes: SourcedNote[] = [];
+				for (const page of Object.values(pages)) {
+					for (const email of page.emails) notes.push({ email, text: page.content, path: page.path });
+				}
+				this.intelligenceNotes = notes;
+				return notes;
+			})().finally(() => { this.intelligenceNotesLoad = null; });
+			await this.intelligenceNotesLoad;
+		}
+		const notes = this.intelligenceNotes ?? [];
+		const indexPath = this.getIndexPath();
+		const index: ContactIndex = await this.app.vault.adapter.exists(indexPath)
+			? JSON.parse(await this.app.vault.adapter.read(indexPath)) as ContactIndex
+			: this.contactIndex ?? { schemaVersion: 1, userEmail: "", lastSync: "", contacts: {}, edges: [] };
+		index.edges ??= [];
+		return { index, notes, state: this.intelligence.state };
 	}
 
 	private async loadContactIndex() {
@@ -446,6 +585,9 @@ export default class GmailCrmPlugin extends Plugin {
 		// string is built synchronously on the main thread at every checkpoint.
 		const content = JSON.stringify(this.contactIndex);
 		await this.app.vault.adapter.write(normalizePath(path), content);
+		for (const leaf of this.app.workspace.getLeavesOfType(PEOPLE_INTELLIGENCE_VIEW)) {
+			if (leaf.view instanceof PeopleIntelligenceView) void leaf.view.refresh(false);
+		}
 	}
 
 	private getIndexPath(): string {
@@ -711,12 +853,22 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	/**
-	 * Full pass: reads every people page, rebuilds the relationship graph, and
-	 * rewrites every page's frontmatter. Correct but O(vault) in file reads, so
-	 * it is a manual command rather than the post-sync default.
-	 */
-	async rescoreAllContacts() {
+	/** Scored snapshot from the last staleness update, reused by the manual push command. */
+	private lastScoredPages: ScoredPage[] | null = null;
+
+	/** Load people pages, build the graph, and score every page without writing anything. */
+	private async computeScoredPages(): Promise<ScoredPage[]> {
+		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+		const pages = await engine.loadPeoplePages();
+		const graph = engine.buildGraph(pages, this.contactIndex);
+		return Object.entries(pages).map(([name, page]) => ({
+			page,
+			staleness: computeStaleness(page, graph[name] ?? []),
+		}));
+	}
+
+	async rescoreAllContacts(options: { push?: boolean } = {}) {
+		const { push = true } = options;
 		const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
 		const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
 		const notice = new Notice("Computing staleness scores...", 0);
@@ -729,10 +881,12 @@ export default class GmailCrmPlugin extends Plugin {
 
 			let done = 0;
 			let staleCount = 0;
+			const scoredPages: ScoredPage[] = [];
 			for (const [name, page] of Object.entries(pages)) {
 				done++;
 				const relationships = graph[name] ?? [];
 				const staleness = computeStaleness(page, relationships);
+				scoredPages.push({ page, staleness });
 				this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
 
 				if (staleness.label === "stale" || staleness.label === "dormant") {
@@ -782,11 +936,131 @@ export default class GmailCrmPlugin extends Plugin {
 			await this.saveSettings();
 
 			notice.setMessage(`Scored ${count} contacts — ${staleCount} going stale`);
+			this.lastScoredPages = scoredPages;
+
+			if (
+				push &&
+				this.settings.autoPushScores &&
+				this.settings.scorePushUrl &&
+				this.settings.scorePushEmail &&
+				this.settings.scorePushApiKey
+			) {
+				try {
+					const pushed = await pushScores(
+						{
+							url: this.settings.scorePushUrl,
+							ownerEmail: this.settings.scorePushEmail,
+							apiKey: this.settings.scorePushApiKey,
+						},
+						scoredPages
+					);
+					notice.setMessage(`Scored ${count} contacts — pushed ${pushed} to endpoint`);
+				} catch (e: unknown) {
+					// Push failures never block scoring.
+					const msg = e instanceof Error ? e.message : String(e);
+					console.error("[Gmail CRM] score push failed", e);
+					new Notice(`Score push failed: ${msg}`);
+				}
+			}
 			setTimeout(() => notice.hide(), 4000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Staleness update failed: ${msg}`);
+		}
+	}
+
+	async pushScoresToEndpoint() {
+		if (
+			!this.settings.scorePushUrl ||
+			!this.settings.scorePushEmail ||
+			!this.settings.scorePushApiKey
+		) {
+			new Notice("Set the score push endpoint URL, email, and API key in settings first");
+			return;
+		}
+		const notice = new Notice("Pushing scores...", 0);
+		try {
+			const scoredPages = this.lastScoredPages ?? (await this.computeScoredPages());
+			const pushed = await pushScores(
+				{
+					url: this.settings.scorePushUrl,
+					ownerEmail: this.settings.scorePushEmail,
+					apiKey: this.settings.scorePushApiKey,
+				},
+				scoredPages
+			);
+			notice.setMessage(`Pushed ${pushed} contacts`);
+			setTimeout(() => notice.hide(), 4000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`Score push failed: ${msg}`);
+		}
+	}
+
+	async pushPeopleGraph() {
+		if (!this.settings.graphPushUrl || !this.settings.graphPushToken) {
+			new Notice("Set the graph URL and push token in settings first (mint the token on the graph page)");
+			return;
+		}
+		if (!this.settings.graphPushSalt) {
+			this.settings.graphPushSalt = generateGraphSalt();
+			await this.saveSettings();
+		}
+		const notice = new Notice("Pushing people graph...", 0);
+		try {
+			const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+			const pages = await engine.loadPeoplePages();
+			const graph = engine.buildGraph(pages, this.contactIndex);
+
+			const contacts: GraphContactInput[] = [];
+			for (const [name, page] of Object.entries(pages)) {
+				const email = this.getEmailForPage(page);
+				if (!email) continue;
+				contacts.push({
+					email,
+					name,
+					company: this.getContactByEmail(email)?.company ?? this.getContactByEmail(email)?.orgName ?? null,
+					role: this.getContactByEmail(email)?.role ?? this.getContactByEmail(email)?.orgTitle,
+					photoUrl: this.getContactByEmail(email)?.photoUrl,
+					lastContact: page.gmailStats?.lastContact ?? null,
+					staleness: computeStaleness(page, graph[name] ?? []),
+				});
+			}
+			const edges = this.buildContactEdges(pages, graph);
+			let themeCandidates: LocalThemeCandidate[] = [];
+			try {
+				const workspace = await this.loadIntelligenceWorkspace(false);
+				const candidatePages: Array<PersonPage & { modifiedAt: string }> = [];
+				for (const page of Object.values(pages)) {
+					const file = this.app.vault.getAbstractFileByPath(page.path);
+					if (!(file instanceof TFile) || !Number.isFinite(file.stat.mtime)) continue;
+					candidatePages.push({ ...page, modifiedAt: new Date(file.stat.mtime).toISOString() });
+				}
+				themeCandidates = await buildLocalThemeCandidates(candidatePages, workspace.state.events as Interaction[]);
+			} catch {
+				// Local intelligence is optional: preserve the existing graph push when
+				// its private workspace is unavailable or cannot be read.
+				themeCandidates = [];
+			}
+
+			const payload = await buildGraphPayload(contacts, edges, this.settings.graphPushSalt, themeCandidates);
+			const pushed = await pushGraphToWeb(
+				{ url: this.settings.graphPushUrl, token: this.settings.graphPushToken },
+				payload
+			);
+			const pruned = contacts.length - pushed.nodes;
+			notice.setMessage(
+				pruned > 0
+					? `Pushed your ${pushed.nodes} most-connected people (${pruned} without ties left out), ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
+					: `Pushed ${pushed.nodes} people, ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
+			);
+			setTimeout(() => notice.hide(), 6000);
+		} catch (e: unknown) {
+			notice.hide();
+			const msg = e instanceof Error ? e.message : String(e);
+			new Notice(`People graph push failed: ${msg}`);
 		}
 	}
 
@@ -798,6 +1072,7 @@ export default class GmailCrmPlugin extends Plugin {
 	 * costs a few thousand file reads instead of 23k.
 	 */
 	async updateStaleness() {
+		this.lastScoredPages = null;
 		if (!this.contactIndex) {
 			new Notice("No contact index yet — run a sync first.");
 			return;
@@ -837,7 +1112,7 @@ export default class GmailCrmPlugin extends Plugin {
 				this.updateContactScore(page, staleness, scoreUpdatedAt, relationships);
 
 				const file = this.lookupPeoplePage(filesByName, contact);
-				if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt)) {
+				if (file && this.needsPageRewrite(previous, staleness, file, lastScoredAt, contact.photoUpdatedAt)) {
 					const content = await this.app.vault.read(file);
 					const updated = await fm.updateFrontmatter(
 						file,
@@ -928,8 +1203,10 @@ export default class GmailCrmPlugin extends Plugin {
 		previous: Contact["score"],
 		staleness: StalenessScore,
 		file: TFile,
-		lastScoredAt: number
+		lastScoredAt: number,
+		photoUpdatedAt?: number
 	): boolean {
+		if ((photoUpdatedAt ?? 0) > lastScoredAt) return true;
 		if (!previous) return true;
 		if (previous.label !== staleness.label) return true;
 		if (previous.quadrant !== staleness.quadrant) return true;
@@ -964,6 +1241,7 @@ export default class GmailCrmPlugin extends Plugin {
 			howKnown: null,
 			keyContext: null,
 			gmailStats: {
+				photoUrl: contact.photoUrl,
 				totalExchanges: contact.totalExchanges,
 				sentCount: contact.sentCount,
 				receivedCount: contact.receivedCount,

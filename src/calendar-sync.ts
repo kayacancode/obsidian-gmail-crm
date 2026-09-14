@@ -1,4 +1,5 @@
 import { requestUrl } from "obsidian";
+import type { Interaction } from "./intelligence-model";
 import type { GmailCrmSettings, Contact } from "./types";
 
 const CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
@@ -11,6 +12,7 @@ interface CalendarAttendee {
 }
 
 interface CalendarEvent {
+	id?: string;
 	summary?: string;
 	status?: string;
 	start?: { dateTime?: string; date?: string };
@@ -25,6 +27,7 @@ interface CalendarListResponse {
 }
 
 interface CalendarStats {
+	events: Interaction[];
 	meetings: number;
 	accepted: number;
 	organizedByThem: number;
@@ -40,23 +43,26 @@ interface CalendarStats {
 export async function syncCalendarData(
 	settings: GmailCrmSettings,
 	contacts: Record<string, Contact>,
-	userEmail?: string
+	userEmail?: string,
+	onInteractions?: (events: Interaction[]) => Promise<void>
 ): Promise<void> {
 	if (!settings.accessToken) {
 		console.warn("[Gmail CRM] Calendar sync skipped — no access token");
 		return;
 	}
 
+	let stats: Map<string, CalendarStats>;
 	try {
-		const ownerEmail = (userEmail ?? "").toLowerCase();
-		const stats = await fetchCalendarStats(settings, ownerEmail);
-		mergeCalendarStats(contacts, stats);
-		console.log(`[Gmail CRM] Calendar sync complete — updated ${stats.size} contacts`);
+		stats = await fetchCalendarStats(settings, (userEmail ?? "").toLowerCase());
 	} catch (e: unknown) {
 		const msg = e instanceof Error ? e.message : String(e);
-		// Don't throw — calendar data is additive / optional
 		console.warn(`[Gmail CRM] Calendar sync failed (non-fatal): ${msg}`);
+		return;
 	}
+	// Persistence failures must reach the caller; only optional API failures are non-fatal.
+	await onInteractions?.([...stats.values()].flatMap(s => s.events));
+	mergeCalendarStats(contacts, stats);
+	console.log(`[Gmail CRM] Calendar sync complete — updated ${stats.size} contacts`);
 }
 
 async function getHeaders(settings: GmailCrmSettings): Promise<Record<string, string>> {
@@ -87,7 +93,7 @@ async function fetchCalendarStats(
 			timeMax,
 			maxResults: "2500",
 			singleEvents: "true",
-			fields: "items(summary,start,end,attendees,organizer,status),nextPageToken",
+			fields: "items(id,summary,start,end,attendees,organizer,status),nextPageToken",
 		});
 		if (pageToken) params.set("pageToken", pageToken);
 
@@ -137,6 +143,7 @@ async function fetchCalendarStats(
 				let stat = statsMap.get(email);
 				if (!stat) {
 					stat = {
+						events: [],
 						meetings: 0,
 						accepted: 0,
 						organizedByThem: 0,
@@ -146,6 +153,9 @@ async function fetchCalendarStats(
 					statsMap.set(email, stat);
 				}
 
+				if (event.id && ownerAccepted && attendee.responseStatus === "accepted") {
+					stat.events.push({ id: event.id, email, date: eventDate.toISOString(), kind: "meeting", title: event.summary ?? "Calendar meeting", sourceId: event.id });
+				}
 				stat.meetings++;
 
 				// Both the owner and this attendee accepted

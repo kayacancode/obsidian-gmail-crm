@@ -1,6 +1,9 @@
 import { TFile, TFolder, Vault, normalizePath } from "obsidian";
 import type { PersonPage, Relationship } from "./types";
 import type { StalenessScore } from "./staleness";
+import { logoUrlForDomain } from "./people-photos";
+
+const GENERIC_DOMAINS = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "protonmail.com", "me.com", "live.com", "mail.com"]);
 
 export interface CrmFrontmatter {
 	email?: string;
@@ -36,6 +39,7 @@ export interface CrmFrontmatter {
 	// Email open tracking
 	open_engagement?: string;
 	open_count?: number;
+	photo?: string; // contact photo URL from Google Contacts
 }
 
 export class FrontmatterManager {
@@ -88,7 +92,7 @@ export class FrontmatterManager {
 		return null;
 	}
 
-	async resolveCompany(rawCompany: string): Promise<string> {
+	async resolveCompany(rawCompany: string, domain?: string): Promise<string> {
 		const matched = this.matchCompany(rawCompany);
 		if (matched) {
 			return `"[[${this.companiesFolder}/${matched}|${matched}]]"`;
@@ -108,6 +112,7 @@ export class FrontmatterManager {
 				"tags: [company]",
 				"type: company",
 				"status: active",
+				...(domain ? [`domain: ${domain}`, `logo: "${logoUrlForDomain(domain)}"`] : []),
 				"---",
 				"",
 				`# ${safeName}`,
@@ -133,9 +138,22 @@ export class FrontmatterManager {
 
 			// Update index
 			this.loadCompanyIndex().set(safeName.toLowerCase(), safeName);
+		} else if (domain && existing instanceof TFile) {
+			await this.ensureCompanyLogo(existing, domain);
 		}
 
 		return `"[[${this.companiesFolder}/${safeName}|${safeName}]]"`;
+	}
+
+	/** Add domain + logo to a company page that predates logo support. Leaves pages that already have a logo alone. */
+	private async ensureCompanyLogo(file: TFile, domain: string): Promise<void> {
+		const content = await this.vault.read(file);
+		const fm = content.match(/^---\n([\s\S]*?)\n---/);
+		if (!fm || /^logo:/m.test(fm[1])) return;
+		const lines = fm[1].split("\n");
+		if (!/^domain:/m.test(fm[1])) lines.push(`domain: ${domain}`);
+		lines.push(`logo: "${logoUrlForDomain(domain)}"`);
+		await this.vault.modify(file, content.replace(/^---\n[\s\S]*?\n---/, `---\n${lines.join("\n")}\n---`));
 	}
 
 	/**
@@ -167,6 +185,7 @@ export class FrontmatterManager {
 		};
 
 		if (page.email) crm.email = page.email;
+		if (page.gmailStats?.photoUrl) crm.photo = page.gmailStats.photoUrl;
 
 		let rawCompany: string | null = null;
 		if (page.role) {
@@ -180,15 +199,15 @@ export class FrontmatterManager {
 		if (!rawCompany && page.gmailStats?.domain) {
 			const d = page.gmailStats.domain;
 			// Skip generic email providers
-			const generic = new Set(["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com", "protonmail.com", "me.com", "live.com", "mail.com"]);
-			if (!generic.has(d)) {
-				rawCompany = d.split(".")[0]; // e.g., "betaworks" from "betaworks.com"
+			if (!GENERIC_DOMAINS.has(d)) {
+				rawCompany = d.split(".")[0]; // e.g., "acme" from "acme.com"
 				// Capitalize
 				rawCompany = rawCompany.charAt(0).toUpperCase() + rawCompany.slice(1);
 			}
 		}
 		if (rawCompany) {
-			crm.company = await this.resolveCompany(rawCompany);
+			const d = page.gmailStats?.domain;
+			crm.company = await this.resolveCompany(rawCompany, d && !GENERIC_DOMAINS.has(d) ? d : undefined);
 		}
 
 		if (page.gmailStats) {

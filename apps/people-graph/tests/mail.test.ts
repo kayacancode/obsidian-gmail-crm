@@ -1,0 +1,7 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {parseMessage,emailScore,seal,unseal,opaque} from '../src/mail-model';
+test('captures multiple To/Cc recipients without message bodies and deduplicates identity',()=>{const r=parseMessage({id:'x',internalDate:'1788955200000',payload:{headers:[{name:'From',value:'"Chen, Ada" <ada@example.com>'},{name:'To',value:'Me <me@example.com>, Bo <bo@example.com>'},{name:'Cc',value:'Bo <bo@example.com>'},{name:'Message-ID',value:'<unique@mail>'},{name:'Subject',value:'A meeting'}],body:{data:'SECRET'}}},'me@example.com');assert.equal(r?.key,'<unique@mail>');assert.equal(r?.participants.length,3);assert.equal(r?.participants[0].name,'Chen, Ada');assert.ok(!JSON.stringify(r).includes('SECRET'));});
+test('invalid message dates are not silently replaced with today',()=>{assert.equal(parseMessage({id:'x',payload:{headers:[]}},'me@example.com'),null);});
+test('reciprocity adds strength and stale relationships lose momentum',()=>{assert.ok(emailScore(10,10,0).strength>emailScore(20,0,0).strength);assert.ok(emailScore(10,10,180).momentum<emailScore(10,10,0).momentum);});
+test('encrypted grants are authenticated and identity hashes are tenant-scoped',async()=>{const key='one-secret',sealed=await seal('refresh-value',key);assert.ok(!sealed.includes('refresh-value'));assert.equal(await unseal(sealed,key),'refresh-value');await assert.rejects(unseal(sealed,'wrong'));assert.notEqual(await opaque('a','person@example.com',key),await opaque('b','person@example.com',key));});

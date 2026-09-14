@@ -221,6 +221,110 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// Score push section
+		new Setting(containerEl)
+			.setName("Fetch contact photos")
+			.setDesc("After each sync, pull profile photos and job titles from Google Contacts. Adds a photo field to people pages and a logo to company pages. Needs a one-time reconnect to grant contacts access.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.fetchContactPhotos)
+					.onChange(async (value) => {
+						this.plugin.settings.fetchContactPhotos = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl).setName("Score push").setHeading();
+
+		new Setting(containerEl)
+			.setName("Endpoint URL")
+			.setDesc("Server to push relationship scores to (receives POST /api/scores/push). Empty disables pushing.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.scorePushUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.scorePushUrl = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Your email")
+			.setDesc("Identity sent with each push, e.g. you@example.com.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.scorePushEmail)
+					.onChange(async (value) => {
+						this.plugin.settings.scorePushEmail = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("API key")
+			.setDesc("Sent as the X-Api-Key header to authenticate the push.")
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text
+					.setValue(this.plugin.settings.scorePushApiKey)
+					.onChange(async (value) => {
+						this.plugin.settings.scorePushApiKey = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Auto-push after scoring")
+			.setDesc("Push scores to the endpoint whenever staleness scores update.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoPushScores)
+					.onChange(async (value) => {
+						this.plugin.settings.autoPushScores = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		// People graph web view section
+		new Setting(containerEl).setName("People graph web view").setHeading();
+
+		new Setting(containerEl)
+			.setName("Graph URL")
+			.setDesc("Deployment to push your people graph to. Empty disables pushing.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.graphPushUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.graphPushUrl = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Graph push token")
+			.setDesc("Mint it on the graph page after signing in — pushes are tied to your account.")
+			.addText((text) => {
+				text.inputEl.type = "password";
+				text
+					.setValue(this.plugin.settings.graphPushToken)
+					.onChange(async (value) => {
+						this.plugin.settings.graphPushToken = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Push people graph to web")
+			.setDesc("Upload your current people and connections to the graph URL above, then refresh the web page.")
+			.addButton((button) => button
+				.setButtonText("Push graph")
+				.setCta()
+				.onClick(async () => {
+					button.setDisabled(true).setButtonText("Pushing…");
+					try { await this.plugin.pushPeopleGraph(); }
+					finally { button.setDisabled(false).setButtonText("Push graph"); }
+				}));
+
 		// Notes section
 		new Setting(containerEl).setName("Contact notes").setHeading();
 

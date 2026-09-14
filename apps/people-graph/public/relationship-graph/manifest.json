@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "sourceRevision": "495a58b168e1e010a5cac1677d1a9a8a305c68221337ad8b47dad34d34651439",
+  "files": {
+    "graph.mjs": "7589d9d62d11d226b272dfb7df63e1db55e3c145b37f68be3d1247a287a91e4c",
+    "graph.css": "725f0a4c3ac788169ad69bc842211ef61b3607d70396d501b19a6a3c75965043",
+    "model.mjs": "ac1dd1e8fa628fb255ccf802f95c8e614cd32cfcca905059b8206c848418f942",
+    "paths.mjs": "f6a8ccd5188268291188e54bdf517ebda94a2afdd86833e03b5536d054daf80f",
+    "spatial-photo-atlas.jpg": "4ec0f3f4c2eab0068dbb46cd63425d43f1071ebf95097516c8a696b6c755b069"
+  }
+}
