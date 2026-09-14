@@ -246,6 +246,7 @@ export function mountGraph(element, options = {}) {
     section.append(make('p', 'rg-topic-explanation', themes.length
       ? onlySubjects ? 'Based on email subjects. Deeper topics need approved body analysis or synced meeting notes.' : 'Themes from your permitted sources. Choose one to see its people and evidence.'
       : `No ${lens === 'firm' ? 'firm-shared' : lens === 'public' ? 'public-source' : 'evidence-backed'} themes yet in this view.`));
+    section.querySelector('.rg-topic-explanation').append(make('span', 'rg-heat-legend', 'Color = theme · Glow = recent relevance, not closeness'));
     const chips = make('div', 'rg-topic-chips');
     const promoted = promotedThemes();
     const active = themes.find(theme => theme.themeId === activeThemeId);
@@ -433,10 +434,10 @@ export function mountGraph(element, options = {}) {
           // Each topic paints local patches around its members, not one huge wash
           // across everyone between them. Per-layer opacity bounds accumulation.
           const color = themeColor(field.themeId);
-          area.style.opacity = String(.12 + field.score / 100 * .14);
+          area.style.opacity = String(.18 + field.score / 100 * .28);
           area.style.backgroundImage = field.nodeIds.map(id => {
             const point = positions.get(id);
-            return `radial-gradient(ellipse 100px 85px at ${point.x}px ${point.y}px, rgb(${color}) 0%, rgb(${color} / .55) 35%, transparent 78%)`;
+            return `radial-gradient(ellipse 125px 105px at ${point.x}px ${point.y}px, rgb(${color} / .95) 0%, rgb(${color} / .6) 48%, rgb(${color} / 0) 100%)`;
           }).join(',');
           fields.append(area);
         });

@@ -47,6 +47,9 @@ try {
     assert.ok(await page.locator('.rg-theme-field').count()<=3);
     assert.ok(await page.locator('.rg-person-heat').count()<=3);
     assert.equal(await page.getByRole('button',{name:'•',exact:true}).count(),0);
+    const layers = await page.locator('.rg-theme-field').evaluateAll(nodes=>nodes.map(n=>({opacity:Number(getComputedStyle(n).opacity),background:getComputedStyle(n).backgroundImage})));
+    assert.ok(layers.every(layer=>layer.opacity>=.18&&layer.opacity<=.46));
+    assert.ok(layers.every(layer=>layer.background.includes('125px 105px')),'heat extends visibly beyond the photo footprint');
   });
   await page.setViewportSize({width:1596,height:900});
   await page.waitForTimeout(100);

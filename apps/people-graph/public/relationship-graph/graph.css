@@ -810,6 +810,7 @@
 .rg-shell .rg-topic-reset[aria-pressed='true'] { color: var(--rg-orange); border-bottom-color: var(--rg-orange); }
 .rg-topic-heading select { margin-left: auto; width: min(240px, 40%); min-width: 0; padding: 5px; border: 1px solid var(--rg-line); background: var(--rg-panel); }
 .rg-topic-explanation { margin: 8px 0 12px; color: var(--rg-muted); font-size: 11px; line-height: 1.5; }
+.rg-heat-legend { display: block; }
 .rg-topic-chips { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
 .rg-shell .rg-theme-label { flex: 0 0 auto; max-width: 210px; padding: 6px 10px; border: 1px solid var(--rg-line); border-left: 3px solid rgb(var(--field-color)); background: var(--rg-background); color: var(--rg-foreground); font-size: 12px; text-align: left; pointer-events: auto; }
 .rg-theme-label small { display: block; margin-top: 2px; font-size: 10px; max-width: 195px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
