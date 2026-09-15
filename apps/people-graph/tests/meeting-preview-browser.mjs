@@ -34,6 +34,18 @@ try {
   await upload(batch);await page.getByRole('button',{name:'Load private preview',exact:true}).click();
   await page.getByRole('button',{name:'Why Fictional memory priority is hot now'}).waitFor();
   assert.equal(await page.locator('.rg-node').count(),115);
+  for (const width of [1280, 1024, 859, 390]) {
+    await page.setViewportSize({width,height:900});
+    const overlaps = await page.evaluate(() => {
+      const source=document.querySelector('#source-wrap').getBoundingClientRect();
+      return [...document.querySelectorAll('.top-actions > *')].some(element => {
+        const actions=element.getBoundingClientRect();
+        return actions.width > 0 && source.left < actions.right && source.right > actions.left && source.top < actions.bottom && source.bottom > actions.top;
+      });
+    });
+    assert.equal(overlaps,false,`preview controls must not overlap the source picker at ${width}px`);
+  }
+  await page.setViewportSize({width:1280,height:900});
   await page.getByRole('button',{name:'Why Fictional memory priority is hot now'}).click();
   const panel=page.getByLabel('Why this is hot now',{exact:true});
   assert.match(await panel.innerText(),/Our suggestion/i);assert.match(await panel.innerText(),/Meeting summary, not a direct quote/);
