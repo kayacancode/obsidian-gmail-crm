@@ -2,6 +2,7 @@ import { normalizeGraph, searchGraph } from './model.mjs';
 import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
+import { parseMeetingBatch, meetingPreviewState, withMeetingPreview } from './meeting-preview.mjs';
 
 const DIRECTORY_PAGE_SIZE = 50;
 // World-space gutters include names and Why now controls. The camera scales the
@@ -83,6 +84,9 @@ export function mountGraph(element, options = {}) {
   let relevanceStatus = '';
   let correctionOpen = false;
   let relevanceGraph;
+  let meetingBatch = null;
+  let meetingFeedback = Object.create(null);
+  let meetingPreview = null;
 
   function validLens(value) {
     if (!['my', 'firm', 'public', 'off'].includes(value)) throw new Error('Relevance lens is unsupported');
@@ -97,15 +101,18 @@ export function mountGraph(element, options = {}) {
   }
 
   function refreshRelevance() {
+    meetingPreview = meetingPreviewState(meetingBatch, graph, meetingFeedback);
     relevanceGraph = lens === 'off'
       ? { ...graph, themes: [], themeSignals: [], relevance: { themes: [], connectors: [], discoveries: [] }, connectors: [] }
       : filterRelevance(graph, lens);
+    relevanceGraph = withMeetingPreview(relevanceGraph, meetingPreview, lens);
     // A stored score without visible, active evidence must never create a glow.
     const activeIds = new Set(relevanceGraph.themes.filter(theme => theme.status === 'active').map(theme => theme.id));
     relevanceGraph = { ...relevanceGraph, relevance: { ...relevanceGraph.relevance,
       themes: relevanceGraph.relevance.themes.filter(theme => activeIds.has(theme.themeId) && theme.score > 0 && theme.components.length),
     } };
-    if (activeThemeId && !relevanceGraph.relevance.themes.some(theme => theme.themeId === activeThemeId)) {
+    if (activeThemeId && !relevanceGraph.relevance.themes.some(theme => theme.themeId === activeThemeId)
+      && !(lens === 'my' && meetingPreview?.cards.some(card => card.themeId === activeThemeId))) {
       activeThemeId = null;
       relevancePersonId = null;
       if (panelMode === 'why') panelMode = selectedId ? 'node' : null;
@@ -216,7 +223,8 @@ export function mountGraph(element, options = {}) {
   }
 
   function rankedThemes() {
-    return relevanceGraph.relevance.themes.slice().sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    const previewIds = new Set(lens === 'my' ? meetingPreview?.themes.map(theme => theme.themeId) : []);
+    return relevanceGraph.relevance.themes.slice().sort((a, b) => Number(previewIds.has(b.themeId)) - Number(previewIds.has(a.themeId)) || b.score - a.score || a.name.localeCompare(b.name));
   }
 
   function promotedThemes() {
@@ -232,6 +240,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function themeSource(theme) {
+    if (meetingPreview?.cards.some(card => card.themeId === theme.themeId)) return 'Granola preview';
     const types = new Set(theme.components.map(component => component.sourceType));
     if (types.size === 1 && types.has('gmail_subject')) return 'Email subject';
     if (types.has('gmail_body_derived')) return 'AI-extracted topic';
@@ -250,6 +259,7 @@ export function mountGraph(element, options = {}) {
     const reset = button('All themes', 'clear-theme', 'rg-topic-reset');
     reset.setAttribute('aria-pressed', String(!activeThemeId));
     heading.append(reset);
+    if (meetingPreview && lens === 'my') heading.append(button('Review meeting batch', 'review-meetings', 'rg-topic-reset'));
     const picker = make('select');
     picker.dataset.action = 'browse-theme';
     picker.setAttribute('aria-label', 'Browse all themes');
@@ -541,6 +551,8 @@ export function mountGraph(element, options = {}) {
   }
 
   function renderWhyPanel() {
+    const card = lens === 'my' && meetingPreview?.cards.find(item => item.themeId === activeThemeId);
+    if (card) return renderMeetingCard(card);
     const theme = relevanceGraph.relevance.themes.find(item => item.themeId === activeThemeId);
     if (!theme) return null;
     const panel = make('section', 'rg-context-panel rg-why-panel');
@@ -605,6 +617,57 @@ export function mountGraph(element, options = {}) {
     const publicSource = button('Add public source', 'open-public-source', 'rg-theme-action');
     publicSource.disabled = relevancePending || typeof callbacks.onOpenPublicSource !== 'function';
     panel.append(context, publicSource);
+    return panel;
+  }
+
+  function meetingPanel(label) {
+    const panel = make('section', 'rg-context-panel rg-why-panel');
+    panel.setAttribute('aria-label', label);
+    const close = button('×', 'close-panel', 'rg-close');
+    close.setAttribute('aria-label', 'Close meeting preview');panel.append(close);
+    panel.append(make('p', 'rg-eyebrow', 'Private Granola preview'),
+      make('p', 'rg-source', 'This tab only. Refresh, source changes, and sign-out clear the preview and review choices. No automatic actions.'));
+    return panel;
+  }
+
+  function renderMeetingReview() {
+    const panel = meetingPanel('Meeting preview review');
+    panel.append(make('h2', '', `${meetingBatch.notes.length} notes · ${meetingPreview.cards.length} suggestions`));
+    for (const card of meetingPreview.cards) {
+      const row = button('', 'inspect-meeting', 'rg-theme-action');row.dataset.themeId = card.themeId;
+      row.append(make('strong', '', card.name), make('span', 'rg-source', ` · ${card.status}${!card.score && card.status === 'active' ? ' · aging; check status' : ''}`));
+      panel.append(row);
+    }
+    panel.append(button('Remove preview', 'remove-meetings', 'rg-theme-action'));
+    return panel;
+  }
+
+  function renderMeetingCard(card) {
+    const panel = meetingPanel('Why this is hot now');
+    panel.append(make('h2', '', card.name), make('p', 'rg-source', `Status: ${card.status} · ${card.meetingCount} source meeting${card.meetingCount === 1 ? '' : 's'}`),
+      make('h3', 'rg-eyebrow', 'Why now — our interpretation'), make('p', 'rg-copy', card.whyNow),
+      make('p', 'rg-source', card.score ? `Preview heat ${card.score}/100: meeting recency and distinct source count, not certainty or relationship strength.${card.confirmed ? ' You marked this still relevant for 7 days.' : ''}` : 'No heat. This suggestion is resolved, dismissed, superseded, or needs a fresh relevance check.'),
+      make('h3', 'rg-eyebrow', 'Recorded meeting evidence'));
+    for (const evidence of card.evidence) {
+      const item = make('article', 'rg-evidence-item');
+      const link = make('a', 'rg-source', evidence.title);link.href = evidence.url;link.target = '_blank';link.rel = 'noopener noreferrer';link.referrerPolicy = 'no-referrer';
+      item.append(make('p', 'rg-copy', evidence.text), make('p', 'rg-source', `${evidence.date.slice(0,10)} · ${evidence.attribution}`), link);panel.append(item);
+    }
+    panel.append(make('h3', 'rg-eyebrow', 'People in this context'));
+    if (!card.people.length) panel.append(make('p', 'rg-source', 'No specific person is asserted by this suggestion. No person-level heat added.'));
+    for (const person of card.people) {
+      const item = make('article', 'rg-evidence-item');
+      if (person.nodeId) { const personButton = button(`${person.label} ↗`, 'select-node', 'rg-theme-action');personButton.dataset.nodeId = person.nodeId;item.append(personButton); }
+      else item.append(make('strong', '', person.label));
+      item.append(make('p', 'rg-source', person.context), make('p', 'rg-source', person.nodeId ? 'Suggested name + organization match. Verify identity; this is not proof of expertise, attendance, or willingness.' : 'No unambiguous available map match. No heat added for this person.'));panel.append(item);
+    }
+    panel.append(make('h3', 'rg-eyebrow', 'Our suggestion'), make('p', 'rg-copy', card.suggestion));
+    const controls = make('div', 'rg-actions');
+    for (const [name, action] of [['Still relevant','still-relevant'],['Resolved','resolve'],['Dismiss','dismiss']]) {
+      const control = button(name, 'review-meeting');control.dataset.meetingId = card.id;control.dataset.review = action;
+      control.disabled = card.status !== 'active';controls.append(control);
+    }
+    panel.append(controls, button('Review meeting batch', 'review-meetings', 'rg-theme-action'));
     return panel;
   }
 
@@ -781,6 +844,7 @@ export function mountGraph(element, options = {}) {
 
   function render(focusAction = null) {
     if (destroyed) return;
+    refreshRelevance();
     root.dataset.demo = String(demoEnabled());
     root.replaceChildren();
     const header = make('header', 'rg-header');
@@ -832,7 +896,8 @@ export function mountGraph(element, options = {}) {
     if (panelMode === 'why' && lens !== 'off') {
       const panel = renderWhyPanel();
       if (panel) root.append(panel);
-    } else if (panelMode === 'edge') root.append(renderEvidencePanel());
+    } else if (panelMode === 'meeting-review' && lens === 'my' && meetingPreview) root.append(renderMeetingReview());
+    else if (panelMode === 'edge') root.append(renderEvidencePanel());
     else if (panelMode === 'node' && !pathState) root.append(renderNodePanel());
     if (lens !== 'off' && !pathState) {
       const discoveries = renderDiscoveries();
@@ -976,7 +1041,18 @@ export function mountGraph(element, options = {}) {
     const target = event.target.closest?.('[data-action]');
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
-    if (action === 'clear-theme') {
+    if (action === 'review-meetings' && meetingPreview && lens === 'my') {
+      panelMode = 'meeting-review';render();
+    } else if (action === 'remove-meetings') {
+      meetingBatch = null;meetingFeedback = Object.create(null);activeThemeId = null;panelMode = null;render();
+    } else if (action === 'inspect-meeting' && lens === 'my') {
+      const card = meetingPreview?.cards.find(item => item.themeId === target.dataset.themeId);if (!card) return;
+      activeThemeId = card.themeId;panelMode = 'why';query = '';focusCanvas(card.people.flatMap(person => person.nodeId ? [person.nodeId] : []));render();
+    } else if (action === 'review-meeting' && lens === 'my') {
+      const card = meetingPreview?.cards.find(item => item.id === target.dataset.meetingId);
+      if (!card || card.status !== 'active' || !['still-relevant','resolve','dismiss'].includes(target.dataset.review)) return;
+      meetingFeedback[card.id] = {action:target.dataset.review,at:new Date().toISOString()};render();
+    } else if (action === 'clear-theme') {
       invalidateRelevance();activeThemeId = null;relevancePersonId = null;
       camera = { x: 0, y: 0, zoom: 1 };
       panelMode = selectedId ? 'node' : null;render();
@@ -1182,8 +1258,15 @@ export function mountGraph(element, options = {}) {
   render();
 
   return {
+    setMeetingPreview(input) {
+      if (destroyed) return;
+      const batch = parseMeetingBatch(input, options.previewAccount);
+      meetingBatch = batch;meetingFeedback = Object.create(null);lens = 'my';activeThemeId = null;
+      panelMode = 'meeting-review';render();
+    },
     setGraph(nextGraph) {
       if (destroyed) return;
+      meetingBatch = null;meetingFeedback = Object.create(null);
       graph = normalizeGraph(nextGraph);
       invalidateRelevance();
       refreshRelevance();
@@ -1253,6 +1336,7 @@ export function mountGraph(element, options = {}) {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      meetingBatch = null;meetingFeedback = Object.create(null);meetingPreview = null;
       invalidateRelevance();
       pathRequest += 1;
       resizeObserver?.disconnect();

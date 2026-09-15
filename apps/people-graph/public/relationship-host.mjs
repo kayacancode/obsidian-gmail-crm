@@ -89,6 +89,8 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     }
   }
   async function loadEvidence(themeId) {
+    // Local meeting drafts must never be sent through persisted-theme APIs.
+    if (typeof themeId === 'string' && themeId.startsWith('meeting-preview:')) return;
     const ctx = context(), run = relevanceGeneration;
     const value = await request(withSource(`/api/themes/${encodeURIComponent(themeId)}/evidence`, `lens=${state.lens === 'off' ? 'my' : state.lens}`), {}, ctx);
     if (run !== relevanceGeneration) return;
@@ -344,6 +346,10 @@ async function startBrowserApp() {
   let renderedEnvelope = null;
   let activeDialog = null;
   const sessionTrails = new Map();
+  const meetingPreviewButton = document.createElement('button');
+  meetingPreviewButton.id = 'meeting-preview';meetingPreviewButton.type = 'button';meetingPreviewButton.textContent = 'Meeting preview';meetingPreviewButton.hidden = true;
+  $('#refresh').after(meetingPreviewButton);
+  meetingPreviewButton.onclick = openMeetingPreview;
 
   function closeDialog() { activeDialog?.remove(); activeDialog = null; }
   function dialog(title) {
@@ -372,6 +378,26 @@ async function startBrowserApp() {
   function paragraph(parent,text) { const p=document.createElement('p');p.textContent=text;parent.append(p);return p; }
   function action(parent,label,handler) { const button=document.createElement('button');button.type='button';button.textContent=label;button.onclick=handler;parent.append(button);return button; }
   function errorMessage(error) { if(error.name!=='AbortError')status.textContent=error.message; }
+  function openMeetingPreview() {
+    if (!graphInstance || !mountedAccount) return;
+    const instance = graphInstance, account = mountedAccount;
+    const view = dialog('Private meeting preview');
+    paragraph(view.content,'Load a reviewed batch of up to 5 Granola notes. The file is read locally in this tab, not uploaded to the server. It must belong to the signed-in graph account.');
+    paragraph(view.content,'This is a manual distillation preview, not automatic Granola sync. Refresh, source changes, and sign-out clear the preview and review choices. Original notes and graph data are unchanged.');
+    const input = document.createElement('input');input.type = 'file';input.accept = '.json,application/json';input.setAttribute('aria-label','Reviewed meeting batch');view.content.append(input);
+    const load = action(view.content,'Load private preview',async()=>{
+      const file = input.files?.[0];if (!file) {view.message.textContent='Choose a reviewed meeting batch first.';return;}
+      if (file.size > 100_000) {view.message.textContent='Meeting preview file is too large.';return;}
+      if (controller.getState().lens !== 'my') {view.message.textContent='Switch Relevance now to My mind before loading this private preview.';return;}
+      load.disabled = true;input.disabled = true;
+      try {
+        const contents = await file.text();
+        if (!view.element.isConnected || instance !== graphInstance || account !== mountedAccount) return;
+        instance.setMeetingPreview(contents);closeDialog();status.textContent='Private Granola preview loaded · this tab only · no automatic actions';
+      } catch(error) {if (view.element.isConnected) view.message.textContent=error.message;}
+      finally {load.disabled = false;input.disabled = false;}
+    });
+  }
   async function openRetrieval(scope) {
     const view=dialog('Retrieve more context');
     const person=mountedGraph?.nodes.find(node=>node.id===scope.personId);
@@ -435,7 +461,7 @@ async function startBrowserApp() {
   }
 
   function setAuthenticatedControls(visible) {
-    for (const id of ['source-wrap', 'refresh', 'setup', 'signout']) $(`#${id}`).hidden = !visible;
+    for (const id of ['source-wrap', 'refresh', 'setup', 'signout', 'meeting-preview']) $(`#${id}`).hidden = !visible;
     signin.hidden = visible;
   }
 
@@ -520,7 +546,7 @@ async function startBrowserApp() {
       $('#graph').replaceChildren();
       mountedAccount = state.account;
     }
-    if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, title: 'People relationships', onSaveTrail: saveBrowserTrail,
+    if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, title: 'People relationships', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
       onLensChange: lens => controller.loadRelevance(lens), onThemeFeedback: input => controller.submitFeedback(input),
       onRetrievePreview: scope => openRetrieval(scope), onOpenPublicSource: scope => openPublicSource(scope) });
     else if (mountedGraph !== state.graph) graphInstance.setGraph(state.graph);

@@ -57,6 +57,16 @@ Connector rings summarize documented or inferred graph structure. They do not pr
 
 The top **Topics & themes** strip labels each theme's source; all themes remain in its picker. Gmail's normal sync supplies subject-derived signals, not body-understood topics. The overview promotes up to five non-boilerplate themes and paints at most three localized fields; selecting a theme focuses one field and brings its members into view. Up to three labeled **Why now** controls expose evidence at close zoom. The full authorized network occupies a spaced world canvas: **Fit** frames every person, drag/arrow keys pan, and zoom or selection reveals names and details. Portraits, heat and labels share one camera transform; viewport size never caps the network. **Off** removes heat without moving the current people.
 
+## Private meeting preview
+
+**Meeting preview** accepts a manually reviewed JSON distillation of at most five Granola notes and ten suggestions, scoped to the signed-in graph account. This pilot does not connect to Granola, fetch notes, call AI, or upload its file. Meeting summaries are never bundled with the public application. The batch and **Still relevant / Resolved / Dismiss** choices live only in browser memory; refresh, graph-source changes, account changes, and sign-out clear them. **Review meeting batch** retains resolved/superseded items for inspection without heat.
+
+The file uses `version: 1`, an opaque `id`, `account`, `reviewedAt`, `notes` (`id`, `title`, `date`), and `themes` (`id`, `name`, `status`, `whyNow`, `suggestion`, `evidence`, `people`). Each evidence item binds `noteId`, `text`, and `attribution` to a note in the batch. Each person has `label`, `context`, `matchName`, and `matchCompany`; the last two are either both null (unmatched) or an exact unique name/organization match, explicitly labeled suggested in the UI. Ambiguous and restricted identities never get heat. No relationship edges are created.
+
+The private preview appears only under **My mind**. Its transparent priority heuristic starts at 40 plus 10 per distinct source meeting, capped at 80, with a 14-day half-life and a 45-day cutoff based on meeting dates, not import dates. A **Still relevant** confirmation gives a 65-point floor for seven days; this is advisory preview priority, not confidence or relationship strength. This small-batch UI validates a reviewed distillation; it is not an automated topic-extraction or proactive-notification pipeline.
+
+Run `npm run test:meeting-preview-browser` against the local development server to exercise import, privacy, evidence links, review controls, and lifecycle clearing with fictional data.
+
 ## Development
 
 ```sh
