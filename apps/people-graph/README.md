@@ -55,7 +55,7 @@ Relevance heat is an advisory view of recent metadata and user-confirmed evidenc
 
 Connector rings summarize documented or inferred graph structure. They do not prove that anyone is close to the user, willing to help, or able to make an introduction. The system never sends outreach, emails or introduction requests; it only presents context for a person to review and act on themselves.
 
-The top **Topics & themes** strip labels each theme's source; all themes remain in its picker. Gmail's normal sync supplies subject-derived signals, not body-understood topics. The overview promotes up to five non-boilerplate themes and paints at most three localized fields; selecting a theme focuses one field and brings otherwise off-canvas members into view. Up to three labeled **Why now** controls expose evidence. Canvas capacity adapts to space for portraits, names and controls; the complete network remains in search and All results. **Off** removes heat without moving the current people.
+The top **Topics & themes** strip labels each theme's source; all themes remain in its picker. Gmail's normal sync supplies subject-derived signals, not body-understood topics. The overview promotes up to five non-boilerplate themes and paints at most three localized fields; selecting a theme focuses one field and brings its members into view. Up to three labeled **Why now** controls expose evidence at close zoom. The full authorized network occupies a spaced world canvas: **Fit** frames every person, drag/arrow keys pan, and zoom or selection reveals names and details. Portraits, heat and labels share one camera transform; viewport size never caps the network. **Off** removes heat without moving the current people.
 
 ## Development
 
@@ -66,7 +66,7 @@ npm run smoke        # end-to-end against wrangler dev --local
 
 ## Relationship discovery
 
-Search the full authorized graph by recorded names, companies, roles and relationship context. The canvas intentionally renders a bounded overview or selected neighborhood while the paginated directory and search retain access to every returned person. Select a person, inspect labelled links and their source context, compare arbitrary routes, and return to the prior canvas state. Co-recipient routes are marked as requiring verification; path output is never a claim that someone is willing to make an introduction.
+Search the full authorized graph by recorded names, companies, roles and relationship context. The canvas retains every returned person; only an explicit search or path view narrows the rendered set. Selecting people or themes moves the camera without replacing the network. The paginated directory remains an alternative, not the only way to reach off-screen people. Select a person, inspect labelled links and their source context, compare arbitrary routes, and return to the prior canvas state. Co-recipient routes are marked as requiring verification; path output is never a claim that someone is willing to make an introduction.
 
 The browser never writes the current graph or route to durable storage. API graph ownership must match the signed-in account, stale in-flight requests are ignored after account/source changes, and a sign-out is accepted only after the server confirms it.
 

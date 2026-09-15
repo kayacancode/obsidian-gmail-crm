@@ -117,6 +117,12 @@
   cursor: grabbing;
 }
 
+.rg-map-viewport { position: absolute; overflow: hidden; }
+.rg-scene { position: absolute; transform-origin: 0 0; }
+.rg-canvas[data-detail='false'] .rg-node-label,
+.rg-canvas[data-detail='false'] .rg-person-heat,
+.rg-canvas[data-detail='false'] .rg-edge-label { display: none; }
+
 .rg-canvas svg,
 .rg-nodes,
 .rg-edge-labels {
@@ -209,7 +215,8 @@
 .rg-node-label {
   position: absolute;
   top: calc(100% + 8px);
-  left: 0;
+  left: 50%;
+  transform: translateX(-50%);
   width: var(--label-width, 136px);
   max-width: 175px;
   max-height: 43px;

@@ -3,10 +3,11 @@ import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
 
-const CANVAS_NODE_LIMIT = 80;
 const DIRECTORY_PAGE_SIZE = 50;
-// Includes portrait, two-line label and the occasional Why now control at 75% zoom.
+// World-space gutters include names and Why now controls. The camera scales the
+// entire scene; viewport size must never determine how many people exist on it.
 const CANVAS_ROW_PITCH = 210;
+const CANVAS_COLUMN_PITCH = 160;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function initials(name) {
@@ -27,17 +28,16 @@ function hash(value) {
   return result >>> 0;
 }
 
-function positionFor(node, index, total, layout) {
+function positionFor(node, index, layout) {
   const seed = hash(node.id);
-  const columns = Math.min(layout.columns, total);
+  const columns = layout.columns;
   const column = index % columns;
   const row = Math.floor(index / columns);
-  const cellWidth = layout.usableWidth / Math.max(1, columns);
   return {
-    x: 32 + cellWidth * (column + .5) + ((seed & 255) / 255 - .5) * 12,
-    y: layout.top + 54 + row * CANVAS_ROW_PITCH + (((seed >>> 8) & 255) / 255 - .5) * 10,
+    x: CANVAS_COLUMN_PITCH * (column + .5) + ((seed & 255) / 255 - .5) * 12,
+    y: 90 + row * CANVAS_ROW_PITCH + (((seed >>> 8) & 255) / 255 - .5) * 10,
     size: 72 + (seed % 19),
-    labelWidth: Math.min(136, cellWidth - 24),
+    labelWidth: 136,
   };
 }
 
@@ -61,6 +61,7 @@ export function mountGraph(element, options = {}) {
   let graph = normalizeGraph(options.graph ?? { nodes: [], edges: [] });
   const demoEnabled = () => options.demo === true && graph.meta.fictional === true;
   let byId;
+  let nodeIndex;
   let edgesByNode;
   let selectedId = null;
   let selectedEdgeId = null;
@@ -76,7 +77,6 @@ export function mountGraph(element, options = {}) {
   let camera = { x: 0, y: 0, zoom: 1 };
   let lens = validLens(options.lens ?? 'my');
   let activeThemeId = null;
-  let canvasThemeMembers = [];
   let relevancePersonId = null;
   let relevanceRequest = 0;
   let relevancePending = false;
@@ -173,6 +173,7 @@ export function mountGraph(element, options = {}) {
 
   function rebuildIndexes() {
     byId = new Map(graph.nodes.map((node) => [node.id, node]));
+    nodeIndex = new Map(graph.nodes.map((node, index) => [node.id, index]));
     edgesByNode = new Map(graph.nodes.map((node) => [node.id, []]));
     for (const edge of graph.edges) {
       edgesByNode.get(edge.source).push(edge);
@@ -188,13 +189,30 @@ export function mountGraph(element, options = {}) {
     const width = element.clientWidth || 1000;
     const height = Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
-    const usableWidth = Math.max(132, width - (width >= 1100 ? 380 : 64));
+    const usableWidth = Math.max(132, width - (width >= 1100 ? 380 : 48));
     const top = width <= 700 ? 365 : 260;
-    const columns = Math.max(1, Math.floor(usableWidth / 140));
-    // First center + largest lower label footprint + bottom controls; count the
-    // first row explicitly so narrow screens still use the available second row.
-    const rows = Math.max(1, 1 + Math.floor((height - top - 54 - 96 - 72) / CANVAS_ROW_PITCH));
-    return { width, height, usableWidth, top, columns, capacity: Math.min(CANVAS_NODE_LIMIT, columns * rows) };
+    const usableHeight = height - top - 86;
+    const count = Math.max(1, graph.nodes.length);
+    const columns = Math.min(count, Math.max(1, Math.ceil(Math.sqrt(count * usableWidth / usableHeight * CANVAS_ROW_PITCH / CANVAS_COLUMN_PITCH))));
+    const rows = Math.ceil(count / columns);
+    const worldWidth = columns * CANVAS_COLUMN_PITCH;
+    const worldHeight = rows * CANVAS_ROW_PITCH;
+    const fitScale = Math.min(1, usableWidth / worldWidth, usableHeight / worldHeight);
+    return { width, height, usableWidth, usableHeight, top, columns, worldWidth, worldHeight, fitScale };
+  }
+
+  function focusCanvas(ids) {
+    const layout = canvasLayout();
+    const points = ids.filter(id => byId.has(id)).map(id => positionFor(byId.get(id), nodeIndex.get(id), layout));
+    if (!points.length) return;
+    const left = Math.min(...points.map(p => p.x)) - 80;
+    const right = Math.max(...points.map(p => p.x)) + 80;
+    const top = Math.min(...points.map(p => p.y)) - 80;
+    const bottom = Math.max(...points.map(p => p.y)) + 110;
+    const scale = Math.min(1, layout.usableWidth / (right - left), layout.usableHeight / (bottom - top));
+    camera = { zoom: scale / layout.fitScale,
+      x: (layout.worldWidth / 2 - (left + right) / 2) * scale,
+      y: (layout.worldHeight / 2 - (top + bottom) / 2) * scale };
   }
 
   function rankedThemes() {
@@ -265,10 +283,6 @@ export function mountGraph(element, options = {}) {
   }
 
   function visibleCanvasData() {
-    const limit = canvasLayout().capacity;
-    const members = new Set(canvasThemeMembers);
-    const prioritize = nodes => nodes.slice(limit).some(node => members.has(node.id))
-      ? nodes.sort((a,b) => Number(members.has(b.id)) - Number(members.has(a.id))) : nodes;
     if (currentRoute()) {
       const route = currentRoute();
       return {
@@ -280,24 +294,19 @@ export function mountGraph(element, options = {}) {
     }
     if (selectedId) {
       const allEdges = edgesByNode.get(selectedId) ?? [];
-      const visibleEdges = allEdges.slice(0, limit - 1);
-      const relatedIds = new Set([selectedId, ...members, ...visibleEdges.map((edge) => other(edge, selectedId))]);
+      const relatedIds = new Set([selectedId, ...allEdges.map((edge) => other(edge, selectedId))]);
       const matches = searchGraph(relevanceGraph, query);
-      const visibleNodes = prioritize(matches
-        .filter((node) => relatedIds.has(node.id))
-        .concat(matches.filter((node) => !relatedIds.has(node.id))))
-        .slice(0, limit);
-      const visibleIds = new Set(visibleNodes.map((node) => node.id));
+      const visibleIds = new Set(matches.map((node) => node.id));
       return {
-        nodes: visibleNodes,
-        edges: visibleEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+        nodes: matches,
+        edges: allEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
         total: matches.length,
         isPath: false,
         relatedIds,
       };
     }
     const matches = searchGraph(relevanceGraph, query);
-    return { nodes: prioritize(matches).slice(0, limit), edges: [], total: matches.length, isPath: false };
+    return { nodes: matches, edges: [], total: matches.length, isPath: false };
   }
 
   function renderPortrait(node, index) {
@@ -327,7 +336,7 @@ export function mountGraph(element, options = {}) {
     canvas.tabIndex = 0;
     canvas.setAttribute('aria-label', 'Relationship canvas. Drag or use arrow keys to move; use plus and minus to zoom.');
     const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('viewBox', currentRoute() ? '0 0 1000 780' : `0 0 ${layout.width} ${layout.height}`);
+    svg.setAttribute('viewBox', currentRoute() ? '0 0 1000 780' : `0 0 ${layout.worldWidth} ${layout.worldHeight}`);
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.setAttribute('aria-hidden', 'true');
     const lines = document.createElementNS(SVG_NS, 'g');
@@ -336,6 +345,17 @@ export function mountGraph(element, options = {}) {
     const edgeLayer = make('div', 'rg-edge-labels');
     edgeLayer.setAttribute('aria-label', 'Visible relationship evidence');
     const data = visibleCanvasData();
+    const scale = layout.fitScale * camera.zoom;
+    canvas.dataset.detail = String(data.isPath || scale >= .8);
+    let scene = canvas;
+    if (!data.isPath) {
+      const viewport = make('div', 'rg-map-viewport');
+      Object.assign(viewport.style, { left: '24px', top: `${layout.top}px`, width: `${layout.usableWidth}px`, height: `${layout.usableHeight}px` });
+      scene = make('div', 'rg-scene');
+      Object.assign(scene.style, { width: `${layout.worldWidth}px`, height: `${layout.worldHeight}px`,
+        transform: `translate(${(layout.usableWidth - layout.worldWidth * scale) / 2 + camera.x}px, ${(layout.usableHeight - layout.worldHeight * scale) / 2 + camera.y}px) scale(${scale})` });
+      viewport.append(scene);canvas.append(viewport);
+    }
     const positions = new Map();
     const pulseIds = new Set(data.nodes.filter(node => node.type === 'person')
       .map(node => ({ id: node.id, score: Math.max(0, ...personThemes(node.id).map(theme => theme.score)) }))
@@ -348,13 +368,12 @@ export function mountGraph(element, options = {}) {
     data.nodes.forEach((node, index) => {
       const base = data.isPath
         ? { x: 120 + (index * 760) / Math.max(1, data.nodes.length - 1), y: 300, size: 106 }
-        : positionFor(node, index, data.nodes.length, layout);
-      const position = {
+        : positionFor(node, nodeIndex.get(node.id), layout);
+      const position = data.isPath ? {
         x: base.x * camera.zoom + camera.x,
-        y: data.isPath ? base.y * camera.zoom + camera.y
-          : layout.top + 54 + (base.y - layout.top - 54) * camera.zoom + camera.y,
+        y: base.y * camera.zoom + camera.y,
         size: Math.max(54, base.size * camera.zoom),
-      };
+      } : base;
       positions.set(node.id, position);
       const nodeButton = button('', 'select-node', 'rg-node');
       nodeButton.dataset.nodeId = node.id;
@@ -362,6 +381,7 @@ export function mountGraph(element, options = {}) {
       nodeButton.dataset.pathNode = String(data.isPath);
       nodeButton.dataset.related = String(Boolean(data.relatedIds?.has(node.id)));
       nodeButton.dataset.context = String(Boolean(selectedId && !data.isPath && !data.relatedIds?.has(node.id)));
+      nodeButton.title = [node.name, node.role, node.company].filter(Boolean).join(' · ');
       if (lens !== 'off' && node.type === 'person') {
         const themes = personThemes(node.id);
         const heat = Math.max(0, ...themes.map(theme => theme.score));
@@ -370,7 +390,7 @@ export function mountGraph(element, options = {}) {
           nodeButton.dataset.hot = 'true';
           nodeButton.dataset.heatLevel = String(heat >= 80 ? 3 : heat >= 50 ? 2 : 1);
           if (pulseIds.has(node.id)) nodeButton.dataset.pulse = 'true';
-          nodeButton.title = themes.map(theme => `${theme.name}: ${theme.reason}`).join('\n');
+          nodeButton.title += '\n' + themes.map(theme => `${theme.name}: ${theme.reason}`).join('\n');
         }
         if (connector?.score > 0) nodeButton.dataset.connector = connector.evidenceClass;
       }
@@ -380,7 +400,7 @@ export function mountGraph(element, options = {}) {
       nodeButton.style.height = `${position.size}px`;
       nodeButton.style.setProperty('--route-index', String(index));
       nodeButton.style.setProperty('--route-y', `${195 + index * 160}px`);
-      nodeButton.style.setProperty('--label-width', `${(base.labelWidth || 136) * camera.zoom}px`);
+      nodeButton.style.setProperty('--label-width', `${base.labelWidth || 136}px`);
       nodeButton.setAttribute('aria-label', `Explore ${node.name}`);
       nodeButton.setAttribute('aria-pressed', String(node.id === selectedId));
       nodeButton.append(renderPortrait(node, index));
@@ -422,7 +442,6 @@ export function mountGraph(element, options = {}) {
       edgeButton.setAttribute('aria-pressed', String(edge.id === selectedEdgeId));
       edgeLayer.append(edgeButton);
     });
-    const hiddenCount = Math.max(0, data.total - data.nodes.length);
     if (lens !== 'off' && !data.isPath) {
       const fields = make('div', 'rg-theme-fields');
       const scoredIds = new Set(activeThemeId ? [activeThemeId] : promotedThemes().slice(0, 3).map(theme => theme.themeId));
@@ -441,11 +460,11 @@ export function mountGraph(element, options = {}) {
           }).join(',');
           fields.append(area);
         });
-      canvas.append(fields);
+      scene.append(fields);
     }
-    canvas.append(svg, nodeLayer, edgeLayer, make('p', 'rg-canvas-note', hiddenCount
-      ? `${data.nodes.length} spaced on canvas · ${hiddenCount} more in search & All results`
-      : `${data.nodes.length} shown on canvas`));
+    scene.append(svg, nodeLayer, edgeLayer);
+    canvas.append(make('p', 'rg-canvas-note', data.isPath ? `${data.nodes.length} people on this path`
+      : `${data.nodes.length} people on map${query ? ` · ${graph.nodes.length} in full network` : ''} · Drag to pan · Zoom for names · Fit for overview`));
     return canvas;
   }
 
@@ -467,7 +486,9 @@ export function mountGraph(element, options = {}) {
   function renderNavigation() {
     const nav = make('div', 'rg-navigation');
     nav.setAttribute('aria-label', 'Canvas navigation');
-    nav.append(button('−', 'zoom-out'), make('span', 'rg-zoom-value', `${Math.round(camera.zoom * 100)}%`), button('+', 'zoom-in'), button('Fit', 'fit'));
+    const scale = currentRoute() ? camera.zoom : canvasLayout().fitScale * camera.zoom;
+    nav.append(button('−', 'zoom-out'), make('span', 'rg-zoom-value', `${Math.round(scale * 100)}%`), button('+', 'zoom-in'), button('Fit', 'fit'));
+    nav.lastElementChild.title = 'Fit the entire network';
     nav.children[0].setAttribute('aria-label', 'Zoom out');
     nav.children[2].setAttribute('aria-label', 'Zoom in');
     return nav;
@@ -760,9 +781,6 @@ export function mountGraph(element, options = {}) {
 
   function render(focusAction = null) {
     if (destroyed) return;
-    // Off removes the relevance layer without moving the last chosen people.
-    if (lens !== 'off') canvasThemeMembers = relevanceGraph.relevance.themes
-      .find(theme => theme.themeId === activeThemeId)?.nodeIds ?? [];
     root.dataset.demo = String(demoEnabled());
     root.replaceChildren();
     const header = make('header', 'rg-header');
@@ -805,6 +823,11 @@ export function mountGraph(element, options = {}) {
     const bottom = make('div', 'rg-bottom');
     if (!pathState) bottom.append(renderTrail());
     bottom.append(renderNavigation());
+    if (!pathState && canvasLayout().width >= 1100) {
+      const right = `${canvasLayout().width - canvasLayout().usableWidth - 24}px`;
+      bottom.style.right = right;
+      canvas.querySelector('.rg-canvas-note').style.right = right;
+    }
     canvas.append(bottom);
     if (panelMode === 'why' && lens !== 'off') {
       const panel = renderWhyPanel();
@@ -837,7 +860,6 @@ export function mountGraph(element, options = {}) {
     if (destroyed || !byId.has(id)) return;
     invalidateRelevance();
     activeThemeId = null;
-    canvasThemeMembers = [];
     relevancePersonId = null;
     if (pathState && !pathState.to && id !== pathState.from && byId.get(id).type === 'person') {
       pathState.to = id;
@@ -858,6 +880,7 @@ export function mountGraph(element, options = {}) {
     panelMode = 'node';
     query = '';
     page = 0;
+    focusCanvas([id]);
     render();
     if (notify) callbacks.onSelect({ node: byId.get(id), trail: cloneTrail(trail) });
   }
@@ -877,10 +900,10 @@ export function mountGraph(element, options = {}) {
     if (!people.length) return;
     invalidateRelevance();
     activeThemeId = null;
-    canvasThemeMembers = [];
     const from = byId.get(selectedId)?.type === 'person' ? selectedId : people[0].id;
     pathRequest += 1;
     pathState = { from, to: '', result: null, index: 0, loading: false, error: null, camera: { ...camera } };
+    camera = { x: 0, y: 0, zoom: 1 };
     panelMode = null;
     selectedEdgeId = null;
     render();
@@ -890,8 +913,14 @@ export function mountGraph(element, options = {}) {
     if (!pathState) return;
     invalidateRelevance();
     pathRequest += 1;
+    const needsRefit = pathState.needsRefit;
     camera = pathState.camera;
     pathState = null;
+    if (needsRefit) {
+      camera = { x: 0, y: 0, zoom: 1 };
+      if (query) focusCanvas(searchGraph(relevanceGraph, query).map(node => node.id));
+      else if (selectedId) focusCanvas([selectedId]);
+    }
     selectedEdgeId = null;
     panelMode = selectedId ? 'node' : null;
     render();
@@ -936,7 +965,9 @@ export function mountGraph(element, options = {}) {
   }
 
   function zoom(multiplier, focusAction = null) {
-    camera.zoom = Math.max(0.75, Math.min(1.65, camera.zoom * multiplier));
+    const next = Math.max(.6, Math.min(currentRoute() ? 1.65 : 2 / canvasLayout().fitScale, camera.zoom * multiplier));
+    const factor = next / camera.zoom;
+    camera = { x: camera.x * factor, y: camera.y * factor, zoom: next };
     render(focusAction);
   }
 
@@ -947,13 +978,15 @@ export function mountGraph(element, options = {}) {
     const action = target.dataset.action;
     if (action === 'clear-theme') {
       invalidateRelevance();activeThemeId = null;relevancePersonId = null;
-      canvasThemeMembers = [];
+      camera = { x: 0, y: 0, zoom: 1 };
       panelMode = selectedId ? 'node' : null;render();
     } else if (action === 'inspect-theme') {
       invalidateRelevance();
       activeThemeId = target.dataset.themeId;
       relevancePersonId = target.dataset.personId ?? null;
       panelMode = 'why';
+      query = '';
+      focusCanvas(relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
       render();
     } else if (action === 'theme-correct') {
       correctionOpen = true;
@@ -976,13 +1009,12 @@ export function mountGraph(element, options = {}) {
     else if (action === 'inspect-edge') inspectEdge(target.dataset.edgeId);
     else if (action === 'start-path') startPath();
     else if (action === 'close-path') closePath();
-    else if (action === 'close-panel') { invalidateRelevance(); activeThemeId = null; canvasThemeMembers = []; panelMode = null; selectedEdgeId = null; render(); }
+    else if (action === 'close-panel') { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
     else if (action === 'save-trail' && trail.nodeIds.length) callbacks.onSaveTrail(cloneTrail(trail));
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
       invalidateRelevance();
       activeThemeId = null;
-      canvasThemeMembers = [];
       pathRequest += 1;
       selectedId = null;
       selectedEdgeId = null;
@@ -994,20 +1026,20 @@ export function mountGraph(element, options = {}) {
     } else if (action === 'trail-back' && trail.nodeIds.length > 1) {
       invalidateRelevance();
       activeThemeId = null;
-      canvasThemeMembers = [];
       trail = { nodeIds: trail.nodeIds.slice(0, -1), edgeIds: trail.edgeIds.slice(0, -1) };
       selectedId = trail.nodeIds.at(-1);
       panelMode = 'node';
+      focusCanvas([selectedId]);
       render();
       callbacks.onSelect({ node: byId.get(selectedId), trail: cloneTrail(trail) });
     } else if (action === 'trail-step') {
       invalidateRelevance();
       activeThemeId = null;
-      canvasThemeMembers = [];
       const index = Number(target.dataset.trailIndex);
       trail = { nodeIds: trail.nodeIds.slice(0, index + 1), edgeIds: trail.edgeIds.slice(0, index) };
       selectedId = trail.nodeIds.at(-1);
       panelMode = 'node';
+      focusCanvas([selectedId]);
       render();
       callbacks.onSelect({ node: byId.get(selectedId), trail: cloneTrail(trail) });
     } else if (action === 'route-option') {
@@ -1027,6 +1059,11 @@ export function mountGraph(element, options = {}) {
     if (event.target.dataset?.action !== 'search') return;
     query = event.target.value;
     page = 0;
+    // Path routes use their own coordinates, not the full network's world camera.
+    if (!pathState) {
+      if (query) focusCanvas(searchGraph(relevanceGraph, query).map(node => node.id));
+      else camera = { x: 0, y: 0, zoom: 1 };
+    }
     render();
     const nextSearch = root.querySelector('[data-action="search"]');
     nextSearch?.focus();
@@ -1037,6 +1074,9 @@ export function mountGraph(element, options = {}) {
     const action = event.target.dataset?.action;
     if (action === 'browse-theme') {
       invalidateRelevance();activeThemeId = event.target.value || null;relevancePersonId = null;
+      query = '';
+      if (activeThemeId) focusCanvas(relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
+      else camera = { x: 0, y: 0, zoom: 1 };
       panelMode = activeThemeId ? 'why' : selectedId ? 'node' : null;render('browse-theme');return;
     }
     if (action === 'relevance-lens') {
@@ -1059,7 +1099,7 @@ export function mountGraph(element, options = {}) {
   function onKeyDown(event) {
     if (event.key === 'Escape') {
       if (pathState) closePath();
-      else if (panelMode) { invalidateRelevance(); activeThemeId = null; canvasThemeMembers = []; panelMode = null; selectedEdgeId = null; render(); }
+      else if (panelMode) { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
       return;
     }
     if (!event.target.closest?.('.rg-canvas')) return;
@@ -1127,6 +1167,13 @@ export function mountGraph(element, options = {}) {
     // controls in that case would discard the keyboard focus we just restored.
     if (size === lastSize) return;
     lastSize = size;
+    if (pathState) pathState.needsRefit = true;
+    else {
+      camera = { x: 0, y: 0, zoom: 1 };
+      if (query) focusCanvas(searchGraph(relevanceGraph, query).map(node => node.id));
+      else if (activeThemeId) focusCanvas(relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
+      else if (selectedId) focusCanvas([selectedId]);
+    }
     render();
   }
   const resizeObserver = typeof view?.ResizeObserver === 'function' ? new view.ResizeObserver(onResize) : null;
@@ -1194,12 +1241,12 @@ export function mountGraph(element, options = {}) {
       pathRequest += 1;
       invalidateRelevance();
       activeThemeId = null;
-      canvasThemeMembers = [];
       pathState = null;
       trail = cloneTrail(nextTrail);
       selectedId = trail.nodeIds.at(-1);
       selectedEdgeId = null;
       panelMode = 'node';
+      focusCanvas([selectedId]);
       render();
       callbacks.onSelect({ node: byId.get(selectedId), trail: cloneTrail(trail) });
     },
