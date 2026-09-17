@@ -3,9 +3,10 @@ import {boundedJSON} from './bounded-json';
 export type FolderPage={folders:{id:string;name:string;parentFolderId:string|null}[];hasMore:boolean;cursor:string|null};
 export type NotePage={notes:{id:string;title:string;createdAt:string;updatedAt:string}[];hasMore:boolean;cursor:string|null};
 export type GranolaFailure='unauthorized'|'forbidden'|'rate_limited'|'timeout'|'unavailable';
+type GranolaDiagnostic='transport'|'http_4xx'|'http_5xx'|'http_other'|'response_json'|'page_shape'|'page_cursor'|'page_terminal_cursor'|'folder_id'|'folder_name'|'folder_parent'|'note_shape'|'unexpected';
 
 export class GranolaClientError extends Error{
- constructor(readonly failure:GranolaFailure){super(failure);this.name='GranolaClientError';}
+ constructor(readonly failure:GranolaFailure,readonly diagnostic:GranolaDiagnostic='unexpected'){super(failure);this.name='GranolaClientError';}
 }
 
 const BASE_URL='https://public-api.granola.ai';
@@ -36,15 +37,18 @@ async function granolaJSON(url:URL,apiKey:string):Promise<unknown>{
   if(reader)void reader.cancel().catch(()=>{});
  },DEADLINE_MS);
  const operation=(async()=>{
-  const response=await fetch(url,{method:'GET',headers:{authorization:`Bearer ${apiKey}`,accept:'application/json'},redirect:'error',signal:controller.signal});
+  let response:Response;
+  try{response=await fetch(url,{method:'GET',headers:{authorization:`Bearer ${apiKey}`,accept:'application/json'},redirect:'error',signal:controller.signal});}
+  catch{throw new GranolaClientError('unavailable','transport');}
   if(!response.ok){await response.body?.cancel().catch(()=>{});throw statusError(response.status);}
-  if(!response.body)throw new GranolaClientError('unavailable');
+  if(!response.body)throw new GranolaClientError('unavailable','response_json');
   reader=response.body.getReader();
   const boundedBody=new ReadableStream<Uint8Array>({
    async pull(stream){const chunk=await reader!.read();if(chunk.done)stream.close();else stream.enqueue(chunk.value);},
    cancel(reason){return reader!.cancel(reason);},
   });
-  return boundedJSON(new Response(boundedBody,{headers:response.headers}),MAX_RESPONSE_BYTES);
+  try{return await boundedJSON(new Response(boundedBody,{headers:response.headers}),MAX_RESPONSE_BYTES);}
+  catch{throw new GranolaClientError('unavailable','response_json');}
  })();
  try{return await Promise.race([operation,deadline]);}
  catch(error){
@@ -61,25 +65,27 @@ function statusError(status:number):GranolaClientError{
  if(status===401)return new GranolaClientError('unauthorized');
  if(status===403)return new GranolaClientError('forbidden');
  if(status===429)return new GranolaClientError('rate_limited');
- return new GranolaClientError('unavailable');
+ return new GranolaClientError('unavailable',status>=500?'http_5xx':status>=400?'http_4xx':'http_other');
 }
 
 function pagination(value:unknown,key:'folders'|'notes',inputCursor?:string):{items:unknown[];hasMore:boolean;cursor:string|null}{
- if(!record(value)||!Array.isArray(value[key])||value[key].length>PAGE_SIZE||typeof value.hasMore!=='boolean'||!Object.hasOwn(value,'cursor'))invalid();
- const cursor=value.cursor;if(cursor!==null&&!validCursor(cursor))invalid();
- if(value.hasMore&&(cursor===null||cursor===''||cursor===inputCursor||value[key].length===0))invalid();
- if(!value.hasMore&&cursor!==null)invalid();
+ if(!record(value)||!Array.isArray(value[key])||value[key].length>PAGE_SIZE||typeof value.hasMore!=='boolean'||!Object.hasOwn(value,'cursor'))invalid('page_shape');
+ const cursor=value.cursor;if(cursor!==null&&!validCursor(cursor))invalid('page_cursor');
+ if(value.hasMore&&(cursor===null||cursor===''||cursor===inputCursor||value[key].length===0))invalid('page_cursor');
+ if(!value.hasMore&&cursor!==null)invalid('page_terminal_cursor');
  return {items:value[key],hasMore:value.hasMore,cursor};
 }
 
 function folder(value:unknown):FolderPage['folders'][number]{
- if(!record(value)||typeof value.id!=='string'||!FOLDER_ID.test(value.id)||typeof value.name!=='string'||value.name.length>1_000||!Object.hasOwn(value,'parent_folder_id'))invalid();
- const parent=value.parent_folder_id;if(parent!==null&&(typeof parent!=='string'||!FOLDER_ID.test(parent)))invalid();
+ if(!record(value)||typeof value.id!=='string'||!FOLDER_ID.test(value.id))invalid('folder_id');
+ if(typeof value.name!=='string'||value.name.length>1_000)invalid('folder_name');
+ if(!Object.hasOwn(value,'parent_folder_id'))invalid('folder_parent');
+ const parent=value.parent_folder_id;if(parent!==null&&(typeof parent!=='string'||!FOLDER_ID.test(parent)))invalid('folder_parent');
  return {id:value.id,name:value.name,parentFolderId:parent};
 }
 
 function note(value:unknown):NotePage['notes'][number]{
- if(!record(value)||typeof value.id!=='string'||!NOTE_ID.test(value.id)||(value.title!==null&&typeof value.title!=='string')||(typeof value.title==='string'&&value.title.length>2_000)||!validDate(value.created_at)||!validDate(value.updated_at))invalid();
+ if(!record(value)||typeof value.id!=='string'||!NOTE_ID.test(value.id)||(value.title!==null&&typeof value.title!=='string')||(typeof value.title==='string'&&value.title.length>2_000)||!validDate(value.created_at)||!validDate(value.updated_at))invalid('note_shape');
  return {id:value.id,title:value.title===null?'Untitled meeting':value.title,createdAt:value.created_at,updatedAt:value.updated_at};
 }
 
@@ -92,4 +98,4 @@ function validDate(value:unknown):value is string{
 }
 function validCursor(value:unknown):value is string{return typeof value==='string'&&value.length>0&&value.length<=2_048&&!/[\x00-\x1f\x7f]/.test(value);}
 function record(value:unknown):value is Record<string,unknown>{return typeof value==='object'&&value!==null&&!Array.isArray(value);}
-function invalid():never{throw new GranolaClientError('unavailable');}
+function invalid(diagnostic:GranolaDiagnostic):never{throw new GranolaClientError('unavailable',diagnostic);}

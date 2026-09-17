@@ -56,7 +56,7 @@ function clientError(cause:GranolaClientError):Response{
  if(cause.failure==='forbidden')return error('granola_forbidden','Granola denied access to this resource.',422);
  if(cause.failure==='rate_limited')return error('granola_rate_limited','Granola rate limit reached. Try again shortly.',429);
  if(cause.failure==='timeout')return error('granola_timeout','Granola did not respond in time.',504);
- return error('granola_unavailable','Granola is temporarily unavailable.',502);
+ return json({error:'granola_unavailable',message:'Granola is temporarily unavailable.',diagnostic:cause.diagnostic},502);
 }
 
 class RequestTooLarge extends Error{}

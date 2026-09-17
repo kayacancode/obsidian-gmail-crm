@@ -240,6 +240,21 @@ try{
   }
 
   {
+    let diagnostic='folder_parent';
+    const {page,errors}=await fixture({granolaHandler:()=>({status:502,json:{error:'granola_unavailable',diagnostic,message:'SECRET provider body'}})});
+    await page.goto(origin+'/accounts?tab=granola');
+    await connect(page,'grn_fictional_diagnostic');
+    await page.getByText(/Diagnostic: folder_parent/).waitFor({timeout:5000});
+    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
+    diagnostic='SECRET untrusted diagnostic';
+    await connect(page,'grn_fictional_diagnostic');
+    await page.getByText('Granola browsing is temporarily unavailable. Try again.',{exact:true}).waitFor();
+    assert.equal(await page.getByText(/SECRET/).count(),0);
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  {
     let mode='empty';
     const test=await fixture({granolaHandler:()=>mode==='empty'
       ?{status:200,json:{folders:[],hasMore:false,cursor:null}}

@@ -6,6 +6,8 @@ const messages={
   granola_timeout:'Granola took too long to respond. Try again.',
   granola_unavailable:'Granola browsing is temporarily unavailable. Try again.',
 };
+// Only app-defined codes may be displayed; never render provider error text.
+const diagnosticCodes=new Set(['transport','http_4xx','http_5xx','http_other','response_json','page_shape','page_cursor','page_terminal_cursor','folder_id','folder_name','folder_parent','note_shape','unexpected']);
 
 export function createGranolaConnection(root,{onUnauthorized}={}){
   let account=null,apiKey='',connected=false,busy=false,generation=0,pending=null;
@@ -58,8 +60,9 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
     if(next===account)return;
     clear();account=next;render();
   }
-  function showError(code){
+  function showError(code,diagnostic){
     status.textContent=messages[code]||'Granola browsing is temporarily unavailable. Try again.';
+    if(code==='granola_unavailable'&&diagnosticCodes.has(diagnostic))status.textContent=`Granola connection failed. Diagnostic: ${diagnostic}. Share this code for troubleshooting, not your API key.`;
   }
   function render(){
     signIn.hidden=Boolean(account);
@@ -94,7 +97,7 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
       const response=await fetch(path,{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:controller.signal});
       let data={};try{data=await response.json();}catch{}
       if(run!==generation)throw Object.assign(Error('stale'),{stale:true});
-      if(!response.ok)throw Object.assign(Error('request failed'),{status:response.status,code:data?.error});
+      if(!response.ok)throw Object.assign(Error('request failed'),{status:response.status,code:data?.error,diagnostic:data?.diagnostic});
       return data;
     }finally{if(pending===controller)pending=null;}
   }
@@ -102,7 +105,7 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
     if(error?.name==='AbortError'||error?.stale)return;
     if(error?.status===401){clear();account=null;showError('app_unauthorized');render();onUnauthorized?.();return;}
     if(!wasConnected||error?.code==='granola_unauthorized'||error?.code==='granola_forbidden')clear();
-    showError(error?.code);render();
+    showError(error?.code,error?.diagnostic);render();
   }
   async function loadFolders(cursor=null,key=apiKey){
     if(busy)return;

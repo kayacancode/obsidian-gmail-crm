@@ -149,3 +149,25 @@ test('Granola timeout settles and cancels a body reader that ignores cancellatio
   });
  }finally{globalThis.setTimeout=originalSetTimeout;}
 });
+
+test('Granola diagnostics distinguish failure stages without exposing provider data or keys',async()=>{
+ const valid={id:FOLDER_ID,name:'Private folder',parent_folder_id:null};
+ const cases:[string,()=>Promise<Response>][]=[
+  ['transport',async()=>{throw Error('SECRET '+API_KEY);}],
+  ['http_4xx',async()=>new Response('SECRET '+API_KEY,{status:400})],
+  ['http_5xx',async()=>new Response('SECRET '+API_KEY,{status:503})],
+  ['response_json',async()=>new Response('SECRET '+API_KEY)],
+  ['page_shape',async()=>Response.json({SECRET:API_KEY})],
+  ['page_cursor',async()=>Response.json({folders:[valid],hasMore:true,cursor:null})],
+  ['page_terminal_cursor',async()=>Response.json({folders:[valid],hasMore:false,cursor:'private-cursor'})],
+  ['folder_id',async()=>Response.json({folders:[{...valid,id:'SECRET'}],hasMore:false,cursor:null})],
+  ['folder_name',async()=>Response.json({folders:[{...valid,name:123}],hasMore:false,cursor:null})],
+  ['folder_parent',async()=>Response.json({folders:[{id:FOLDER_ID,name:'SECRET'}],hasMore:false,cursor:null})],
+ ];
+ for(const [diagnostic,fake] of cases)await withFetch(fake as typeof fetch,async()=>{
+  const {response,env}=await granolaRequest('/api/granola/folders',{apiKey:API_KEY});
+  assert.equal(response.status,502);
+  assert.deepEqual(await response.json(),{error:'granola_unavailable',message:'Granola is temporarily unavailable.',diagnostic});
+  assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(env.storageCalls(),0);
+ });
+});
