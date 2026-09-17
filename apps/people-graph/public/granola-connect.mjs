@@ -107,11 +107,11 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
   async function loadFolders(cursor=null,key=apiKey){
     if(busy)return;
     if(cursor&&usedFolderCursors.has(cursor)){foldersMore=false;folderMessage.textContent='Folder browsing stopped because Granola repeated a page cursor.';render();return;}
-    if(cursor)usedFolderCursors.add(cursor);
     busy=true;const run=generation,wasConnected=connected;render();
     try{
       const data=await request('/api/granola/folders',{apiKey:key,...(cursor?{cursor}:{})},run);
       if(run!==generation)return;
+      if(cursor)usedFolderCursors.add(cursor);
       const next=[...folders,...data.folders].slice(0,300);
       folders=next;connected=true;apiKey=key;input.value='';status.textContent='';
       folderCursor=data.cursor;foldersMore=Boolean(data.hasMore&&data.cursor);
@@ -119,15 +119,15 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
       if(folders.length>=300&&foldersMore){foldersMore=false;folderCursor=null;folderMessage.textContent='Folder limit reached. Showing the first 300 folders.';}
     }catch(error){fail(error,wasConnected);}finally{if(run===generation){busy=false;render();}}
   }
-  async function loadNotes(cursor=null){
+  async function loadNotes(cursor=null,replace=false){
     if(busy||!selectedFolder||!apiKey)return;
     if(cursor&&usedNoteCursors.has(cursor)){notesMore=false;noteMessage.textContent='Note browsing stopped because Granola repeated a page cursor.';render();return;}
-    if(cursor)usedNoteCursors.add(cursor);
     busy=true;const run=generation,folderId=selectedFolder;render();
     try{
       const data=await request('/api/granola/notes',{apiKey,folderId,...(cursor?{cursor}:{})},run);
       if(run!==generation||folderId!==selectedFolder)return;
-      notes=[...notes,...data.notes].slice(0,300);noteCursor=data.cursor;notesMore=Boolean(data.hasMore&&data.cursor);noteMessage.textContent=notes.length?'':'No notes are available in this folder.';
+      if(replace)usedNoteCursors.clear();else if(cursor)usedNoteCursors.add(cursor);
+      notes=(replace?data.notes:[...notes,...data.notes]).slice(0,300);noteCursor=data.cursor;notesMore=Boolean(data.hasMore&&data.cursor);noteMessage.textContent=notes.length?'':'No notes are available in this folder.';
       if(notes.length>=300&&notesMore){notesMore=false;noteCursor=null;noteMessage.textContent='Note limit reached. Showing the first 300 notes.';}
     }catch(error){fail(error,true);}finally{if(run===generation){busy=false;render();}}
   }
@@ -137,7 +137,7 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
   disconnectButton.addEventListener('click',clear);
   moreFolders.addEventListener('click',()=>void loadFolders(folderCursor));
   folderSelect.addEventListener('change',()=>{selectedFolder=folderSelect.value;resetNotes();folderMessage.textContent='';noteMessage.textContent='';render();});
-  browseNotes.addEventListener('click',()=>void loadNotes());
+  browseNotes.addEventListener('click',()=>void loadNotes(null,true));
   moreNotes.addEventListener('click',()=>void loadNotes(noteCursor));
   render();
   return {setAccount,clear};

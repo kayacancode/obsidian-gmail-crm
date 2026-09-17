@@ -156,6 +156,58 @@ try{
   }
 
   {
+    let folderContinuationAttempts=0,noteContinuationAttempts=0,noteFreshCalls=0;
+    const test=await fixture({granolaHandler:(path,body)=>{
+      if(path.endsWith('/folders')){
+        if(!body.cursor)return {status:200,json:{folders:[folder('fol_00000000000001','Retry source')],hasMore:true,cursor:'retry-folders'}};
+        folderContinuationAttempts++;
+        return folderContinuationAttempts===1
+          ?{status:429,json:{error:'granola_rate_limited',message:'safe fixed text'}}
+          :{status:200,json:{folders:[folder('fol_00000000000002','Recovered folder')],hasMore:false,cursor:null}};
+      }
+      if(!body.cursor){noteFreshCalls++;return {status:200,json:{notes:[note('not_00000000000001','Stable first note')],hasMore:true,cursor:'retry-notes'}};}
+      noteContinuationAttempts++;
+      return noteContinuationAttempts===1
+        ?{status:429,json:{error:'granola_rate_limited',message:'safe fixed text'}}
+        :{status:200,json:{notes:[note('not_00000000000002','Recovered note')],hasMore:false,cursor:null}};
+    }});
+    const {page,errors}=test;
+    await page.goto(origin+'/accounts?tab=granola');
+    await connect(page,'grn_fictional_retry_key');
+    await page.getByRole('button',{name:'More folders',exact:true}).click();
+    await page.getByText('Granola is receiving too many requests. Wait a moment and try again.',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'More folders',exact:true}).click();
+    await page.waitForTimeout(100);
+    await page.getByLabel('Granola folder',{exact:true}).selectOption('fol_00000000000001');
+    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
+    await page.getByText('Stable first note',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
+    await page.waitForTimeout(100);
+    const rowsAfterRefresh=await page.locator('.granola-notes li').count();
+    await page.getByRole('button',{name:'More notes',exact:true}).click();
+    await page.waitForTimeout(100);
+    await page.getByRole('button',{name:'More notes',exact:true}).click();
+    await page.waitForTimeout(100);
+    assert.deepEqual({
+      folderContinuationAttempts,
+      noteContinuationAttempts,
+      noteFreshCalls,
+      rowsAfterRefresh,
+      recoveredFolder:await page.getByText('Recovered folder',{exact:true}).count()===1,
+      recoveredNote:await page.getByText('Recovered note',{exact:true}).count()===1,
+    },{
+      folderContinuationAttempts:2,
+      noteContinuationAttempts:2,
+      noteFreshCalls:2,
+      rowsAfterRefresh:1,
+      recoveredFolder:true,
+      recoveredNote:true,
+    });
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  {
     let release;
     const deferred=new Promise(resolve=>{release=resolve;});
     const test=await fixture({granolaHandler:async()=>{await deferred;return {status:200,json:{folders:[folder('fol_00000000000009','Late private folder')],hasMore:false,cursor:null}};}});
