@@ -17,6 +17,7 @@
     "test:meeting-preview-browser": "node tests/meeting-preview-browser.mjs",
     "test:browser": "node tests/browser.mjs",
     "test:accounts-browser": "node tests/accounts-browser.mjs && node tests/accounts-simple-browser.mjs",
+    "test:granola-browser": "node tests/granola-browser.mjs",
     "test:lab-browser": "node tests/lab-browser.mjs",
     "test:studio-browser": "node tests/studio-browser.mjs",
     "build:district": "node scripts/build-district.mjs",
