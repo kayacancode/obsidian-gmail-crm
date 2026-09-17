@@ -51,11 +51,21 @@ Email scores use frequency, reciprocity and recency, independently of the option
 
 ## Contextual relevance and evidence
 
-Relevance heat is an advisory view of recent metadata and user-confirmed evidence, not a measure of relationship strength, expertise, closeness, consent or willingness. Evidence remains partitioned by exact visibility: **My mind** can use all evidence authorized for that owner, **Firm** uses only explicitly firm evidence, and **Public momentum** uses only public evidence. Granola and Obsidian material stays local unless the user explicitly pushes a bounded graph snapshot; public URLs are fetched only after a preview and confirmation.
+Relevance heat is an advisory view of recent metadata and user-confirmed evidence, not a measure of relationship strength, expertise, closeness, consent or willingness. Evidence remains partitioned by exact visibility: **My mind** can use all evidence authorized for that owner, **Firm** uses only explicitly firm evidence, and **Public momentum** uses only public evidence. Meeting-summary preview files remain local. The separate Granola connection below sends an explicitly entered key through the backend to browse metadata only; it does not import meeting content into the graph. Obsidian material stays local unless the user explicitly pushes a bounded graph snapshot; public URLs are fetched only after a preview and confirmation.
 
 Connector rings summarize documented or inferred graph structure. They do not prove that anyone is close to the user, willing to help, or able to make an introduction. The system never sends outreach, emails or introduction requests; it only presents context for a person to review and act on themselves.
 
 The top **Topics & themes** strip labels each theme's source; all themes remain in its picker. Gmail's normal sync supplies subject-derived signals, not body-understood topics. The overview promotes up to five non-boilerplate themes and paints at most three localized fields; selecting a theme focuses one field and brings its members into view. Up to three labeled **Why now** controls expose evidence at close zoom. The full authorized network occupies a spaced world canvas: **Fit** frames every person, drag/arrow keys pan, and zoom or selection reveals names and details. Portraits, heat and labels share one camera transform; viewport size never caps the network. **Off** removes heat without moving the current people.
+
+## Granola API connection (metadata only)
+
+Open **Accounts → Granola** (or `/accounts?tab=granola`), sign in to People, and enter a Granola API key directly in the masked field. **Connect Granola** verifies folder access. Choose a folder and **Browse notes** to see note titles and creation dates. Pagination is explicit, with at most 300 folders and 300 note rows held in the page. The Granola account does not need to use the same email as the People login.
+
+The key passes over HTTPS through this application's authenticated backend to the official Granola API. It is not saved in browser storage or the application database, and is never added to URLs, logs or AI prompts. Leaving the Granola tab, refreshing, disconnecting, changing accounts, signing out or an authentication failure clears the connection; enter the key again next time. The password field clears after a successful connection while the key remains in memory for requested browsing.
+
+This connection reads **folder names, note titles and dates only**. It does not fetch summaries, private notes or transcripts, run AI, save an imported batch, sync in the background, or affect graph themes/heat. Those later import steps are not available in this release. The separate manual **Meeting preview** below continues to work unchanged.
+
+Keys are created in Granola's desktop app under Settings → Connectors → API keys; use the appropriate existing scopes for the notes you want to access. See [Granola's API access documentation](https://docs.granola.ai/help-center/sharing/integrations/granola-api). Never send the key in chat. Run `npm run test:granola-browser` against the local server for fictional connection and lifecycle tests; a real key must be entered by its owner before claiming live-key interoperability.
 
 ## Private meeting preview
 
