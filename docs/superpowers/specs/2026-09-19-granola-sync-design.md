@@ -30,7 +30,7 @@ Granola lives inside the existing per-owner `MailSync` Durable Object so it shar
 - `granola_attendees`: `note_id`, `email` (lowercase), `name`, PRIMARY KEY(note_id, email).
 - `granola_edges`: `note_id`, `a`, `b` (emails, a < b), PRIMARY KEY(note_id, a, b).
 
-Limits: 400 KB stored content per note (summary + private notes + transcript; transcript pages beyond the cap are dropped and the note is marked truncated), 20,000 notes per owner, 50 attendees per note. Over-limit input is truncated or skipped with a recorded reason, never a failed sync.
+Limits: 400,000 characters (UTF-16 code units) of stored content per note (summary + private notes + transcript; transcript pages beyond the cap are dropped and the note is marked truncated), 20,000 notes per owner, 50 attendees per note. Over-limit input is truncated or skipped with a recorded reason, never a failed sync.
 
 Signals go to the existing `theme_signals` table with the existing source type `granola` (already weighted in the relevance model), `account` = `granola`, visibility `private`, `evidence_ref` = `granola-note:<id>#<summary|private_notes|transcript>@<offset>` for statements and `granola-note:<id>#topic@<topicId>` for topics, `observed_at` = `meeting_at`. Deleting a note deletes its signals by evidence prefix. The note row also keeps the extraction result JSON so hiding and re-showing a folder can remove and restore signals without calling the model again.
 
