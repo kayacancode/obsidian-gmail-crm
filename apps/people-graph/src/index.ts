@@ -46,7 +46,7 @@ export default {
 			if (pathname === "/api/granola" || pathname.startsWith("/api/granola/")) {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({error:user.error,message:"Sign in to use Granola."},401);
-				return await granolaRoute(request);
+				return await granolaRoute(request, env, user.email);
 			}
 			if (pathname === "/api/session" && request.method === "POST") {
 				if (request.headers.get("origin") !== url.origin) return json({error:"invalid_origin"},403);

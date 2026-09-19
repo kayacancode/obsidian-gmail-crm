@@ -1,63 +1,60 @@
-import {GranolaClientError,listGranolaFolders,listGranolaNotes} from './granola-client';
+import {GranolaClientError} from './granola-client';
+import type {MailEnv} from './mail-sync';
+import type {GranolaRange} from './granola-sync';
 
 const MAX_REQUEST_BYTES=8*1024;
 const API_KEY=/^grn_[\x21-\x7e]{4,508}$/;
 const FOLDER_ID=/^fol_[a-zA-Z0-9]{14}$/;
 
-export async function granolaRoute(request:Request):Promise<Response>{
- const url=new URL(request.url);
- if(url.pathname!=='/api/granola/folders'&&url.pathname!=='/api/granola/notes')return error('not_found','Granola route not found.',404);
- if(request.method!=='POST')return error('method_not_allowed','Use POST for Granola requests.',405);
- if(request.headers.get('origin')!==url.origin)return error('invalid_origin','Request origin is not allowed.',403);
- if(request.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()!=='application/json')return error('unsupported_media_type','Content-Type must be application/json.',415);
+export async function granolaRoute(request:Request,env:MailEnv,owner:string):Promise<Response>{
+ const url=new URL(request.url),path=url.pathname,method=request.method,stub=env.MAIL.getByName(owner);
  if(url.search)return error('invalid_request','Granola request is invalid.',400);
+ if(path==='/api/granola/status'){if(method!=='GET')return error('method_not_allowed','Use GET for status.',405);return json(await stub.granolaStatus());}
+ if(request.headers.get('origin')!==url.origin)return error('invalid_origin','Request origin is not allowed.',403);
  try{
-  const raw=await requestText(request);let body:unknown;
-  try{body=JSON.parse(raw);}catch{return error('invalid_request','Granola request is invalid.',400);}
-  if(!record(body)||!validKeys(body,url.pathname.endsWith('/notes')))return error('invalid_request','Granola request is invalid.',400);
-  if(typeof body.apiKey!=='string'||!API_KEY.test(body.apiKey))return error('invalid_request','Granola request is invalid.',400);
-  if(body.cursor!==undefined&&!validCursor(body.cursor))return error('invalid_request','Granola request is invalid.',400);
-  if(url.pathname.endsWith('/notes')){
-   if(typeof body.folderId!=='string'||!FOLDER_ID.test(body.folderId))return error('invalid_request','Granola request is invalid.',400);
-   return json(await listGranolaNotes(body.apiKey,{folderId:body.folderId,cursor:body.cursor as string|undefined}));
+  if(path==='/api/granola/connect'){
+   if(method!=='POST')return error('method_not_allowed','Use POST to connect.',405);
+   const body=await jsonBody(request);if(!body||!record(body)||!sameKeys(body,['apiKey','range']))return invalid();
+   if(typeof body.apiKey!=='string'||!API_KEY.test(body.apiKey)||(body.range!=='recent'&&body.range!=='all'))return invalid();
+   return json(await stub.granolaConnect(body.apiKey,body.range as GranolaRange));
   }
-  return json(await listGranolaFolders(body.apiKey,body.cursor as string|undefined));
+  if(path==='/api/granola/folders'){
+   if(method!=='PATCH')return error('method_not_allowed','Use PATCH to change folders.',405);
+   const body=await jsonBody(request);if(!body||!record(body)||!sameKeys(body,['excluded'])||!Array.isArray(body.excluded)||body.excluded.length>500||body.excluded.some(id=>typeof id!=='string'||!FOLDER_ID.test(id)))return invalid();
+   return json(await stub.granolaExcluded(body.excluded as string[]));
+  }
+  if(path==='/api/granola/sync'){if(method!=='POST')return error('method_not_allowed','Use POST to sync.',405);return json(await stub.granolaSyncNow());}
+  if(path==='/api/granola/connection'){if(method!=='DELETE')return error('method_not_allowed','Use DELETE to disconnect.',405);await stub.granolaDisconnect();return json({ok:true});}
+  return error('not_found','Granola route not found.',404);
  }catch(cause){
   if(cause instanceof RequestTooLarge)return error('request_too_large','Granola request is too large.',413);
-  if(cause instanceof RequestInvalid)return error('invalid_request','Granola request is invalid.',400);
+  if(cause instanceof UnsupportedMedia)return error('unsupported_media_type','Content-Type must be application/json.',415);
   if(cause instanceof GranolaClientError)return clientError(cause);
+  const code=cause instanceof Error?cause.message:'';
+  if(code.startsWith('granola:')){const [,failure,diagnostic]=code.split(':');return granolaFailure(failure,diagnostic);}
+  if(code==='mail_not_configured')return error('mail_not_configured','Granola connections are not enabled on this server yet.',503);
+  if(code==='invalid_key'||code==='invalid_folder')return invalid();
   return error('granola_unavailable','Granola is temporarily unavailable.',502);
  }
 }
-
-async function requestText(request:Request):Promise<string>{
- const declared=Number(request.headers.get('content-length'));
- if(Number.isFinite(declared)&&declared>MAX_REQUEST_BYTES)throw new RequestTooLarge();
- const reader=request.body?.getReader();if(!reader)return '';
- const decoder=new TextDecoder('utf-8',{fatal:true,ignoreBOM:false});let bytes=0,text='';
- try{
-  while(true){const chunk=await reader.read();if(chunk.done)break;bytes+=chunk.value.byteLength;if(bytes>MAX_REQUEST_BYTES)throw new RequestTooLarge();text+=decoder.decode(chunk.value,{stream:true});}
-  text+=decoder.decode();return text;
- }catch(cause){if(cause instanceof RequestTooLarge)throw cause;throw new RequestInvalid();
- }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+async function jsonBody(request:Request):Promise<unknown>{
+ if(request.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()!=='application/json')throw new UnsupportedMedia();
+ const declared=Number(request.headers.get('content-length'));if(Number.isFinite(declared)&&declared>MAX_REQUEST_BYTES)throw new RequestTooLarge();
+ const raw=await request.text();if(raw.length>MAX_REQUEST_BYTES)throw new RequestTooLarge();
+ try{return JSON.parse(raw);}catch{return null;}
 }
-
-function validKeys(body:Record<string,unknown>,notes:boolean):boolean{
- const allowed=notes?new Set(['apiKey','folderId','cursor']):new Set(['apiKey','cursor']);
- return Object.hasOwn(body,'apiKey')&&(!notes||Object.hasOwn(body,'folderId'))&&Object.keys(body).every(key=>allowed.has(key));
-}
-function validCursor(value:unknown):value is string{return typeof value==='string'&&value.length>0&&value.length<=2_048&&!/[\x00-\x1f\x7f]/.test(value);}
+const invalid=()=>error('invalid_request','Granola request is invalid.',400);
+function sameKeys(body:Record<string,unknown>,keys:string[]){return Object.keys(body).sort().join(',')===[...keys].sort().join(',');}
 function record(value:unknown):value is Record<string,unknown>{return typeof value==='object'&&value!==null&&!Array.isArray(value);}
 function json(value:unknown,status=200):Response{return new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});}
 function error(code:string,message:string,status:number):Response{return json({error:code,message},status);}
-
-function clientError(cause:GranolaClientError):Response{
- if(cause.failure==='unauthorized')return error('granola_unauthorized','Granola rejected this API key.',422);
- if(cause.failure==='forbidden')return error('granola_forbidden','Granola denied access to this resource.',422);
- if(cause.failure==='rate_limited')return error('granola_rate_limited','Granola rate limit reached. Try again shortly.',429);
- if(cause.failure==='timeout')return error('granola_timeout','Granola did not respond in time.',504);
- return json({error:'granola_unavailable',message:'Granola is temporarily unavailable.',diagnostic:cause.diagnostic},502);
+function clientError(cause:GranolaClientError):Response{return granolaFailure(cause.failure,cause.diagnostic);}
+function granolaFailure(failure:string,diagnostic?:string):Response{
+ if(failure==='unauthorized')return error('granola_unauthorized','Granola rejected this API key.',422);
+ if(failure==='forbidden')return error('granola_forbidden','Granola denied access to this resource.',422);
+ if(failure==='rate_limited')return error('granola_rate_limited','Granola rate limit reached. Try again shortly.',429);
+ if(failure==='timeout')return error('granola_timeout','Granola did not respond in time.',504);
+ return json({error:'granola_unavailable',message:'Granola is temporarily unavailable.',diagnostic},502);
 }
-
 class RequestTooLarge extends Error{}
-class RequestInvalid extends Error{}
+class UnsupportedMedia extends Error{}
