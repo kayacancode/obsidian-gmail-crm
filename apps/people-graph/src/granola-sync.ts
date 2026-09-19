@@ -7,7 +7,7 @@ export type GranolaRange='recent'|'all';
 export type GranolaConnectionStatus='syncing'|'connected'|'reconnect_required'|'error';
 export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus|null;range:GranolaRange|null;lastSync:number;nextSync:number;error:string;counts:{folders:number;notes:number;pending:number;extracted:number;failed:number;skipped:number};folders:{id:string;name:string;parentId:string|null;excluded:boolean;noteCount:number}[]}
 export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>}
-export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean}
+export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean;capDropped?:boolean}
 interface Connection {grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null}
 
 export const GRANOLA_ACCOUNT='granola';
@@ -46,7 +46,7 @@ export class GranolaSync {
   catch(e){if(e instanceof GranolaClientError)throw Error('granola:'+e.failure+':'+e.diagnostic);throw e;}
   const grant=await seal(apiKey,this.env.MAIL_TOKEN_KEY);
   const old=this.read();
-  const c:Connection={grant,ownerEmail:old?.ownerEmail??null,status:'syncing',range,watermark:null,lastSync:old?.lastSync??0,nextSync:0,lastReconcile:old?.lastReconcile??0,error:'',job:{phase:'folders',pending:[],maxUpdated:'',retries:0,nextAttempt:0,lastRun:0,started:Date.now(),processed:0,initial:true}};
+  const c:Connection={grant,ownerEmail:old?.ownerEmail??null,status:'syncing',range,watermark:null,lastSync:old?.lastSync??0,nextSync:0,lastReconcile:old?.lastReconcile??0,error:'',job:{phase:'folders',pending:[],maxUpdated:'',retries:0,nextAttempt:0,lastRun:0,started:Date.now(),processed:0,initial:true,capDropped:false}};
   this.ctx.storage.transactionSync(()=>{this.write(c);this.upsertFolders(first.folders,Date.now());});
   return this.status();
  }
@@ -97,7 +97,7 @@ export class GranolaSync {
 
  async tick(now=Date.now()):Promise<void>{
   let c=this.read();if(!c)return;
-  if(c.status==='connected'&&c.nextSync<=now){c.status='syncing';c.error='';c.job={phase:now-c.lastReconcile>=GranolaSync.RECONCILE_EVERY&&c.watermark?'reconcile':'folders',pending:[],seenIds:[],maxUpdated:c.watermark??'',retries:0,nextAttempt:0,lastRun:0,started:now,processed:0,initial:!c.watermark};this.write(c);}
+  if(c.status==='connected'&&c.nextSync<=now){c.status='syncing';c.error='';c.job={phase:now-c.lastReconcile>=GranolaSync.RECONCILE_EVERY&&c.watermark?'reconcile':'folders',pending:[],seenIds:[],maxUpdated:c.watermark??'',retries:0,nextAttempt:0,lastRun:0,started:now,processed:0,initial:!c.watermark,capDropped:false};this.write(c);}
   if(c.status!=='syncing'||!c.job||c.job.nextAttempt>now)return;
   c.job.lastRun=now;this.write(c);
   try{
@@ -146,7 +146,8 @@ export class GranolaSync {
    for(const r of this.ctx.storage.sql.exec<{id:string;updated_at:string}>("SELECT id,updated_at FROM granola_notes WHERE extraction_status='refetch'").toArray())if(!job.pending.some(p=>p.id===r.id))job.pending.push({id:r.id,updatedAt:r.updated_at});
    // The row-count cap only ever applies to brand-new notes: updates to notes already
    // stored (including refetch rows) never grow the table, so they must never be dropped.
-   const existingIds=new Set(this.ctx.storage.sql.exec<{id:string}>('SELECT id FROM granola_notes').toArray().map(r=>r.id));
+   // `existing` (built above from the full table) already has every stored id.
+   const existingIds=new Set(existing.keys());
    const total=existingIds.size;
    const newCount=job.pending.filter(p=>!existingIds.has(p.id)).length;
    if(total+newCount>this.maxNotes){
@@ -155,11 +156,16 @@ export class GranolaSync {
     job.pending=job.pending.filter(p=>{
      if(existingIds.has(p.id))return true;
      if(kept<room){kept++;return true;}
-     return false;// dropped: must not advance the watermark past this note
+     // Dropped: this note must be listed again by a future run, so nothing this run —
+     // not even another note's later updated_at — may advance the watermark. See the
+     // capDropped check in finishRun.
+     job.capDropped=true;
+     return false;
     });
    }
    // Only fold in updated_at values for notes that actually survive to be fetched —
    // notes dropped by the cap above must stay eligible for a future incremental list.
+   // (finishRun ignores maxUpdated entirely for this run when capDropped is set.)
    for(const p of job.pending)if(p.updatedAt>job.maxUpdated)job.maxUpdated=p.updatedAt;
    job.phase='fetch';
   }
@@ -221,7 +227,13 @@ export class GranolaSync {
 
  protected async finishRun(now:number){
   const c=this.read();if(!c||!c.job)return;
-  if(c.job.maxUpdated)c.watermark=c.job.maxUpdated;
+  // If the note cap dropped anything this run, do not advance the watermark at all —
+  // even a note that survived and looks safe to fold in could let a dropped note's
+  // updated_at slip below the new watermark and never be listed again. The next run
+  // simply re-lists from the old watermark; already-stored, unchanged notes are cheap
+  // to skip by their stored updated_at, so this only costs a bit of re-listing.
+  if(c.job.capDropped)c.error='note_cap_reached';
+  else{if(c.job.maxUpdated)c.watermark=c.job.maxUpdated;c.error='';}
   // The first full sync never goes through reconcilePhase (which is what normally
   // stamps lastReconcile), so without this the very next due sync would see a
   // 7-day-old lastReconcile of 0 and reconcile immediately instead of listing.

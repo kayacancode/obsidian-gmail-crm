@@ -199,9 +199,28 @@ test('note cap counts only new notes, never drops updates or refetches, and neve
  assert.equal(f.db.prepare('SELECT title FROM granola_notes WHERE id=?').get(OLD)!.title,'Old updated','update to an existing note is still fetched at the cap');
  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes WHERE id=?').get(NOTE_C)!.n,0,'new note beyond the cap is dropped');
  const c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
- // The dropped note's later updated_at must not be folded into the watermark, or it
- // would never be listed again by a future incremental (updated_after) sync.
- assert.equal(c.watermark,'2026-08-16T12:00:00Z');
+ // A cap drop anywhere in the run must block the watermark from advancing at all this
+ // run — even from other notes' later updated_at — or a dropped note could end up
+ // below the new watermark and never be listed again.
+ assert.equal(c.watermark,null);assert.equal(c.error,'note_cap_reached');
+});
+
+test('note cap: an always-kept update to an existing note with a newer updated_at must not drag the watermark past a note the cap dropped',async()=>{
+ const f=granolaFixture({maxNotes:2});
+ const OLD='not_9999999990abcd',NOTE_C='not_3234567890abcd';
+ f.db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,0,?,NULL,?,0,0,0)").run(OLD,'Old','2026-08-01T11:00:00Z','scheduled','2026-08-01T12:00:00Z','2026-08-01T12:00:00Z','["fol_1234567890abcd"]','s','p','t','h','done','granola-v1');
+ const net=network({notes:[
+  noteRaw(OLD,'Old updated','fol_1234567890abcd','2026-08-25T12:00:00Z'),// update, always kept, and newest of the batch
+  noteRaw(NOTE_A,'Alpha','fol_1234567890abcd','2026-08-14T12:00:00Z'),// new note — kept (fills the last cap slot)
+  noteRaw(NOTE_C,'Gamma','fol_1234567890abcd','2026-08-20T12:00:00Z'),// new note — dropped by the cap
+ ]});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await runToIdle(f,net.fake);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes WHERE id=?').get(NOTE_C)!.n,0,'note beyond the cap is dropped');
+ const c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
+ // Without the fix, OLD's later updated_at (kept, since updates are never dropped)
+ // would advance the watermark past NOTE_C, hiding it from every future incremental list.
+ assert.equal(c.watermark,null);assert.equal(c.error,'note_cap_reached');
 });
 
 test('reconcile deletes nothing when the upstream list returns 401',async()=>{
