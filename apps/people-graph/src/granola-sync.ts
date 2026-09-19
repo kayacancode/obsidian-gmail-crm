@@ -18,7 +18,7 @@ const HOUR=3_600_000,DAY=86_400_000;
 
 export class GranolaSync {
  constructor(private readonly ctx:DurableObjectState,private readonly env:MailEnv,private readonly hooks:GranolaHooks){
-  ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS granola_connection (id INTEGER PRIMARY KEY CHECK (id=1),grant TEXT NOT NULL,status TEXT NOT NULL,range TEXT NOT NULL,next_sync INTEGER NOT NULL DEFAULT 0,last_sync INTEGER NOT NULL DEFAULT 0,error TEXT NOT NULL DEFAULT '',data TEXT NOT NULL);
+  ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS granola_connection (id INTEGER PRIMARY KEY CHECK (id=1),grant TEXT NOT NULL,data TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS granola_folders (id TEXT PRIMARY KEY,name TEXT NOT NULL,parent_id TEXT,excluded INTEGER NOT NULL DEFAULT 0,seen_at INTEGER NOT NULL);
    CREATE TABLE IF NOT EXISTS granola_notes (id TEXT PRIMARY KEY,title TEXT NOT NULL,web_url TEXT,meeting_at TEXT NOT NULL,date_basis TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,folder_ids TEXT NOT NULL,summary TEXT NOT NULL,private_notes TEXT NOT NULL,transcript TEXT NOT NULL,content_hash TEXT NOT NULL,bytes INTEGER NOT NULL,extraction_status TEXT NOT NULL,extraction TEXT,extractor_version TEXT NOT NULL,extraction_attempts INTEGER NOT NULL DEFAULT 0,synced_at INTEGER NOT NULL,hidden INTEGER NOT NULL DEFAULT 0);
    CREATE INDEX IF NOT EXISTS granola_notes_status ON granola_notes(extraction_status,meeting_at DESC);
@@ -26,10 +26,8 @@ export class GranolaSync {
    CREATE INDEX IF NOT EXISTS granola_attendees_email ON granola_attendees(email);
    CREATE TABLE IF NOT EXISTS granola_edges (note_id TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,PRIMARY KEY(note_id,a,b));`);
  }
- // status/range/next_sync/last_sync/error live in real columns (setExcluded/syncNow/tick reach
- // for them via SQL directly in later tasks); the rest of Connection is a JSON blob.
- private read():Connection|null{const row=this.ctx.storage.sql.exec<{grant:string;status:GranolaConnectionStatus;range:GranolaRange;next_sync:number;last_sync:number;error:string;data:string}>('SELECT grant,status,range,next_sync,last_sync,error,data FROM granola_connection WHERE id=1').toArray()[0];if(!row)return null;const rest=JSON.parse(row.data) as Omit<Connection,'grant'|'status'|'range'|'nextSync'|'lastSync'|'error'>;return {...rest,grant:row.grant,status:row.status,range:row.range,nextSync:row.next_sync,lastSync:row.last_sync,error:row.error};}
- private write(c:Connection){const {grant,status,range,nextSync,lastSync,error,...rest}=c;this.ctx.storage.sql.exec('INSERT INTO granola_connection (id,grant,status,range,next_sync,last_sync,error,data) VALUES (1,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET grant=excluded.grant,status=excluded.status,range=excluded.range,next_sync=excluded.next_sync,last_sync=excluded.last_sync,error=excluded.error,data=excluded.data',grant,status,range,nextSync,lastSync,error,JSON.stringify(rest));}
+ private read():Connection|null{const row=this.ctx.storage.sql.exec<{grant:string;data:string}>('SELECT grant,data FROM granola_connection WHERE id=1').toArray()[0];if(!row)return null;return {...JSON.parse(row.data),grant:row.grant} as Connection;}
+ private write(c:Connection){const {grant,...data}=c;this.ctx.storage.sql.exec('INSERT INTO granola_connection (id,grant,data) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET grant=excluded.grant,data=excluded.data',grant,JSON.stringify(data));}
 
  async connect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{
   if(!this.env.MAIL_TOKEN_KEY)throw Error('mail_not_configured');

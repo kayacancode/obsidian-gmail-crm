@@ -78,6 +78,6 @@ test('syncNow brings nextSync forward only when connected and idle',async()=>{
  const f=granolaFixture();
  assert.equal(f.sync.syncNow().connected,false);
  await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
- f.db.prepare("UPDATE granola_connection SET status='connected', next_sync=?").run(Date.now()+3600000);
+ f.db.prepare("UPDATE granola_connection SET data=json_set(json_set(data,'$.status','connected'),'$.nextSync',?)").run(Date.now()+3600000);
  const status=f.sync.syncNow();assert.ok(status.nextSync<=Date.now());assert.equal(status.status,'connected');
 });
