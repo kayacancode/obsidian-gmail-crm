@@ -1,6 +1,6 @@
 # Granola API import: five-note private pilot
 
-Status: written design for review; not implemented or deployed.
+Status: superseded on 2026-09-19 by `2026-09-19-granola-sync-design.md` (background sync of all folders). Kept for history; not implemented.
 
 ## Approved outcome
 
