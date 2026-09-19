@@ -38,7 +38,7 @@ async function granolaJSON(url:URL,apiKey:string):Promise<unknown>{
  },DEADLINE_MS);
  const operation=(async()=>{
   let response:Response;
-  try{response=await fetch(url,{method:'GET',headers:{authorization:`Bearer ${apiKey}`,accept:'application/json'},redirect:'error',signal:controller.signal});}
+  try{response=await fetch(url,{method:'GET',headers:{authorization:`Bearer ${apiKey}`,accept:'application/json'},redirect:'manual',signal:controller.signal});}
   catch{throw new GranolaClientError('unavailable','transport');}
   if(!response.ok){await response.body?.cancel().catch(()=>{});throw statusError(response.status);}
   if(!response.body)throw new GranolaClientError('unavailable','response_json');

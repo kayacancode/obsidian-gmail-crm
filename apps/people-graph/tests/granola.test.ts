@@ -57,7 +57,7 @@ test('Granola folders use the fixed upstream and expose only allowlisted metadat
  assert.ok(call);const upstream=new URL(call.url);
  assert.equal(upstream.origin,'https://public-api.granola.ai');assert.equal(upstream.pathname,'/v1/folders');
  assert.deepEqual([...upstream.searchParams],[['page_size','30']]);
- assert.equal(call.init.method,'GET');assert.equal(call.init.redirect,'error');
+ assert.equal(call.init.method,'GET');assert.equal(call.init.redirect,'manual');
  const headers=new Headers(call.init.headers);assert.equal(headers.get('authorization'),'Bearer '+API_KEY);assert.equal(headers.get('accept'),'application/json');
 });
 
@@ -76,7 +76,7 @@ test('Granola notes encode folder pagination and drop private upstream fields',a
  assert.ok(call);const upstream=new URL(call.url);
  assert.equal(upstream.origin,'https://public-api.granola.ai');assert.equal(upstream.pathname,'/v1/notes');
  assert.deepEqual([...upstream.searchParams],[['folder_id',FOLDER_ID],['page_size','30'],['cursor','old/cursor+=']]);
- assert.equal(call.init.redirect,'error');
+ assert.equal(call.init.redirect,'manual');
 });
 
 test('Granola routes reject method, origin, content type, query input, size and schema violations before fetch',async()=>{
@@ -169,5 +169,22 @@ test('Granola diagnostics distinguish failure stages without exposing provider d
   assert.equal(response.status,502);
   assert.deepEqual(await response.json(),{error:'granola_unavailable',message:'Granola is temporarily unavailable.',diagnostic});
   assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(env.storageCalls(),0);
+ });
+});
+
+test('Granola client uses a redirect mode the Workers runtime supports and still rejects redirects',async()=>{
+ // workerd only implements redirect: "follow" | "manual" and throws on "error" before sending anything.
+ const workerdFetch=(handler:(init?:RequestInit)=>Response)=>(async(_input:RequestInfo|URL,init?:RequestInit)=>{
+  if(init?.redirect==='error')throw new TypeError('Invalid redirect value, must be one of "follow" or "manual"');
+  return handler(init);
+ }) as typeof fetch;
+ await withFetch(workerdFetch(()=>Response.json({folders:[{id:FOLDER_ID,name:'Pilot',parent_folder_id:null}],hasMore:false,cursor:null})),async()=>{
+  const {response}=await granolaRequest('/api/granola/folders',{apiKey:API_KEY});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{folders:[{id:FOLDER_ID,name:'Pilot',parentFolderId:null}],hasMore:false,cursor:null});
+ });
+ await withFetch(workerdFetch(()=>new Response(null,{status:302,headers:{location:'https://elsewhere.test/'}})),async()=>{
+  const {response}=await granolaRequest('/api/granola/folders',{apiKey:API_KEY});
+  assert.equal(response.status,502);assert.equal((await response.json() as any).error,'granola_unavailable');
  });
 });
