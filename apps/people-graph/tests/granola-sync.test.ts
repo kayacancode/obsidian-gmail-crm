@@ -81,3 +81,102 @@ test('syncNow brings nextSync forward only when connected and idle',async()=>{
  f.db.prepare("UPDATE granola_connection SET data=json_set(json_set(data,'$.status','connected'),'$.nextSync',?)").run(Date.now()+3600000);
  const status=f.sync.syncNow();assert.ok(status.nextSync<=Date.now());assert.equal(status.status,'connected');
 });
+
+const NOTE_A='not_1234567890abcd',NOTE_B='not_2234567890abcd';
+function noteRaw(id:string,title:string,folder='fol_1234567890abcd',updated='2026-08-15T12:00:00Z'){return {id,object:'note',title,owner:{name:'Me',email:'me@example.test'},created_at:'2026-08-14T12:00:00Z',updated_at:updated,web_url:'https://notes.granola.ai/d/'+id,calendar_event:{scheduled_start_time:'2026-08-14T11:00:00Z'},attendees:[{name:'Me',email:'me@example.test'},{name:'Ada',email:'ada@example.test'},{name:'Bob',email:'bob@example.test'}],folder_membership:[{id:folder,name:'x',parent_folder_id:null}],summary_text:'Ada asked for an intro to a fintech founder.',private_notes_text:'remember to send deck',transcript:null};}
+function network(opts:{notes?:any[];transcript?:string;fail?:(url:string)=>Response|null}={}){
+ const calls:string[]=[];const notes=opts.notes??[noteRaw(NOTE_A,'Alpha'),noteRaw(NOTE_B,'Beta','fol_2234567890abcd')];
+ const fake=(async(input:any)=>{const url=String(input);calls.push(url);const hit=opts.fail?.(url);if(hit)return hit;
+  if(url.includes('/v1/folders'))return foldersResponse();
+  if(url.includes('/transcript'))return Response.json({transcript:[{speaker:{name:'Ada'},text:opts.transcript??'We should talk next week.',start_time:'2026-08-14T11:00:00Z',end_time:'2026-08-14T11:00:05Z'}],hasMore:false,cursor:null});
+  if(/\/v1\/notes\/not_/.test(url)){const id=new URL(url).pathname.split('/')[3];const n=notes.find(x=>x.id===id);return n?Response.json(n):new Response('{}',{status:404});}
+  if(url.includes('/v1/notes'))return Response.json({notes:notes.map(n=>({id:n.id,title:n.title,created_at:n.created_at,updated_at:n.updated_at})),hasMore:false,cursor:null});
+  return new Response('{}',{status:500});}) as typeof fetch;
+ return {fake,calls};
+}
+function bump(f:ReturnType<typeof granolaFixture>,patch:Record<string,unknown>){const row=f.db.prepare('SELECT data FROM granola_connection').get() as any;f.db.prepare('UPDATE granola_connection SET data=?').run(JSON.stringify({...JSON.parse(row.data),...patch}));}
+async function runToIdle(f:ReturnType<typeof granolaFixture>,fake:typeof fetch,max=40){for(let i=0;i<max;i++){await withFetch(fake,()=>f.sync.tick(Date.now()));const s=f.sync.status();if(s.status!=='syncing')return;}throw Error('did not settle');}
+
+test('first sync lists all notes, fetches details and transcripts, and stores attendees and edges',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'recent'));
+ await runToIdle(f,net.fake);
+ const s=f.sync.status();assert.equal(s.status,'connected');assert.equal(s.counts.notes,2);assert.ok(s.nextSync>Date.now()+3_000_000);
+ const listUrl=net.calls.find(u=>u.includes('/v1/notes?'))!;assert.ok(new URL(listUrl).searchParams.get('created_after'));
+ const row=f.db.prepare('SELECT * FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'pending');assert.equal(row.transcript,'Ada: We should talk next week.');assert.equal(row.meeting_at,'2026-08-14T11:00:00Z');assert.equal(row.web_url,'https://notes.granola.ai/d/'+NOTE_A);
+ assert.deepEqual(f.db.prepare('SELECT email FROM granola_attendees WHERE note_id=? ORDER BY email').all(NOTE_A).map((r:any)=>r.email),['ada@example.test','bob@example.test','me@example.test']);
+ assert.deepEqual(f.db.prepare('SELECT a,b FROM granola_edges WHERE note_id=? ORDER BY a,b').all(NOTE_A).map((r:any)=>({a:r.a,b:r.b})),[{a:'ada@example.test',b:'bob@example.test'},{a:'ada@example.test',b:'me@example.test'},{a:'bob@example.test',b:'me@example.test'}]);
+ const c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
+ assert.equal(c.watermark,'2026-08-15T12:00:00Z');assert.equal(c.ownerEmail,'me@example.test');
+ assert.ok(f.invalidations()>0);
+});
+
+test('incremental sync uses updated_after and skips unchanged notes',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ net.calls.length=0;bump(f,{nextSync:0});
+ await runToIdle(f,net.fake);
+ const listUrl=net.calls.find(u=>u.includes('/v1/notes?'))!;assert.equal(new URL(listUrl).searchParams.get('updated_after'),'2026-08-15T12:00:00Z');assert.equal(new URL(listUrl).searchParams.get('created_after'),null);
+ assert.equal(net.calls.filter(u=>/\/v1\/notes\/not_/.test(u)&&!u.includes('transcript')).length,0,'unchanged notes are not refetched');
+});
+
+test('notes whose folders are all excluded are stored as skipped without content',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await f.sync.setExcluded(['fol_2234567890abcd']);
+ await runToIdle(f,net.fake);
+ const b=f.db.prepare('SELECT extraction_status,summary,hidden FROM granola_notes WHERE id=?').get(NOTE_B) as any;
+ assert.equal(b.extraction_status,'skipped');assert.equal(b.summary,'');assert.equal(b.hidden,1);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_attendees WHERE note_id=?').get(NOTE_B)!.n,0);
+ assert.equal(net.calls.filter(u=>u.includes(NOTE_B+'/transcript')).length,0);
+ await f.sync.setExcluded([]);
+ assert.equal((f.db.prepare('SELECT extraction_status FROM granola_notes WHERE id=?').get(NOTE_B) as any).extraction_status,'refetch');
+ bump(f,{nextSync:0});await runToIdle(f,net.fake);
+ assert.equal((f.db.prepare('SELECT extraction_status FROM granola_notes WHERE id=?').get(NOTE_B) as any).extraction_status,'pending');
+});
+
+test('transport and 5xx failures back off, 401 sets reconnect_required, nothing is deleted',async()=>{
+ const f=granolaFixture();let mode:'ok'|'boom'|'unauth'='ok';
+ const net=network({fail:url=>mode==='boom'&&url.includes('/v1/notes')?new Response('x',{status:503}):mode==='unauth'?new Response('x',{status:401}):null});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ mode='boom';bump(f,{nextSync:0});
+ await withFetch(net.fake,()=>f.sync.tick(Date.now()));await withFetch(net.fake,()=>f.sync.tick(Date.now()));
+ let c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
+ assert.equal(c.status,'syncing');assert.ok(c.job.retries>=1);assert.ok(c.job.nextAttempt>Date.now());
+ mode='unauth';bump(f,{job:{...c.job,nextAttempt:0}});
+ await withFetch(net.fake,()=>f.sync.tick(Date.now()));
+ c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
+ assert.equal(c.status,'reconnect_required');assert.equal(f.sync.nextDue(),undefined);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,2);
+});
+
+test('weekly reconcile deletes notes missing upstream and their attendees, edges and signals',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ await f.store.ingest([{id:'sig-b',owner:'owner@example.test',account:'granola',themeId:'theme-x',sourceType:'granola',visibility:'private',observedAt:'2026-08-14T11:00:00Z',ingestedAt:'2026-08-15T00:00:00Z',confidence:.8,summary:'Ask: “x”',evidenceRef:`granola-note:${NOTE_B}#summary@0`,contentHash:'h',extractorVersion:'granola-v1'} as any]);
+ const only=network({notes:[noteRaw(NOTE_A,'Alpha')]});
+ bump(f,{nextSync:0,lastReconcile:0});
+ await runToIdle(f,only.fake);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,1);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_edges WHERE note_id=?').get(NOTE_B)!.n,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM theme_signals WHERE evidence_ref LIKE ?').get(`granola-note:${NOTE_B}%`)!.n,0);
+});
+
+test('transcript pages stop at the byte cap and mark the note truncated',async()=>{
+ // getGranolaTranscript caps each utterance to 4000 chars, so a page needs many
+ // utterances (not one giant one) to approach the 400KB cap within a few pages.
+ const f=granolaFixture();const big='x'.repeat(4_000);const net=network();
+ let page=0;const perNote:Record<string,number>={};
+ const fake=(async(input:any,init:any)=>{const url=String(input);
+  if(url.includes('/transcript')){
+   page++;const id=new URL(url).pathname.split('/')[3];const n=(perNote[id]=(perNote[id]??0)+1);
+   const items=Array.from({length:35},()=>({speaker:{name:'Ada'},text:big,start_time:'2026-08-14T11:00:00Z',end_time:'2026-08-14T11:00:05Z'}));
+   return Response.json({transcript:items,hasMore:n<5,cursor:n<5?'c'+n:null});
+  }
+  return net.fake(input,init);
+ }) as typeof fetch;
+ await withFetch(fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,fake);
+ const row=f.db.prepare('SELECT bytes,transcript FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.ok(row.bytes<=400*1024);assert.ok(page<=8);assert.ok(row.transcript.endsWith('[transcript truncated]'));
+});

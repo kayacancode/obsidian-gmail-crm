@@ -257,6 +257,16 @@ export class RelevanceStore {
 		});
 	}
 
+	async removeSignalsByEvidencePrefix(account:string,prefix:string):Promise<void> {
+		const owner = await this.owner();
+		if (!owner) return;
+		const pattern = prefix.replace(/[%_\\]/g,'\\$&')+'%';
+		this.ctx.storage.transactionSync(()=>{
+			this.ctx.storage.sql.exec("DELETE FROM theme_signals WHERE owner=? AND account=? AND evidence_ref LIKE ? ESCAPE '\\'",owner,account,pattern);
+			this.ctx.storage.sql.exec('DELETE FROM themes WHERE owner=? AND NOT EXISTS (SELECT 1 FROM theme_signals WHERE theme_signals.owner=themes.owner AND theme_signals.theme_id=themes.id)',owner);
+		});
+	}
+
 	/** The earliest queued relevance job, never an idle wake-up. */
 	async nextAlarmAt(mailDue?:number,runningNotBefore?:number,publicRunningNotBefore?:number):Promise<number|undefined> {
 		const owner = await this.owner();
