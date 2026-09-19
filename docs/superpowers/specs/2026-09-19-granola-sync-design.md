@@ -88,7 +88,7 @@ The Granola tab renders one source card in the style of the Gmail inbox cards:
 - Connected: status line (Syncing n of m notes / Connected, last sync, next sync / Reconnect required with a key field), Sync now, Disconnect with confirmation. Folder list with checkboxes, all checked by default, note counts, nested by parent. Unchecking calls PATCH immediately and shows "Hidden from your graph".
 - Polls status every 5 s while syncing. Clears on sign-out, account change, and auth failure. Key is never held after the connect request completes.
 
-Graph UI: source chips show "Granola meetings"; the person panel lists meeting evidence with the note title, date, and a link to the note in Granola; edge legend gains "shared meeting". No layout changes.
+Graph UI (deferred to a follow-up on 2026-09-19): the why-now panel already shows meeting statements as text because signals carry the existing `granola` source type, and shared-meeting edges render through the existing edge-type labels. Still to do in a follow-up: a "Granola meetings" source chip, the note title, date and link to the note in the person panel (the stored `web_url` is not yet returned by any route), and an explicit "shared meeting" legend entry. No layout changes.
 
 ## Boundaries and errors
 
