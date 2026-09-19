@@ -240,7 +240,8 @@ export class GranolaSync {
    if(Date.now()-started>GranolaSync.EXTRACT_BUDGET_MS)break;
    const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
    let extraction:GranolaExtraction;
-   try{extraction=await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract({summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees});}
+   const remainingMs=GranolaSync.EXTRACT_BUDGET_MS-(Date.now()-started);
+   try{extraction=await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract({summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees},AbortSignal.timeout(Math.max(1_000,Math.min(remainingMs,180_000))));}
    catch(e){
     const attempts=row.extraction_attempts+1;const failed=attempts>=GranolaSync.MAX_ATTEMPTS||(e instanceof Error&&e.message==='invalid_extraction'&&attempts>=2);
     this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempts=?,extraction_status=? WHERE id=?',attempts,failed?'failed':'pending',row.id);
@@ -248,7 +249,7 @@ export class GranolaSync {
     continue;
    }
    await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
-   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,row.id,row.content_hash);
+   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,GRANOLA_EXTRACTOR_VERSION,row.id,row.content_hash);
   }
   const remaining=this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='pending' AND hidden=0").toArray()[0].n;
   const c2=this.read();if(!c2||!c2.job)return;

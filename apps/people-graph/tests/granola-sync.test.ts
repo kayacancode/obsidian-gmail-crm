@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {GranolaSync} from '../src/granola-sync';
 import {RelevanceStore} from '../src/relevance-store';
-import {unseal} from '../src/mail-model';
+import {unseal,opaque} from '../src/mail-model';
+import {FakeAI} from './worker-stub';
 
 export function granolaFixture(opts:{maxNotes?:number}={}){
  const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>();
@@ -234,8 +235,6 @@ test('reconcile deletes nothing when the upstream list returns 401',async()=>{
  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,2);
 });
 
-import {FakeAI} from './worker-stub';
-import {opaque} from '../src/mail-model';
 const MODEL='@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 function withAI(f:ReturnType<typeof granolaFixture>,response:unknown){const ai=new FakeAI(response);Object.assign(f.env,{AI:ai,THEME_MODEL:MODEL});return ai;}
 const goodAI={response:{topics:[{topicId:'business_strategy',confidence:0.7}],statements:[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.'}]}};
@@ -286,4 +285,23 @@ test('statements with no topic land in the Meetings theme',async()=>{
  assert.equal(theme.canonical_name,'meetings');
  const sig=f.db.prepare("SELECT summary,confidence FROM theme_signals WHERE account='granola'").get() as any;
  assert.equal(sig.summary,'Commitment: “remember to send deck”');assert.equal(sig.confidence,0.7);
+});
+
+test('an extractor version bump forces exactly one re-extraction per stale note, then settles',async()=>{
+ // Single-note fixture so the "one re-extraction" delta is exactly the per-note call
+ // count (GranolaExtractor may issue more than one AI call per note, one per segment),
+ // rather than a hardcoded constant.
+ const f=granolaFixture();const ai=withAI(f,goodAI);const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ let row=f.db.prepare('SELECT extraction_status,extractor_version,extraction FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v1');assert.ok(row.extraction);
+ const perNoteCalls=ai.calls.length;assert.ok(perNoteCalls>0);
+ f.db.prepare("UPDATE granola_notes SET extractor_version='granola-v0' WHERE id=?").run(NOTE_A);
+ bump(f,{nextSync:0});await runToIdle(f,net.fake);
+ row=f.db.prepare('SELECT extraction_status,extractor_version FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v1');
+ assert.equal(ai.calls.length,perNoteCalls*2,'exactly one re-extraction cycle for the stale note');
+ const afterBump=ai.calls.length;
+ bump(f,{nextSync:0});await runToIdle(f,net.fake);
+ assert.equal(ai.calls.length,afterBump,'no further AI calls once the note is back on the current version');
 });
