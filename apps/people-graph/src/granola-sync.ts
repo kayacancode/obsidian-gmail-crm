@@ -21,6 +21,7 @@ const HOUR=3_600_000,DAY=86_400_000;
 
 export class GranolaSync {
  private static readonly FETCH_PER_TICK=5;
+ private static readonly FETCH_BUDGET_MS=60_000;
  // Per-note cap on summary+privateNotes+transcript, measured in UTF-16 code units
  // (JS string .length / "characters"), not UTF-8 bytes. Do not switch to byte counting.
  private static readonly MAX_NOTE_CHARS=400*1024;
@@ -37,9 +38,16 @@ export class GranolaSync {
    CREATE TABLE IF NOT EXISTS granola_attendees (note_id TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(note_id,email));
    CREATE INDEX IF NOT EXISTS granola_attendees_email ON granola_attendees(email);
    CREATE TABLE IF NOT EXISTS granola_edges (note_id TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,PRIMARY KEY(note_id,a,b));`);
+  // Added after the first release: when extraction was last attempted, so a 'failed' note
+  // can be retried a week later without re-fetching it.
+  if(!ctx.storage.sql.exec("SELECT name FROM pragma_table_info('granola_notes') WHERE name='extraction_attempted_at'").toArray().length)ctx.storage.sql.exec('ALTER TABLE granola_notes ADD COLUMN extraction_attempted_at INTEGER');
  }
  private read():Connection|null{const row=this.ctx.storage.sql.exec<{grant:string;data:string}>('SELECT grant,data FROM granola_connection WHERE id=1').toArray()[0];if(!row)return null;return {...JSON.parse(row.data),grant:row.grant} as Connection;}
  private write(c:Connection){const {grant,...data}=c;this.ctx.storage.sql.exec('INSERT INTO granola_connection (id,grant,data) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET grant=excluded.grant,data=excluded.data',grant,JSON.stringify(data));}
+ // Every write after an await goes through commit(): a disconnect() or a fresh connect()
+ // inside that window would otherwise be undone by re-inserting the row this tick started with.
+ private checkRun(started:number):Connection{const row=this.read();if(!row||!row.job||row.job.started!==started)throw new StaleRun();return row;}
+ private commit(c:Connection,started:number){this.checkRun(started);this.write(c);}
 
  async connect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{
   if(!this.env.MAIL_TOKEN_KEY)throw Error('mail_not_configured');
@@ -49,7 +57,7 @@ export class GranolaSync {
   catch(e){if(e instanceof GranolaClientError)throw Error('granola:'+e.failure+':'+e.diagnostic);throw e;}
   const grant=await seal(apiKey,this.env.MAIL_TOKEN_KEY);
   const old=this.read();
-  const c:Connection={grant,ownerEmail:old?.ownerEmail??null,status:'syncing',range,watermark:null,lastSync:old?.lastSync??0,nextSync:0,lastReconcile:old?.lastReconcile??0,error:'',job:{phase:'folders',pending:[],maxUpdated:'',retries:0,nextAttempt:0,lastRun:0,started:Date.now(),processed:0,initial:true,capDropped:false}};
+  const c:Connection={grant,ownerEmail:old?.ownerEmail??null,status:'syncing',range,watermark:null,lastSync:old?.lastSync??0,nextSync:0,lastReconcile:old?.lastReconcile??0,error:'',job:{phase:'folders',pending:[],maxUpdated:'',retries:0,nextAttempt:0,lastRun:0,started:Math.max(Date.now(),(old?.job?.started??0)+1),processed:0,initial:true,capDropped:false}};
   this.ctx.storage.transactionSync(()=>{this.write(c);this.upsertFolders(first.folders,Date.now());});
   return this.status();
  }
@@ -101,17 +109,21 @@ export class GranolaSync {
   let c=this.read();if(!c)return;
   if(c.status==='connected'&&c.nextSync<=now){c.status='syncing';c.error='';c.job={phase:now-c.lastReconcile>=GranolaSync.RECONCILE_EVERY&&c.watermark?'reconcile':'folders',pending:[],seenIds:[],maxUpdated:c.watermark??'',retries:0,nextAttempt:0,lastRun:0,started:now,processed:0,initial:!c.watermark,capDropped:false};this.write(c);}
   if(c.status!=='syncing'||!c.job||c.job.nextAttempt>now)return;
+  const started=c.job.started;
   c.job.lastRun=now;this.write(c);
   try{
    const apiKey=await unseal(c.grant,this.env.MAIL_TOKEN_KEY!);
-   if(c.job.phase==='reconcile')await this.reconcilePhase(c,apiKey,now);
-   else if(c.job.phase==='folders')await this.foldersPhase(c,apiKey,now);
-   else if(c.job.phase==='list')await this.listPhase(c,apiKey,now);
-   else if(c.job.phase==='fetch')await this.fetchPhase(c,apiKey,now);
-   else if(c.job.phase==='extract')await this.extractPhase(c,now);
-   c=this.read()!;if(c.job){c.job.retries=0;c.job.nextAttempt=0;c.error='';this.write(c);}
+   if(c.job.phase==='reconcile')await this.reconcilePhase(c,apiKey,now,started);
+   else if(c.job.phase==='folders')await this.foldersPhase(c,apiKey,now,started);
+   else if(c.job.phase==='list')await this.listPhase(c,apiKey,now,started);
+   else if(c.job.phase==='fetch')await this.fetchPhase(c,apiKey,now,started);
+   else if(c.job.phase==='extract')await this.extractPhase(c,now,started);
+   const after=this.read();if(after?.job&&after.job.started===started){after.job.retries=0;after.job.nextAttempt=0;after.error='';this.write(after);}
   }catch(e){
-   const current=this.read();if(!current||!current.job)return;
+   // A disconnect or a new connect during this tick ends the run silently: retries and the
+   // error belong to a job that no longer exists.
+   if(e instanceof StaleRun)return;
+   const current=this.read();if(!current||!current.job||current.job.started!==started)return;
    const failure=e instanceof GranolaClientError?e.failure:'unavailable';
    if(failure==='unauthorized'||failure==='forbidden'){current.status='reconnect_required';current.error='reconnect_required';current.job=null;this.write(current);return;}
    current.job.retries++;current.job.nextAttempt=now+Math.min(30*60_000,30_000*2**(current.job.retries-1));current.error=failure==='rate_limited'?'granola_rate_limited':failure==='timeout'?'granola_timeout':'granola_unavailable';
@@ -120,16 +132,19 @@ export class GranolaSync {
   }
  }
 
- private async foldersPhase(c:Connection,apiKey:string,now:number){
+ private async foldersPhase(c:Connection,apiKey:string,now:number,started:number){
   let cursor:string|undefined;
-  for(let i=0;i<20;i++){const page=await listGranolaFolders(apiKey,cursor);this.ctx.storage.transactionSync(()=>this.upsertFolders(page.folders,now));if(!page.hasMore||!page.cursor)break;cursor=page.cursor;}
+  for(let i=0;i<20;i++){const page=await listGranolaFolders(apiKey,cursor);this.checkRun(started);this.ctx.storage.transactionSync(()=>this.upsertFolders(page.folders,now));if(!page.hasMore||!page.cursor)break;cursor=page.cursor;}
   this.ctx.storage.sql.exec('DELETE FROM granola_folders WHERE seen_at<?',now-7*DAY);
   this.recomputeHidden(this.excludedIds());
   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction=NULL WHERE extraction_status='done' AND extractor_version<>?",GRANOLA_EXTRACTOR_VERSION);
-  c=this.read()!;c.job!.phase='list';c.job!.cursor=undefined;this.write(c);
+  // A failed note is retried a week after its last attempt (its sync time for rows written
+  // before that column existed): one bad model day must not drop a meeting for good.
+  this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction_attempts=0 WHERE extraction_status='failed' AND COALESCE(extraction_attempted_at,synced_at)<?",now-7*DAY);
+  const fresh=this.checkRun(started);fresh.job!.phase='list';fresh.job!.cursor=undefined;this.write(fresh);
  }
 
- private async listPhase(c:Connection,apiKey:string,now:number){
+ private async listPhase(c:Connection,apiKey:string,now:number,started:number){
   const job=c.job!;
   const options=job.initial?(c.range==='recent'?{createdAfter:new Date(now-90*DAY).toISOString()}:{}):{updatedAfter:c.watermark??undefined};
   const page=await listGranolaNotes(apiKey,{...options,cursor:job.cursor});
@@ -172,16 +187,19 @@ export class GranolaSync {
    for(const p of job.pending)if(p.updatedAt>job.maxUpdated)job.maxUpdated=p.updatedAt;
    job.phase='fetch';
   }
-  this.write(c);
+  this.commit(c,started);
  }
 
- private async fetchPhase(c:Connection,apiKey:string,now:number){
-  const job=c.job!;const excluded=this.excludedIds();
+ private async fetchPhase(c:Connection,apiKey:string,now:number,started:number){
+  const job=c.job!;const excluded=this.excludedIds();const budgetStart=Date.now();let overBudget=false;
   for(let i=0;i<GranolaSync.FETCH_PER_TICK&&job.pending.length;i++){
+   // Stop on the wall-clock budget: each fetched note is persisted with the shortened
+   // pending list, so the next alarm resumes exactly here.
+   if(Date.now()-budgetStart>GranolaSync.FETCH_BUDGET_MS){overBudget=true;break;}
    const item=job.pending[0];
    let detail:NoteDetail;
    try{detail=await getGranolaNote(apiKey,item.id);}
-   catch(e){if(e instanceof GranolaClientError&&e.diagnostic==='http_4xx'){job.pending.shift();job.processed++;this.write(c);continue;}throw e;}
+   catch(e){if(e instanceof GranolaClientError&&e.diagnostic==='http_4xx'){job.pending.shift();job.processed++;this.commit(c,started);continue;}throw e;}
    const hidden=GranolaSync.hiddenFor(detail.folderIds,excluded);
    // Skipped/hidden notes are stored with id, folder ids and dates only: no title, url,
    // summary, private notes or transcript, and a 0 character count.
@@ -205,6 +223,9 @@ export class GranolaSync {
     if(truncated)transcript+='\n[transcript truncated]';
    }
    const contentHash=await digestText(`${summary}\u0000${privateNotes}\u0000${transcript}`);
+   // Nothing awaits between this check and the insert below, so a note fetched by a run
+   // that has since been disconnected or replaced never lands in the table.
+   this.checkRun(started);
    const previous=this.ctx.storage.sql.exec<{content_hash:string;extractor_version:string;extraction_status:string}>('SELECT content_hash,extractor_version,extraction_status FROM granola_notes WHERE id=?',item.id).toArray()[0];
    const unchanged=Boolean(previous&&previous.content_hash===contentHash&&previous.extractor_version===GRANOLA_EXTRACTOR_VERSION&&previous.extraction_status==='done');
    const status=hidden?'skipped':unchanged?'done':'pending';
@@ -220,42 +241,50 @@ export class GranolaSync {
    });
    if(status!=='done')await this.removeNoteSignals(item.id);
    if(detail.ownerEmail&&!c.ownerEmail)c.ownerEmail=detail.ownerEmail;
-   job.pending.shift();job.processed++;this.write(c);
+   job.pending.shift();job.processed++;this.commit(c,started);
   }
   await this.hooks.invalidateGraph();
-  if(!job.pending.length){job.phase='extract';this.write(c);}
+  if(!job.pending.length){job.phase='extract';this.commit(c,started);}
+  else if(overBudget){job.nextAttempt=Date.now()+1_500;this.commit(c,started);}
  }
 
  private static readonly EXTRACT_PER_TICK=3;
  private static readonly EXTRACT_BUDGET_MS=120_000;
  private static readonly MAX_ATTEMPTS=5;
 
- protected async extractPhase(c:Connection,now:number):Promise<void>{
-  const owner=await this.hooks.owner();if(!owner){await this.finishRun(now);return;}
-  const started=Date.now();
+ protected async extractPhase(c:Connection,now:number,started:number):Promise<void>{
+  const owner=await this.hooks.owner();if(!owner){await this.finishRun(now,started);return;}
+  const budgetStart=Date.now();
   const rows=this.ctx.storage.sql.exec<{id:string;summary:string;private_notes:string;transcript:string;meeting_at:string;content_hash:string;extraction_attempts:number}>("SELECT id,summary,private_notes,transcript,meeting_at,content_hash,extraction_attempts FROM granola_notes WHERE extraction_status='pending' AND hidden=0 ORDER BY meeting_at DESC LIMIT ?",GranolaSync.EXTRACT_PER_TICK).toArray();
-  if(!rows.length){await this.finishRun(now);return;}
-  let aiDown=false;
+  if(!rows.length){await this.finishRun(now,started);return;}
+  let unavailable=0,extracted=0;
   for(const row of rows){
-   if(Date.now()-started>GranolaSync.EXTRACT_BUDGET_MS)break;
+   if(Date.now()-budgetStart>GranolaSync.EXTRACT_BUDGET_MS)break;
    const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
    let extraction:GranolaExtraction;
-   const remainingMs=GranolaSync.EXTRACT_BUDGET_MS-(Date.now()-started);
+   const remainingMs=GranolaSync.EXTRACT_BUDGET_MS-(Date.now()-budgetStart);
+   this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempted_at=? WHERE id=?',Date.now(),row.id);
    try{extraction=await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract({summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees},AbortSignal.timeout(Math.max(1_000,Math.min(remainingMs,180_000))));}
    catch(e){
     const attempts=row.extraction_attempts+1;const failed=attempts>=GranolaSync.MAX_ATTEMPTS||(e instanceof Error&&e.message==='invalid_extraction'&&attempts>=2);
     this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempts=?,extraction_status=? WHERE id=?',attempts,failed?'failed':'pending',row.id);
-    if(e instanceof Error&&e.message==='ai_unavailable')aiDown=true;
+    if(e instanceof Error&&e.message==='ai_unavailable')unavailable++;
     continue;
    }
+   this.checkRun(started);
    await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
+   this.checkRun(started);
    this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,GRANOLA_EXTRACTOR_VERSION,row.id,row.content_hash);
+   extracted++;
   }
+  // One rejected note is one attempt, not an outage: only a missing or mismatched binding,
+  // or a tick where every attempt failed with ai_unavailable, ends the run early.
+  const aiDown=!this.env.AI||this.env.THEME_MODEL!==THEME_MODEL||(unavailable>0&&!extracted);
   const remaining=this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='pending' AND hidden=0").toArray()[0].n;
   const c2=this.read();if(!c2||!c2.job)return;
   // When the model is unavailable, end this run; pending notes retry on the next hourly run (one attempt per run, five runs to 'failed').
-  if(!remaining||aiDown)await this.finishRun(now);
-  else {c2.job.nextAttempt=Date.now()+1_500;this.write(c2);}
+  if(!remaining||aiDown)await this.finishRun(now,started);
+  else {c2.job.nextAttempt=Date.now()+1_500;this.commit(c2,started);}
  }
 
  private async ingestExtraction(owner:string,noteId:string,meetingAt:string,contentHash:string,extraction:GranolaExtraction,attendees:{email:string;name:string}[]){
@@ -283,17 +312,19 @@ export class GranolaSync {
  protected async applyHiddenSignals():Promise<void>{
   const owner=await this.hooks.owner();if(!owner)return;
   for(const row of this.ctx.storage.sql.exec<{id:string}>("SELECT id FROM granola_notes WHERE hidden=1").toArray())await this.removeNoteSignals(row.id);
+  // One query for every note that still has signals, not one LIKE scan per visible note:
+  // a folder toggle is a UI action and must not cost O(notes x signals).
+  const present=this.hooks.store().granolaNoteIdsWithSignals(GRANOLA_ACCOUNT,owner);
   for(const row of this.ctx.storage.sql.exec<{id:string;meeting_at:string;content_hash:string;extraction:string}>("SELECT id,meeting_at,content_hash,extraction FROM granola_notes WHERE hidden=0 AND extraction_status='done' AND extraction IS NOT NULL").toArray()){
-   const present=this.hooks.store().hasSignalsWithEvidencePrefix(GRANOLA_ACCOUNT,`granola-note:${row.id}#`,owner);
-   if(present)continue;
+   if(present.has(row.id))continue;
    const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
    let extraction:GranolaExtraction;try{extraction=JSON.parse(row.extraction);}catch{continue;}
    await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
   }
  }
 
- protected async finishRun(now:number){
-  const c=this.read();if(!c||!c.job)return;
+ protected async finishRun(now:number,started:number){
+  const c=this.read();if(!c||!c.job||c.job.started!==started)return;
   // If the note cap dropped anything this run, do not advance the watermark at all —
   // even a note that survived and looks safe to fold in could let a dropped note's
   // updated_at slip below the new watermark and never be listed again. The next run
@@ -305,20 +336,21 @@ export class GranolaSync {
   // stamps lastReconcile), so without this the very next due sync would see a
   // 7-day-old lastReconcile of 0 and reconcile immediately instead of listing.
   if(c.job.initial)c.lastReconcile=now;
-  c.status='connected';c.lastSync=now;c.nextSync=now+HOUR;c.job=null;this.write(c);
+  c.status='connected';c.lastSync=now;c.nextSync=now+HOUR;c.job=null;this.commit(c,started);
   await this.hooks.invalidateGraph();
  }
 
- private async reconcilePhase(c:Connection,apiKey:string,now:number){
+ private async reconcilePhase(c:Connection,apiKey:string,now:number,started:number){
   const job=c.job!;
   const page=await listGranolaNotes(apiKey,{cursor:job.cursor});
   job.seenIds=[...(job.seenIds??[]),...page.notes.map(n=>n.id)];
   job.cursor=page.hasMore&&page.cursor?page.cursor:undefined;
-  if(job.cursor){this.write(c);return;}
+  if(job.cursor){this.commit(c,started);return;}
+  this.checkRun(started);
   const seen=new Set(job.seenIds);
   const gone=this.ctx.storage.sql.exec<{id:string}>('SELECT id FROM granola_notes').toArray().map(r=>r.id).filter(id=>!seen.has(id));
   for(const id of gone){this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM granola_edges WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_attendees WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_notes WHERE id=?',id);});await this.removeNoteSignals(id);}
-  c=this.read()!;c.lastReconcile=now;c.job!.seenIds=[];c.job!.phase='folders';c.job!.cursor=undefined;this.write(c);
+  const fresh=this.checkRun(started);fresh.lastReconcile=now;fresh.job!.seenIds=[];fresh.job!.phase='folders';fresh.job!.cursor=undefined;this.write(fresh);
   if(gone.length)await this.hooks.invalidateGraph();
  }
 
@@ -329,4 +361,6 @@ export class GranolaSync {
  edges(){const rows=this.ctx.storage.sql.exec<{a:string;b:string;title:string}>('SELECT e.a AS a,e.b AS b,n.title AS title FROM granola_edges e JOIN granola_notes n ON n.id=e.note_id WHERE n.hidden=0 ORDER BY n.meeting_at DESC, n.title ASC').toArray();const map=new Map<string,{a:string;b:string;weight:number;titles:string[]}>();for(const r of rows){const key=r.a+'\u0000'+r.b;const e=map.get(key)??{a:r.a,b:r.b,weight:0,titles:[]};e.weight++;if(e.titles.length<3&&!e.titles.includes(r.title))e.titles.push(r.title);map.set(key,e);}return [...map.values()].sort((x,y)=>y.weight-x.weight).slice(0,5000);}
 }
 
+/** Thrown when the connection row no longer belongs to the run that started this tick. */
+class StaleRun extends Error{constructor(){super('granola_stale_run');}}
 async function digestText(value:string){const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');}

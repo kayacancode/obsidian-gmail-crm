@@ -7,14 +7,14 @@ import {unseal,opaque} from '../src/mail-model';
 import {FakeAI} from './worker-stub';
 
 export function granolaFixture(opts:{maxNotes?:number}={}){
- const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>();
- const ctx={storage:{sql:{exec(sql:string,...args:any[]){if(sql.includes('CREATE TABLE')){db.exec(sql);return {toArray:()=>[]};}const stmt=db.prepare(sql);const rows=sql.startsWith('SELECT')?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},get:async(k:string)=>kv.get(k),put:async(k:string,v:unknown)=>{kv.set(k,v);},delete:async(k:string)=>kv.delete(k),setAlarm:async(n:number)=>{kv.set('alarm',n);},transactionSync<T>(fn:()=>T){db.exec('BEGIN');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}}};
+ const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>(),statements:string[]=[];
+ const ctx={storage:{sql:{exec(sql:string,...args:any[]){statements.push(sql);if(sql.includes('CREATE TABLE')){db.exec(sql);return {toArray:()=>[]};}const stmt=db.prepare(sql);const rows=sql.startsWith('SELECT')?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},get:async(k:string)=>kv.get(k),put:async(k:string,v:unknown)=>{kv.set(k,v);},delete:async(k:string)=>kv.delete(k),setAlarm:async(n:number)=>{kv.set('alarm',n);},transactionSync<T>(fn:()=>T){db.exec('BEGIN');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}}};
  const env={MAIL_TOKEN_KEY:'encrypt-key',GOOGLE_CLIENT_ID:'client-id',TOKEN_SECRET:'identity-key'} as any;
  kv.set('owner','owner@example.test');
  const store=new RelevanceStore(ctx as any,()=>ctx.storage.get('owner') as Promise<string|undefined>);
  let invalidations=0;
  const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;}},opts.maxNotes);
- return {sync,db,kv,env,store,invalidations:()=>invalidations};
+ return {sync,db,kv,env,store,statements,invalidations:()=>invalidations};
 }
 export async function withFetch<T>(fake:typeof fetch,run:()=>Promise<T>):Promise<T>{const o=globalThis.fetch;globalThis.fetch=fake;try{return await run();}finally{globalThis.fetch=o;}}
 const KEY='grn_fictional_key_123456';
@@ -97,6 +97,20 @@ function network(opts:{notes?:any[];transcript?:string;fail?:(url:string)=>Respo
 }
 function bump(f:ReturnType<typeof granolaFixture>,patch:Record<string,unknown>){const row=f.db.prepare('SELECT data FROM granola_connection').get() as any;f.db.prepare('UPDATE granola_connection SET data=?').run(JSON.stringify({...JSON.parse(row.data),...patch}));}
 async function runToIdle(f:ReturnType<typeof granolaFixture>,fake:typeof fetch,max=40){for(let i=0;i<max;i++){await withFetch(fake,()=>f.sync.tick(Date.now()));const s=f.sync.status();if(s.status!=='syncing')return;}throw Error('did not settle');}
+function connection(f:ReturnType<typeof granolaFixture>){const row=f.db.prepare('SELECT grant,data FROM granola_connection').get() as any;return row?{grant:row.grant,...JSON.parse(row.data)}:null;}
+/** Tick until the persisted job reaches `phase`, so the next tick runs exactly that phase. */
+async function tickToPhase(f:ReturnType<typeof granolaFixture>,fake:typeof fetch,phase:string,max=20){
+ for(let i=0;i<max;i++){if(connection(f)?.job?.phase===phase)return;await withFetch(fake,()=>f.sync.tick(Date.now()));}
+ throw Error('phase '+phase+' not reached');
+}
+/** Holds the first note-detail fetch open and resolves it on demand, like the Gmail held-fetch test. */
+function heldNoteFetch(net:{fake:typeof fetch}){
+ let release:(r:Response)=>void=()=>{};let entered:()=>void=()=>{};const ready=new Promise<void>(r=>entered=r);
+ const fake=(async(input:any,init:any)=>{const url=String(input);
+  if(/\/v1\/notes\/not_/.test(url)&&!url.includes('/transcript')){entered();return new Promise<Response>(r=>{release=r;});}
+  return net.fake(input,init);}) as typeof fetch;
+ return {fake,ready,release:(r:Response)=>release(r)};
+}
 
 test('first sync lists all notes, fetches details and transcripts, and stores attendees and edges',async()=>{
  const f=granolaFixture();const net=network();
@@ -318,4 +332,119 @@ test('contacts, edges and ownEmails expose meeting-derived graph inputs excludin
  await f.sync.setExcluded(['fol_2234567890abcd']);
  assert.equal(f.sync.contacts().find(c=>c.email==='ada@example.test')!.meetings,1);
  assert.equal(f.sync.edges().find(e=>e.a==='ada@example.test'&&e.b==='bob@example.test')!.weight,1);
+});
+
+test('disconnect during an in-flight note fetch cannot resurrect the key or store the note',async()=>{
+ const f=granolaFixture();withAI(f,goodAI);const net=network();const held=heldNoteFetch(net);
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await tickToPhase(f,net.fake,'fetch');
+ const running=withFetch(held.fake,()=>f.sync.tick(Date.now()));
+ await held.ready;
+ await f.sync.disconnect();
+ held.release(Response.json(noteRaw(NOTE_A,'Alpha')));
+ await running;
+ for(const table of ['granola_connection','granola_notes','granola_attendees','granola_edges','granola_folders'])assert.equal(f.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n,0,table);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM theme_signals WHERE account='granola'").get()!.n,0);
+ assert.equal(f.sync.nextDue(),undefined);
+ assert.equal(f.sync.status().connected,false);
+});
+
+test('a new connect during an in-flight note fetch keeps the new key and range',async()=>{
+ const NEW_KEY='grn_fictional_key_654321';
+ const f=granolaFixture();withAI(f,goodAI);const net=network();const held=heldNoteFetch(net);
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await tickToPhase(f,net.fake,'fetch');
+ const running=withFetch(held.fake,()=>f.sync.tick(Date.now()));
+ await held.ready;
+ await withFetch(net.fake,()=>f.sync.connect(NEW_KEY,'recent'));
+ held.release(Response.json(noteRaw(NOTE_A,'Alpha')));
+ await running;
+ const c=connection(f)!;
+ assert.equal(await unseal(c.grant,'encrypt-key'),NEW_KEY);
+ assert.equal(c.range,'recent');assert.equal(c.status,'syncing');assert.equal(c.job.phase,'folders');
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,0,'the replaced run stores nothing');
+});
+
+test('a disconnect during extraction leaves no orphaned Granola signals',async()=>{
+ const f=granolaFixture();const net=network();
+ let release:(v:unknown)=>void=()=>{};let entered:()=>void=()=>{};const ready=new Promise<void>(r=>entered=r);
+ const first=new Promise<unknown>(r=>{release=r;});let aiCalls=0;
+ Object.assign(f.env,{THEME_MODEL:MODEL,AI:{async run(){aiCalls++;if(aiCalls===1){entered();return first;}return goodAI;}}});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await tickToPhase(f,net.fake,'extract');
+ const running=withFetch(net.fake,()=>f.sync.tick(Date.now()));
+ await ready;
+ await f.sync.disconnect();
+ release(goodAI);
+ await running;
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM theme_signals WHERE account='granola'").get()!.n,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,0);
+ assert.equal(f.sync.status().connected,false);
+});
+
+test('a failed note older than seven days becomes pending again and is re-extracted',async()=>{
+ const f=granolaFixture();const ai=withAI(f,goodAI);const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ const before=ai.calls.length;
+ const stale=f.db.prepare("UPDATE granola_notes SET extraction_status='failed',extraction_attempts=5,extraction=NULL,extraction_attempted_at=? WHERE id=?");
+ stale.run(Date.now()-8*86_400_000,NOTE_A);stale.run(Date.now(),NOTE_B);
+ bump(f,{nextSync:0});await runToIdle(f,net.fake);
+ const a=f.db.prepare('SELECT extraction_status,extraction_attempts FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(a.extraction_status,'done');assert.equal(a.extraction_attempts,1);
+ assert.equal((f.db.prepare('SELECT extraction_status FROM granola_notes WHERE id=?').get(NOTE_B) as any).extraction_status,'failed','a note attempted today waits its week');
+ assert.ok(ai.calls.length>before);
+});
+
+test('one note the model rejects is one attempt, not an outage, and the tick keeps going',async()=>{
+ const f=granolaFixture();
+ // The rejected note is the newest, so ORDER BY meeting_at DESC attempts it first.
+ const net=network({notes:[
+  {...noteRaw(NOTE_A,'Alpha'),summary_text:'Ada asked for an intro to a fintech founder.',calendar_event:{scheduled_start_time:'2026-08-15T11:00:00Z'}},
+  {...noteRaw(NOTE_B,'Beta'),summary_text:'Bob committed to send the deck.',calendar_event:{scheduled_start_time:'2026-08-13T11:00:00Z'}},
+ ]});
+ Object.assign(f.env,{THEME_MODEL:MODEL,AI:{async run(_model:string,input:any){
+  if(JSON.stringify(input).includes('Ada asked for an intro'))throw Error('model rejected this input');
+  return {response:{topics:[],statements:[{email:'bob@example.test',kind:'commitment',quote:'Bob committed to send the deck.'}]}};
+ }}});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await tickToPhase(f,net.fake,'extract');
+ await withFetch(net.fake,()=>f.sync.tick(Date.now()));
+ const a=f.db.prepare('SELECT extraction_status,extraction_attempts FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ const b=f.db.prepare('SELECT extraction_status FROM granola_notes WHERE id=?').get(NOTE_B) as any;
+ assert.equal(b.extraction_status,'done','the good note is extracted in the same run');
+ assert.equal(a.extraction_status,'pending');assert.equal(a.extraction_attempts,1);
+ assert.equal(connection(f)!.status,'syncing','one rejected note does not end the run');
+});
+
+test('a folder toggle costs a bounded number of statements whatever the visible note count',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ const N=40;const insert=f.db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,0,'done',?,'granola-v1',0,0,0)");
+ const signals:unknown[]=[];
+ for(let i=0;i<N;i++){
+  const id=`not_${String(i).padStart(4,'0')}567890ab`;
+  insert.run(id,'Note '+i,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','["fol_1234567890abcd"]','s','p','t','h'+i,'{"topics":[],"statements":[],"calls":1}');
+  signals.push({id:'sig-'+i,owner:'owner@example.test',account:'granola',themeId:'theme-x',sourceType:'granola',visibility:'private',observedAt:'2026-08-14T11:00:00Z',ingestedAt:'2026-08-15T00:00:00Z',confidence:.8,summary:'Ask: “hi”',evidenceRef:`granola-note:${id}#summary@0`,contentHash:'h'+i,extractorVersion:'granola-v1'});
+ }
+ await f.store.ingest(signals as any);
+ f.statements.length=0;
+ await f.sync.setExcluded(['fol_2234567890abcd']);// hides none of the notes above
+ const total=f.statements.length,signalQueries=f.statements.filter(s=>s.includes('theme_signals')).length;
+ assert.ok(total<N+20,`a toggle over ${N} visible notes issued ${total} statements`);
+ assert.ok(signalQueries<=8,`a toggle issued ${signalQueries} signal queries`);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM theme_signals WHERE account='granola'").get()!.n,N,'signals are left in place');
+});
+
+test('Granola statement signals reach the my lens only, never firm or public',async()=>{
+ const f=granolaFixture();withAI(f,goodAI);const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ const granolaIds=new Set((f.db.prepare("SELECT id FROM theme_signals WHERE account='granola'").all() as any[]).map(r=>r.id));
+ assert.ok(granolaIds.size>0);
+ const seen=async(lens:'my'|'firm'|'public')=>new Set((await f.store.snapshot(lens)).themes.flatMap(t=>t.components.map(c=>c.signalId)));
+ const mine=await seen('my');
+ assert.ok([...granolaIds].some(id=>mine.has(id)),'my mind sees meeting statements');
+ for(const lens of ['firm','public'] as const){
+  const visible=await seen(lens);
+  assert.ok([...granolaIds].every(id=>!visible.has(id)),`${lens} excludes meeting statements`);
+ }
 });

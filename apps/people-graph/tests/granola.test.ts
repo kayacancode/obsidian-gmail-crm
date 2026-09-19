@@ -9,7 +9,9 @@ const FOLDER_ID='fol_1234567890abcd';
 const calls:{name:string;args:unknown[]}[]=[];let stubOwner='';
 const statusValue={connected:true,status:'syncing',range:'all',lastSync:0,nextSync:0,error:'',counts:{folders:1,notes:0,pending:0,extracted:0,failed:0,skipped:0},folders:[{id:FOLDER_ID,name:'Pilot',parentId:null,excluded:false,noteCount:0}]};
 let stubError:Error|null=null;
+const bound:unknown[][]=[];let bindError:Error|null=null;
 const stub={
+ async bindOwner(...args:unknown[]){bound.push(args);if(bindError)throw bindError;},
  async granolaConnect(...args:unknown[]){calls.push({name:'granolaConnect',args});if(stubError)throw stubError;return statusValue;},
  granolaStatus(){calls.push({name:'granolaStatus',args:[]});return statusValue;},
  async granolaExcluded(...args:unknown[]){calls.push({name:'granolaExcluded',args});if(stubError)throw stubError;return statusValue;},
@@ -97,4 +99,27 @@ test('folders PATCH, sync POST and connection DELETE call the owner object',asyn
  assert.equal((await granolaRequest('/api/granola/folders',{excluded:['fol_zzzzzzzzzzzzzz']},{method:'PATCH'})).response.status,400);
  stubError=null;
  assert.equal((await granolaRequest('/api/granola/notes',{})).response.status,404);
+});
+
+test('every Granola route binds the session owner to the object before dispatching',async()=>{
+ const routes:[string,unknown,RequestInit][]=[
+  ['/api/granola/status',null,{method:'GET'}],
+  ['/api/granola/connect',{apiKey:API_KEY,range:'all'},{}],
+  ['/api/granola/folders',{excluded:[FOLDER_ID]},{method:'PATCH'}],
+  ['/api/granola/sync',null,{}],
+  ['/api/granola/connection',null,{method:'DELETE'}],
+ ];
+ for(const [path,body,init] of routes){
+  calls.length=0;bound.length=0;stubError=null;bindError=null;
+  const {response}=await granolaRequest(path,body,init);
+  assert.equal(response.status,200,path);
+  assert.deepEqual(bound,[['owner@example.test']],path);
+  // Binding happens first: with a failing bind, nothing else on the object is called.
+  calls.length=0;bound.length=0;bindError=Error('missing_owner');
+  const blocked=await granolaRequest(path,body,init);
+  assert.notEqual(blocked.response.status,200,path);
+  assert.deepEqual(calls,[],path);
+  assert.deepEqual(bound,[['owner@example.test']],path);
+  bindError=null;
+ }
 });

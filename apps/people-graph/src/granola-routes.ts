@@ -9,6 +9,9 @@ const FOLDER_ID=/^fol_[a-zA-Z0-9]{14}$/;
 export async function granolaRoute(request:Request,env:MailEnv,owner:string):Promise<Response>{
  const url=new URL(request.url),path=url.pathname,method=request.method,stub=env.MAIL.getByName(owner);
  if(url.search)return error('invalid_request','Granola request is invalid.',400);
+ // Bind the owner before any Granola work: a Granola-first owner otherwise syncs into an
+ // object with no owner, which skips extraction and returns a null graph.
+ await stub.bindOwner(owner);
  if(path==='/api/granola/status'){if(method!=='GET')return error('method_not_allowed','Use GET for status.',405);return json(await stub.granolaStatus());}
  if(request.headers.get('origin')!==url.origin)return error('invalid_origin','Request origin is not allowed.',403);
  try{

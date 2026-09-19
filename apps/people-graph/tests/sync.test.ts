@@ -292,6 +292,37 @@ test('pushed feedback validates local graph theme and person ids without accepti
 test('OAuth connect state is browser-bound, expiring and single use',async()=>{const {service,db}=fixture();await service.begin('n',{owner:'owner',verifier:'v',cookie:'correct',range:'recent',expires:Date.now()+10000,redirect:'x'});assert.equal(await service.consume('n','wrong'),null);assert.ok(await service.consume('n','correct'));assert.equal(await service.consume('n','correct'),null);db.close();});
 test('revoked grants stop retries and request reconnection',async()=>{const {service,db}=fixture();try{await service.attachAccount('me@example.com','refresh','all');globalThis.fetch=async()=>Response.json({error:'invalid_grant'},{status:400});await service.alarm();assert.equal(service.list()[0].status,'reconnect');}finally{globalThis.fetch=originalFetch;db.close();}});
 test('disconnect during network fetch cannot resurrect imported data',async()=>{const {service,db}=fixture();let release:(r:Response)=>void=()=>{};let entered:()=>void=()=>{};const ready=new Promise<void>(r=>entered=r);try{await service.attachAccount('me@example.com','refresh','all');globalThis.fetch=async(input:any)=>{if(String(input).includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(String(input).includes('/messages?'))return Response.json({messages:[{id:'m1'}]});entered();return new Promise<Response>(r=>release=r);};const running=service.alarm();await ready;await service.remove('me@example.com');release(Response.json(msg('m1')));await running;assert.equal(service.list().length,0);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM contributions').get().n,0);}finally{globalThis.fetch=originalFetch;db.close();}});
+test('a Granola-only graph before the first sync completes is stamped now, not the epoch',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner@example.test');
+ try{
+  globalThis.fetch=async(input:any)=>String(input).includes('/v1/folders')?Response.json({folders:[],hasMore:false,cursor:null}):Response.json({notes:[],hasMore:false,cursor:null});
+  await service.granolaConnect('grn_fictional_key_123456','all');
+  const graph=await service.graph() as any;
+  assert.ok(graph,'a Granola connection alone makes a graph');
+  assert.ok(Date.parse(graph.pushedAt)>Date.now()-5000,`pushedAt was ${graph.pushedAt}`);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+test('one alarm runs the Gmail batch and the next one runs the Granola tick',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner@example.test');const granolaCalls:string[]=[];
+ try{
+  globalThis.fetch=async(input:any)=>{const url=String(input);
+   if(url.includes('public-api.granola.ai')){granolaCalls.push(url);
+    if(url.includes('/v1/folders'))return Response.json({folders:[{id:'fol_1234567890abcd',name:'Pilot',parent_folder_id:null}],hasMore:false,cursor:null});
+    return Response.json({notes:[],hasMore:false,cursor:null});}
+   if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});
+   if(url.includes('/messages?'))return Response.json({messages:[{id:'m1'}]});
+   return Response.json(msg('m1'));};
+  await service.granolaConnect('grn_fictional_key_123456','all');
+  await service.attachAccount('me@example.com','refresh','all');
+  granolaCalls.length=0;
+  await service.alarm();
+  assert.equal(service.list()[0].processed,1,'the Gmail batch ran');
+  assert.deepEqual(granolaCalls,[],'Granola does not share the alarm with a Gmail batch');
+  await service.alarm();
+  assert.ok(granolaCalls.length>0,'the next alarm runs the Granola tick');
+  assert.ok(Number(kv.get('alarm'))<=Date.now()+2000,'and that alarm was scheduled straight away');
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
 test('large imports share batches fairly with other inboxes',async()=>{const {service,db}=fixture();try{await service.attachAccount('me@example.com','first','all');await service.attachAccount('other@example.com','second','all');globalThis.fetch=async(input:any)=>String(input).includes('oauth2.googleapis')?Response.json({access_token:'access'}):String(input).includes('/messages?')?Response.json({messages:Array.from({length:25},(_,i)=>({id:'m'+i}))}):Response.json(msg('m'));await service.alarm();await service.alarm();assert.deepEqual(service.list().map(a=>a.processed),[10,10]);}finally{globalThis.fetch=originalFetch;db.close();}});
 test('canonical messages across inboxes count once and survive one disconnect',async()=>{const {service,db}=fixture();network();try{await service.begin('n',{owner:'owner',verifier:'v',cookie:'c',range:'all',expires:Date.now()+10000,redirect:'x'});await service.attachAccount('me@example.com','first','all');await service.attachAccount('other@example.com','second','all');await service.alarm();await service.alarm();assert.equal(db.prepare("SELECT COUNT(DISTINCT canonical) AS n FROM contributions WHERE email='ada@example.com'").get().n,1);await service.remove('other@example.com');assert.equal((await service.graph() as any).nodes.length,2);}finally{globalThis.fetch=originalFetch;db.close();}});
 test('Google contact photos attach by email, page fully, and disappear on disconnect',async()=>{const {service,db}=fixture();let calls=0;try{await service.begin('n',{owner:'owner',verifier:'v',cookie:'c',range:'all',expires:Date.now()+10000,redirect:'x'});await service.attachAccount('me@example.com','refresh','all',true);globalThis.fetch=async(input:any)=>{const u=String(input);if(u.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(u.includes('people.googleapis')){calls++;return Response.json({connections:[{emailAddresses:[{value:calls===1?'ADA@example.com':'bo@example.com'}],photos:[{url:'https://lh3.googleusercontent.com/person',default:false}]}],...(calls===1?{nextPageToken:'page2'}:{})});}if(u.includes('/messages?'))return Response.json({messages:[{id:'m1'}]});return Response.json(msg('m1'));};await service.alarm();assert.equal(service.list()[0].status,'syncing');await service.alarm();assert.equal(service.list()[0].status,'connected');assert.equal((await service.graph() as any).nodes.filter((n:any)=>n.photoUrl).length,2);await service.remove('me@example.com');assert.equal(db.prepare('SELECT COUNT(*) AS n FROM contact_photos').get().n,0);}finally{globalThis.fetch=originalFetch;db.close();}});

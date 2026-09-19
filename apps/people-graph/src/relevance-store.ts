@@ -211,9 +211,18 @@ export class RelevanceStore {
 		const owner = await this.requiredOwner();
 		return this.persist(owner,themes.filter(t=>t.owner===owner),signals);
 	}
-	hasSignalsWithEvidencePrefix(account:string,prefix:string,owner:string):boolean {
-		const pattern = prefix.replace(/[%_\\]/g,'\\$&')+'%';
-		return this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM theme_signals WHERE owner=? AND account=? AND evidence_ref LIKE ? ESCAPE '\\'",owner,account,pattern).toArray()[0].n>0;
+	/** Note ids that already carry at least one signal, in one query: the ids live inside
+	 *  `granola-note:<id>#<part>@<offset>` evidence refs, which no index can prefix-scan. */
+	granolaNoteIdsWithSignals(account:string,owner:string):Set<string> {
+		const prefix='granola-note:',ids=new Set<string>();
+		for (const row of this.ctx.storage.sql.exec<{evidence_ref:string}>('SELECT DISTINCT evidence_ref FROM theme_signals WHERE owner=? AND account=?',owner,account).toArray()) {
+			const ref=String(row.evidence_ref);
+			if(!ref.startsWith(prefix))continue;
+			const hash=ref.indexOf('#',prefix.length);
+			const id=hash<0?ref.slice(prefix.length):ref.slice(prefix.length,hash);
+			if(id)ids.add(id);
+		}
+		return ids;
 	}
 
 	/** Converts transient subject metadata into compact, owner-opaque signals. */

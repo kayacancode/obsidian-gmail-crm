@@ -11,7 +11,7 @@ import type {RetrievalJob,RetrievalError} from './relevance-store';
 import {previewPublicSource,fetchPublicSource,withPublicDeadline,publicAwait,safePublicError,PUBLIC_EXTRACTOR_VERSION,type PublicSourceInput,type PublicSourceState,type PublicFetchResult} from './public-sources';
 import {normalizePushedGraph,type PushedGraphPayload} from './relevance-routes';
 import {boundedJSON as readBoundedJSON} from './bounded-json';
-import {GranolaSync,GRANOLA_ACCOUNT,type GranolaRange,type GranolaStatus} from './granola-sync';
+import {GranolaSync,type GranolaRange,type GranolaStatus} from './granola-sync';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string}
@@ -46,7 +46,10 @@ export class MailSync extends DurableObject<MailEnv>{
   const now=Date.now();for(const a of this.rows()){if(a.status==='connected'&&a.nextSync<=now)await this.start(a.email,undefined,false);}
   const a=this.rows().filter(a=>a.status==='syncing'&&(a.job?.nextAttempt||0)<=now).sort((a,b)=>(a.job?.lastRun||0)-(b.job?.lastRun||0))[0];
   if(a?.job){a.job.lastRun=now;this.put(a);try{await this.batch(a);}catch(e){if(this.active(a)){const current=this.get(a.email)!;current.job!.retries++;current.job!.nextAttempt=Date.now()+Math.min(300000,5000*2**current.job!.retries);const message=e instanceof Error?e.message:'sync_failed';current.error=message;current.status=message==='reconnect_required'?'reconnect':current.job!.retries>=6?'error':'syncing';this.put(current);}}}
-  await this.granola().tick(now);
+  // One source per alarm: a Gmail batch and a Granola tick share no state, and running both
+  // would stack their deadlines. scheduleNextAlarm() folds in Granola's next due time, so the
+  // Granola tick runs on the next alarm, moments later.
+  if(!a?.job)await this.granola().tick(now);
   await this.retrievalBatch();
   await this.publicSourceBatch();
   await this.scheduleNextAlarm();
@@ -338,7 +341,8 @@ export class MailSync extends DurableObject<MailEnv>{
   for(const e of this.granola().edges()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;cur.types.push('shared_meeting');cur.contexts.push(...e.titles.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_meeting'],contexts:e.titles});}
   const edges=[...merged.values()].filter(e=>idMap.has(e.a)&&idMap.has(e.b)).sort((x,y)=>y.weight-x.weight).slice(0,5000).map(e=>({source:idMap.get(e.a),target:idMap.get(e.b),weight:e.weight,types:e.types,contexts:e.contexts.slice(0,3)}));
   const stamps=[...accounts.map(a=>Math.max(a.lastSync,a.job?.lastRun||0)),this.granola().status().lastSync];
-  const value={pushedAt:new Date(Math.max(...stamps)).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Message metadata and meeting attendee lists only; no message bodies. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
+  // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.
+  const value={pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Message metadata and meeting attendee lists only; no message bodies. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
   return this.store().attachToGraph(value,'my');
  }
