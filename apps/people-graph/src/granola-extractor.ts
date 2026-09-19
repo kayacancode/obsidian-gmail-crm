@@ -4,7 +4,7 @@ import {THEME_MODEL,THEME_TOPICS,type TopicId} from './theme-extractor';
 export type StatementKind='ask'|'commitment'|'intro'|'follow_up'|'interest';
 export const KIND_LABEL:Record<StatementKind,string>=Object.freeze({ask:'Ask',commitment:'Commitment',intro:'Intro',follow_up:'Follow-up',interest:'Interest'});
 export interface GranolaExtractionInput {summary:string;privateNotes:string;transcript:string;attendees:{email:string;name:string}[]}
-export interface GroundedStatement {email:string;kind:StatementKind;quote:string;source:'summary'|'private_notes'|'transcript';offset:number}
+export interface GroundedStatement {email:string;kind:StatementKind;quote:string;source:'summary'|'private_notes'|'transcript';/** Index into the whitespace-normalised source text, not the raw text. */offset:number}
 export interface GranolaExtraction {topics:{topicId:TopicId;confidence:number}[];statements:GroundedStatement[];calls:number}
 
 const CHUNK_CHARS=24_000,MAX_CHUNKS=4,MAX_QUOTE=300,MAX_CALLS=5;
@@ -38,14 +38,14 @@ export class GranolaExtractor {
  constructor(private readonly ai:Env['AI']|undefined,private readonly model:string|undefined){}
  async extract(input:GranolaExtractionInput,signal:AbortSignal=AbortSignal.timeout(180_000)):Promise<GranolaExtraction>{
   if(!this.ai||this.model!==THEME_MODEL)throw Error('ai_unavailable');
-  const attendees=input.attendees.map(a=>a.email);
-  const segments:{label:string;text:string}[]=[];
+  const attendees=input.attendees.map(a=>a.email.trim().toLowerCase());
+  const segments:{text:string}[]=[];
   const head=[input.summary&&`SUMMARY:\n${input.summary}`,input.privateNotes&&`PRIVATE NOTES:\n${input.privateNotes}`].filter(Boolean).join('\n\n');
-  if(head)segments.push({label:'summary',text:head});
-  for(const chunk of chunkTranscript(input.transcript))segments.push({label:'transcript',text:`TRANSCRIPT SEGMENT:\n${chunk}`});
+  if(head)segments.push({text:head});
+  for(const chunk of chunkTranscript(input.transcript))segments.push({text:`TRANSCRIPT SEGMENT:\n${chunk}`});
   const topics=new Map<TopicId,number>();const statements:GroundedStatement[]=[];const seen=new Set<string>();let calls=0;
   for(const segment of segments.slice(0,MAX_CALLS)){
-   signal.throwIfAborted();
+   if(signal.aborted)throw Error('ai_unavailable');
    const parsed=await this.call({attendees,text:segment.text},signal);calls++;
    for(const t of parsed.topics)topics.set(t.topicId,Math.max(topics.get(t.topicId)??0,t.confidence));
    for(const s of parsed.statements){
@@ -59,7 +59,7 @@ export class GranolaExtractor {
  }
  private async call(user:{attendees:string[];text:string},signal:AbortSignal):Promise<{topics:{topicId:TopicId;confidence:number}[];statements:{email:string;kind:StatementKind;quote:string}[]}>{
   let output:unknown;
-  try{output=await settle(this.ai!.run(THEME_MODEL,{messages:[{role:'system',content:SYSTEM},{role:'user',content:JSON.stringify(user)}],response_format:{type:'json_schema',json_schema:SCHEMA},max_tokens:3072},{signal}),signal);}
+  try{output=await settle(this.ai!.run(this.model!,{messages:[{role:'system',content:SYSTEM},{role:'user',content:JSON.stringify(user)}],response_format:{type:'json_schema',json_schema:SCHEMA},max_tokens:3072},{signal}),signal);}
   catch{throw Error('ai_unavailable');}
   try{
    if(isRecord(output)&&'response' in output){if(Object.keys(output).some(k=>!ENVELOPE_KEYS.has(k)))throw Error();output=output.response;}

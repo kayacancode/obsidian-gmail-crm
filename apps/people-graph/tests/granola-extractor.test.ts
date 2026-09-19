@@ -55,3 +55,29 @@ test('transcript chunks are sent as separate calls and merged, with a hard cap o
  assert.equal(out.calls,5);assert.equal(ai.calls.length,5);
  assert.deepEqual(out.topics,[{topicId:'research',confidence:0.5}]);
 });
+
+test('extract rejects immediately with an already-aborted signal and makes no AI calls',async()=>{
+ const ai=new FakeAI({response:{topics:[],statements:[]}});
+ const controller=new AbortController();controller.abort();
+ await assert.rejects(new GranolaExtractor(ai as any,MODEL).extract(input,controller.signal),/ai_unavailable/);
+ assert.equal(ai.calls.length,0);
+});
+
+class AbortingAI {
+ calls:{model:string;input:any}[]=[];
+ constructor(private response:unknown,private controller:AbortController){}
+ async run(model:string,input:any){this.calls.push({model,input});this.controller.abort();return this.response;}
+}
+test('extract aborts between calls once the signal fires during an in-flight call',async()=>{
+ const controller=new AbortController();
+ const ai=new AbortingAI({response:{topics:[],statements:[]}},controller);
+ await assert.rejects(new GranolaExtractor(ai as any,MODEL).extract(input,controller.signal),/ai_unavailable/);
+ assert.equal(ai.calls.length,1);// summary+notes call ran; the transcript-chunk call was skipped once aborted
+});
+
+test('attendee email comparison is case-insensitive for mixed-case attendees',async()=>{
+ const mixedInput={...input,attendees:[{email:'Ada@Example.TEST',name:'Ada'},{email:'bob@example.test',name:'Bob'}]};
+ const ai=new FakeAI({response:{topics:[],statements:[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.'}]}});
+ const out=await new GranolaExtractor(ai as any,MODEL).extract(mixedInput);
+ assert.deepEqual(out.statements,[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.',source:'summary',offset:0}]);
+});
