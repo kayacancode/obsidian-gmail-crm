@@ -18,13 +18,17 @@ const HOUR=3_600_000,DAY=86_400_000;
 
 export class GranolaSync {
  private static readonly FETCH_PER_TICK=5;
- private static readonly MAX_NOTE_BYTES=400*1024;
+ // Per-note cap on summary+privateNotes+transcript, measured in UTF-16 code units
+ // (JS string .length / "characters"), not UTF-8 bytes. Do not switch to byte counting.
+ private static readonly MAX_NOTE_CHARS=400*1024;
  private static readonly MAX_NOTES=20_000;
  private static readonly RECONCILE_EVERY=7*DAY;
 
- constructor(private readonly ctx:DurableObjectState,private readonly env:MailEnv,private readonly hooks:GranolaHooks){
+ constructor(private readonly ctx:DurableObjectState,private readonly env:MailEnv,private readonly hooks:GranolaHooks,private readonly maxNotes:number=GranolaSync.MAX_NOTES){
   ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS granola_connection (id INTEGER PRIMARY KEY CHECK (id=1),grant TEXT NOT NULL,data TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS granola_folders (id TEXT PRIMARY KEY,name TEXT NOT NULL,parent_id TEXT,excluded INTEGER NOT NULL DEFAULT 0,seen_at INTEGER NOT NULL);
+   -- "bytes" holds a character count (summary+private_notes+transcript .length, UTF-16 code
+   -- units), not a UTF-8 byte count; the column keeps its original name to avoid a migration.
    CREATE TABLE IF NOT EXISTS granola_notes (id TEXT PRIMARY KEY,title TEXT NOT NULL,web_url TEXT,meeting_at TEXT NOT NULL,date_basis TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,folder_ids TEXT NOT NULL,summary TEXT NOT NULL,private_notes TEXT NOT NULL,transcript TEXT NOT NULL,content_hash TEXT NOT NULL,bytes INTEGER NOT NULL,extraction_status TEXT NOT NULL,extraction TEXT,extractor_version TEXT NOT NULL,extraction_attempts INTEGER NOT NULL DEFAULT 0,synced_at INTEGER NOT NULL,hidden INTEGER NOT NULL DEFAULT 0);
    CREATE INDEX IF NOT EXISTS granola_notes_status ON granola_notes(extraction_status,meeting_at DESC);
    CREATE TABLE IF NOT EXISTS granola_attendees (note_id TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(note_id,email));
@@ -128,16 +132,35 @@ export class GranolaSync {
   const page=await listGranolaNotes(apiKey,{...options,cursor:job.cursor});
   const existing=new Map(this.ctx.storage.sql.exec<{id:string;updated_at:string;extraction_status:string}>('SELECT id,updated_at,extraction_status FROM granola_notes').toArray().map(r=>[r.id,r]));
   for(const n of page.notes){
-   if(n.updatedAt>job.maxUpdated)job.maxUpdated=n.updatedAt;
    const row=existing.get(n.id);
-   if(row&&row.updated_at===n.updatedAt&&row.extraction_status!=='refetch')continue;
+   if(row&&row.updated_at===n.updatedAt&&row.extraction_status!=='refetch'){
+    // Unchanged notes are never queued, so it's always safe to fold their updated_at
+    // into the watermark now.
+    if(n.updatedAt>job.maxUpdated)job.maxUpdated=n.updatedAt;
+    continue;
+   }
    if(!job.pending.some(p=>p.id===n.id))job.pending.push({id:n.id,updatedAt:n.updatedAt});
   }
   job.cursor=page.hasMore&&page.cursor?page.cursor:undefined;
   if(!job.cursor){
    for(const r of this.ctx.storage.sql.exec<{id:string;updated_at:string}>("SELECT id,updated_at FROM granola_notes WHERE extraction_status='refetch'").toArray())if(!job.pending.some(p=>p.id===r.id))job.pending.push({id:r.id,updatedAt:r.updated_at});
-   const total=this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM granola_notes').toArray()[0].n;
-   if(total+job.pending.length>GranolaSync.MAX_NOTES)job.pending.length=Math.max(0,GranolaSync.MAX_NOTES-total);
+   // The row-count cap only ever applies to brand-new notes: updates to notes already
+   // stored (including refetch rows) never grow the table, so they must never be dropped.
+   const existingIds=new Set(this.ctx.storage.sql.exec<{id:string}>('SELECT id FROM granola_notes').toArray().map(r=>r.id));
+   const total=existingIds.size;
+   const newCount=job.pending.filter(p=>!existingIds.has(p.id)).length;
+   if(total+newCount>this.maxNotes){
+    const room=Math.max(0,this.maxNotes-total);
+    let kept=0;
+    job.pending=job.pending.filter(p=>{
+     if(existingIds.has(p.id))return true;
+     if(kept<room){kept++;return true;}
+     return false;// dropped: must not advance the watermark past this note
+    });
+   }
+   // Only fold in updated_at values for notes that actually survive to be fetched —
+   // notes dropped by the cap above must stay eligible for a future incremental list.
+   for(const p of job.pending)if(p.updatedAt>job.maxUpdated)job.maxUpdated=p.updatedAt;
    job.phase='fetch';
   }
   this.write(c);
@@ -151,19 +174,23 @@ export class GranolaSync {
    try{detail=await getGranolaNote(apiKey,item.id);}
    catch(e){if(e instanceof GranolaClientError&&e.diagnostic==='http_4xx'){job.pending.shift();job.processed++;this.write(c);continue;}throw e;}
    const hidden=GranolaSync.hiddenFor(detail.folderIds,excluded);
-   // Combined summary+privateNotes must fit under the per-note cap before the transcript loop runs.
-   let summary=detail.summary,privateNotes=detail.privateNotes;
-   if(summary.length+privateNotes.length>GranolaSync.MAX_NOTE_BYTES){
-    privateNotes=privateNotes.slice(0,Math.max(0,GranolaSync.MAX_NOTE_BYTES-summary.length));
-    if(summary.length>GranolaSync.MAX_NOTE_BYTES)summary=summary.slice(0,GranolaSync.MAX_NOTE_BYTES);
-   }
-   let transcript='',bytes=summary.length+privateNotes.length,truncated=false;
+   // Skipped/hidden notes are stored with id, folder ids and dates only: no title, url,
+   // summary, private notes or transcript, and a 0 character count.
+   let summary=detail.summary,privateNotes=detail.privateNotes,transcript='',bytes=0,truncated=false;
    if(!hidden){
+    // Combined summary+privateNotes must fit under the per-note cap (characters, i.e.
+    // UTF-16 code units / .length — not UTF-8 bytes) before the transcript loop runs.
+    if(summary.length+privateNotes.length>GranolaSync.MAX_NOTE_CHARS){
+     privateNotes=privateNotes.slice(0,Math.max(0,GranolaSync.MAX_NOTE_CHARS-summary.length));
+     if(summary.length>GranolaSync.MAX_NOTE_CHARS)summary=summary.slice(0,GranolaSync.MAX_NOTE_CHARS);
+    }
+    bytes=summary.length+privateNotes.length;
     let cursor:string|undefined;
     for(let p=0;p<64;p++){
      const page=await getGranolaTranscript(apiKey,item.id,cursor);
-     if(bytes+page.text.length>GranolaSync.MAX_NOTE_BYTES){transcript+=(transcript?'\n':'')+page.text.slice(0,Math.max(0,GranolaSync.MAX_NOTE_BYTES-bytes-64));bytes=Math.min(bytes+page.text.length,GranolaSync.MAX_NOTE_BYTES);truncated=true;break;}
-     transcript+=(transcript?'\n':'')+page.text;bytes+=page.text.length;
+     const sep=transcript?1:0;// count the '\n' page separator we're about to add
+     if(bytes+sep+page.text.length>GranolaSync.MAX_NOTE_CHARS){transcript+=(transcript?'\n':'')+page.text.slice(0,Math.max(0,GranolaSync.MAX_NOTE_CHARS-bytes-sep-64));bytes=Math.min(bytes+sep+page.text.length,GranolaSync.MAX_NOTE_CHARS);truncated=true;break;}
+     transcript+=(transcript?'\n':'')+page.text;bytes+=sep+page.text.length;
      if(!page.hasMore||!page.cursor)break;cursor=page.cursor;
     }
     if(truncated)transcript+='\n[transcript truncated]';
@@ -174,7 +201,7 @@ export class GranolaSync {
    const status=hidden?'skipped':unchanged?'done':'pending';
    this.ctx.storage.transactionSync(()=>{
     this.ctx.storage.sql.exec("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,0,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,web_url=excluded.web_url,meeting_at=excluded.meeting_at,date_basis=excluded.date_basis,updated_at=excluded.updated_at,folder_ids=excluded.folder_ids,summary=excluded.summary,private_notes=excluded.private_notes,transcript=excluded.transcript,content_hash=excluded.content_hash,bytes=excluded.bytes,extraction_status=excluded.extraction_status,extraction=CASE WHEN excluded.extraction_status='done' THEN granola_notes.extraction ELSE NULL END,extractor_version=excluded.extractor_version,extraction_attempts=0,synced_at=excluded.synced_at,hidden=excluded.hidden",
-     item.id,detail.title.slice(0,300),detail.webUrl,detail.meetingAt,detail.dateBasis,detail.createdAt,detail.updatedAt,JSON.stringify(detail.folderIds),hidden?'':summary,hidden?'':privateNotes,transcript,contentHash,bytes,status,GRANOLA_EXTRACTOR_VERSION,now,hidden);
+     item.id,hidden?'':detail.title.slice(0,300),hidden?null:detail.webUrl,detail.meetingAt,detail.dateBasis,detail.createdAt,detail.updatedAt,JSON.stringify(detail.folderIds),hidden?'':summary,hidden?'':privateNotes,transcript,contentHash,bytes,status,GRANOLA_EXTRACTOR_VERSION,now,hidden);
     this.ctx.storage.sql.exec('DELETE FROM granola_attendees WHERE note_id=?',item.id);this.ctx.storage.sql.exec('DELETE FROM granola_edges WHERE note_id=?',item.id);
     if(!hidden){
      for(const a of detail.attendees)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_attendees VALUES (?,?,?)',item.id,a.email,a.name);

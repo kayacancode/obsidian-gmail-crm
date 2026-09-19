@@ -5,14 +5,14 @@ import {GranolaSync} from '../src/granola-sync';
 import {RelevanceStore} from '../src/relevance-store';
 import {unseal} from '../src/mail-model';
 
-export function granolaFixture(){
+export function granolaFixture(opts:{maxNotes?:number}={}){
  const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>();
  const ctx={storage:{sql:{exec(sql:string,...args:any[]){if(sql.includes('CREATE TABLE')){db.exec(sql);return {toArray:()=>[]};}const stmt=db.prepare(sql);const rows=sql.startsWith('SELECT')?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},get:async(k:string)=>kv.get(k),put:async(k:string,v:unknown)=>{kv.set(k,v);},delete:async(k:string)=>kv.delete(k),setAlarm:async(n:number)=>{kv.set('alarm',n);},transactionSync<T>(fn:()=>T){db.exec('BEGIN');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}}};
  const env={MAIL_TOKEN_KEY:'encrypt-key',GOOGLE_CLIENT_ID:'client-id',TOKEN_SECRET:'identity-key'} as any;
  kv.set('owner','owner@example.test');
  const store=new RelevanceStore(ctx as any,()=>ctx.storage.get('owner') as Promise<string|undefined>);
  let invalidations=0;
- const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;}});
+ const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;}},opts.maxNotes);
  return {sync,db,kv,env,store,invalidations:()=>invalidations};
 }
 export async function withFetch<T>(fake:typeof fetch,run:()=>Promise<T>):Promise<T>{const o=globalThis.fetch;globalThis.fetch=fake;try{return await run();}finally{globalThis.fetch=o;}}
@@ -177,6 +177,40 @@ test('transcript pages stop at the byte cap and mark the note truncated',async()
   return net.fake(input,init);
  }) as typeof fetch;
  await withFetch(fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,fake);
- const row=f.db.prepare('SELECT bytes,transcript FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ const row=f.db.prepare('SELECT bytes,summary,private_notes,transcript FROM granola_notes WHERE id=?').get(NOTE_A) as any;
  assert.ok(row.bytes<=400*1024);assert.ok(page<=8);assert.ok(row.transcript.endsWith('[transcript truncated]'));
+ // The self-reported "bytes" column may be clamped to the cap; verify the actual stored
+ // content (which also carries the truncation marker) stays under the cap too.
+ assert.ok(row.summary.length+row.private_notes.length+row.transcript.length<=400*1024);
+});
+
+test('note cap counts only new notes, never drops updates or refetches, and never advances the watermark past a dropped note',async()=>{
+ const f=granolaFixture({maxNotes:2});
+ const OLD='not_9999999990abcd',NOTE_C='not_3234567890abcd';
+ f.db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,0,?,NULL,?,0,0,0)").run(OLD,'Old','2026-08-01T11:00:00Z','scheduled','2026-08-01T12:00:00Z','2026-08-01T12:00:00Z','["fol_1234567890abcd"]','s','p','t','h','done','granola-v1');
+ const net=network({notes:[
+  noteRaw(OLD,'Old updated','fol_1234567890abcd','2026-08-16T12:00:00Z'),// update to an already-stored note
+  noteRaw(NOTE_A,'Alpha','fol_1234567890abcd','2026-08-14T12:00:00Z'),// new note, earlier updated_at — kept (fills the last cap slot)
+  noteRaw(NOTE_C,'Gamma','fol_1234567890abcd','2026-08-20T12:00:00Z'),// new note, latest updated_at — dropped by the cap
+ ]});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));
+ await runToIdle(f,net.fake);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,2);
+ assert.equal(f.db.prepare('SELECT title FROM granola_notes WHERE id=?').get(OLD)!.title,'Old updated','update to an existing note is still fetched at the cap');
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes WHERE id=?').get(NOTE_C)!.n,0,'new note beyond the cap is dropped');
+ const c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
+ // The dropped note's later updated_at must not be folded into the watermark, or it
+ // would never be listed again by a future incremental (updated_after) sync.
+ assert.equal(c.watermark,'2026-08-16T12:00:00Z');
+});
+
+test('reconcile deletes nothing when the upstream list returns 401',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ bump(f,{nextSync:0,lastReconcile:0});// forces the next due sync to start with reconcile
+ const unauth=network({fail:url=>url.includes('/v1/notes?')?new Response('x',{status:401}):null});
+ await runToIdle(f,unauth.fake);
+ const c=JSON.parse((f.db.prepare('SELECT data FROM granola_connection').get() as any).data);
+ assert.equal(c.status,'reconnect_required');
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,2);
 });
