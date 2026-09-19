@@ -305,3 +305,17 @@ test('an extractor version bump forces exactly one re-extraction per stale note,
  bump(f,{nextSync:0});await runToIdle(f,net.fake);
  assert.equal(ai.calls.length,afterBump,'no further AI calls once the note is back on the current version');
 });
+
+test('contacts, edges and ownEmails expose meeting-derived graph inputs excluding hidden notes',async()=>{
+ const f=granolaFixture();const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ assert.deepEqual(f.sync.ownEmails(),['me@example.test']);
+ const contacts=f.sync.contacts();
+ assert.deepEqual(contacts.map(c=>[c.email,c.name,c.meetings]).sort(),[['ada@example.test','Ada',2],['bob@example.test','Bob',2],['me@example.test','Me',2]]);
+ assert.equal(contacts[0].last,Date.parse('2026-08-14T11:00:00Z'));
+ const edges=f.sync.edges();
+ assert.deepEqual(edges.find(e=>e.a==='ada@example.test'&&e.b==='bob@example.test'),{a:'ada@example.test',b:'bob@example.test',weight:2,titles:['Alpha','Beta']});
+ await f.sync.setExcluded(['fol_2234567890abcd']);
+ assert.equal(f.sync.contacts().find(c=>c.email==='ada@example.test')!.meetings,1);
+ assert.equal(f.sync.edges().find(e=>e.a==='ada@example.test'&&e.b==='bob@example.test')!.weight,1);
+});

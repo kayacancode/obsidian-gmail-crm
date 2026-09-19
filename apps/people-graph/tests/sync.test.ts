@@ -303,3 +303,42 @@ test('other contacts are queried with profile sources after saved contacts finis
 
 test('Other-only permission imports photos independently',async()=>{const {service,db}=fixture();try{await service.attachAccount('me@example.com','refresh','all',false,true);network();const mail=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{if(String(input).includes('people.googleapis')){assert.ok(String(input).includes('otherContacts'));return Response.json({otherContacts:[{emailAddresses:[{value:'ada@example.com'}],photos:[{url:'https://lh3.googleusercontent.com/ada'}]}]});}return mail(input,init);};await service.alarm();assert.equal(service.list()[0].photoCount,1);}finally{globalThis.fetch=originalFetch;db.close();}});
 test('Other contacts permission failure preserves successful saved photos',async()=>{const {service,db}=fixture();try{await service.attachAccount('me@example.com','refresh','all',true,true);network();const mail=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>String(input).includes('otherContacts')?Response.json({}, {status:403}):String(input).includes('people.googleapis')?Response.json({connections:[{emailAddresses:[{value:'ada@example.com'}],photos:[{url:'https://lh3.googleusercontent.com/ada'}]}]}):mail(input,init);await service.alarm();await service.alarm();assert.equal(service.list()[0].photoCount,1);assert.equal(service.list()[0].status,'connected');}finally{globalThis.fetch=originalFetch;db.close();}});
+
+test('graph merges Gmail contributions with Granola meetings on one node and one edge set',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada@example.com','Ada',Date.parse('2026-07-01T00:00:00Z'),'Hello',1,1);
+  db.prepare('INSERT INTO mail_edges VALUES (?,?,?,?,?)').run('me@example.com','m1','ada@example.com','bob@example.com','Hello');
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','bob@example.com','Bob',Date.parse('2026-07-01T00:00:00Z'),'Hello',0,1);
+  // Granola rows written directly (tables are created by MailSync's GranolaSync)
+  db.prepare("INSERT INTO granola_connection (id,grant,data) VALUES (1,'sealed',?)").run(JSON.stringify({ownerEmail:'me@example.com',status:'connected',range:'all',watermark:'w',lastSync:1,nextSync:9e15,lastReconcile:1,error:'',job:null}));
+  db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES ('not_1234567890abcd','Standup',NULL,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','[]','','','','h',0,'done',NULL,'granola-v1',0,0,0)").run();
+  for(const [e,n] of [['me@example.com','Me'],['ada@example.com','Ada L'],['carol@example.com','Carol']])db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run('not_1234567890abcd',e,n);
+  db.prepare("INSERT INTO granola_edges VALUES ('not_1234567890abcd','ada@example.com','bob@example.com')").run();
+  db.prepare("INSERT INTO granola_edges VALUES ('not_1234567890abcd','ada@example.com','carol@example.com')").run();
+  const graph=(await service.graph())!;
+  assert.equal(graph.scoreModel,'email-meeting-frequency-reciprocity-recency-v2');
+  const names=graph.nodes.map((n:any)=>n.name).sort();assert.deepEqual(names,['Ada','Bob','Carol']);// me@ excluded via both Gmail account and Granola owner
+  const ada=graph.nodes.find((n:any)=>n.name==='Ada') as any;
+  assert.equal(ada.id,await opaque('owner','ada@example.com','identity-key'));assert.equal(ada.meetings,1);assert.equal(ada.lastContact,'2026-08-14T11:00:00.000Z');assert.equal(ada.lastMeeting,'2026-08-14T11:00:00.000Z');
+  const carol=graph.nodes.find((n:any)=>n.name==='Carol') as any;assert.equal(carol.meetings,1);assert.ok(carol.strength>0);
+  const ab=graph.edges.find((e:any)=>e.source===ada.id&&e.target===graph.nodes.find((n:any)=>n.name==='Bob')!.id) as any;
+  assert.deepEqual(ab.types.sort(),['shared_email','shared_meeting']);assert.equal(ab.weight,2);assert.deepEqual(ab.contexts,['Hello','Standup']);
+ }finally{db.close();}
+});
+
+test('graph exists with Granola alone, and alarm runs a Granola tick and schedules it',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  globalThis.fetch=(async(input:any)=>{const url=String(input);if(url.includes('/v1/folders'))return Response.json({folders:[],hasMore:false,cursor:null});if(url.includes('/v1/notes'))return Response.json({notes:[],hasMore:false,cursor:null});return new Response('{}',{status:500});}) as typeof fetch;
+  const status=await service.granolaConnect('grn_fictional_key_123456','all');
+  assert.equal(status.status,'syncing');assert.ok(typeof kv.get('alarm')==='number');
+  for(let i=0;i<6&&service.granolaStatus().status==='syncing';i++)await service.alarm();
+  assert.equal(service.granolaStatus().status,'connected');
+  assert.ok((await service.graph())!==null);
+  assert.ok((kv.get('alarm') as number)>Date.now()+3_000_000);
+  await service.granolaDisconnect();
+  assert.equal(service.granolaStatus().connected,false);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});

@@ -324,9 +324,9 @@ export class GranolaSync {
 
  protected async removeNoteSignals(noteId:string){await this.hooks.store().removeSignalsByEvidencePrefix(GRANOLA_ACCOUNT,`granola-note:${noteId}#`);}
 
- contacts(){return [] as {email:string;name:string;meetings:number;last:number}[];}// Task 6
- edges(){return [] as {a:string;b:string;weight:number;titles:string[]}[];}// Task 6
- ownEmails(){return [] as string[];}// Task 6
+ ownEmails():string[]{const c=this.read();return c?.ownerEmail?[c.ownerEmail]:[];}
+ contacts(){return this.ctx.storage.sql.exec<{email:string;name:string;meetings:number;last:string}>('SELECT a.email AS email,MAX(a.name) AS name,COUNT(*) AS meetings,MAX(n.meeting_at) AS last FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 GROUP BY a.email ORDER BY meetings DESC, a.email ASC LIMIT 5000').toArray().map(r=>({email:r.email,name:r.name,meetings:r.meetings,last:Date.parse(r.last)}));}
+ edges(){const rows=this.ctx.storage.sql.exec<{a:string;b:string;title:string}>('SELECT e.a AS a,e.b AS b,n.title AS title FROM granola_edges e JOIN granola_notes n ON n.id=e.note_id WHERE n.hidden=0 ORDER BY n.meeting_at DESC, n.title ASC').toArray();const map=new Map<string,{a:string;b:string;weight:number;titles:string[]}>();for(const r of rows){const key=r.a+'\u0000'+r.b;const e=map.get(key)??{a:r.a,b:r.b,weight:0,titles:[]};e.weight++;if(e.titles.length<3&&!e.titles.includes(r.title))e.titles.push(r.title);map.set(key,e);}return [...map.values()].sort((x,y)=>y.weight-x.weight).slice(0,5000);}
 }
 
 async function digestText(value:string){const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');}
