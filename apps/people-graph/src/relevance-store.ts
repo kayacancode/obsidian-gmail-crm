@@ -206,6 +206,16 @@ export class RelevanceStore {
 		return this.persist(owner,[...themes.values()],signals);
 	}
 
+	/** Ingest signals together with server-defined themes (Granola topics carry their own display names). */
+	async ingestWithThemes(themes:Theme[],signals:SignalInput[]):Promise<{themes:number;signals:number}> {
+		const owner = await this.requiredOwner();
+		return this.persist(owner,themes.filter(t=>t.owner===owner),signals);
+	}
+	hasSignalsWithEvidencePrefix(account:string,prefix:string,owner:string):boolean {
+		const pattern = prefix.replace(/[%_\\]/g,'\\$&')+'%';
+		return this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM theme_signals WHERE owner=? AND account=? AND evidence_ref LIKE ? ESCAPE '\\'",owner,account,pattern).toArray()[0].n>0;
+	}
+
 	/** Converts transient subject metadata into compact, owner-opaque signals. */
 	async ingestMetadata(account:string, rows:MetadataInput[], now=Date.now(), stillCurrent?:()=>boolean):Promise<{themes:number;signals:number}> {
 		const owner = await this.requiredOwner();

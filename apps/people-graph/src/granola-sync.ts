@@ -1,7 +1,10 @@
-import {seal,unseal} from './mail-model';
+import {seal,unseal,opaque} from './mail-model';
 import {listGranolaFolders,listGranolaNotes,getGranolaNote,getGranolaTranscript,GranolaClientError,type NoteDetail} from './granola-client';
 import type {RelevanceStore} from './relevance-store';
 import type {MailEnv} from './mail-sync';
+import {canonicalThemeName,type Theme,type ThemeSignal} from './relevance-model';
+import {GranolaExtractor,KIND_LABEL,type GranolaExtraction} from './granola-extractor';
+import {THEME_TOPICS,THEME_MODEL} from './theme-extractor';
 
 export type GranolaRange='recent'|'all';
 export type GranolaConnectionStatus='syncing'|'connected'|'reconnect_required'|'error';
@@ -76,14 +79,13 @@ export class GranolaSync {
    for(const row of this.ctx.storage.sql.exec<{id:string;folder_ids:string}>("SELECT id,folder_ids FROM granola_notes WHERE extraction_status='skipped'").toArray())if(!GranolaSync.hiddenFor(JSON.parse(row.folder_ids),excluded)){this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='refetch' WHERE id=?",row.id);refetched=true;}
   });
   if(refetched){const c=this.read();if(c&&c.status==='connected'){c.nextSync=Date.now();this.write(c);}}
-  await this.applyHiddenSignals();// Task 5 fills this in; stub as no-op here
+  await this.applyHiddenSignals();
   await this.hooks.invalidateGraph();
   return this.status();
  }
  private excludedIds(){return new Set(this.ctx.storage.sql.exec<{id:string}>('SELECT id FROM granola_folders WHERE excluded=1').toArray().map(r=>r.id));}
  static hiddenFor(folderIds:string[],excluded:Set<string>){return folderIds.length>0&&folderIds.every(id=>excluded.has(id))?1:0;}
  private recomputeHidden(excluded:Set<string>){for(const row of this.ctx.storage.sql.exec<{id:string;folder_ids:string}>('SELECT id,folder_ids FROM granola_notes').toArray())this.ctx.storage.sql.exec('UPDATE granola_notes SET hidden=? WHERE id=?',GranolaSync.hiddenFor(JSON.parse(row.folder_ids),excluded),row.id);}
- protected async applyHiddenSignals():Promise<void>{}
 
  syncNow():GranolaStatus{const c=this.read();if(c&&c.status!=='syncing'&&c.status!=='reconnect_required'){c.status='connected';c.error='';c.nextSync=Date.now();this.write(c);}return this.status();}
 
@@ -123,6 +125,7 @@ export class GranolaSync {
   for(let i=0;i<20;i++){const page=await listGranolaFolders(apiKey,cursor);this.ctx.storage.transactionSync(()=>this.upsertFolders(page.folders,now));if(!page.hasMore||!page.cursor)break;cursor=page.cursor;}
   this.ctx.storage.sql.exec('DELETE FROM granola_folders WHERE seen_at<?',now-7*DAY);
   this.recomputeHidden(this.excludedIds());
+  this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction=NULL WHERE extraction_status='done' AND extractor_version<>?",GRANOLA_EXTRACTOR_VERSION);
   c=this.read()!;c.job!.phase='list';c.job!.cursor=undefined;this.write(c);
  }
 
@@ -223,7 +226,70 @@ export class GranolaSync {
   if(!job.pending.length){job.phase='extract';this.write(c);}
  }
 
- protected async extractPhase(c:Connection,now:number):Promise<void>{await this.finishRun(now);}
+ private static readonly EXTRACT_PER_TICK=3;
+ private static readonly EXTRACT_BUDGET_MS=120_000;
+ private static readonly MAX_ATTEMPTS=5;
+
+ protected async extractPhase(c:Connection,now:number):Promise<void>{
+  const owner=await this.hooks.owner();if(!owner){await this.finishRun(now);return;}
+  const started=Date.now();
+  const rows=this.ctx.storage.sql.exec<{id:string;summary:string;private_notes:string;transcript:string;meeting_at:string;content_hash:string;extraction_attempts:number}>("SELECT id,summary,private_notes,transcript,meeting_at,content_hash,extraction_attempts FROM granola_notes WHERE extraction_status='pending' AND hidden=0 ORDER BY meeting_at DESC LIMIT ?",GranolaSync.EXTRACT_PER_TICK).toArray();
+  if(!rows.length){await this.finishRun(now);return;}
+  let aiDown=false;
+  for(const row of rows){
+   if(Date.now()-started>GranolaSync.EXTRACT_BUDGET_MS)break;
+   const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
+   let extraction:GranolaExtraction;
+   try{extraction=await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract({summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees});}
+   catch(e){
+    const attempts=row.extraction_attempts+1;const failed=attempts>=GranolaSync.MAX_ATTEMPTS||(e instanceof Error&&e.message==='invalid_extraction'&&attempts>=2);
+    this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempts=?,extraction_status=? WHERE id=?',attempts,failed?'failed':'pending',row.id);
+    if(e instanceof Error&&e.message==='ai_unavailable')aiDown=true;
+    continue;
+   }
+   await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
+   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,row.id,row.content_hash);
+  }
+  const remaining=this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='pending' AND hidden=0").toArray()[0].n;
+  const c2=this.read();if(!c2||!c2.job)return;
+  // When the model is unavailable, end this run; pending notes retry on the next hourly run (one attempt per run, five runs to 'failed').
+  if(!remaining||aiDown)await this.finishRun(now);
+  else {c2.job.nextAttempt=Date.now()+1_500;this.write(c2);}
+ }
+
+ private async ingestExtraction(owner:string,noteId:string,meetingAt:string,contentHash:string,extraction:GranolaExtraction,attendees:{email:string;name:string}[]){
+  await this.removeNoteSignals(noteId);
+  const now=new Date().toISOString();const themes=new Map<string,Theme>();const signals:(ThemeSignal&{account:string})[]=[];
+  const topicTheme=async(topicId:keyof typeof THEME_TOPICS)=>{const topic=THEME_TOPICS[topicId];const id='theme-'+await opaque(owner,`body-topic:${topicId}`,this.env.TOKEN_SECRET);themes.set(id,{id,owner,canonicalName:canonicalThemeName(topic.name),aliases:[topic.name],description:topic.summary,status:'active',createdAt:now,updatedAt:now});return id;};
+  let best:{id:string;confidence:number}|null=null;
+  for(const t of extraction.topics){
+   const themeId=await topicTheme(t.topicId);
+   if(!best||t.confidence>best.confidence)best={id:themeId,confidence:t.confidence};
+   signals.push({id:await opaque(owner,`granola-topic:${noteId}:${t.topicId}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:t.confidence,summary:`Meeting matched ${THEME_TOPICS[t.topicId].name}`,evidenceRef:`granola-note:${noteId}#topic@${t.topicId}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});
+  }
+  let fallback:string|null=null;
+  const emails=new Set(attendees.map(a=>a.email));
+  for(const s of extraction.statements){
+   if(!emails.has(s.email))continue;
+   let themeId=best?.id;
+   if(!themeId){fallback??='theme-'+await opaque(owner,'granola-meetings',this.env.TOKEN_SECRET);themeId=fallback;themes.set(themeId,{id:themeId,owner,canonicalName:'meetings',aliases:['Meetings'],description:'Statements from meeting notes without a matched topic',status:'active',createdAt:now,updatedAt:now});}
+   const personId=await opaque(owner,s.email,this.env.TOKEN_SECRET);
+   signals.push({id:await opaque(owner,`granola-statement:${noteId}:${s.email}:${s.kind}:${s.source}:${s.offset}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,personId,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:s.source==='summary'?0.8:s.source==='private_notes'?0.7:0.6,summary:`${KIND_LABEL[s.kind]}: “${s.quote}”`.slice(0,240),evidenceRef:`granola-note:${noteId}#${s.source}@${s.offset}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});
+  }
+  await this.hooks.store().ingestWithThemes([...themes.values()],signals);
+ }
+
+ protected async applyHiddenSignals():Promise<void>{
+  const owner=await this.hooks.owner();if(!owner)return;
+  for(const row of this.ctx.storage.sql.exec<{id:string}>("SELECT id FROM granola_notes WHERE hidden=1").toArray())await this.removeNoteSignals(row.id);
+  for(const row of this.ctx.storage.sql.exec<{id:string;meeting_at:string;content_hash:string;extraction:string}>("SELECT id,meeting_at,content_hash,extraction FROM granola_notes WHERE hidden=0 AND extraction_status='done' AND extraction IS NOT NULL").toArray()){
+   const present=this.hooks.store().hasSignalsWithEvidencePrefix(GRANOLA_ACCOUNT,`granola-note:${row.id}#`,owner);
+   if(present)continue;
+   const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
+   let extraction:GranolaExtraction;try{extraction=JSON.parse(row.extraction);}catch{continue;}
+   await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
+  }
+ }
 
  protected async finishRun(now:number){
   const c=this.read();if(!c||!c.job)return;

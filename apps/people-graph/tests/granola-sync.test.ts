@@ -233,3 +233,57 @@ test('reconcile deletes nothing when the upstream list returns 401',async()=>{
  assert.equal(c.status,'reconnect_required');
  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_notes').get()!.n,2);
 });
+
+import {FakeAI} from './worker-stub';
+import {opaque} from '../src/mail-model';
+const MODEL='@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+function withAI(f:ReturnType<typeof granolaFixture>,response:unknown){const ai=new FakeAI(response);Object.assign(f.env,{AI:ai,THEME_MODEL:MODEL});return ai;}
+const goodAI={response:{topics:[{topicId:'business_strategy',confidence:0.7}],statements:[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.'}]}};
+
+test('extraction ingests topic and statement signals bound to attendee ids and meeting dates',async()=>{
+ const f=granolaFixture();const ai=withAI(f,goodAI);const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ assert.equal((f.db.prepare('SELECT extraction_status FROM granola_notes WHERE id=?').get(NOTE_A) as any).extraction_status,'done');
+ const signals=f.db.prepare("SELECT * FROM theme_signals WHERE account='granola' ORDER BY evidence_ref").all() as any[];
+ const ada=await opaque('owner@example.test','ada@example.test','identity-key');
+ const statement=signals.find(s=>s.person_id===ada&&s.evidence_ref===`granola-note:${NOTE_A}#summary@0`)!;
+ assert.equal(statement.summary,'Intro: “Ada asked for an intro to a fintech founder.”');assert.equal(statement.source_type,'granola');assert.equal(statement.visibility,'private');assert.equal(statement.observed_at,'2026-08-14T11:00:00Z');assert.equal(statement.confidence,0.8);
+ const topic=signals.find(s=>s.evidence_ref===`granola-note:${NOTE_A}#topic@business_strategy`)!;
+ assert.equal(topic.person_id,null);assert.equal(topic.summary,'Meeting matched Business strategy');
+ assert.equal(statement.theme_id,topic.theme_id);
+ assert.equal(topic.theme_id,'theme-'+await opaque('owner@example.test','body-topic:business_strategy','identity-key'));
+ assert.ok(!JSON.stringify(ai.calls).includes(KEY));
+ assert.ok(JSON.stringify(ai.calls[0].input).includes('remember to send deck'));
+});
+
+test('ai failures leave the note pending with attempts, and it fails after five',async()=>{
+ const f=granolaFixture();withAI(f,new Error('boom'));const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ let row=f.db.prepare('SELECT extraction_status,extraction_attempts FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'pending');assert.equal(row.extraction_attempts,1);
+ for(let i=0;i<4;i++){bump(f,{nextSync:0});await runToIdle(f,net.fake);}
+ row=f.db.prepare('SELECT extraction_status,extraction_attempts FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'failed');assert.equal(row.extraction_attempts,5);
+ assert.equal(f.sync.status().counts.failed,2);
+});
+
+test('hiding a folder removes its signals and re-including restores them without AI',async()=>{
+ const f=granolaFixture();const ai=withAI(f,goodAI);const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ const before=ai.calls.length;
+ await f.sync.setExcluded(['fol_1234567890abcd']);
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM theme_signals WHERE evidence_ref LIKE ?').get(`granola-note:${NOTE_A}%`)!.n,0);
+ assert.equal((f.db.prepare('SELECT extraction FROM granola_notes WHERE id=?').get(NOTE_A) as any).extraction!==null,true);
+ await f.sync.setExcluded([]);
+ assert.ok(f.db.prepare('SELECT COUNT(*) AS n FROM theme_signals WHERE evidence_ref LIKE ?').get(`granola-note:${NOTE_A}%`)!.n>=2);
+ assert.equal(ai.calls.length,before);
+});
+
+test('statements with no topic land in the Meetings theme',async()=>{
+ const f=granolaFixture();withAI(f,{response:{topics:[],statements:[{email:'bob@example.test',kind:'commitment',quote:'remember to send deck'}]}});const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ const theme=f.db.prepare("SELECT t.canonical_name FROM theme_signals s JOIN themes t ON t.id=s.theme_id WHERE s.account='granola'").get() as any;
+ assert.equal(theme.canonical_name,'meetings');
+ const sig=f.db.prepare("SELECT summary,confidence FROM theme_signals WHERE account='granola'").get() as any;
+ assert.equal(sig.summary,'Commitment: “remember to send deck”');assert.equal(sig.confidence,0.7);
+});
