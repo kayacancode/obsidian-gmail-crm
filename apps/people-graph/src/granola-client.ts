@@ -22,13 +22,65 @@ export async function listGranolaFolders(apiKey:string,cursor?:string):Promise<F
  return {folders:page.items.map(folder),hasMore:page.hasMore,cursor:page.cursor};
 }
 
-export async function listGranolaNotes(apiKey:string,folderId:string,cursor?:string):Promise<NotePage>{
- const url=new URL('/v1/notes',BASE_URL);url.searchParams.set('folder_id',folderId);url.searchParams.set('page_size',String(PAGE_SIZE));if(cursor)url.searchParams.set('cursor',cursor);
- const raw=await granolaJSON(url,apiKey);const page=pagination(raw,'notes',cursor);
+export type NoteListOptions={folderId?:string;createdAfter?:string;updatedAfter?:string;cursor?:string};
+export type NoteDetail={id:string;title:string;webUrl:string|null;createdAt:string;updatedAt:string;meetingAt:string;dateBasis:'scheduled'|'created';ownerEmail:string|null;folderIds:string[];attendees:{email:string;name:string}[];summary:string;privateNotes:string};
+export type TranscriptPage={text:string;hasMore:boolean;cursor:string|null};
+const MAX_ATTENDEES=50;
+const MAX_TEXT=400*1024;
+const EMAIL=/^[^\s@]{1,64}@[^\s@]{1,255}$/;
+
+export async function listGranolaNotes(apiKey:string,options:NoteListOptions={}):Promise<NotePage>{
+ const url=new URL('/v1/notes',BASE_URL);
+ if(options.folderId)url.searchParams.set('folder_id',options.folderId);
+ url.searchParams.set('page_size',String(PAGE_SIZE));
+ if(options.createdAfter)url.searchParams.set('created_after',options.createdAfter);
+ if(options.updatedAfter)url.searchParams.set('updated_after',options.updatedAfter);
+ if(options.cursor)url.searchParams.set('cursor',options.cursor);
+ const raw=await granolaJSON(url,apiKey);const page=pagination(raw,'notes',options.cursor);
  return {notes:page.items.map(note),hasMore:page.hasMore,cursor:page.cursor};
 }
 
-async function granolaJSON(url:URL,apiKey:string):Promise<unknown>{
+export async function getGranolaNote(apiKey:string,noteId:string):Promise<NoteDetail>{
+ if(!NOTE_ID.test(noteId))invalid('note_shape');
+ const raw=await granolaJSON(new URL(`/v1/notes/${noteId}`,BASE_URL),apiKey,MAX_TEXT+64*1024);
+ if(!record(raw)||raw.id!==noteId)invalid('note_shape');
+ const base=note(raw);
+ const attendees:NoteDetail['attendees']=[];const seen=new Set<string>();
+ if(!Array.isArray(raw.attendees))invalid('note_shape');
+ for(const a of raw.attendees.slice(0,MAX_ATTENDEES)){
+  if(!record(a)||typeof a.email!=='string')continue;
+  const email=a.email.trim().toLowerCase();if(!EMAIL.test(email)||seen.has(email))continue;seen.add(email);
+  const name=typeof a.name==='string'&&a.name.trim()?a.name.trim().slice(0,160):email.split('@')[0];
+  attendees.push({email,name});
+ }
+ if(!Array.isArray(raw.folder_membership))invalid('note_shape');
+ const folderIds=raw.folder_membership.map(f=>record(f)&&typeof f.id==='string'&&FOLDER_ID.test(f.id)?f.id:null).filter((id):id is string=>id!==null);
+ const event=record(raw.calendar_event)?raw.calendar_event:null;
+ const scheduled=event&&validDate(event.scheduled_start_time)?event.scheduled_start_time:null;
+ const owner=record(raw.owner)&&typeof raw.owner.email==='string'?raw.owner.email.trim().toLowerCase():null;
+ const webUrl=typeof raw.web_url==='string'?safeGranolaUrl(raw.web_url):null;
+ return {...base,webUrl,meetingAt:scheduled??base.createdAt,dateBasis:scheduled?'scheduled':'created',ownerEmail:owner&&EMAIL.test(owner)?owner:null,folderIds,attendees,summary:text(raw.summary_text),privateNotes:text(raw.private_notes_text)};
+}
+
+export async function getGranolaTranscript(apiKey:string,noteId:string,cursor?:string):Promise<TranscriptPage>{
+ if(!NOTE_ID.test(noteId))invalid('note_shape');
+ const url=new URL(`/v1/notes/${noteId}/transcript`,BASE_URL);url.searchParams.set('page_size','100');if(cursor)url.searchParams.set('cursor',cursor);
+ const raw=await granolaJSON(url,apiKey,MAX_TEXT);
+ const page=pagination(raw,'transcript',cursor,100);
+ const lines:string[]=[];
+ for(const item of page.items){
+  if(!record(item)||typeof item.text!=='string')invalid('note_shape');
+  const speaker=record(item.speaker)?item.speaker:{};
+  const label=typeof speaker.name==='string'&&speaker.name.trim()?speaker.name.trim().slice(0,80):typeof speaker.diarization_label==='string'?speaker.diarization_label.slice(0,40):speaker.attribution==='me'?'me':'them';
+  lines.push(`${label}: ${item.text.slice(0,4000)}`);
+ }
+ return {text:lines.join('\n'),hasMore:page.hasMore,cursor:page.cursor};
+}
+
+function text(value:unknown):string{return typeof value==='string'?value.slice(0,MAX_TEXT):'';}
+function safeGranolaUrl(value:string):string|null{try{const u=new URL(value);return u.protocol==='https:'&&(u.hostname==='granola.ai'||u.hostname.endsWith('.granola.ai'))&&value.length<=2048?u.href:null;}catch{return null;}}
+
+async function granolaJSON(url:URL,apiKey:string,maxBytes=MAX_RESPONSE_BYTES):Promise<unknown>{
  const controller=new AbortController();let reader:ReadableStreamDefaultReader<Uint8Array>|undefined;let timedOut=false;
  let rejectDeadline:(reason:GranolaClientError)=>void=()=>{};
  const deadline=new Promise<never>((_,reject)=>{rejectDeadline=reject;});
@@ -47,7 +99,7 @@ async function granolaJSON(url:URL,apiKey:string):Promise<unknown>{
    async pull(stream){const chunk=await reader!.read();if(chunk.done)stream.close();else stream.enqueue(chunk.value);},
    cancel(reason){return reader!.cancel(reason);},
   });
-  try{return await boundedJSON(new Response(boundedBody,{headers:response.headers}),MAX_RESPONSE_BYTES);}
+  try{return await boundedJSON(new Response(boundedBody,{headers:response.headers}),maxBytes);}
   catch{throw new GranolaClientError('unavailable','response_json');}
  })();
  try{return await Promise.race([operation,deadline]);}
@@ -68,8 +120,8 @@ function statusError(status:number):GranolaClientError{
  return new GranolaClientError('unavailable',status>=500?'http_5xx':status>=400?'http_4xx':'http_other');
 }
 
-function pagination(value:unknown,key:'folders'|'notes',inputCursor?:string):{items:unknown[];hasMore:boolean;cursor:string|null}{
- if(!record(value)||!Array.isArray(value[key])||value[key].length>PAGE_SIZE||typeof value.hasMore!=='boolean'||!Object.hasOwn(value,'cursor'))invalid('page_shape');
+function pagination(value:unknown,key:'folders'|'notes'|'transcript',inputCursor?:string,pageSize=PAGE_SIZE):{items:unknown[];hasMore:boolean;cursor:string|null}{
+ if(!record(value)||!Array.isArray(value[key])||value[key].length>pageSize||typeof value.hasMore!=='boolean'||!Object.hasOwn(value,'cursor'))invalid('page_shape');
  const cursor=value.cursor;if(cursor!==null&&!validCursor(cursor))invalid('page_cursor');
  if(value.hasMore&&(cursor===null||cursor===''||cursor===inputCursor||value[key].length===0))invalid('page_cursor');
  if(!value.hasMore&&cursor!==null)invalid('page_terminal_cursor');

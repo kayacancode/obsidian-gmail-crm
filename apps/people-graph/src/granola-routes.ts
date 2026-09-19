@@ -19,7 +19,7 @@ export async function granolaRoute(request:Request):Promise<Response>{
   if(body.cursor!==undefined&&!validCursor(body.cursor))return error('invalid_request','Granola request is invalid.',400);
   if(url.pathname.endsWith('/notes')){
    if(typeof body.folderId!=='string'||!FOLDER_ID.test(body.folderId))return error('invalid_request','Granola request is invalid.',400);
-   return json(await listGranolaNotes(body.apiKey,body.folderId,body.cursor as string|undefined));
+   return json(await listGranolaNotes(body.apiKey,{folderId:body.folderId,cursor:body.cursor as string|undefined}));
   }
   return json(await listGranolaFolders(body.apiKey,body.cursor as string|undefined));
  }catch(cause){
