@@ -16,7 +16,7 @@ async function fixture(options={}){
   const page=await browser.newPage({viewport:{width:1360,height:1000}});
   const errors=[];
   const requests=[];
-  const state={signed:options.signed??false,owner:'owner@example.test',rejectKey:false,granola:status()};
+  const state={signed:options.signed??false,owner:'owner@example.test',rejectKey:false,granola:status(),statusGate:null};
   page.on('pageerror',error=>errors.push(error.message));
   await page.route('https://accounts.google.com/gsi/client',route=>route.fulfill({contentType:'text/javascript',body:googleStub}));
   await page.route('**/api/config',route=>route.fulfill({json:{googleClientId:'fictional-client'}}));
@@ -34,6 +34,7 @@ async function fixture(options={}){
     const request=route.request();
     if(request.method()!=='GET')return route.fallback();
     requests.push({url:request.url(),method:'GET',body:null});
+    if(state.statusGate)await state.statusGate;
     await route.fulfill({json:state.granola});
   });
   await page.route('**/api/granola/connect',async route=>{
@@ -127,6 +128,7 @@ try{
     await page.waitForFunction(()=>document.querySelector('.granola-status')?.textContent.includes('rejected that API key'));
     assert.match(await page.textContent('.granola-status'),/rejected that API key/);
     assert.ok(await page.isVisible('#granola-api-key'),'form must remain visible after a rejected key');
+    assert.equal(await page.inputValue('#granola-api-key'),'','the key must be cleared from the input after a failed connect');
     assert.ok(!(await page.content()).includes('grn_fictional_bad_key'));
     assert.deepEqual(errors,[]);
     await page.close();
@@ -174,7 +176,33 @@ try{
     await page.close();
   }
 
-  console.log('PASS: Granola connect, folder exclusion, sync now, disconnect confirm, rejected key, reconnect flow, sign-out reset, and mobile layout.');
+  {
+    // 7. switching away and back to the Granola tab keeps the connected card visible immediately,
+    // without flashing the disconnected/connect form while the fresh status poll is still in flight.
+    const test=await fixture();
+    const {page,errors}=test;
+    await page.goto(origin+'/accounts.html?tab=granola');
+    await signIn(page);
+    await page.fill('#granola-api-key','grn_fictional_key_123456');
+    await page.selectOption('#granola-range','all');
+    await page.click('#granola-root button.primary');
+    await page.waitForSelector('.granola-card .status');
+
+    await page.getByRole('tab',{name:'Gmail',exact:true}).click();
+    let release;
+    test.state.statusGate=new Promise(resolve=>{release=resolve;});
+    await page.getByRole('tab',{name:'Granola',exact:true}).click();
+    assert.ok(await page.isVisible('.granola-card'),'the card must stay visible while the status poll is pending');
+    assert.ok(await page.isHidden('#granola-api-key'),'the key field must not reappear while still connected');
+    release();
+    await page.waitForTimeout(50);
+    assert.ok(await page.isVisible('.granola-card'));
+    assert.ok(await page.isHidden('#granola-api-key'));
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  console.log('PASS: Granola connect, folder exclusion, sync now, disconnect confirm, rejected key, reconnect flow, sign-out reset, mobile layout, and tab-switch persistence.');
 }finally{
   await browser.close();
 }

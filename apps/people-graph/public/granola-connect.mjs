@@ -49,6 +49,7 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
   function abort(){pending?.abort();pending=null;}
   function stopPolling(){clearTimeout(timer);timer=null;}
   function clear(){generation++;abort();stopPolling();input.value='';busy=false;status=null;statusLine.textContent='Not connected.';render();}
+  function suspend(){generation++;abort();stopPolling();input.value='';busy=false;}
   function setAccount(next){if(next===account)return;clear();account=next;render();if(account)void load();}
   function showError(code,diagnostic){
     statusLine.textContent=messages[code]||messages.granola_unavailable;
@@ -102,8 +103,8 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
   }
   async function connect(){
     if(busy||!account)return;busy=true;const run=generation;render();
-    const key=input.value;
-    try{status=await request('/api/granola/connect',{apiKey:key,range:range.value},'POST',run);input.value='';statusLine.textContent='';render();schedule();}
+    const key=input.value;input.value='';
+    try{status=await request('/api/granola/connect',{apiKey:key,range:range.value},'POST',run);statusLine.textContent='';render();schedule();}
     catch(error){fail(error);}
     finally{if(run===generation){busy=false;render();}}
   }
@@ -129,5 +130,5 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
   disconnectButton.addEventListener('click',()=>void disconnect());
   window.addEventListener('pagehide',()=>{abort();stopPolling();input.value='';});
   render();
-  return {setAccount,clear,refresh:()=>void load()};
+  return {setAccount,clear,suspend,refresh:()=>void load()};
 }
