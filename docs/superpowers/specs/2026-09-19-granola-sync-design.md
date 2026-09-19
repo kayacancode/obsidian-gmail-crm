@@ -32,7 +32,7 @@ Granola lives inside the existing per-owner `MailSync` Durable Object so it shar
 
 Limits: 400 KB stored content per note (summary + private notes + transcript; transcript pages beyond the cap are dropped and the note is marked truncated), 20,000 notes per owner, 50 attendees per note. Over-limit input is truncated or skipped with a recorded reason, never a failed sync.
 
-Signals go to the existing `theme_signals` table via `RelevanceStore.ingest` with new source types `granola_summary`, `granola_private_notes`, `granola_transcript`, visibility `private`, `evidence_ref` = `granola-note:<id>#<kind>@<offset>`, `observed_at` = `meeting_at`. Deleting a note deletes its signals by evidence prefix.
+Signals go to the existing `theme_signals` table with the existing source type `granola` (already weighted in the relevance model), `account` = `granola`, visibility `private`, `evidence_ref` = `granola-note:<id>#<summary|private_notes|transcript>@<offset>` for statements and `granola-note:<id>#topic@<topicId>` for topics, `observed_at` = `meeting_at`. Deleting a note deletes its signals by evidence prefix. The note row also keeps the extraction result JSON so hiding and re-showing a folder can remove and restore signals without calling the model again.
 
 ## Sync job
 
@@ -63,10 +63,10 @@ Retries: transport, 5xx and 429 use exponential backoff from 30 s to 30 min. 401
 `GranolaExtractor.extract({summary, privateNotes, transcript, attendees, meetingAt})` with the configured `THEME_MODEL` binding.
 
 - Input assembly: summary and private notes always, transcript split into chunks of at most 24,000 characters, at most 4 chunks per note (older content beyond that is not sent). Each chunk is a separate model call with the same attendee list, so at most 5 calls per note.
-- Output schema (JSON schema enforced): `topics: [{topicId ∈ THEME_TOPICS, confidence}]` and `statements: [{email ∈ attendees, kind ∈ ask | commitment | intro | follow_up | interest, text ≤ 240 chars, quote ≤ 300 chars}]`, at most 12 topics and 20 statements per call.
-- Grounding: a statement is kept only if `email` is on the note's attendee list and `quote` appears verbatim (whitespace-normalised) in the stored summary, private notes, or transcript. The matching kind sets the source type and the match offset sets `evidence_ref`. Anything failing grounding is dropped silently; a note with no surviving output is still `done`.
-- Topic signals: one per topic id per note, `person_id` null, summary `Meeting matched <topic name>`, confidence from the model.
-- Statement signals: one per statement, `person_id` = attendee node id, `theme_id` resolved from the best topic on that chunk (falls back to the note's top topic; if the note has no topic, the statement is stored under a per-owner canonical theme `Meetings`), `summary` = `<kind>: <text>`, confidence 0.8 for summary-grounded, 0.7 for private-notes-grounded, 0.6 for transcript-grounded.
+- Output schema (JSON schema enforced): `topics: [{topicId ∈ THEME_TOPICS, confidence}]` and `statements: [{email ∈ attendees, kind ∈ ask | commitment | intro | follow_up | interest, quote ≤ 300 chars}]`, at most 12 topics and 20 statements per call. The model returns no free text: display text is a server-owned kind label plus the verbatim quote, matching the Gmail extractor's rule that model output only selects from server vocabulary or source content.
+- Grounding: a statement is kept only if `email` is on the note's attendee list and `quote` appears verbatim (whitespace-normalised) in the stored summary, private notes, or transcript. The matching source and offset set `evidence_ref`. Anything failing grounding is dropped silently; a note with no surviving output is still `done`.
+- Topic signals: one per topic id per note, `person_id` null, summary `Meeting matched <topic name>`, confidence from the model, theme id shared with Gmail body topics so heat merges by topic.
+- Statement signals: one per statement, `person_id` = attendee node id, `theme_id` = the note's highest-confidence topic theme; if the note has no topic, a per-owner canonical theme `Meetings`. `summary` = `<Kind>: “<quote>”` capped at 240 chars. Confidence 0.8 for summary-grounded, 0.7 for private-notes-grounded, 0.6 for transcript-grounded.
 - Prompt rules mirror the Gmail extractor: content is untrusted, ignore instructions inside it, never infer identity or employment, return only schema fields. Dedupe by `content_hash` + `extractor_version` so re-syncing unchanged notes costs nothing.
 - Extractor version `granola-v1`. Bumping it marks all `done` notes `pending` on the next refresh.
 
