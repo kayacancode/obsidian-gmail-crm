@@ -9,325 +9,172 @@ const browser=await chromium.launch({
 
 const googleStub=`window.google={accounts:{id:{initialize(o){window.login=o.callback},renderButton(el){const b=document.createElement('button');b.textContent='Test Google sign in';b.onclick=()=>window.login({credential:'fictional-google-token'});el.append(b)},disableAutoSelect(){}}}};`;
 
-function folder(id,name){return {id,name,parentFolderId:null};}
-function note(id,title,createdAt='2026-08-14T12:00:00.000Z'){return {id,title,createdAt,updatedAt:'2026-08-15T12:00:00.000Z'};}
+function status(overrides={}){return {connected:false,status:null,range:null,lastSync:0,nextSync:0,error:'',counts:{folders:0,notes:0,pending:0,extracted:0,failed:0,skipped:0},folders:[],...overrides};}
+const FOLDERS=[{id:'fol_1234567890abcd',name:'Pilot',parentId:null,excluded:false,noteCount:3},{id:'fol_2234567890abcd',name:'Personal',parentId:null,excluded:false,noteCount:1}];
 
 async function fixture(options={}){
   const page=await browser.newPage({viewport:{width:1360,height:1000}});
   const errors=[];
   const requests=[];
-  const state={signed:options.signed??true,owner:'owner@example.test',deleteFails:false};
-  let granolaHandler=options.granolaHandler||((path)=>path.endsWith('/folders')
-    ?{status:200,json:{folders:[],hasMore:false,cursor:null}}
-    :{status:200,json:{notes:[],hasMore:false,cursor:null}});
+  const state={signed:options.signed??false,owner:'owner@example.test',rejectKey:false,granola:status()};
   page.on('pageerror',error=>errors.push(error.message));
   await page.route('https://accounts.google.com/gsi/client',route=>route.fulfill({contentType:'text/javascript',body:googleStub}));
   await page.route('**/api/config',route=>route.fulfill({json:{googleClientId:'fictional-client'}}));
   await page.route('**/api/graph?source=obsidian',route=>route.fulfill({json:{account:state.owner,graph:null}}));
   await page.route('**/api/session',route=>{
-    if(route.request().method()==='DELETE'){
-      if(state.deleteFails)return route.fulfill({status:500,json:{error:'session_delete_failed'}});
-      state.signed=false;
-    }else state.signed=true;
+    if(route.request().method()==='DELETE'){state.signed=false;return route.fulfill({json:{ok:true}});}
+    state.signed=true;
     return route.fulfill({json:{ok:true}});
   });
   await page.route('**/api/accounts',route=>route.fulfill({
     status:state.signed?200:401,
     json:state.signed?{account:state.owner,configured:true,accounts:[]}:{error:'missing_token'},
   }));
-  await page.route('**/api/granola/*',async route=>{
+  await page.route('**/api/granola/status',async route=>{
     const request=route.request();
-    const path=new URL(request.url()).pathname;
-    const body=request.postDataJSON();
-    requests.push({path,body,headers:request.headers()});
-    const result=await granolaHandler(path,body,requests.length);
-    await route.fulfill(result);
+    if(request.method()!=='GET')return route.fallback();
+    requests.push({url:request.url(),method:'GET',body:null});
+    await route.fulfill({json:state.granola});
   });
-  return {page,errors,requests,state,setGranolaHandler(handler){granolaHandler=handler;}};
+  await page.route('**/api/granola/connect',async route=>{
+    const request=route.request();
+    const body=request.postDataJSON();
+    requests.push({url:request.url(),method:'POST',body});
+    if(state.rejectKey){
+      await route.fulfill({status:422,json:{error:'granola_unauthorized',message:'Granola rejected this API key. Check it and try again.'}});
+      return;
+    }
+    state.granola=status({connected:true,status:'syncing',range:body.range,folders:FOLDERS,counts:{folders:FOLDERS.length,notes:4,pending:4,extracted:0,failed:0,skipped:0}});
+    await route.fulfill({json:state.granola});
+  });
+  await page.route('**/api/granola/folders',async route=>{
+    const request=route.request();
+    const body=request.postDataJSON();
+    requests.push({url:request.url(),method:'PATCH',body});
+    const excluded=new Set(body.excluded);
+    state.granola.folders=state.granola.folders.map(f=>({...f,excluded:excluded.has(f.id)}));
+    await route.fulfill({json:state.granola});
+  });
+  await page.route('**/api/granola/sync',async route=>{
+    const request=route.request();
+    requests.push({url:request.url(),method:'POST',body:null});
+    state.granola.status='syncing';
+    await route.fulfill({json:state.granola});
+  });
+  await page.route('**/api/granola/connection',async route=>{
+    const request=route.request();
+    requests.push({url:request.url(),method:'DELETE',body:null});
+    state.granola=status();
+    await route.fulfill({json:{ok:true}});
+  });
+  return {page,errors,requests,state};
 }
 
-async function connect(page,key='grn_fictional_test_key'){
-  await page.getByLabel('Granola API key',{exact:true}).fill(key);
-  const button=page.getByRole('button',{name:'Connect Granola',exact:true});
-  const colors=await button.evaluate(node=>{const style=getComputedStyle(node);return {background:style.backgroundColor,color:style.color};});
-  assert.deepEqual(colors,{background:'rgb(52, 75, 67)',color:'rgb(255, 255, 255)'});
-  await button.click();
+async function signIn(page){
+  await page.getByRole('button',{name:'Test Google sign in'}).click();
+  await page.waitForSelector('#granola-root h2');
+  await page.waitForFunction(()=>!document.querySelector('#granola-api-key')?.disabled);
 }
 
 try{
   {
-    const test=await fixture({signed:false});
-    const {page,requests}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    const granolaTab=page.getByRole('tab',{name:'Granola',exact:true});
-    await granolaTab.waitFor();
-    assert.equal(await granolaTab.getAttribute('aria-selected'),'true');
-    assert.match(await page.getByRole('tabpanel',{name:'Granola'}).innerText(),/Sign in to People/);
-    assert.ok(await page.getByLabel('Granola API key',{exact:true}).isDisabled());
-    assert.equal(requests.length,0,'Granola must not be contacted before explicit submission');
-    await page.getByRole('button',{name:'Test Google sign in'}).click();
-    await page.waitForFunction(()=>!document.querySelector('#granola-api-key')?.disabled);
-    assert.ok(await page.getByLabel('Granola API key',{exact:true}).isEnabled());
+    // 1. connect, 2. folder toggle, 3. sync now + disconnect confirm
+    const test=await fixture();
+    const {page,requests,errors}=test;
+    await page.goto(origin+'/accounts.html?tab=granola');
+    await signIn(page);
+
+    await page.fill('#granola-api-key','grn_fictional_key_123456');
+    await page.selectOption('#granola-range','all');
+    await page.click('#granola-root button.primary');
+    await page.waitForSelector('.granola-card .status');
+    assert.equal(requests.find(r=>r.url.endsWith('/api/granola/connect')).body.range,'all');
+    assert.equal(await page.inputValue('#granola-api-key').catch(()=>''),'');
+    assert.match(await page.textContent('.granola-card .status'),/Syncing/);
+    assert.equal((await page.$$('.granola-folders input[type=checkbox]')).length,2);
+    assert.ok(!(await page.content()).includes('grn_fictional_key_123456'));
+
+    // 2. folder toggle
+    await page.uncheck('.granola-folders input[value="fol_2234567890abcd"]');
+    await page.waitForFunction(()=>document.querySelector('.granola-folders li[data-id="fol_2234567890abcd"] .hint')?.textContent.includes('Hidden'));
+    assert.deepEqual(requests.find(r=>r.url.endsWith('/api/granola/folders')).body,{excluded:['fol_2234567890abcd']});
+
+    // 3. sync now + disconnect confirm
+    test.state.granola.status='connected';
+    await page.waitForSelector('.granola-card button:has-text("Sync now"):not([disabled])');
+    await page.click('.granola-card button:has-text("Sync now")');
+    assert.ok(requests.some(r=>r.url.endsWith('/api/granola/sync')));
+    page.once('dialog',d=>d.accept());
+    await page.click('.granola-card button:has-text("Disconnect")');
+    await page.waitForSelector('#granola-api-key');
+    assert.ok(requests.some(r=>r.url.endsWith('/api/granola/connection')&&r.method==='DELETE'));
+    assert.ok(await page.isHidden('.granola-card'));
+
+    assert.deepEqual(errors,[]);
     await page.close();
   }
 
   {
-    const folderPages=[
-      {folders:[folder('fol_00000000000001','Product'),folder('fol_00000000000002','Research')],hasMore:true,cursor:'folder-page-2'},
-      {folders:[folder('fol_00000000000003','Advisors')],hasMore:false,cursor:null},
-    ];
-    const notePages=[
-      {notes:[note('not_00000000000001','<img src=x onerror=alert(1)>')],hasMore:true,cursor:'note-page-2'},
-      {notes:[note('not_00000000000002','Fictional customer call')],hasMore:false,cursor:null},
-    ];
-    const test=await fixture({granolaHandler:(path,body)=>{
-      const pages=path.endsWith('/folders')?folderPages:notePages;
-      if(path.endsWith('/notes')&&body.folderId==='fol_00000000000002')return {status:200,json:{notes:[],hasMore:false,cursor:null}};
-      return {status:200,json:body.cursor?pages[1]:pages[0]};
-    }});
-    const {page,errors,requests,state}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page);
-    await page.getByText('Connected for this session',{exact:true}).waitFor();
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
-    assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
-    assert.deepEqual(requests[0].body,{apiKey:'grn_fictional_test_key'});
-    assert.equal(requests[0].headers.authorization,undefined);
-    const folderSelect=page.getByLabel('Granola folder',{exact:true});
-    assert.equal(await folderSelect.inputValue(),'');
-    assert.ok(await page.getByRole('button',{name:'Browse notes',exact:true}).isDisabled());
-    await page.getByRole('button',{name:'More folders',exact:true}).click();
-    await folderSelect.locator('option',{hasText:'Advisors'}).waitFor({state:'attached'});
-    assert.equal(await folderSelect.locator('option').count(),4);
-    await folderSelect.selectOption('fol_00000000000001');
-    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
-    await page.getByText('<img src=x onerror=alert(1)>',{exact:true}).waitFor();
-    assert.equal(await page.locator('#granola-root img').count(),0,'note titles must remain text');
-    assert.match(await page.getByText(/^Created /).first().innerText(),/^Created /);
-    await page.getByRole('button',{name:'More notes',exact:true}).click();
-    await page.getByText('Fictional customer call',{exact:true}).waitFor();
-    assert.deepEqual(requests.at(-1).body,{apiKey:'grn_fictional_test_key',folderId:'fol_00000000000001',cursor:'note-page-2'});
-    await page.screenshot({path:'/tmp/people-granola-desktop.png',fullPage:true});
+    // 4. rejected key shows the safe message and keeps the form
+    const test=await fixture();
+    const {page,errors}=test;
+    test.state.rejectKey=true;
+    await page.goto(origin+'/accounts.html?tab=granola');
+    await signIn(page);
+    await page.fill('#granola-api-key','grn_fictional_bad_key');
+    await page.selectOption('#granola-range','recent');
+    await page.click('#granola-root button.primary');
+    await page.waitForFunction(()=>document.querySelector('.granola-status')?.textContent.includes('rejected that API key'));
+    assert.match(await page.textContent('.granola-status'),/rejected that API key/);
+    assert.ok(await page.isVisible('#granola-api-key'),'form must remain visible after a rejected key');
+    assert.ok(!(await page.content()).includes('grn_fictional_bad_key'));
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  {
+    // 5. reconnect_required state shows a key field and Reconnect button
+    const test=await fixture();
+    const {page,errors}=test;
+    test.state.granola=status({connected:true,status:'reconnect_required',range:'all',folders:FOLDERS});
+    await page.goto(origin+'/accounts.html?tab=granola');
+    await signIn(page);
+    await page.waitForSelector('.granola-card');
+    assert.ok(await page.isVisible('#granola-api-key'),'reconnect requires re-entering the key');
+    await page.getByRole('button',{name:'Reconnect Granola',exact:true}).waitFor();
+    assert.equal(await page.isVisible('#granola-range'),false,'range picker is hidden while reconnecting');
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  {
+    // 6. sign-out clears the card back to the signed-out gate; mobile width 320 has no horizontal overflow
+    const test=await fixture();
+    const {page,errors}=test;
+    await page.goto(origin+'/accounts.html?tab=granola');
+    await signIn(page);
+    await page.fill('#granola-api-key','grn_fictional_key_123456');
+    await page.selectOption('#granola-range','all');
+    await page.click('#granola-root button.primary');
+    await page.waitForSelector('.granola-card .status');
+
     await page.setViewportSize({width:390,height:844});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
-    await page.screenshot({path:'/tmp/people-granola-mobile.png',fullPage:true});
     await page.setViewportSize({width:320,height:740});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
-    const beforeFolderChoice=requests.length;
-    await folderSelect.selectOption('fol_00000000000002');
-    assert.equal(requests.length,beforeFolderChoice,'choosing a folder must not browse automatically');
-    assert.equal(await page.getByText('Fictional customer call',{exact:true}).count(),0);
-    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
-    await page.getByText('No notes are available in this folder.',{exact:true}).waitFor();
+    await page.setViewportSize({width:1360,height:1000});
 
-    const gmailTab=page.getByRole('tab',{name:'Gmail',exact:true});
-    await page.getByRole('tab',{name:'Granola',exact:true}).press('ArrowLeft');
-    assert.equal(await gmailTab.getAttribute('aria-selected'),'true');
-    await page.getByRole('tab',{name:'Granola',exact:true}).click();
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isHidden());
-    assert.equal(await page.locator('#granola-root').getByText('Product',{exact:true}).count(),0);
-
-    await connect(page);
-    await page.getByText('Connected for this session',{exact:true}).waitFor();
-    await page.reload();
-    await page.getByRole('tab',{name:'Granola',exact:true}).waitFor();
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isHidden());
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
-    assert.equal(await page.locator('#granola-root').getByText('Product',{exact:true}).count(),0);
-    await connect(page);
-    await page.getByText('Connected for this session',{exact:true}).waitFor();
-    state.deleteFails=true;
     await page.getByRole('button',{name:'Sign out',exact:true}).click();
-    await page.getByText('Sign-out failed. Please retry.',{exact:true}).waitFor();
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isHidden());
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
+    await page.getByRole('button',{name:'Test Google sign in'}).waitFor();
+    assert.match(await page.textContent('.granola-signin'),/Sign in to People/);
+    assert.ok(await page.isHidden('.granola-card'));
+    assert.ok(await page.isDisabled('#granola-api-key'));
 
-    state.deleteFails=false;
-    await page.getByRole('tab',{name:'Granola',exact:true}).click();
-    await connect(page);
-    await page.getByText('Connected for this session',{exact:true}).waitFor();
-    await page.waitForTimeout(5200);
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isVisible(),'same-account polling must retain the connection');
-    state.owner='new-owner@example.test';
-    await page.waitForFunction(()=>document.querySelector('#identity')?.textContent==='new-owner@example.test',null,{timeout:7000});
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isHidden());
     assert.deepEqual(errors,[]);
     await page.close();
   }
 
-  {
-    let folderContinuationAttempts=0,noteContinuationAttempts=0,noteFreshCalls=0;
-    const test=await fixture({granolaHandler:(path,body)=>{
-      if(path.endsWith('/folders')){
-        if(!body.cursor)return {status:200,json:{folders:[folder('fol_00000000000001','Retry source')],hasMore:true,cursor:'retry-folders'}};
-        folderContinuationAttempts++;
-        return folderContinuationAttempts===1
-          ?{status:429,json:{error:'granola_rate_limited',message:'safe fixed text'}}
-          :{status:200,json:{folders:[folder('fol_00000000000002','Recovered folder')],hasMore:false,cursor:null}};
-      }
-      if(!body.cursor){noteFreshCalls++;return {status:200,json:{notes:[note('not_00000000000001','Stable first note')],hasMore:true,cursor:'retry-notes'}};}
-      noteContinuationAttempts++;
-      return noteContinuationAttempts===1
-        ?{status:429,json:{error:'granola_rate_limited',message:'safe fixed text'}}
-        :{status:200,json:{notes:[note('not_00000000000002','Recovered note')],hasMore:false,cursor:null}};
-    }});
-    const {page,errors}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_retry_key');
-    await page.getByRole('button',{name:'More folders',exact:true}).click();
-    await page.getByText('Granola is receiving too many requests. Wait a moment and try again.',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'More folders',exact:true}).click();
-    await page.waitForTimeout(100);
-    await page.getByLabel('Granola folder',{exact:true}).selectOption('fol_00000000000001');
-    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
-    await page.getByText('Stable first note',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
-    await page.waitForTimeout(100);
-    const rowsAfterRefresh=await page.locator('.granola-notes li').count();
-    await page.getByRole('button',{name:'More notes',exact:true}).click();
-    await page.waitForTimeout(100);
-    await page.getByRole('button',{name:'More notes',exact:true}).click();
-    await page.waitForTimeout(100);
-    assert.deepEqual({
-      folderContinuationAttempts,
-      noteContinuationAttempts,
-      noteFreshCalls,
-      rowsAfterRefresh,
-      recoveredFolder:await page.getByText('Recovered folder',{exact:true}).count()===1,
-      recoveredNote:await page.getByText('Recovered note',{exact:true}).count()===1,
-    },{
-      folderContinuationAttempts:2,
-      noteContinuationAttempts:2,
-      noteFreshCalls:2,
-      rowsAfterRefresh:1,
-      recoveredFolder:true,
-      recoveredNote:true,
-    });
-    assert.deepEqual(errors,[]);
-    await page.close();
-  }
-
-  {
-    let release;
-    const deferred=new Promise(resolve=>{release=resolve;});
-    const test=await fixture({granolaHandler:async()=>{await deferred;return {status:200,json:{folders:[folder('fol_00000000000009','Late private folder')],hasMore:false,cursor:null}};}});
-    const {page,errors}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_deferred_key');
-    await page.getByRole('tab',{name:'Gmail',exact:true}).click();
-    release();
-    await page.waitForTimeout(100);
-    await page.getByRole('tab',{name:'Granola',exact:true}).click();
-    assert.equal(await page.getByText('Late private folder',{exact:true}).count(),0);
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isHidden());
-    assert.deepEqual(errors,[]);
-    await page.close();
-  }
-
-  {
-    const test=await fixture({granolaHandler:()=>({status:422,json:{error:'granola_unauthorized',message:'raw upstream secret must never render'}})});
-    const {page,errors}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_rejected_key');
-    await page.getByText('Granola rejected that API key. Check it and try again.',{exact:true}).waitFor();
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
-    assert.equal(await page.getByText(/raw upstream secret/).count(),0);
-    assert.deepEqual(errors,[]);
-    await page.reload();
-    assert.ok(await page.getByText('Connected for this session',{exact:true}).isHidden());
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
-    await page.close();
-  }
-
-  {
-    let diagnostic='folder_parent';
-    const {page,errors}=await fixture({granolaHandler:()=>({status:502,json:{error:'granola_unavailable',diagnostic,message:'SECRET provider body'}})});
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_diagnostic');
-    await page.getByText(/Diagnostic: folder_parent/).waitFor({timeout:5000});
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
-    diagnostic='SECRET untrusted diagnostic';
-    await connect(page,'grn_fictional_diagnostic');
-    await page.getByText('Granola browsing is temporarily unavailable. Try again.',{exact:true}).waitFor();
-    assert.equal(await page.getByText(/SECRET/).count(),0);
-    assert.deepEqual(errors,[]);
-    await page.close();
-  }
-
-  {
-    let mode='empty';
-    const test=await fixture({granolaHandler:()=>mode==='empty'
-      ?{status:200,json:{folders:[],hasMore:false,cursor:null}}
-      :mode==='app-auth'
-        ?{status:401,json:{error:'missing_token',message:'raw app auth body'}}
-        :{status:502,json:{error:'granola_unavailable',message:'raw upstream detail'}}});
-    const {page,errors}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_empty_key');
-    await page.getByText('Connected for this session',{exact:true}).waitFor();
-    await page.getByText('No Granola folders are available.',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'Disconnect Granola',exact:true}).click();
-    mode='api-error';
-    await connect(page,'grn_fictional_api_error');
-    await page.getByText('Granola browsing is temporarily unavailable. Try again.',{exact:true}).waitFor();
-    assert.equal(await page.getByText(/raw upstream detail/).count(),0);
-    assert.equal(await page.getByLabel('Granola API key',{exact:true}).inputValue(),'');
-    mode='app-auth';
-    await connect(page,'grn_fictional_app_auth');
-    await page.getByText('Sign in to People before connecting Granola.',{exact:true}).waitFor();
-    assert.ok(await page.getByLabel('Granola API key',{exact:true}).isDisabled());
-    assert.equal(await page.getByText(/raw app auth body/).count(),0);
-    assert.deepEqual(errors,[]);
-    await page.close();
-  }
-
-  {
-    const pages=Array.from({length:10},(_,pageIndex)=>({
-      folders:Array.from({length:30},(_,index)=>folder(`fol_${String(pageIndex*30+index).padStart(14,'0')}`,`Folder ${pageIndex*30+index+1}`)),
-      hasMore:true,
-      cursor:`cursor-${pageIndex+1}`,
-    }));
-    const test=await fixture({granolaHandler:(path,body)=>{
-      if(path.endsWith('/notes'))return {status:200,json:{notes:[],hasMore:false,cursor:null}};
-      const pageIndex=body.cursor?Number(body.cursor.split('-')[1]):0;
-      return {status:200,json:pages[pageIndex]};
-    }});
-    const {page,errors}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_limit_key');
-    for(let index=1;index<10;index++)await page.getByRole('button',{name:'More folders',exact:true}).click();
-    await page.getByText('Folder limit reached. Showing the first 300 folders.',{exact:true}).waitFor();
-    assert.equal(await page.getByLabel('Granola folder',{exact:true}).locator('option').count(),301);
-    assert.equal(await page.getByRole('button',{name:'More folders',exact:true}).count(),0);
-    assert.deepEqual(errors,[]);
-    await page.close();
-  }
-
-  {
-    const notePages=Array.from({length:10},(_,pageIndex)=>({
-      notes:Array.from({length:30},(_,index)=>note(`not_${String(pageIndex*30+index).padStart(14,'0')}`,`Note ${pageIndex*30+index+1}`)),
-      hasMore:true,
-      cursor:`note-cursor-${pageIndex+1}`,
-    }));
-    const test=await fixture({granolaHandler:(path,body)=>{
-      if(path.endsWith('/folders'))return {status:200,json:{folders:[folder('fol_00000000000001','Limit test')],hasMore:false,cursor:null}};
-      const pageIndex=body.cursor?Number(body.cursor.split('-').at(-1)):0;
-      return {status:200,json:notePages[pageIndex]};
-    }});
-    const {page,errors}=test;
-    await page.goto(origin+'/accounts?tab=granola');
-    await connect(page,'grn_fictional_note_limit');
-    await page.getByLabel('Granola folder',{exact:true}).selectOption('fol_00000000000001');
-    await page.getByRole('button',{name:'Browse notes',exact:true}).click();
-    for(let index=1;index<10;index++)await page.getByRole('button',{name:'More notes',exact:true}).click();
-    await page.getByText('Note limit reached. Showing the first 300 notes.',{exact:true}).waitFor();
-    assert.equal(await page.locator('.granola-notes li').count(),300);
-    assert.equal(await page.getByRole('button',{name:'More notes',exact:true}).count(),0);
-    assert.deepEqual(errors,[]);
-    await page.close();
-  }
-
-  console.log('PASS: Granola sign-in gate, memory-only connection, safe paged browsing, resets, stale-response fencing, limits, responsive layout and errors.');
+  console.log('PASS: Granola connect, folder exclusion, sync now, disconnect confirm, rejected key, reconnect flow, sign-out reset, and mobile layout.');
 }finally{
   await browser.close();
 }
