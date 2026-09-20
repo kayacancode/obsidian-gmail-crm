@@ -84,7 +84,7 @@ test('syncNow brings nextSync forward only when connected and idle',async()=>{
 });
 
 const NOTE_A='not_1234567890abcd',NOTE_B='not_2234567890abcd';
-function noteRaw(id:string,title:string,folder='fol_1234567890abcd',updated='2026-08-15T12:00:00Z'){return {id,object:'note',title,owner:{name:'Me',email:'me@example.test'},created_at:'2026-08-14T12:00:00Z',updated_at:updated,web_url:'https://notes.granola.ai/d/'+id,calendar_event:{scheduled_start_time:'2026-08-14T11:00:00Z'},attendees:[{name:'Me',email:'me@example.test'},{name:'Ada',email:'ada@example.test'},{name:'Bob',email:'bob@example.test'}],folder_membership:[{id:folder,name:'x',parent_folder_id:null}],summary_text:'Ada asked for an intro to a fintech founder.',private_notes_text:'remember to send deck',transcript:null};}
+function noteRaw(id:string,title:string,folder='fol_1234567890abcd',updated='2026-08-15T12:00:00Z'){return {id,object:'note',title,owner:{name:'Me',email:'me@example.test'},created_at:'2026-08-14T12:00:00Z',updated_at:updated,web_url:'https://notes.granola.ai/d/'+id,calendar_event:{scheduled_start_time:'2026-08-14T11:00:00Z'},attendees:[{name:'Me',email:'me@example.test'},{name:'Ada',email:'ada@example.test'},{name:'Bob',email:'bob@example.test'}],folder_membership:folder?[{id:folder,name:'x',parent_folder_id:null}]:[],summary_text:'Ada asked for an intro to a fintech founder.',private_notes_text:'remember to send deck',transcript:null};}
 function network(opts:{notes?:any[];transcript?:string;fail?:(url:string)=>Response|null}={}){
  const calls:string[]=[];const notes=opts.notes??[noteRaw(NOTE_A,'Alpha'),noteRaw(NOTE_B,'Beta','fol_2234567890abcd')];
  const fake=(async(input:any)=>{const url=String(input);calls.push(url);const hit=opts.fail?.(url);if(hit)return hit;
@@ -263,7 +263,8 @@ test('extraction ingests topic and statement signals bound to attendee ids and m
  assert.equal(statement.summary,'Intro: “Ada asked for an intro to a fintech founder.”');assert.equal(statement.source_type,'granola');assert.equal(statement.visibility,'private');assert.equal(statement.observed_at,'2026-08-14T11:00:00Z');assert.equal(statement.confidence,0.8);
  const topic=signals.find(s=>s.evidence_ref===`granola-note:${NOTE_A}#topic@business_strategy`)!;
  assert.equal(topic.person_id,null);assert.equal(topic.summary,'Meeting matched Business strategy');
- assert.equal(statement.theme_id,topic.theme_id);
+ // NOTE_A is in the "Pilot" folder, so the statement lands under the folder theme, not the topic theme.
+ assert.equal(statement.theme_id,'theme-'+await opaque('owner@example.test','granola-folder:fol_1234567890abcd','identity-key'));
  assert.equal(topic.theme_id,'theme-'+await opaque('owner@example.test','body-topic:business_strategy','identity-key'));
  assert.ok(!JSON.stringify(ai.calls).includes(KEY));
  assert.ok(JSON.stringify(ai.calls[0].input).includes('remember to send deck'));
@@ -293,12 +294,27 @@ test('hiding a folder removes its signals and re-including restores them without
 });
 
 test('statements with no topic land in the Meetings theme',async()=>{
- const f=granolaFixture();withAI(f,{response:{topics:[],statements:[{email:'bob@example.test',kind:'commitment',quote:'remember to send deck'}]}});const net=network();
+ const f=granolaFixture();withAI(f,{response:{topics:[],statements:[{email:'bob@example.test',kind:'commitment',quote:'remember to send deck'}]}});const net=network({notes:[noteRaw(NOTE_A,'Alpha','')]});
  await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
  const theme=f.db.prepare("SELECT t.canonical_name FROM theme_signals s JOIN themes t ON t.id=s.theme_id WHERE s.account='granola'").get() as any;
  assert.equal(theme.canonical_name,'meetings');
  const sig=f.db.prepare("SELECT summary,confidence FROM theme_signals WHERE account='granola'").get() as any;
  assert.equal(sig.summary,'Commitment: “remember to send deck”');assert.equal(sig.confidence,0.7);
+});
+
+test('statements land under a theme named after the note folder, topics keep topic themes',async()=>{
+ const f=granolaFixture();withAI(f,{response:{topics:[{topicId:'research',confidence:0.6}],statements:[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.'}]}});const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ const pilot='theme-'+await opaque('owner@example.test','granola-folder:fol_1234567890abcd','identity-key');
+ const theme=f.db.prepare('SELECT canonical_name,aliases,description FROM themes WHERE id=?').get(pilot) as any;
+ assert.equal(theme.canonical_name,'pilot');assert.deepEqual(JSON.parse(theme.aliases),['Pilot']);
+ const statement=f.db.prepare("SELECT theme_id FROM theme_signals WHERE account='granola' AND person_id IS NOT NULL AND evidence_ref LIKE ?").get(`granola-note:${NOTE_A}#%`) as any;
+ assert.equal(statement.theme_id,pilot);
+ const topic=f.db.prepare("SELECT theme_id FROM theme_signals WHERE evidence_ref=?").get(`granola-note:${NOTE_A}#topic@research`) as any;
+ assert.equal(topic.theme_id,'theme-'+await opaque('owner@example.test','body-topic:research','identity-key'));
+ assert.equal((f.db.prepare('SELECT extractor_version FROM granola_notes WHERE id=?').get(NOTE_A) as any).extractor_version,'granola-v2');
+ const stored=JSON.parse((f.db.prepare('SELECT extraction FROM granola_notes WHERE id=?').get(NOTE_A) as any).extraction);
+ assert.deepEqual(stored.returned,{topics:1*stored.calls,statements:1*stored.calls});
 });
 
 test('an extractor version bump forces exactly one re-extraction per stale note, then settles',async()=>{
@@ -308,12 +324,12 @@ test('an extractor version bump forces exactly one re-extraction per stale note,
  const f=granolaFixture();const ai=withAI(f,goodAI);const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});
  await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
  let row=f.db.prepare('SELECT extraction_status,extractor_version,extraction FROM granola_notes WHERE id=?').get(NOTE_A) as any;
- assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v1');assert.ok(row.extraction);
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v2');assert.ok(row.extraction);
  const perNoteCalls=ai.calls.length;assert.ok(perNoteCalls>0);
  f.db.prepare("UPDATE granola_notes SET extractor_version='granola-v0' WHERE id=?").run(NOTE_A);
  bump(f,{nextSync:0});await runToIdle(f,net.fake);
  row=f.db.prepare('SELECT extraction_status,extractor_version FROM granola_notes WHERE id=?').get(NOTE_A) as any;
- assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v1');
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v2');
  assert.equal(ai.calls.length,perNoteCalls*2,'exactly one re-extraction cycle for the stale note');
  const afterBump=ai.calls.length;
  bump(f,{nextSync:0});await runToIdle(f,net.fake);

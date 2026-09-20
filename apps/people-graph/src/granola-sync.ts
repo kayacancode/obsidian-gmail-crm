@@ -14,7 +14,7 @@ export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'reconcile
 interface Connection {grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null}
 
 export const GRANOLA_ACCOUNT='granola';
-export const GRANOLA_EXTRACTOR_VERSION='granola-v1';
+export const GRANOLA_EXTRACTOR_VERSION='granola-v2';
 const API_KEY=/^grn_[\x21-\x7e]{4,508}$/;
 const FOLDER_ID=/^fol_[a-zA-Z0-9]{14}$/;
 const HOUR=3_600_000,DAY=86_400_000;
@@ -297,11 +297,24 @@ export class GranolaSync {
    if(!best||t.confidence>best.confidence)best={id:themeId,confidence:t.confidence};
    signals.push({id:await opaque(owner,`granola-topic:${noteId}:${t.topicId}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:t.confidence,summary:`Meeting matched ${THEME_TOPICS[t.topicId].name}`,evidenceRef:`granola-note:${noteId}#topic@${t.topicId}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});
   }
+  // The first folder id of the note that still has a row in granola_folders (folders drop off
+  // after 7 days unseen) names the theme for its statements, ahead of the best topic match.
+  let folderThemeId:string|null=null;
+  const noteRow=this.ctx.storage.sql.exec<{folder_ids:string}>('SELECT folder_ids FROM granola_notes WHERE id=?',noteId).toArray()[0];
+  if(noteRow){
+   for(const folderId of JSON.parse(noteRow.folder_ids) as string[]){
+    const folder=this.ctx.storage.sql.exec<{id:string;name:string}>('SELECT id,name FROM granola_folders WHERE id=?',folderId).toArray()[0];
+    if(!folder)continue;
+    const id='theme-'+await opaque(owner,`granola-folder:${folderId}`,this.env.TOKEN_SECRET);
+    themes.set(id,{id,owner,canonicalName:canonicalThemeName(folder.name)||'meetings',aliases:[folder.name],description:`Meetings in your Granola folder ${folder.name}`,status:'active',createdAt:now,updatedAt:now});
+    folderThemeId=id;break;
+   }
+  }
   let fallback:string|null=null;
   const own=this.read()?.ownerEmail;const emails=new Set(attendees.map(a=>a.email).filter(email=>email!==own));
   for(const s of extraction.statements){
    if(!emails.has(s.email))continue;
-   let themeId=best?.id;
+   let themeId=folderThemeId??best?.id;
    if(!themeId){fallback??='theme-'+await opaque(owner,'granola-meetings',this.env.TOKEN_SECRET);themeId=fallback;themes.set(themeId,{id:themeId,owner,canonicalName:'meetings',aliases:['Meetings'],description:'Statements from meeting notes without a matched topic',status:'active',createdAt:now,updatedAt:now});}
    const personId=await opaque(owner,s.email,this.env.TOKEN_SECRET);
    signals.push({id:await opaque(owner,`granola-statement:${noteId}:${s.email}:${s.kind}:${s.source}:${s.offset}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,personId,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:s.source==='summary'?0.8:s.source==='private_notes'?0.7:0.6,summary:`${KIND_LABEL[s.kind]}: “${s.quote}”`.slice(0,240),evidenceRef:`granola-note:${noteId}#${s.source}@${s.offset}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});

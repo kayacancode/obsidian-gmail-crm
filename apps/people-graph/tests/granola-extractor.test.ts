@@ -81,3 +81,11 @@ test('attendee email comparison is case-insensitive for mixed-case attendees',as
  const out=await new GranolaExtractor(ai as any,MODEL).extract(mixedInput);
  assert.deepEqual(out.statements,[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.',source:'summary',offset:0}]);
 });
+
+test('prompt asks for every supported statement and reports returned counts',async()=>{
+ const ai=new FakeAI({response:{topics:[],statements:[{email:'ada@example.test',kind:'intro',quote:'Ada asked for an intro to a fintech founder.'},{email:'ada@example.test',kind:'ask',quote:'NOT IN TEXT'}]}});
+ const out=await new GranolaExtractor(ai as any,MODEL).extract(input);
+ const system=ai.calls[0].input.messages[0].content;
+ assert.ok(system.includes('every statement the text supports'));assert.ok(system.includes('partial sentence'));assert.ok(!system.includes('Return empty arrays when nothing is supported'));
+ assert.deepEqual(out.returned,{topics:0,statements:2*ai.calls.length});assert.equal(out.statements.length,1);
+});
