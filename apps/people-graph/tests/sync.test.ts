@@ -373,3 +373,20 @@ test('graph exists with Granola alone, and alarm runs a Granola tick and schedul
   assert.equal(service.granolaStatus().connected,false);
  }finally{globalThis.fetch=originalFetch;db.close();}
 });
+
+test('graph drops theme signals and relevance members whose person is not a node',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada@example.com','Ada',Date.now(),'Hello',1,1);
+  const ada=await opaque('owner','ada@example.com','identity-key'),me=await opaque('owner','me@example.com','identity-key');
+  const now=new Date().toISOString();
+  const signal=(id:string,personId:string)=>({id,owner:'owner',account:'granola',personId,themeId:'theme-x',sourceType:'granola',visibility:'private',observedAt:now,ingestedAt:now,confidence:.8,summary:'Ask: “hi”',evidenceRef:`granola-note:not_1234567890abcd#summary@${id.length}`,contentHash:'h',extractorVersion:'granola-v1'});
+  await (service as any).store().ingest([signal('sig-ada',ada),signal('sig-me',me)]);
+  const graph=(await service.graph())!;
+  const nodeIds=new Set(graph.nodes.map((n:any)=>n.id));
+  assert.ok(nodeIds.has(ada));assert.ok(!nodeIds.has(me));
+  assert.deepEqual(graph.themeSignals.map((s:any)=>s.id),['sig-ada']);
+  for(const theme of graph.relevance.themes){for(const id of theme.nodeIds)assert.ok(nodeIds.has(id),'relevance theme nodeIds must be graph nodes');for(const c of theme.components)assert.notEqual(c.signalId,'sig-me');}
+ }finally{db.close();}
+});

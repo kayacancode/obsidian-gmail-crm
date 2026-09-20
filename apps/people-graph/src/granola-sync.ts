@@ -298,7 +298,7 @@ export class GranolaSync {
    signals.push({id:await opaque(owner,`granola-topic:${noteId}:${t.topicId}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:t.confidence,summary:`Meeting matched ${THEME_TOPICS[t.topicId].name}`,evidenceRef:`granola-note:${noteId}#topic@${t.topicId}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});
   }
   let fallback:string|null=null;
-  const emails=new Set(attendees.map(a=>a.email));
+  const own=this.read()?.ownerEmail;const emails=new Set(attendees.map(a=>a.email).filter(email=>email!==own));
   for(const s of extraction.statements){
    if(!emails.has(s.email))continue;
    let themeId=best?.id;

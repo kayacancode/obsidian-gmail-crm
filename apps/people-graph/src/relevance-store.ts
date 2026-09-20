@@ -299,12 +299,16 @@ export class RelevanceStore {
 
 	async attachToGraph<T extends {nodes:unknown[];edges:unknown[]}>(graph:T,lens:RelevanceLens,now=Date.now()):Promise<T & {themes:Omit<Theme,'owner'>[];themeSignals:Omit<ThemeSignal,'owner'>[];relevance:RelevanceSnapshot;connectors:RelevanceSnapshot['connectors']}> {
 		const owner = await this.requiredOwner();
-		const relevance = await this.snapshot(lens,now);
 		const nodes = graph.nodes.filter(isGraphNode);
+		// A person signal must point at a graph node: the client rejects the whole payload otherwise.
+		// Signals can outlive their node (own addresses are never nodes; contacts can fall below the cap).
+		const nodeIds = new Set(nodes.map(node => node.id));
+		const visible = this.signals(owner).filter(signal => !signal.personId || nodeIds.has(signal.personId));
+		const relevance = scoreRelevance(visible,this.feedback(owner),lens,now,this.themes(owner));
 		const edges = graph.edges.filter(isGraphEdge).map((edge,index) => ({id:`mail-${index}`,source:edge.source,target:edge.target,kind:'cooccurrence' as const}));
 		const connectors = [...scoreConnectors(nodes,edges).values()].sort((a,b) => b.score-a.score || a.nodeId.localeCompare(b.nodeId));
 		const themes = this.themes(owner).map(({owner:_,...theme}) => theme);
-		const themeSignals = this.signals(owner).map(({owner:_,...signal}) => signal);
+		const themeSignals = visible.map(({owner:_,...signal}) => signal);
 		return {...graph,themes,themeSignals,relevance:{...relevance,connectors},connectors};
 	}
 
