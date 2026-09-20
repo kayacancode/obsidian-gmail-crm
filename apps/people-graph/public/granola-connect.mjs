@@ -68,7 +68,8 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
     if(!connected)return;
     cardStatus.textContent=STATUS_LABEL[status.status]||status.status;
     const c=status.counts;
-    progress.textContent=status.status==='syncing'?`${c.extracted.toLocaleString()} of ${(c.notes+c.pending).toLocaleString()} meetings analysed`:`${c.notes.toLocaleString()} meetings · ${status.range==='all'?'All history':'Last 90 days'}${c.failed?` · ${c.failed} could not be analysed`:''}`;
+    if(statusLine.textContent==='Not connected.')statusLine.textContent='';
+    progress.textContent=status.status==='syncing'?`${c.extracted.toLocaleString()} of ${(c.notes+c.pending).toLocaleString()} meetings analysed`:`${c.notes.toLocaleString()} meetings · ${c.extracted.toLocaleString()} analysed${c.pending?` · ${c.pending.toLocaleString()} pending`:''}${c.failed?` · ${c.failed} could not be analysed`:''} · ${status.range==='all'?'All history':'Last 90 days'}`;
     syncLine.textContent=status.lastSync?'Last completed sync: '+new Date(status.lastSync).toLocaleString()+(status.status==='connected'&&status.nextSync?' · next '+new Date(status.nextSync).toLocaleTimeString():''):'First sync has not completed yet.';
     errorLine.textContent=status.error?(status.status==='syncing'?'Temporary issue. Retrying automatically.':status.error==='reconnect_required'?'Granola rejected the stored key. Enter a new key to reconnect.':status.error==='note_cap_reached'?'Meeting limit reached; newest meetings are kept.':'Sync paused: '+(messages[status.error]||status.error)):'';
     syncButton.disabled=busy||status.status==='syncing'||reconnect;
