@@ -97,6 +97,7 @@ export function mountGraph(element, options = {}) {
     onThemeFeedback: options.onThemeFeedback,
     onRetrievePreview: options.onRetrievePreview,
     onOpenPublicSource: options.onOpenPublicSource,
+    onDraftNote: options.onDraftNote,
   };
   let graph = normalizeGraph(options.graph ?? { nodes: [], edges: [] });
   const demoEnabled = () => options.demo === true && graph.meta.fictional === true;
@@ -558,6 +559,7 @@ export function mountGraph(element, options = {}) {
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
       if (typeof callbacks.onOpenPublicSource === 'function') panel.append(button('Add public source', 'open-person-public-source', 'rg-theme-action'));
+      if (typeof callbacks.onDraftNote === 'function') panel.append(button('Draft a note', 'draft-person-note', 'rg-theme-action'));
     }
     if (lens !== 'off') {
       const connector = relevanceGraph.connectors.find(item => item.nodeId === node.id);
@@ -1121,6 +1123,9 @@ export function mountGraph(element, options = {}) {
       if (relevancePending || !selectedId) return;
       requestRelevance(action === 'retrieve-person-context' ? callbacks.onRetrievePreview : callbacks.onOpenPublicSource,
         { personId: selectedId }, 'Context request completed.');
+    } else if (action === 'draft-person-note') {
+      if (relevancePending || !selectedId) return;
+      requestRelevance(callbacks.onDraftNote, selectedId, 'Draft ready for your review.');
     } else if (action === 'retrieve-context' || action === 'open-public-source') {
       if (relevancePending) return;
       requestRelevance(action === 'retrieve-context' ? callbacks.onRetrievePreview : callbacks.onOpenPublicSource,

@@ -12,6 +12,7 @@ import {previewPublicSource,fetchPublicSource,withPublicDeadline,publicAwait,saf
 import {normalizePushedGraph,type PushedGraphPayload} from './relevance-routes';
 import {boundedJSON as readBoundedJSON} from './bounded-json';
 import {GranolaSync,type GranolaRange,type GranolaStatus} from './granola-sync';
+import {composeDraft} from './draft-note';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string}
@@ -329,6 +330,28 @@ export class MailSync extends DurableObject<MailEnv>{
   for(const r of mail)merged.set(r.email,{...r,meetings:0,lastMeeting:0});
   for(const m of this.granola().contacts()){const r=merged.get(m.email);if(r){r.meetings=m.meetings;r.lastMeeting=m.last;r.sent+=m.meetings;r.received+=m.meetings;r.last=Math.max(r.last,m.last);if(r.name.includes('@')&&!m.name.includes('@'))r.name=m.name;}else merged.set(m.email,{email:m.email,name:m.name,sent:m.meetings,received:m.meetings,last:m.last,meetings:m.meetings,lastMeeting:m.last});}
   return [...merged.values()].filter(r=>!own.has(r.email)).sort((x,y)=>(y.sent+y.received)-(x.sent+x.received)||x.email.localeCompare(y.email)).slice(0,1500);
+ }
+ /** Resolves an opaque node id back to the contact email, the way retrievalScope does. */
+ private async emailForPerson(personId:string){
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;
+  for(const row of this.graphContacts())if(await opaque(owner,row.email,this.env.TOKEN_SECRET)===personId)return row.email;
+  return null;
+ }
+ /**
+  * Outreach draft for one person from their own visible evidence. The prompt carries the
+  * display name, company, last contact and at most eight signal summaries — never note
+  * bodies, transcripts, API keys or anybody else's evidence. Nothing is ever sent.
+  */
+ async draftNote(personId:string){
+  if(typeof personId!=='string'||!personId||personId.includes('@')||personId.length>200)throw Error('unknown_person');
+  const graph=await this.graph();const node=graph?.nodes.find(n=>n.id===personId);
+  if(!graph||!node)throw Error('unknown_person');
+  const basedOn=graph.themeSignals.filter(s=>s.personId===personId)
+   .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,8)
+   .map(s=>({summary:s.summary,observedAt:s.observedAt,...(s.provenance?.title?{title:s.provenance.title}:{})}));
+  const to=await this.emailForPerson(personId);
+  const {subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,{name:node.name,company:node.company,lastContact:node.lastContact,evidence:basedOn});
+  return {to,name:node.name,subject,body,basedOn};
  }
  async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();if(!accounts.length&&!this.granola().status().connected)return null;
   const rows=this.graphContacts();

@@ -5,9 +5,12 @@ section.workflow-dialog { position: fixed; inset: 50% auto auto 50%; transform: 
 .workflow-dialog::backdrop { background: #0006; }
 .workflow-dialog h2 { margin-top: 0; font-weight: 400; }
 .workflow-dialog label { display: grid; gap: 6px; margin: 16px 0; }
-.workflow-dialog input, .workflow-dialog select { min-width: 0; width: 100%; padding: 8px; background: var(--paper); color: var(--ink); border: 1px solid var(--line); }
+.workflow-dialog input, .workflow-dialog select, .workflow-dialog textarea { min-width: 0; width: 100%; padding: 8px; background: var(--paper); color: var(--ink); border: 1px solid var(--line); }
 .workflow-dialog button { margin: 8px 12px 0 0; padding: 8px 0; border: 0; border-bottom: 1px solid var(--orange); background: transparent; color: var(--orange); }
 .workflow-dialog button:disabled { opacity: .45; }
+.workflow-dialog textarea { min-height: 180px; font: inherit; resize: vertical; }
+.workflow-dialog ul { margin: 8px 0; padding-left: 20px; }
+.workflow-dialog a { color: var(--orange); }
 * { box-sizing: border-box; }
 html, body { min-width: 0; min-height: 100%; margin: 0; background: var(--paper); color: var(--ink); font: 13px/1.4 Helvetica, Arial, sans-serif; }
 button, select { color: inherit; font: inherit; }

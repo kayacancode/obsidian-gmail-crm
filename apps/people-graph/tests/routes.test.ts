@@ -48,3 +48,29 @@ test('legacy graph payloads preserve dotted and duplicate node ids through push 
  const loaded=await signedRequest('/api/graph?source=obsidian',env);assert.equal(loaded.status,200);const graph=(await loaded.json() as any).graph;
  assert.deepEqual(graph.nodes,legacy.nodes);assert.deepEqual(graph.edges,legacy.edges);assert.deepEqual(graph.themes,[]);assert.deepEqual(graph.themeSignals,[]);
 });
+
+test('draft route is session-gated, same-origin, body-checked and maps durable object failures',async()=>{
+ const {env}=workerFixture();const calls:string[]=[];
+ let result:any={to:'ada@example.test',name:'Ada',subject:'Following up',body:'Hi Ada, good to see you.',basedOn:[{summary:'Ask: “hi”',observedAt:'2026-09-14T11:00:00.000Z',title:'Pilot sync'}]};
+ env.MAIL.getByName=(owner:string)=>({bindOwner:async()=>{calls.push('bind:'+owner);},draftNote:async(personId:string)=>{calls.push('draft:'+personId);if(result instanceof Error)throw result;return result;}});
+ const post=(body:string,origin='https://people.test')=>({method:'POST',headers:{origin,'content-type':'application/json'},body});
+ assert.equal((await worker.fetch(new Request('https://people.test/api/people/draft',post('{"personId":"ada"}')),env)).status,401);
+ assert.deepEqual(calls,[]);
+ assert.equal((await signedRequest('/api/people/draft',env,post('{"personId":"ada"}','https://evil.test'))).status,403);
+ for(const body of ['{}','not json','{"personId":""}','{"personId":"a@b.test"}',JSON.stringify({personId:'x'.repeat(2100)})]){
+  const bad=await signedRequest('/api/people/draft',env,post(body));
+  assert.equal(bad.status,400,body.slice(0,40));assert.equal((await bad.json() as any).error,'invalid_request');
+ }
+ assert.deepEqual(calls,[]);
+ const ok=await signedRequest('/api/people/draft',env,post('{"personId":"ada"}'));
+ assert.equal(ok.status,200);assert.equal(ok.headers.get('cache-control'),'no-store');
+ assert.deepEqual(await ok.json(),result);
+ assert.deepEqual(calls,['bind:owner@example.test','draft:ada']);
+ for(const [message,status] of [['unknown_person',404],['ai_unavailable',503],['invalid_draft',502],['boom',500]] as const){
+  result=Error(message);
+  const failed=await signedRequest('/api/people/draft',env,post('{"personId":"ada"}'));
+  assert.equal(failed.status,status,message);
+  assert.equal((await failed.json() as any).error,status===500?'server_error':message);
+ }
+ assert.equal((await signedRequest('/api/people/draft',env,{method:'GET'})).status,405);
+});

@@ -124,6 +124,10 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     if(!accounts.length)throw Error('No connected Gmail account is available.');
     return accounts;
   }
+  async function draftNote(personId) {
+    const ctx = context();
+    return request('/api/people/draft', {body:{personId}}, ctx);
+  }
   async function previewPublicSource(input) {
     const ctx = context();
     const value = await request(withSource('/api/public-sources/preview'), {body:clean({url:input.url,personId:input.personId})}, ctx);
@@ -318,7 +322,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signIn,
     signOut,
     requestPushToken,
-    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback,
+    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
     pollRetrieval: id => pollJob(id, 'retrieval'),
@@ -460,6 +464,45 @@ async function startBrowserApp() {
     });input.focus();
   }
 
+  /** The draft is model-written, labelled, editable, and never sent by this app. */
+  async function openDraftNote(personId) {
+    const view=dialog('Draft a note');
+    const person=mountedGraph?.nodes.find(node=>node.id===personId);
+    paragraph(view.content,`Draft for ${person?.name ?? 'this person'} \u00b7 written from your own evidence \u00b7 review and edit it before sending`);
+    paragraph(view.content,'Nothing is sent until you send it from your mail client.');
+    view.message.textContent='Writing a draft\u2026';
+    let draft;
+    try{draft=await controller.draftNote(personId);}
+    catch(error){if(view.element.isConnected)view.message.textContent=error.message;return;}
+    if(!view.element.isConnected)return;
+    view.message.textContent='';
+    paragraph(view.content,'Based on:');
+    const list=document.createElement('ul');
+    for(const item of draft.basedOn ?? []){
+      const entry=document.createElement('li');
+      entry.textContent=[item.summary,item.title,String(item.observedAt ?? '').slice(0,10)].filter(Boolean).join(' \u00b7 ');
+      list.append(entry);
+    }
+    view.content.append(list);
+    const subjectLabel=document.createElement('label');subjectLabel.textContent='Subject';
+    const subject=document.createElement('input');subject.type='text';subject.setAttribute('aria-label','Subject');subject.value=draft.subject;
+    subjectLabel.append(subject);
+    const bodyLabel=document.createElement('label');bodyLabel.textContent='Draft body';
+    const body=document.createElement('textarea');body.setAttribute('aria-label','Draft body');body.rows=10;body.value=draft.body;
+    bodyLabel.append(body);
+    view.content.append(subjectLabel,bodyLabel);
+    action(view.content,'Copy',async()=>{
+      try{await navigator.clipboard.writeText(`${subject.value}\n\n${body.value}`);view.message.textContent='Copied';}
+      catch{view.message.textContent='Copy failed. Select the draft and copy it yourself.';}
+    });
+    if(draft.to){
+      const mail=document.createElement('a');mail.textContent='Open in email \u2197';mail.rel='noopener';
+      const rebuild=()=>{mail.href=`mailto:${draft.to}?subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(body.value)}`;};
+      rebuild();subject.oninput=body.oninput=rebuild;view.content.append(mail);
+    }
+    subject.focus();
+  }
+
   function setAuthenticatedControls(visible) {
     for (const id of ['source-wrap', 'refresh', 'setup', 'signout', 'meeting-preview']) $(`#${id}`).hidden = !visible;
     signin.hidden = visible;
@@ -548,7 +591,8 @@ async function startBrowserApp() {
     }
     if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, title: 'People relationships', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
       onLensChange: lens => controller.loadRelevance(lens), onThemeFeedback: input => controller.submitFeedback(input),
-      onRetrievePreview: scope => openRetrieval(scope), onOpenPublicSource: scope => openPublicSource(scope) });
+      onRetrievePreview: scope => openRetrieval(scope), onOpenPublicSource: scope => openPublicSource(scope),
+      onDraftNote: personId => openDraftNote(personId) });
     else if (mountedGraph !== state.graph) graphInstance.setGraph(state.graph);
     mountedGraph = state.graph;
     if(state.relevanceEnvelope && renderedEnvelope !== state.relevanceEnvelope){renderedEnvelope=state.relevanceEnvelope;graphInstance.setRelevance(renderedEnvelope,state.lens);}

@@ -419,3 +419,36 @@ test('graph drops theme signals and relevance members whose person is not a node
   for(const theme of graph.relevance.themes){for(const id of theme.nodeIds)assert.ok(nodeIds.has(id),'relevance theme nodeIds must be graph nodes');for(const c of theme.components)assert.notEqual(c.signalId,'sig-me');}
  }finally{db.close();}
 });
+
+test('draftNote resolves the person, sends the eight newest signals and never another person’s evidence',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ const ai=new FakeAI({response:{subject:'Following up on the fintech intro',body:'Hi Ada, you mentioned wanting an intro to a fintech founder. Happy to make it this week.'}});
+ Object.assign((service as any).env,{AI:ai,THEME_MODEL:'@cf/meta/llama-3.3-70b-instruct-fp8-fast'});
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada@example.com','Ada',Date.parse('2026-09-01T00:00:00Z'),'Hello',1,1);
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m2','bob@example.com','Bob',Date.parse('2026-09-01T00:00:00Z'),'Hello',1,1);
+  const ada=await opaque('owner','ada@example.com','identity-key'),bob=await opaque('owner','bob@example.com','identity-key');
+  db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES ('not_1234567890abcd','Pilot sync with Ada',NULL,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','[]','SECRET SUMMARY','SECRET NOTES','SECRET TRANSCRIPT','h',0,'done',NULL,'granola-v2',0,0,0)").run();
+  const now=new Date().toISOString();
+  const signal=(id:string,personId:string,day:number,ref:string)=>({id,owner:'owner',account:'granola',personId,themeId:'theme-x',sourceType:'granola',visibility:'private',observedAt:`2026-09-${String(day).padStart(2,'0')}T11:00:00.000Z`,ingestedAt:now,confidence:.8,summary:`Ask: “quote ${day}”`,evidenceRef:ref,contentHash:id,extractorVersion:'granola-v2'});
+  await (service as any).store().ingest([
+   ...Array.from({length:10},(_,i)=>signal(`sig-ada-${i}`,ada,i+1,`granola-note:not_1234567890abcd#summary@${i}`)),
+   signal('sig-bob',bob,20,'granola-note:not_1234567890abcd#summary@99'),
+  ]);
+  const value=await service.draftNote(ada);
+  assert.equal(value.to,'ada@example.com');
+  assert.equal(value.name,'Ada');
+  assert.equal(value.subject,'Following up on the fintech intro');
+  assert.match(value.body,/^Hi Ada/);
+  assert.deepEqual(value.basedOn.map((item:any)=>item.summary),[10,9,8,7,6,5,4,3].map(day=>`Ask: “quote ${day}”`));
+  assert.equal(value.basedOn.length,8);
+  assert.equal(value.basedOn[0].title,'Pilot sync with Ada');
+  const sent=JSON.stringify(ai.calls[0].input);
+  assert.ok(!sent.includes('SECRET'),'note bodies, notes and transcripts never reach the model');
+  assert.ok(!sent.includes('quote 20'),'another person’s evidence never reaches the model');
+  assert.ok(!sent.includes('ada@example.com'),'the contact email never reaches the model');
+  await assert.rejects(service.draftNote(await opaque('owner','nobody@example.com','identity-key')),/unknown_person/);
+  await assert.rejects(service.draftNote(''),/unknown_person/);
+ }finally{db.close();}
+});

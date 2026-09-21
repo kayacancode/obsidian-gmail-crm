@@ -261,6 +261,43 @@ try {
   assert.ok(workflowCalls.some(call=>call.publicSource==='?source=obsidian'));
   await checkReloadedProvenance();
 
+  // Draft a note: the model writes it, the owner edits it, and nothing is ever sent from here.
+  const draftBody='Hi Ada, you mentioned wanting an intro to a fintech founder in the pilot sync. I have two people in mind and would be glad to introduce you this week.';
+  let draftResponse={status:200,json:{to:'ada@example.test',name:'Ada Rivera',subject:'Following up on the fintech intro',body:draftBody,
+    basedOn:[{summary:'Ask: \u201cAda asked for an intro to a fintech founder.\u201d',observedAt:'2026-09-14T12:00:00Z',title:'Pilot sync with Ada'},
+      {summary:'Interest: \u201cagent memory\u201d',observedAt:'2026-09-02T12:00:00Z'}]}};
+  await page.route('**/api/people/draft',route=>{workflowCalls.push({draft:route.request().postDataJSON()});return route.fulfill(draftResponse);});
+  await page.evaluate(()=>{window.copiedText=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedText.push(text);}}});});
+  await page.locator('.rg-node').filter({hasText:'Ada Rivera'}).click();
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  const draftDialog=page.getByRole('dialog',{name:'Draft a note'});
+  await draftDialog.getByLabel('Subject').waitFor();
+  assert.deepEqual(workflowCalls.find(call=>call.draft).draft,{personId:'ada'});
+  assert.equal(await draftDialog.getByLabel('Subject').inputValue(),'Following up on the fintech intro');
+  assert.equal(await draftDialog.getByLabel('Draft body').inputValue(),draftBody);
+  assert.match(await draftDialog.innerText(),/Based on:/);
+  assert.match(await draftDialog.innerText(),/Pilot sync with Ada/);
+  assert.match(await draftDialog.innerText(),/Nothing is sent until you send it from your mail client\./);
+  const mailto=draftDialog.getByRole('link',{name:'Open in email \u2197'});
+  assert.equal(await mailto.getAttribute('href'),`mailto:ada@example.test?subject=${encodeURIComponent('Following up on the fintech intro')}&body=${encodeURIComponent(draftBody)}`);
+  await draftDialog.getByLabel('Subject').fill('Quick hello');
+  assert.equal(await mailto.getAttribute('href'),`mailto:ada@example.test?subject=Quick%20hello&body=${encodeURIComponent(draftBody)}`);
+  await draftDialog.getByRole('button',{name:'Copy',exact:true}).click();
+  await page.locator('.workflow-dialog [role="status"]').filter({hasText:'Copied'}).waitFor();
+  assert.equal(await page.evaluate(()=>window.copiedText.at(-1)),`Quick hello\n\n${draftBody}`);
+  await page.keyboard.press('Escape');
+  await draftDialog.waitFor({state:'hidden'});
+  draftResponse={status:200,json:{...draftResponse.json,to:null}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  await draftDialog.getByLabel('Subject').waitFor();
+  assert.equal(await draftDialog.getByRole('link',{name:'Open in email \u2197'}).count(),0,'no address means no mail client link');
+  await page.keyboard.press('Escape');
+  draftResponse={status:503,json:{error:'ai_unavailable'}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  await page.locator('.workflow-dialog [role="status"]').filter({hasText:'503'}).waitFor();
+  assert.equal(await draftDialog.getByLabel('Subject').count(),0,'a failed draft shows nothing to copy or send');
+  await page.keyboard.press('Escape');
+
   // Mount the real renderer with controllable host boundaries. Removing lens filtering,
   // state preservation, or request-generation guards must fail these assertions.
   await page.evaluate(async () => {

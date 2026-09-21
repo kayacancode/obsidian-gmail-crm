@@ -33,3 +33,21 @@ export async function mailRoute(request:Request,env:MailEnv,owner:string){
  if(path==='/api/accounts/disconnect'){await stub.remove(body.email);return json({ok:true});}
  return json({error:'not_found'},404);
 }
+/** POST /api/people/draft — an outreach draft from the person's own evidence. The app never sends it. */
+export async function draftRoute(request:Request,env:MailEnv,owner:string){
+ const url=new URL(request.url);
+ if(request.method!=='POST')return json({error:'method_not_allowed'},405);
+ if(request.headers.get('origin')!==url.origin)return json({error:'invalid_origin'},403);
+ const raw=await request.text();if(raw.length>2000)return json({error:'invalid_request'},400);
+ let personId:unknown;try{personId=(JSON.parse(raw) as {personId?:unknown}|null)?.personId;}catch{return json({error:'invalid_request'},400);}
+ if(typeof personId!=='string'||!personId||personId.length>200||personId.includes('@'))return json({error:'invalid_request'},400);
+ const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+ try{return json(await stub.draftNote(personId));}
+ catch(error){
+  const code=error instanceof Error?error.message:'';
+  if(code==='unknown_person')return json({error:'unknown_person'},404);
+  if(code==='ai_unavailable')return json({error:'ai_unavailable',message:'The drafting model is unavailable. Try again shortly.'},503);
+  if(code==='invalid_draft')return json({error:'invalid_draft',message:'The draft did not pass safety checks. Try again.'},502);
+  throw error;
+ }
+}
