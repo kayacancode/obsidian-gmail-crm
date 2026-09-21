@@ -274,3 +274,24 @@ test('theme fields are stable, use member positions, and never move visible node
   assert.ok(first[0].x > 100 && first[0].x < 500);
   assert.ok(first[0].y > 180 && first[0].y < 260);
 });
+
+test('shared people keep the owners who shared them, bounded, and shared_via edges keep a readable label', () => {
+  const shared = normalizeGraph({
+    nodes: [
+      { id: 'a', name: 'Ada', via: ['owner@example.test', ' second@example.test '] },
+      { id: 'b', name: 'Bo', lastContact: null },
+    ],
+    edges: [{ source: 'a', target: 'b', types: ['shared_via'] }],
+  });
+
+  assert.deepEqual(shared.nodes[0].via, ['owner@example.test', 'second@example.test']);
+  assert.deepEqual(shared.nodes[1].via, []);
+  assert.equal(shared.nodes[1].lastContact, null);
+  assert.deepEqual(shared.edges[0].types, ['shared_via']);
+  assert.equal(shared.edges[0].label, 'shared via');
+
+  // A non-array, an over-long owner, or too many owners is a producer bug, not something to render.
+  assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: 'owner@example.test' }], edges: [] }), /via/i);
+  assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: ['x'.repeat(321)] }], edges: [] }), /via/i);
+  assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: Array.from({ length: 21 }, (_, i) => `o${i}@example.test`) }], edges: [] }), /via/i);
+});

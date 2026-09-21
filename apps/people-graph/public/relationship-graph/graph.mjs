@@ -81,6 +81,20 @@ export function evidenceLines(signal, component) {
   return { summary, source, link: meeting ? granolaLink(meeting.canonicalUrl) : null, details };
 }
 
+/**
+ * People shared with the viewer carry `via`: the owners who shared them. The canvas has room for
+ * one address, so extra owners are counted rather than listed; the panel and the tooltip name
+ * them all. Both are plain strings set with textContent, never markup.
+ */
+function viaLine(node) {
+  const [first, ...rest] = node.via;
+  return rest.length ? `via ${first} +${rest.length} more` : `via ${first}`;
+}
+
+function sharedByLine(node) {
+  return `Shared with you by ${node.via.join(', ')}`;
+}
+
 export function mountGraph(element, options = {}) {
   if (!element?.ownerDocument || typeof element.replaceChildren !== 'function') {
     throw new Error('mountGraph requires a DOM element');
@@ -311,9 +325,13 @@ export function mountGraph(element, options = {}) {
     }
     heading.append(picker);section.append(heading);
     const onlySubjects = themes.length && themes.every(theme => theme.components.every(c => c.sourceType === 'gmail_subject'));
-    section.append(make('p', 'rg-topic-explanation', themes.length
+    const explanation = themes.length
       ? onlySubjects ? 'Based on email subjects. Deeper topics need approved body analysis or synced meeting notes.' : 'Themes from your permitted sources. Choose one to see its people and evidence.'
-      : `No ${lens === 'firm' ? 'firm-shared' : lens === 'public' ? 'public-source' : 'evidence-backed'} themes yet in this view.`));
+      : `No ${lens === 'firm' ? 'firm-shared' : lens === 'public' ? 'public-source' : 'evidence-backed'} themes yet in this view.`;
+    // Firm is the only lens that shows evidence someone else shared with you, so name it here.
+    section.append(make('p', 'rg-topic-explanation', lens === 'firm'
+      ? `${explanation} Firm also shows the evidence shared with you by the people marked “via” on the canvas.`
+      : explanation));
     section.querySelector('.rg-topic-explanation').append(make('span', 'rg-heat-legend', 'Color = theme · Glow = recent relevance, not closeness'));
     const chips = make('div', 'rg-topic-chips');
     const promoted = promotedThemes();
@@ -453,9 +471,14 @@ export function mountGraph(element, options = {}) {
       nodeButton.style.setProperty('--label-width', `${base.labelWidth || 136}px`);
       nodeButton.setAttribute('aria-label', `Explore ${node.name}`);
       nodeButton.setAttribute('aria-pressed', String(node.id === selectedId));
+      if (node.via?.length) {
+        nodeButton.dataset.via = 'true';
+        nodeButton.title += `\n${sharedByLine(node)}`;
+      }
       nodeButton.append(renderPortrait(node, index));
       const label = make('span', 'rg-node-label', node.name);
       label.append(make('small', '', [node.role, node.company].filter(Boolean).join(' · ') || node.type));
+      if (node.via?.length) label.append(make('small', 'rg-node-via', viaLine(node)));
       nodeButton.append(label);
       nodeLayer.append(nodeButton);
       if (lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
@@ -555,6 +578,9 @@ export function mountGraph(element, options = {}) {
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
     const profile = [node.role, node.company].filter(Boolean).join(' · ');
     if (profile) panel.append(make('p', 'rg-source', profile));
+    if (node.via?.length) {
+      panel.append(make('p', 'rg-source rg-shared-source', `${sharedByLine(node)}. Their evidence appears in the Firm lens only.`));
+    }
     if (node.type === 'person') {
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));

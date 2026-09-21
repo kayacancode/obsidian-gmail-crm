@@ -401,7 +401,10 @@ async function startBrowserApp() {
       }
     });
     element.showModal?.(); element.focus();
-    return {element,content,message,cancel};
+    // Some dialogs only learn their real title once the server answers (an intro request, say),
+    // so the title stays changeable: aria-label and the heading always move together.
+    const retitle=next=>{element.setAttribute('aria-label',next);heading.textContent=next;};
+    return {element,content,message,cancel,retitle};
   }
   function paragraph(parent,text) { const p=document.createElement('p');p.textContent=text;parent.append(p);return p; }
   function action(parent,label,handler) { const button=document.createElement('button');button.type='button';button.textContent=label;button.onclick=handler;parent.append(button);return button; }
@@ -492,7 +495,7 @@ async function startBrowserApp() {
   async function openDraftNote(personId) {
     const view=dialog('Draft a note');
     const person=mountedGraph?.nodes.find(node=>node.id===personId);
-    paragraph(view.content,`Draft for ${person?.name ?? 'this person'} \u00b7 written from your own evidence \u00b7 review and edit it before sending`);
+    const intro=paragraph(view.content,`Draft for ${person?.name ?? 'this person'} \u00b7 written from your own evidence \u00b7 review and edit it before sending`);
     paragraph(view.content,'Nothing is sent until you send it from your mail client.');
     view.message.textContent='Writing a draft\u2026';
     let draft;
@@ -507,6 +510,13 @@ async function startBrowserApp() {
     }
     if(!view.element.isConnected)return;
     view.message.textContent='';
+    // A person the owner only knows through a share has no address here: the server drafts an
+    // intro request to the owner who shared them, so the dialog has to say who it is written to.
+    const introVia=typeof draft.introVia==='string'&&draft.introVia.trim().length<=320?draft.introVia.trim():'';
+    if(introVia){
+      view.retitle(`Intro request to ${introVia}`);
+      intro.textContent=`${introVia} shared ${draft.name||'this person'} with you. This draft asks ${introVia} for an introduction; it is not a note to ${draft.name||'them'}.`;
+    }
     paragraph(view.content,'Based on:');
     const list=document.createElement('ul');
     for(const item of draft.basedOn ?? []){

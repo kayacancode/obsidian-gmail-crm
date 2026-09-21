@@ -330,6 +330,22 @@ try {
   assert.equal(await draftDialog.getByRole('link',{name:'Open in email ↗'}).count(),0,'a mailto-unsafe address renders no mail client link');
   await page.keyboard.press('Escape');
 
+  // A person who is only in the graph because someone shared them cannot be written to directly:
+  // the server returns introVia and the owner's address, and the dialog becomes an intro request.
+  const introBody='Would you be up for introducing me to Ada Rivera? We are both working on agent memory.';
+  draftResponse={status:200,json:{to:'owner@example.test',introVia:'owner@example.test',name:'Ada Rivera',
+    subject:'Intro to Ada Rivera?',body:introBody,basedOn:[{summary:'Interest: “agent memory”',observedAt:'2026-09-02T12:00:00Z'}]}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  const introDialog=page.getByRole('dialog',{name:'Intro request to owner@example.test'});
+  await introDialog.getByLabel('Subject').waitFor();
+  assert.match(await introDialog.innerText(),/Intro request to owner@example\.test/);
+  assert.match(await introDialog.innerText(),/asks owner@example\.test for an introduction/);
+  assert.ok(!(await introDialog.innerText()).includes('Draft for Ada Rivera'),'an intro request is not addressed to the shared person');
+  assert.equal(await introDialog.getByRole('link',{name:'Open in email ↗'}).getAttribute('href'),
+    `mailto:owner@example.test?subject=${encodeURIComponent('Intro to Ada Rivera?')}&body=${encodeURIComponent(introBody)}`);
+  await page.keyboard.press('Escape');
+  await introDialog.waitFor({state:'hidden'});
+
   // Search my network: the field sits above the graph, results are ranked and explained, and
   // choosing one selects that person through the graph's own node selection.
   let searchDelay=0;
@@ -398,7 +414,8 @@ try {
     window.heatFixture = {
       meta: { fictional: true },
       nodes: ['Ada Rivera', 'Bo Chen', 'Cia Ford', 'Dee Park', 'Eli Lin', 'Fay Singh', 'Gus Lee', 'Hal Jo']
-        .map((name, i) => ({ id: ['ada', 'bo', 'cia', 'dee', 'eli', 'fay', 'gus', 'hal'][i], name, type: 'person', photoPosition: `${i % 4 * 33.333}% ${Math.floor(i / 4) * 33.333}%` })),
+        // Cia is in this graph only because owner@example.test shared her: she carries `via`.
+        .map((name, i) => ({ id: ['ada', 'bo', 'cia', 'dee', 'eli', 'fay', 'gus', 'hal'][i], name, type: 'person', photoPosition: `${i % 4 * 33.333}% ${Math.floor(i / 4) * 33.333}%`, ...(i === 2 ? { via: ['owner@example.test'] } : {}) })),
       edges: [{ id: 'ada-bo', source: 'ada', target: 'bo', kind: 'personal', label: 'worked with' }],
       themes: [{ id: 'memory', name: 'Agent memory' }, { id: 'health', name: 'Health systems' }],
       themeSignals: signals,
@@ -437,6 +454,9 @@ try {
   assert.equal(await page.locator('.rg-node[data-connector="inferred"]').count(), 1);
   const positions = () => page.locator('.rg-node').evaluateAll(nodes => nodes.map(n => [n.dataset.nodeId,n.style.left,n.style.top,n.style.width]));
   const initialPositions = await positions();
+  // Only a shared person is marked, and only the Firm lens explains shared evidence.
+  assert.equal(await page.locator('.rg-node[data-via="true"]').count(), 1, 'only the shared person is marked as shared');
+  assert.doesNotMatch(await page.locator('.rg-topic-explanation').innerText(), /shared with you/i, 'only Firm explains shared evidence');
   await page.getByRole('button', {name:'Why Agent memory is hot now', exact:true}).click();
   const why = page.getByLabel('Why this is hot now', {exact:true});
   assert.match(await why.innerText(), /PRIVATE EVIDENCE/);
@@ -492,6 +512,9 @@ try {
   await page.getByRole('button', {name:'Why Health systems is hot now',exact:true}).click();
   assert.match(await why.innerText(), /FIRM EVIDENCE/);
   assert.doesNotMatch(await why.innerText(), /PRIVATE EVIDENCE|PUBLIC EVIDENCE/);
+  // The Firm lens is where a sharer's evidence appears, and says so.
+  assert.match(await page.locator('.rg-topic-explanation').innerText(), /shared with you/i);
+  assert.match(await page.locator('.rg-topic-explanation').innerText(), /via/i);
   await lens.selectOption('off');
   assert.equal(await page.locator('.rg-theme-field,.rg-why-panel,.rg-discoveries,[data-hot],[data-heat-level],[data-connector]').count(), 0);
   assert.deepEqual(await positions(), initialPositions, 'heat and lens selection never move nodes');
@@ -553,6 +576,23 @@ try {
   await page.locator('.rg-discovery').click();
   assert.equal(await page.locator('.rg-node[data-active="true"]').getAttribute('data-node-id'), 'cia');
   assert.match(await page.getByLabel('Exploration history').innerText(), /Cia Ford/);
+
+  // Cia was shared by owner@example.test: her node carries a "via <owner>" line under the name,
+  // a dashed ring, and the person panel says who shared her and where their evidence appears.
+  // This runs at 320 px with the selection made from the discovery list.
+  const sharedNode = page.locator('.rg-node[data-node-id="cia"]');
+  assert.equal(await sharedNode.getAttribute('data-via'), 'true');
+  assert.equal(await page.locator('.rg-node[data-via="true"]').count(), 1);
+  assert.equal(await sharedNode.locator('.rg-node-via').evaluate(node => node.textContent), 'via owner@example.test');
+  assert.equal(await sharedNode.locator('.rg-portrait').evaluate(node => getComputedStyle(node, '::before').borderTopStyle), 'dashed',
+    'a shared person is drawn with a dashed ring');
+  assert.equal(await page.locator('.rg-node[data-node-id="ada"] .rg-portrait').evaluate(node => getComputedStyle(node, '::before').content), 'none',
+    'a person the viewer knows themselves gets no shared ring');
+  const sharedPanel = page.getByLabel('Selected item and connections');
+  assert.match(await sharedPanel.innerText(), /Shared with you by owner@example\.test/);
+  assert.match(await sharedPanel.innerText(), /Firm lens/);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+
   assert.deepEqual(errors, []);
   console.log('PASS: relationship host authentication, owner graph, source selection, expiry, empty graph, sign-out, balanced heat, exact lenses, corrections, stale callbacks, preserved graph state and mobile/reduced-motion.');
 } finally {

@@ -3,6 +3,8 @@ const MAX_EDGES = 100_000;
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 const MAX_THEMES = 200;
 const MAX_SIGNALS = 5_000;
+const MAX_VIA_OWNERS = 20;
+const MAX_VIA_LENGTH = 320;
 const NODE_TYPES = new Set(['person', 'company', 'story', 'community']);
 const THEME_STATUSES = new Set(['active', 'muted', 'merged']);
 const SIGNAL_VISIBILITIES = new Set(['private', 'firm', 'public']);
@@ -42,6 +44,7 @@ const TYPE_LABELS = new Map([
   ['co_recipient', 'co-recipient'],
   ['shared_email', 'shared email'],
   ['shared_meeting', 'shared meeting'],
+  ['shared_via', 'shared via'],
   ['wiki_link', 'wiki link'],
   ['text_mention', 'text mention'],
   ['interpretation', 'interpretation'],
@@ -139,6 +142,20 @@ function photoUrl(value) {
   return googlePhoto ? parsed.href : null;
 }
 
+/**
+ * The owners who shared this person with the viewer (`via` in the server's graph payload).
+ * These are addresses the viewer is already allowed to see, but they are still producer input:
+ * bound the count and the length so a bad slice cannot fill the canvas with one label.
+ */
+function sharedOwners(raw, index) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new Error(`Node ${index} via must be an array`);
+  if (raw.length > MAX_VIA_OWNERS) throw new Error(`Node ${index} via must hold at most ${MAX_VIA_OWNERS} owners`);
+  return raw.map((value, ownerIndex) => (
+    boundedString(value, `Node ${index} via owner ${ownerIndex}`, MAX_VIA_LENGTH)
+  ));
+}
+
 function normalizeNode(raw, index) {
   requireRecord(raw, `Node ${index}`);
   const type = raw.type === undefined || raw.type === null ? 'person' : raw.type;
@@ -158,6 +175,7 @@ function normalizeNode(raw, index) {
     momentum: optionalScore(raw.momentum, `Node ${index} momentum`),
     scoreModel: optionalString(raw.scoreModel),
     lastContact: optionalString(raw.lastContact),
+    via: sharedOwners(raw.via, index),
     visibility: optionalString(raw.visibility),
     permission: optionalString(raw.permission),
     permissionConflict: raw.permissionConflict === true,
