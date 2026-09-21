@@ -1,0 +1,126 @@
+# Proof movie for the People graph: Granola sync + Jev judgments.
+# Recorded against the LOCAL dev instance (wrangler dev on :8787) holding a real
+# Granola sync of the owner's meetings. Nothing is mocked; beats that cannot be
+# shown locally (Gmail OAuth) are left out on purpose.
+#
+# Build: demo/build.sh  (narrate -> record -> assemble -> subtitles -> check)
+# Each frames scene is recorded by demo/record.mjs at `rate` fps.
+
+width: 1400
+height: 900
+origin: http://localhost:8787
+email: kaya@betaworks.com
+
+scenes:
+  - id: 00-title
+    kind: card
+    title: Your network, with evidence
+    subtitle: Granola meetings + Gmail, judged by Jev. Real local instance, real data.
+    narration: >
+      This is the People graph, running on a local copy with a real sync of
+      Kaya's Granola meetings. Every judgment you will see comes from TypeSafe's
+      Jev model, and every quote is copied verbatim from the notes.
+
+  - id: 01-graph
+    kind: frames
+    src: frames/01-graph
+    rate: 4
+    narration: >
+      The graph merges email contacts and meeting attendees into one network.
+      Theme chips across the top come from Granola folders and topics, and the
+      glow on a person means there is fresh, evidence-backed relevance.
+    actions:
+      - goto: /
+      - wait_for: "#network-query"
+      - wait_for: ".rg-node"
+      - pause: 4
+
+  - id: 02-ask
+    kind: frames
+    src: frames/02-ask
+    rate: 4
+    narration: >
+      Ask your network in plain language. Code shortlists candidates, then Jev
+      scores each person against the question using only their evidence, and
+      the results come back ranked with the lines that justify each match.
+    actions:
+      - click: "#network-query"
+      - type: "who should I follow up with about AI agents"
+      - press: Enter
+      - wait_for: "#network-search-results button"
+      - pause: 5
+
+  - id: 03-person
+    kind: frames
+    src: frames/03-person
+    rate: 4
+    narration: >
+      Choosing a result selects the person. The panel shows their why-now
+      themes; opening one reveals the statements Jev selected, each with the
+      meeting title, the date, and a link back to the note in Granola.
+    actions:
+      - click: "#network-search-results button"
+      - wait_for: ".rg-context-panel"
+      - pause: 2
+      - click: ".rg-context-panel button.rg-theme-action:has-text('why now')"
+      - wait_for: ".rg-why-panel .rg-evidence-item"
+      - pause: 3
+      - click: ".rg-why-panel .rg-evidence-item details summary"
+      - pause: 3
+
+  - id: 04-draft
+    kind: frames
+    src: frames/04-draft
+    rate: 4
+    narration: >
+      Draft a note writes a short outreach draft from that evidence. Jev then
+      checks it for claims the notes do not support and for anything a draft
+      should never ask for. Nothing is sent; the owner copies or opens it in
+      their own mail client.
+    actions:
+      - click: ".rg-why-panel button.rg-close"
+      - wait_for: ".rg-context-panel"
+      - click: ".rg-context-panel button:has-text('Draft a note')"
+      - wait_for: "textarea[aria-label='Draft body']"
+      - pause: 6
+
+  - id: 05-accounts
+    kind: frames
+    src: frames/05-accounts
+    rate: 4
+    narration: >
+      On the Accounts page the Granola card shows the sync, the analysed
+      counts, and every folder with a checkbox. Possible matches are attendees
+      Jev believes are the same person as an email contact; the owner confirms
+      or dismisses each one.
+    actions:
+      - goto: /accounts?tab=granola
+      - wait_for: ".granola-card"
+      - pause: 4
+      - scroll_into_view: ".granola-folders"
+      - pause: 3
+
+  - id: 06-spatial
+    kind: frames
+    src: frames/06-spatial
+    rate: 4
+    narration: >
+      The same ranked search works in the spatial view. The question goes to
+      Jev, the ranked people lead the scene, and each card carries its reason.
+    actions:
+      - goto: /spatial.html
+      - wait_for: "#query"
+      - pause: 2
+      - click: "#query"
+      - type: "AI agents"
+      - press: Enter
+      - wait_for: "text=Ranked by Jev"
+      - pause: 5
+
+  - id: 99-end
+    kind: card
+    title: Built and verified
+    subtitle: Sync, extraction, heat, drafts, identity and search. Reviewed, tested, deployed.
+    narration: >
+      Everything shown ran for real on the local instance, with the same code
+      that is deployed. The pipeline that made this movie lives in the repo.
