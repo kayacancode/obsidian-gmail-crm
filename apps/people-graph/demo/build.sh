@@ -14,6 +14,9 @@ echo "== 1. narrate (measured durations)"
 echo "== 2. record frames against ${ORIGIN:-http://localhost:8787}"
 node "$HERE/record.mjs" "$HERE/scenes.yaml" --work "$WORK"
 
+echo "== 2b. render cards"
+node "$HERE/cards.mjs" "$HERE/scenes.yaml" "$WORK"
+
 echo "== 3. assemble"
 # record.mjs wrote $WORK/scenes.yaml with measured frame rates; assemble resolves frame dirs relative to it.
 test -f "$WORK/scenes.yaml" || cp "$HERE/scenes.yaml" "$WORK/scenes.yaml"

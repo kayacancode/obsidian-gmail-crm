@@ -4,7 +4,9 @@
 # shown locally (Gmail OAuth) are left out on purpose.
 #
 # Build: demo/build.sh  (narrate -> record -> assemble -> subtitles -> check)
-# Each frames scene is recorded by demo/record.mjs at `rate` fps.
+# Each frames scene is recorded by demo/record.mjs at `rate` fps; card scenes are
+# rendered to PNG by demo/cards.mjs (kind: image) because bare headless Chrome could
+# not load the assembler's temp HTML here.
 
 width: 1400
 height: 900
@@ -13,7 +15,8 @@ email: kaya@betaworks.com
 
 scenes:
   - id: 00-title
-    kind: card
+    kind: image
+    src: cards/00-title.png
     title: Your network, with evidence
     subtitle: Granola meetings + Gmail, judged by Jev. Real local instance, real data.
     narration: >
@@ -78,8 +81,16 @@ scenes:
       should never ask for. Nothing is sent; the owner copies or opens it in
       their own mail client.
     actions:
-      - click: ".rg-why-panel button.rg-close"
+      - goto: /
+      - wait_for: "#network-query"
+      - wait_for: ".rg-node"
+      - click: "#network-query"
+      - type: "AI agents"
+      - press: Enter
+      - wait_for: "#network-search-results button"
+      - click: "#network-search-results button"
       - wait_for: ".rg-context-panel"
+      - pause: 1
       - click: ".rg-context-panel button:has-text('Draft a note')"
       - wait_for: "textarea[aria-label='Draft body']"
       - pause: 6
@@ -118,7 +129,8 @@ scenes:
       - pause: 5
 
   - id: 99-end
-    kind: card
+    kind: image
+    src: cards/99-end.png
     title: Built and verified
     subtitle: Sync, extraction, heat, drafts, identity and search. Reviewed, tested, deployed.
     narration: >
