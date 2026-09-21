@@ -637,7 +637,7 @@ export class MailSync extends DurableObject<MailEnv>{
    if(id){const node=nodeById.get(id)!;node.via=person.via;if(person.last&&(!node.lastContact||person.last>Date.parse(node.lastContact)))node.lastContact=new Date(person.last).toISOString();continue;}
    if(nodes.length>=MAX_GRAPH_NODES)continue;
    const days=person.last?(Date.now()-person.last)/86400000:3650;
-   const node:GraphPersonNode={id:await opaque(owner,person.email,this.env.TOKEN_SECRET),photoUrl:null,name:person.name.includes('@')?person.email.split('@')[0]:person.name,company:person.email.split('@')[1],companySource:'email_domain',lastContact:person.last?new Date(person.last).toISOString():null,meetings:person.meetings,lastMeeting:null,via:person.via,...emailScore(person.meetings,person.meetings,days)};
+   const node:GraphPersonNode={id:await opaque(owner,person.email,this.env.TOKEN_SECRET),photoUrl:null,name:sharedDisplayName(person.name,person.email),company:person.email.split('@')[1],companySource:'email_domain',lastContact:person.last?new Date(person.last).toISOString():null,meetings:person.meetings,lastMeeting:null,via:person.via,...emailScore(person.meetings,person.meetings,days)};
    nodes.push(node);idMap.set(person.email,node.id);nodeById.set(node.id,node);
   }
   const merged=this.mergedEdges();

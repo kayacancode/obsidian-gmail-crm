@@ -171,16 +171,20 @@ async function hideShare(env:ShareEnv,viewer:string,body:Record<string,unknown>)
  * is gone, so every failure is swallowed and nothing about it is logged.
  */
 export function refreshShares(env:ShareEnv,viewer:string,force=false):Promise<void>{
- // Two graph loads, or a graph load beside an un-hide, must not run two refreshes at the same
- // viewer's object: the second joins the first rather than re-exporting every owner.
+ // Two graph loads must not run two refreshes at the same viewer's object: the second joins the
+ // first rather than re-exporting every owner. A forced refresh (an un-hide) joins only while the
+ // running pass has not yet read the share rows, since that read will then see the un-hide; once
+ // the rows are read the pass is stale for it, so it waits its turn and runs its own.
  const running=inflight.get(viewer);
- if(running)return running;
- const run=runRefresh(env,viewer,force).finally(()=>{inflight.delete(viewer);});
- inflight.set(viewer,run);
- return run;
+ if(running&&(!force||!running.readRows))return running.run;
+ const entry:Inflight={run:Promise.resolve(),readRows:false};
+ entry.run=(running?.run??Promise.resolve()).then(()=>runRefresh(env,viewer,force,entry)).finally(()=>{if(inflight.get(viewer)===entry)inflight.delete(viewer);});
+ inflight.set(viewer,entry);
+ return entry.run;
 }
-const inflight=new Map<string,Promise<void>>();
-async function runRefresh(env:ShareEnv,viewer:string,force:boolean):Promise<void>{
+interface Inflight{run:Promise<void>;readRows:boolean}
+const inflight=new Map<string,Inflight>();
+async function runRefresh(env:ShareEnv,viewer:string,force:boolean,entry:Inflight):Promise<void>{
  try{
   const stub=env.MAIL.getByName(viewer);
   const meta=await stub.sharedMeta();
@@ -188,6 +192,7 @@ async function runRefresh(env:ShareEnv,viewer:string,force:boolean):Promise<void
   if(!force&&now-Math.max(Number(meta.refreshedAt)||0,attempted.get(viewer)??0)<REFRESH_INTERVAL_MS)return;
   markAttempt(viewer,now);
   await ensureShares(env.DB);
+  entry.readRows=true;
   const rows=await incomingRows(env.DB,viewer,false);
   const live=new Set(rows.map(row=>row.owner_email));
   // Anyone whose cached copy is here but who no longer shares — revoked, or hidden by the

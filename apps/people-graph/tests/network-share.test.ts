@@ -330,3 +330,16 @@ test('a search never sends another owner’s shared evidence to Jev',async()=>{
   assert.ok(!sent.includes('SHARED EDGE CONTEXT'),'nor a shared edge context');
  }finally{db.close();}
 });
+
+test('a shared person cached under a bare local-part name before the placeholder rule still renders safely',async()=>{
+ // Rows imported by an earlier build carry the local part as the name; the display door must
+ // not rely on the import door having been fixed first.
+ const {service,db,ids}=await viewerFixture();
+ try{
+  db.prepare('INSERT INTO shared_people (owner,email,name,last_contact,meetings) VALUES (?,?,?,?,?)').run('owner@share.test','stranger@vc.test','stranger',null,1);
+  const graph=(await service.graph())!;
+  const node=graph.nodes.find((n:any)=>n.id===ids['stranger@vc.test']) as any;
+  assert.equal(node.name,'Someone at vc.test');
+  assert.ok(!node.name.includes('stranger'),'the local part never reaches the browser');
+ }finally{db.close();}
+});

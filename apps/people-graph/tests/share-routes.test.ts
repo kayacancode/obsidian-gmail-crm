@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {makeSession,sessionCookie} from '../src/session';
-import {__setRefreshBudgetForTests} from '../src/share-routes';
+import {__setRefreshBudgetForTests,refreshShares} from '../src/share-routes';
 import worker from '../src/index';
 
 /**
@@ -342,4 +342,26 @@ test('the graph refresh stops at its time budget, its incoming cap, and a broken
  const survived=await signed('/api/graph',broken.env,{},'viewer-broken@example.test');
  assert.equal(survived.status,200,'a refresh failure never fails the graph');
  assert.deepEqual((await survived.json() as any).graph,null,'an empty mail graph still falls back to the pushed graph');
+});
+
+test('a forced refresh arriving mid-refresh runs its own pass instead of joining the stale one',async()=>{
+ // An ordinary graph load has already read the share rows when the viewer un-hides an owner.
+ // Joining that run would return without ever importing the un-hidden owner, and the attempt
+ // stamp would then hold the next chance off for ten minutes.
+ const viewer='viewer-unhide-race@example.test';
+ const {env,rows,calls}=fixture([
+  {owner_email:'bo@vc.test',viewer_email:viewer,scope:'{"kind":"all"}',level:'names',created_at:1,updated_at:30,hidden:1},
+  {owner_email:'cara@vc.test',viewer_email:viewer,scope:'{"kind":"all"}',level:'themes',created_at:1,updated_at:20,hidden:0},
+ ]);
+ env.MAIL.getByName=((inner:(name:string)=>any)=>(name:string)=>{
+  const object=inner(name);
+  return {...object,exportSlice:async(scope:any,level:string)=>{await new Promise(resolve=>setTimeout(resolve,20));return object.exportSlice(scope,level);}};
+ })(env.MAIL.getByName);
+ const ordinary=refreshShares(env,viewer,false);
+ await new Promise(resolve=>setTimeout(resolve,5));
+ rows.find((row:any)=>row.owner_email==='bo@vc.test').hidden=0;
+ const forced=refreshShares(env,viewer,true);
+ await Promise.all([ordinary,forced]);
+ assert.ok(calls.includes('export:bo@vc.test:names:{"kind":"all"}'),'the un-hidden owner is exported by the forced pass');
+ assert.equal(calls.filter(call=>call.startsWith('import:')).length,2,'the forced pass imports on its own after the ordinary one');
 });
