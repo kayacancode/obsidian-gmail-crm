@@ -14,6 +14,7 @@ import {boundedJSON as readBoundedJSON} from './bounded-json';
 import {GranolaSync,type GranolaRange,type GranolaStatus,type GranolaGmailContact,type GranolaIdentitySuggestion} from './granola-sync';
 import {composeDraft,checkDraft} from './draft-note';
 import {jevConfigured,JevError} from './jev';
+import {keywordRank,keywordScores,jevScores,topResults,MAX_QUERY_LENGTH,type SearchEvidence,type SearchResult} from './network-search';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string}
@@ -393,6 +394,40 @@ export class MailSync extends DurableObject<MailEnv>{
    }catch(e){if(!(e instanceof JevError))throw e;}
   }
   return {to,name:node.name,subject,body,checked,warnings,basedOn};
+ }
+ /**
+  * "Who can help with…" over the owner's own graph. One `graph()` read feeds a keyword pass in
+  * code; when Jev is configured it reranks the candidates from their own evidence. The query and
+  * the owner's own names, companies and signal summaries are the only things that leave: never an
+  * email address, an opaque id, a note body or anybody else's evidence. A Jev failure is silent —
+  * the owner still gets the keyword ranking, labelled `checked:false`.
+  */
+ async searchPeople(query:string){
+  if(typeof query!=='string')throw Error('invalid_request');
+  const text=query.trim();
+  if(!text||text.length>MAX_QUERY_LENGTH)throw Error('invalid_request');
+  const graph=await this.graph();
+  if(!graph)return {query:text,results:[] as SearchResult[],checked:false};
+  const evidence=new Map<string,SearchEvidence[]>();
+  for(const signal of graph.themeSignals){
+   const personId=signal.personId;if(!personId)continue;
+   const list=evidence.get(personId)??[];
+   list.push({summary:signal.summary,observedAt:signal.observedAt,...(signal.provenance?.title?{title:signal.provenance.title}:{})});
+   evidence.set(personId,list);
+  }
+  const contexts=new Map<string,string[]>();
+  for(const edge of graph.edges)for(const id of [edge.source,edge.target])if(id)contexts.set(id,[...(contexts.get(id)??[]),...edge.contexts]);
+  const themes=new Map<string,string[]>();
+  for(const theme of graph.relevance?.themes??[])for(const id of theme.nodeIds)themes.set(id,[...(themes.get(id)??[]),theme.name]);
+  const candidates=graph.nodes.map(node=>({personId:node.id,name:node.name,company:node.company??null,lastContact:node.lastContact??null,
+   evidence:evidence.get(node.id)??[],contexts:contexts.get(node.id)??[],themes:themes.get(node.id)??[]}));
+  const ranked=keywordRank(text,candidates);
+  let scores=keywordScores(ranked),checked=false;
+  if(ranked.length&&jevConfigured(this.env)){
+   try{scores=await jevScores(this.env,text,ranked);checked=true;}
+   catch(e){if(!(e instanceof JevError))throw e;scores=keywordScores(ranked);}
+  }
+  return {query:text,results:topResults(text,ranked,scores),checked};
  }
  async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();if(!accounts.length&&!this.granola().status().connected)return null;
   const rows=this.graphContacts();

@@ -74,3 +74,30 @@ test('draft route is session-gated, same-origin, body-checked and maps durable o
  }
  assert.equal((await signedRequest('/api/people/draft',env,{method:'GET'})).status,405);
 });
+
+test('network search route is session-gated, same-origin, body-checked and never returns emails',async()=>{
+ const {env}=workerFixture();const calls:string[]=[];
+ let result:any={query:'fintech',checked:true,results:[{personId:'ada',name:'Ada Rivera',company:'fintech.example',lastContact:'2026-09-10T00:00:00.000Z',
+  score:0.82,reasons:[{summary:'Raising a seed round',observedAt:'2026-09-01T11:00:00.000Z',title:'Pilot sync'}]}]};
+ env.MAIL.getByName=(owner:string)=>({bindOwner:async()=>{calls.push('bind:'+owner);},searchPeople:async(query:string)=>{calls.push('search:'+query);if(result instanceof Error)throw result;return result;}});
+ const post=(body:string,origin='https://people.test')=>({method:'POST',headers:{origin,'content-type':'application/json'},body});
+ assert.equal((await worker.fetch(new Request('https://people.test/api/people/search',post('{"query":"fintech"}')),env)).status,401);
+ assert.deepEqual(calls,[]);
+ assert.equal((await signedRequest('/api/people/search',env,post('{"query":"fintech"}','https://evil.test'))).status,403);
+ for(const body of ['{}','not json','{"query":""}','{"query":"   "}','{"query":42}',JSON.stringify({query:'x'.repeat(201)}),'{"query":"'+'y'.repeat(2100)+'"}']){
+  const bad=await signedRequest('/api/people/search',env,post(body));
+  assert.equal(bad.status,400,body.slice(0,40));assert.equal((await bad.json() as any).error,'invalid_request');
+ }
+ assert.deepEqual(calls,[]);
+ const ok=await signedRequest('/api/people/search',env,post('{"query":"fintech"}'));
+ assert.equal(ok.status,200);assert.equal(ok.headers.get('cache-control'),'no-store');
+ assert.deepEqual(await ok.json(),result);
+ assert.ok(!JSON.stringify(result).includes('@'),'the route never hands back an email address');
+ assert.deepEqual(calls,['bind:owner@example.test','search:fintech']);
+ result=Error('invalid_request');
+ assert.equal((await signedRequest('/api/people/search',env,post('{"query":"fintech"}'))).status,400);
+ result=Error('boom');
+ const failed=await signedRequest('/api/people/search',env,post('{"query":"fintech"}'));
+ assert.equal(failed.status,500);assert.equal((await failed.json() as any).error,'server_error');
+ assert.equal((await signedRequest('/api/people/search',env,{method:'GET'})).status,405);
+});

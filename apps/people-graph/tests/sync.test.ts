@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {MailSync} from '../src/mail-sync';
 import {FakeAI} from './worker-stub';
 import {opaque} from '../src/mail-model';
-import {jevServer,noulA} from './granola-jev-extractor.test';
+import {jevServer,noulA,scoreA} from './granola-jev-extractor.test';
 
 const JEV_KEY='ts_fictional_key_123456';
 const THEME_MODEL='@cf/meta/llama-3.3-70b-instruct-fp8-fast';
@@ -619,5 +619,97 @@ test('dismissing a Granola identity keeps both nodes and clears the suggestion',
   const attendeeId=await opaque('owner','ada@granola.test','identity-key');
   assert.ok(graph.nodes.some((n:any)=>n.id===attendeeId),'the attendee keeps its own node');
   assert.equal((db.prepare('SELECT status FROM granola_identity WHERE attendee_email=?').get('ada@granola.test') as any).status,'dismissed');
+ }finally{db.close();}
+});
+
+/** Three contacts with their own signals, ready for searchPeople with or without Jev. */
+async function searchFixture(){
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+ const insert=db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)');
+ insert.run('me@example.com','m1','ada@fintech.example','Ada Rivera',Date.parse('2026-09-10T00:00:00Z'),'Pilot',1,1);
+ insert.run('me@example.com','m2','bo@design.example','Bo Chen',Date.parse('2026-09-09T00:00:00Z'),'Pilot',1,1);
+ insert.run('me@example.com','m3','cia@other.example','Cia Ford',Date.parse('2026-09-08T00:00:00Z'),'Pilot',1,1);
+ granolaNoteRow(db,'not_1234567890abcd');
+ const [ada,bo,cia]=await Promise.all(['ada@fintech.example','bo@design.example','cia@other.example'].map(email=>opaque('owner',email,'identity-key')));
+ const now=new Date().toISOString();
+ const signal=(id:string,personId:string,day:number,summary:string)=>({id,owner:'owner',account:'granola',personId,themeId:'theme-x',sourceType:'granola' as const,
+  visibility:'private' as const,observedAt:`2026-09-${String(day).padStart(2,'0')}T11:00:00.000Z`,ingestedAt:now,confidence:.8,summary,
+  evidenceRef:`granola-note:not_1234567890abcd#summary@${id}`,contentHash:id,extractorVersion:'granola-v2'});
+ await (service as any).store().ingest([
+  signal('sig-ada-1',ada,1,'Raising a seed round for a fintech product'),
+  signal('sig-ada-2',ada,2,'Wants warmer introductions to angels'),
+  signal('sig-bo',bo,3,'Redesigned the onboarding flow'),
+  signal('sig-cia',cia,4,'Knows a fundraising advisor'),
+ ]);
+ return {service,db,kv,ada,bo,cia};
+}
+
+test('searchPeople ranks the owner’s own graph by keywords when Jev is not configured',async()=>{
+ const {service,db,ada,bo,cia}=await searchFixture();
+ try{
+  const value=await service.searchPeople('  fintech fundraising  ');
+  assert.equal(value.query,'fintech fundraising');
+  assert.equal(value.checked,false,'no TYPESAFE_API_KEY means keyword ranking only');
+  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia,bo]);
+  assert.equal(value.results[0].name,'Ada Rivera');
+  assert.equal(value.results[0].company,'fintech.example');
+  assert.equal(value.results[0].lastContact,'2026-09-10T00:00:00.000Z');
+  assert.equal(value.results[0].score,1);
+  assert.deepEqual(value.results[0].reasons.map(r=>r.summary),['Raising a seed round for a fintech product']);
+  assert.equal(value.results[0].reasons[0].title,'Pilot sync','a reason carries the meeting it came from');
+  assert.deepEqual(value.results[2].reasons.map(r=>r.summary),['Redesigned the onboarding flow'],'no shared term falls back to the newest evidence');
+  assert.ok(!JSON.stringify(value).includes('@'),'the search result never carries an email address');
+  await assert.rejects(service.searchPeople(''),/invalid_request/);
+  await assert.rejects(service.searchPeople('   '),/invalid_request/);
+  await assert.rejects(service.searchPeople('x'.repeat(201)),/invalid_request/);
+  await assert.rejects(service.searchPeople(42 as unknown as string),/invalid_request/);
+ }finally{db.close();}
+});
+
+test('searchPeople reranks with Jev over names, companies and evidence only',async()=>{
+ const {service,db,ada,bo}=await searchFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ try{
+  const jev=jevServer((id,_question,state)=>{
+   const person=state.people[Number(id.slice(1))];
+   const best=person.name==='Bo Chen';
+   return id.startsWith('r')?scoreA(best?3:1):noulA(best?1:0.2);
+  });
+  const value=await withFetch(jev.fake,()=>service.searchPeople('fintech fundraising'));
+  assert.equal(value.checked,true);
+  assert.equal(value.results[0].personId,bo,'Jev’s judgment outranks the keyword pass');
+  assert.equal(value.results[0].score,1);
+  assert.ok(value.results.some(r=>r.personId===ada));
+  assert.equal(jev.requests.length,1);
+  const sent=JSON.stringify(jev.requests[0]);
+  assert.equal(jev.requests[0].state.query,'fintech fundraising');
+  assert.ok(!sent.includes('@'),'no email address ever reaches Jev');
+  assert.ok(!sent.includes('SECRET'));
+  assert.ok(sent.includes('Raising a seed round for a fintech product'),'each person’s own evidence goes with them');
+ }finally{db.close();}
+});
+
+test('searchPeople falls back to the keyword ranking when Jev fails, with no user-facing error',async()=>{
+ const {service,db,ada,bo,cia}=await searchFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ try{
+  const unauthorized=(async()=>new Response('{"error":"no"}',{status:401})) as typeof fetch;
+  const value=await withFetch(unauthorized,()=>service.searchPeople('fintech fundraising'));
+  assert.equal(value.checked,false);
+  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia,bo]);
+ }finally{db.close();}
+});
+
+test('searchPeople returns at most ten people and never another owner’s graph',async()=>{
+ const {service,db}=await searchFixture();
+ try{
+  const insert=db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)');
+  for(let i=0;i<14;i++)insert.run('me@example.com',`extra-${i}`,`fintech${i}@fintech.example`,`Fintech Person ${i}`,Date.parse('2026-09-11T00:00:00Z')+i,'Pilot',1,1);
+  const value=await service.searchPeople('fintech');
+  assert.equal(value.results.length,10);
+  assert.equal(new Set(value.results.map(r=>r.personId)).size,10);
+  const otherOwner=await opaque('other-owner','ada@fintech.example','identity-key');
+  assert.ok(!value.results.some(r=>r.personId===otherOwner));
  }finally{db.close();}
 });

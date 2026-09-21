@@ -56,3 +56,23 @@ export async function draftRoute(request:Request,env:MailEnv,owner:string){
   throw error;
  }
 }
+/**
+ * POST /api/people/search — "who in my network can help with…". The body is one bounded query;
+ * the response is the owner's own people with a score and the evidence behind it, and never an
+ * email address. `checked` says whether Jev ranked the results or the keyword pass stood alone;
+ * a Jev failure is not an error here, it is an unchecked ranking (see MailSync.searchPeople).
+ */
+export async function searchRoute(request:Request,env:MailEnv,owner:string){
+ const url=new URL(request.url);
+ if(request.method!=='POST')return json({error:'method_not_allowed'},405);
+ if(request.headers.get('origin')!==url.origin)return json({error:'invalid_origin'},403);
+ const raw=await request.text();if(raw.length>2000)return json({error:'invalid_request'},400);
+ let query:unknown;try{query=(JSON.parse(raw) as {query?:unknown}|null)?.query;}catch{return json({error:'invalid_request'},400);}
+ if(typeof query!=='string'||!query.trim()||query.trim().length>200)return json({error:'invalid_request'},400);
+ const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+ try{return json(await stub.searchPeople(query.trim()));}
+ catch(error){
+  if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);
+  throw error;
+ }
+}

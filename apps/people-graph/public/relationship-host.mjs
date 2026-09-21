@@ -141,6 +141,11 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     const ctx = context();
     return request('/api/people/draft', {body:{personId}}, ctx);
   }
+  /** "Who can help with…" over the owner's own graph; the server decides the ranking. */
+  async function searchNetwork(query) {
+    const ctx = context();
+    return request('/api/people/search', {body:{query}}, ctx);
+  }
   async function previewPublicSource(input) {
     const ctx = context();
     const value = await request(withSource('/api/public-sources/preview'), {body:clean({url:input.url,personId:input.personId})}, ctx);
@@ -335,7 +340,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signIn,
     signOut,
     requestPushToken,
-    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote,
+    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
     pollRetrieval: id => pollJob(id, 'retrieval'),
@@ -363,6 +368,12 @@ async function startBrowserApp() {
   let renderedEnvelope = null;
   let activeDialog = null;
   const sessionTrails = new Map();
+  const networkSearch = $('#network-search');
+  const networkQuery = $('#network-query');
+  const networkStatus = $('#network-search-status');
+  const networkResults = $('#network-search-results');
+  const networkLabel = $('#network-search-label');
+  let networkRun = 0;
   const meetingPreviewButton = document.createElement('button');
   meetingPreviewButton.id = 'meeting-preview';meetingPreviewButton.type = 'button';meetingPreviewButton.textContent = 'Meeting preview';meetingPreviewButton.hidden = true;
   $('#refresh').after(meetingPreviewButton);
@@ -532,6 +543,70 @@ async function startBrowserApp() {
     subject.focus();
   }
 
+  /**
+   * Search my network. The field sits above the graph; the server ranks the owner's own people
+   * (with Jev when it is configured) and every line here is set with textContent. Choosing a
+   * result hands the person to the graph's own node selection and closes the list.
+   */
+  function clearNetworkSearch({ input = true } = {}) {
+    networkRun += 1;
+    if (input) networkQuery.value = '';
+    networkStatus.textContent = '';
+    networkLabel.textContent = '';
+    networkResults.replaceChildren();
+    networkResults.hidden = true;
+  }
+  function networkResultButton(person) {
+    const choose = document.createElement('button'); choose.type = 'button';
+    const name = document.createElement('strong'); name.textContent = person.name || 'Unnamed person';
+    const meta = document.createElement('small');
+    meta.textContent = [person.company, `${Math.round(Math.max(0, Math.min(1, Number(person.score) || 0)) * 100)}% match`,
+      person.lastContact ? `Last contact ${String(person.lastContact).slice(0,10)}` : null].filter(Boolean).join(' \u00b7 ');
+    choose.append(name, meta);
+    for (const reason of person.reasons ?? []) {
+      const line = document.createElement('small');
+      line.textContent = [reason.summary, reason.title, String(reason.observedAt ?? '').slice(0,10)].filter(Boolean).join(' \u00b7 ');
+      choose.append(line);
+    }
+    choose.onclick = () => {
+      // Reuse the graph's own selection path, so the trail, camera and panel behave exactly as
+      // they do for a click on the canvas. A person who is not on this view is never selected.
+      if (!graphInstance || !mountedGraph?.nodes.some(node => node.id === person.personId)) {
+        networkStatus.textContent = `${person.name || 'That person'} is not on this view of the graph.`;
+        return;
+      }
+      graphInstance.select(person.personId);
+      clearNetworkSearch();
+    };
+    return choose;
+  }
+  async function runNetworkSearch() {
+    const query = networkQuery.value.trim();
+    if (!query) { clearNetworkSearch({ input: false }); return; }
+    const run = ++networkRun;
+    networkResults.replaceChildren(); networkResults.hidden = true; networkLabel.textContent = '';
+    networkStatus.textContent = 'Searching\u2026';
+    let value;
+    try { value = await controller.searchNetwork(query); }
+    catch (error) {
+      if (run !== networkRun) return;
+      // request() throws generic "Context request failed (503)." copy; prefer the server's own
+      // message when it sent one, exactly as the draft dialog does.
+      networkStatus.textContent = error.name === 'AbortError' ? ''
+        : error.status ? (error.serverMessage || 'Could not search your network right now. Try again in a moment.') : error.message;
+      return;
+    }
+    if (run !== networkRun) return;
+    const results = Array.isArray(value.results) ? value.results : [];
+    networkStatus.textContent = results.length
+      ? `${results.length} ${results.length === 1 ? 'person' : 'people'} in your network`
+      : 'No one in your network matches yet.';
+    networkLabel.textContent = value.checked ? 'Ranked by Jev' : 'Keyword match only';
+    if (!results.length) return;
+    for (const person of results) { const item = document.createElement('li'); item.append(networkResultButton(person)); networkResults.append(item); }
+    networkResults.hidden = false;
+  }
+
   function setAuthenticatedControls(visible) {
     for (const id of ['source-wrap', 'refresh', 'setup', 'signout', 'meeting-preview']) $(`#${id}`).hidden = !visible;
     signin.hidden = visible;
@@ -617,6 +692,7 @@ async function startBrowserApp() {
       graphInstance = null;
       $('#graph').replaceChildren();
       mountedAccount = state.account;
+      clearNetworkSearch();
     }
     if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, title: 'People relationships', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
       onLensChange: lens => controller.loadRelevance(lens), onThemeFeedback: input => controller.submitFeedback(input),
@@ -630,7 +706,7 @@ async function startBrowserApp() {
   }
 
   function render(state) {
-    if(state.phase!=='ready'){closeDialog();renderedEnvelope=null;}
+    if(state.phase!=='ready'){closeDialog();clearNetworkSearch();renderedEnvelope=null;}
     source.value = state.source;
     if (state.phase === 'ready') {
       accountLabel.textContent = state.account;
@@ -687,6 +763,9 @@ async function startBrowserApp() {
     history.replaceState(null, '', url);
     void controller.load(chosen);
   };
+  networkSearch.addEventListener('submit', event => { event.preventDefault(); void runNetworkSearch(); });
+  networkSearch.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); clearNetworkSearch(); networkQuery.focus(); } });
+  $('#network-clear').onclick = () => { clearNetworkSearch(); networkQuery.focus(); };
   $('#refresh').onclick = () => void controller.load(source.value);
   $('#signout').onclick = async () => { window.google?.accounts?.id?.disableAutoSelect?.(); signInSetup = null; signin.replaceChildren(); await controller.signOut(); };
   $('#setup').onclick = async () => {

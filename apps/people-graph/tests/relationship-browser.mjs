@@ -330,6 +330,57 @@ try {
   assert.equal(await draftDialog.getByRole('link',{name:'Open in email ↗'}).count(),0,'a mailto-unsafe address renders no mail client link');
   await page.keyboard.press('Escape');
 
+  // Search my network: the field sits above the graph, results are ranked and explained, and
+  // choosing one selects that person through the graph's own node selection.
+  let searchDelay=0;
+  let searchResponse={status:200,json:{query:'fintech fundraising',checked:true,results:[
+    {personId:'bo',name:'Bo Chen',company:'design.example',lastContact:'2026-09-09T00:00:00.000Z',score:0.824,
+      reasons:[{summary:'Raising a seed round for a fintech product',observedAt:'2026-09-01T11:00:00Z',title:'Pilot sync'}]},
+    {personId:'ada',name:'Ada Rivera',company:'fintech.example',lastContact:'2026-09-10T00:00:00.000Z',score:0.41,reasons:[]}]}};
+  await page.route('**/api/people/search',async route=>{
+    workflowCalls.push({search:route.request().postDataJSON()});
+    if(searchDelay)await new Promise(resolve=>setTimeout(resolve,searchDelay));
+    return route.fulfill(searchResponse);
+  });
+  const networkQuery=page.getByLabel('Ask your network');
+  assert.equal(await networkQuery.getAttribute('placeholder'),'Ask your network: who can help with\u2026');
+  searchDelay=400;
+  await networkQuery.fill('fintech fundraising');
+  await networkQuery.press('Enter');
+  await page.locator('#network-search').getByText('Searching\u2026').waitFor();
+  searchDelay=0;
+  const searchResults=page.getByRole('list',{name:'Network search results'});
+  await searchResults.getByRole('button',{name:/Bo Chen/}).waitFor();
+  assert.deepEqual(workflowCalls.at(-1),{search:{query:'fintech fundraising'}});
+  assert.match(await searchResults.innerText(),/82%/);
+  assert.match(await searchResults.innerText(),/design\.example/);
+  assert.match(await searchResults.innerText(),/Raising a seed round for a fintech product/);
+  assert.match(await searchResults.innerText(),/Pilot sync/);
+  // The label is a micro-label like the other status chrome: the copy is exact, the CSS uppercases it.
+  assert.match(await page.locator('#network-search').innerText(),/Ranked by Jev/i);
+  await searchResults.getByRole('button',{name:/Bo Chen/}).click();
+  assert.equal(await page.locator('.rg-node[data-active="true"]').getAttribute('data-node-id'),'bo');
+  assert.equal(await searchResults.count(),0,'choosing a person closes the list');
+  assert.equal(await networkQuery.inputValue(),'');
+  // An empty result is a plain sentence, and an unchecked ranking says so.
+  searchResponse={status:200,json:{query:'underwater basket weaving',checked:false,results:[]}};
+  await networkQuery.fill('underwater basket weaving');
+  await networkQuery.press('Enter');
+  await page.locator('#network-search').getByText('No one in your network matches yet.').waitFor();
+  assert.match(await page.locator('#network-search').innerText(),/Keyword match only/i);
+  await networkQuery.press('Escape');
+  assert.ok(!(await page.locator('#network-search').innerText()).includes('No one in your network matches yet.'),'Escape dismisses the results');
+  assert.equal(await networkQuery.inputValue(),'');
+  // A failed search reads as copy the owner can act on, never a raw status code.
+  searchResponse={status:503,json:{error:'mail_not_configured',message:'Email connections are not enabled on this server yet.'}};
+  await networkQuery.fill('fintech');
+  await networkQuery.press('Enter');
+  await page.locator('#network-search').getByText('Email connections are not enabled on this server yet.').waitFor();
+  assert.equal(await searchResults.count(),0);
+  await page.getByRole('button',{name:'Clear search',exact:true}).click();
+  assert.equal(await networkQuery.inputValue(),'');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+
   // Mount the real renderer with controllable host boundaries. Removing lens filtering,
   // state preservation, or request-generation guards must fail these assertions.
   await page.evaluate(async () => {
