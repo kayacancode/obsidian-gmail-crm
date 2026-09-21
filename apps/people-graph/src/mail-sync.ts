@@ -23,11 +23,11 @@ type Range='recent'|'all';
 interface Job {photoSource?:'saved'|'other';photoPage?:string;photosDone?:boolean;generation:string;range:Range;query:string;pageToken?:string;pending:string[];hasMore:boolean;processed:number;started:number;retries:number;lastRun:number;nextAttempt:number}
 interface Account {revision?:string;otherPhotosEnabled?:boolean;photosEnabled?:boolean;photoStatus?:string;email:string;grant:string;status:string;job:Job|null;lastSync:number;nextSync:number;error:string;range:Range}
 interface Pending {verifier:string;cookie:string;expires:number;range:Range;owner:string;redirect:string}
-interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[]}
+interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[];titles:string[]}
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
-interface GraphPersonNode {id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string;meetings:number;lastMeeting:string|null;strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
+interface GraphPersonNode {id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
- constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.store();this.granola();}
+ constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.store();this.granola();}
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
@@ -467,21 +467,35 @@ export class MailSync extends DurableObject<MailEnv>{
   const emails=new Set(people.map(person=>person.email));
   const edges=[...this.mergedEdges().values()].filter(edge=>emails.has(edge.a)&&emails.has(edge.b))
    .sort((x,y)=>y.weight-x.weight).slice(0,SHARE_CAPS.edges)
-   .map(edge=>({a:edge.a,b:edge.b,weight:edge.weight,types:edge.types,contexts:edge.contexts.slice(0,3)}));
+   // A Gmail subject line is raw mailbox content and is never shared at any level. A Granola
+   // meeting title is content too, so it rides along only once the level is `themes` or above;
+   // at `names` an edge says that two people are connected and how strongly, nothing more.
+   .map(edge=>({a:edge.a,b:edge.b,weight:edge.weight,types:edge.types,contexts:shareLevel==='names'?[]:edge.titles.slice(0,3)}));
   const slice:SharedSlice={owner,exportedAt:Date.now(),people,edges,themes:[],signals:[]};
   if(shareLevel==='names')return slice;
   const byPerson=new Map<string,string>();
   for(const person of people)byPerson.set(await opaque(owner,person.email,this.env.TOKEN_SECRET),person.email);
   const source=await this.store().shareSource();
   const names=new Map(source.themes.map(theme=>[theme.id,theme.name]));
-  const visible=source.signals.filter(signal=>
-   (!signal.personId||byPerson.has(signal.personId))&&names.has(signal.themeId)&&shareableSourceType(signal.sourceType)
-   // `themes` carries topic and metadata evidence; a verbatim quote needs `statements`.
-   &&(shareLevel==='statements'||!carriesQuote(signal)));
+  const visible=source.signals.filter(signal=>{
+   // Evidence another owner shared with this one is theirs; it is never re-shared onward.
+   // `shareSource()` already drops it by account — this is the second net, on the ref shape.
+   if(signal.evidenceRef.startsWith(SHARE_ACCOUNT)||!shareableSourceType(signal.sourceType))return false;
+   if(!names.has(signal.themeId))return false;
+   if(signal.personId&&!byPerson.has(signal.personId))return false;
+   // `themes` carries theme-level evidence only — topic and metadata signals, plus calendar.
+   // A person-attached statement carries the owner's verbatim quote and needs `statements`.
+   return shareLevel==='statements'||!signal.personId||signal.sourceType==='calendar';
+  });
   const titled=this.granolaProvenance({themeSignals:visible.map(({owner:_,...signal})=>signal)}).themeSignals.slice(0,SHARE_CAPS.signals);
-  slice.signals=titled.map(signal=>({email:signal.personId?byPerson.get(signal.personId)??null:null,themeId:signal.themeId,summary:signal.summary,observedAt:signal.observedAt,sourceType:signal.sourceType,confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})}));
-  const used=new Set(slice.signals.map(signal=>signal.themeId));
-  slice.themes=source.themes.filter(theme=>used.has(theme.id)).slice(0,SHARE_CAPS.themes);
+  // The theme cap is applied first and the signals are then trimmed to what survived it, so a
+  // signal is never shipped pointing at a theme name the far side would have to drop.
+  const ordered:string[]=[],seen=new Set<string>();
+  for(const signal of titled)if(!seen.has(signal.themeId)){seen.add(signal.themeId);ordered.push(signal.themeId);}
+  const kept=new Set(ordered.slice(0,SHARE_CAPS.themes));
+  slice.themes=source.themes.filter(theme=>kept.has(theme.id));
+  slice.signals=titled.filter(signal=>kept.has(signal.themeId))
+   .map(signal=>({email:signal.personId?byPerson.get(signal.personId)??null:null,themeId:signal.themeId,summary:signal.summary,observedAt:signal.observedAt,sourceType:signal.sourceType,confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})}));
   return slice;
  }
  /**
@@ -501,6 +515,7 @@ export class MailSync extends DurableObject<MailEnv>{
    const kept=slice.people.filter(person=>!own.has(person.email)&&person.email!==slice.owner);
    const emails=new Set(kept.map(person=>person.email));
    const stamp=new Date().toISOString(),themes=new Map<string,Theme>(),signals:Array<ThemeSignal&{account:string}>=[];
+   const titles:Array<{id:string;title:string}>=[];
    const names=new Map(slice.themes.map(theme=>[theme.id,theme.name]));
    for(const signal of slice.signals){
     const name=names.get(signal.themeId);
@@ -510,18 +525,26 @@ export class MailSync extends DurableObject<MailEnv>{
     // A slice deliberately carries neither the owner's signal ids nor their evidence refs (both
     // would leak the owner's note ids), so the reference is derived from the shared content.
     const hash=await opaque(viewer,`share-signal:${slice.owner}:${signal.themeId}:${signal.email??''}:${signal.observedAt}:${signal.summary}`,this.env.TOKEN_SECRET);
-    signals.push({id:'signal-'+hash,owner:viewer,account:SHARE_ACCOUNT+slice.owner,...(signal.email?{personId:await opaque(viewer,signal.email,this.env.TOKEN_SECRET)}:{}),
+    const id='signal-'+hash;
+    signals.push({id,owner:viewer,account:SHARE_ACCOUNT+slice.owner,...(signal.email?{personId:await opaque(viewer,signal.email,this.env.TOKEN_SECRET)}:{}),
      themeId,sourceType:signal.sourceType as ThemeSignal['sourceType'],visibility:'firm',observedAt:signal.observedAt,ingestedAt:stamp,confidence:signal.confidence,
      summary:signal.summary,evidenceRef:`${SHARE_ACCOUNT}${slice.owner}:${hash}`,contentHash:hash,extractorVersion:SHARE_EXTRACTOR_VERSION});
+    // The meeting title the owner sent along. `theme_signals` has no provenance column, so it
+    // is kept beside the cache and turned back into provenance at read time.
+    if(signal.title)titles.push({id,title:signal.title});
    }
    await this.store().removeAccountData(SHARE_ACCOUNT+slice.owner);
    this.ctx.storage.transactionSync(()=>{
-    this.clearShareCache(slice.owner);
+    this.forgetShare(slice.owner);
     for(const person of kept)this.ctx.storage.sql.exec('INSERT INTO shared_people (owner,email,name,last_contact,meetings) VALUES (?,?,?,?,?)',slice.owner,person.email,person.name,person.lastContact,person.meetings);
     for(const edge of slice.edges)if(emails.has(edge.a)&&emails.has(edge.b))this.ctx.storage.sql.exec('INSERT INTO shared_edges (owner,a,b,weight,types,contexts) VALUES (?,?,?,?,?,?)',slice.owner,edge.a,edge.b,edge.weight,JSON.stringify(edge.types),JSON.stringify(edge.contexts));
+    for(const title of titles)this.ctx.storage.sql.exec('INSERT INTO shared_signals (owner,signal_id,title) VALUES (?,?,?) ON CONFLICT(owner,signal_id) DO UPDATE SET title=excluded.title',slice.owner,title.id,title.title);
     this.ctx.storage.sql.exec('INSERT INTO shared_meta (owner,refreshed_at,level) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET refreshed_at=excluded.refreshed_at,level=excluded.level',slice.owner,Date.now(),levelOfSlice(slice));
    });
-   if(signals.length)await this.store().ingestWithThemes([...themes.values()],signals);
+   // The cache rows are in but the evidence is not yet. If the ingest fails, drop the cache
+   // rows again rather than leave a share whose people have no why-now behind them.
+   try{if(signals.length)await this.store().ingestWithThemes([...themes.values()],signals);}
+   catch(e){this.ctx.storage.transactionSync(()=>this.forgetShare(slice.owner));await this.ctx.storage.delete('graph');throw e;}
    owners.push(slice.owner);people+=kept.length;
   }
   await this.ctx.storage.delete('graph');
@@ -531,13 +554,16 @@ export class MailSync extends DurableObject<MailEnv>{
  async dropShare(owner:string):Promise<void>{
   if(typeof owner!=='string'||!owner.trim())return;
   const key=owner.trim().toLowerCase();
-  this.ctx.storage.transactionSync(()=>{this.clearShareCache(key);this.ctx.storage.sql.exec('DELETE FROM shared_meta WHERE owner=?',key);});
+  this.ctx.storage.transactionSync(()=>this.forgetShare(key));
   await this.store().removeAccountData(SHARE_ACCOUNT+key);
   await this.ctx.storage.delete('graph');
  }
- private clearShareCache(owner:string){
+ /** Every cache row of one owner. Call inside a transaction; the evidence goes separately. */
+ private forgetShare(owner:string){
   this.ctx.storage.sql.exec('DELETE FROM shared_people WHERE owner=?',owner);
   this.ctx.storage.sql.exec('DELETE FROM shared_edges WHERE owner=?',owner);
+  this.ctx.storage.sql.exec('DELETE FROM shared_signals WHERE owner=?',owner);
+  this.ctx.storage.sql.exec('DELETE FROM shared_meta WHERE owner=?',owner);
  }
  /** How fresh the imported cache is, and whose it is; the Worker refreshes on a stale stamp. */
  sharedMeta():{refreshedAt:number;owners:string[]}{
@@ -554,8 +580,11 @@ export class MailSync extends DurableObject<MailEnv>{
  private mergedEdges(){
   const mailEdges=this.ctx.storage.sql.exec<{a:string;b:string;weight:number;subject:string}>('SELECT a,b,COUNT(DISTINCT canonical) AS weight,MAX(subject) AS subject FROM mail_edges GROUP BY a,b ORDER BY weight DESC LIMIT 5000').toArray();
   const merged=new Map<string,SharedEdgeValue>();
-  for(const e of mailEdges){const [a,b]=[e.a,e.b].sort();merged.set(a+'\u0000'+b,{a,b,weight:e.weight,types:['shared_email'],contexts:[e.subject]});}
-  for(const e of this.granola().edges()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;cur.types.push('shared_meeting');cur.contexts.push(...e.titles.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_meeting'],contexts:e.titles});}
+  // `contexts` mixes Gmail subject lines with Granola meeting titles for the owner's own graph;
+  // `titles` keeps the meeting titles apart, because a subject line is never shared and a
+  // meeting title only travels at level `themes` or above.
+  for(const e of mailEdges){const [a,b]=[e.a,e.b].sort();merged.set(a+'\u0000'+b,{a,b,weight:e.weight,types:['shared_email'],contexts:[e.subject],titles:[]});}
+  for(const e of this.granola().edges()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;cur.types.push('shared_meeting');cur.contexts.push(...e.titles.slice(0,2));cur.titles.push(...e.titles);}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_meeting'],contexts:e.titles,titles:[...e.titles]});}
   return merged;
  }
  /** Cached people other owners have shared with this one, one row per address with its owners. */
@@ -589,20 +618,38 @@ export class MailSync extends DurableObject<MailEnv>{
   for(const person of shared.values()){
    if(own.has(person.email))continue;
    const id=idMap.get(person.email);
-   if(id){const node=nodes.find(n=>n.id===id)!;node.via=person.via;if(person.last>Date.parse(node.lastContact))node.lastContact=new Date(person.last).toISOString();continue;}
+   // A node keeps its own last contact unless the shared one is genuinely later; a share with
+   // no date at all leaves it alone, and an unknown date stays null rather than becoming 1970.
+   if(id){const node=nodes.find(n=>n.id===id)!;node.via=person.via;if(person.last&&(!node.lastContact||person.last>Date.parse(node.lastContact)))node.lastContact=new Date(person.last).toISOString();continue;}
    if(nodes.length>=MAX_GRAPH_NODES)continue;
    const days=person.last?(Date.now()-person.last)/86400000:3650;
-   const node:GraphPersonNode={id:await opaque(owner,person.email,this.env.TOKEN_SECRET),photoUrl:null,name:person.name.includes('@')?person.email.split('@')[0]:person.name,company:person.email.split('@')[1],companySource:'email_domain',lastContact:person.last?new Date(person.last).toISOString():new Date(0).toISOString(),meetings:person.meetings,lastMeeting:null,via:person.via,...emailScore(person.meetings,person.meetings,days)};
+   const node:GraphPersonNode={id:await opaque(owner,person.email,this.env.TOKEN_SECRET),photoUrl:null,name:person.name.includes('@')?person.email.split('@')[0]:person.name,company:person.email.split('@')[1],companySource:'email_domain',lastContact:person.last?new Date(person.last).toISOString():null,meetings:person.meetings,lastMeeting:null,via:person.via,...emailScore(person.meetings,person.meetings,days)};
    nodes.push(node);idMap.set(person.email,node.id);
   }
   const merged=this.mergedEdges();
-  for(const e of this.sharedEdgeRows()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;if(!cur.types.includes('shared_via'))cur.types.push('shared_via');cur.contexts.push(...e.contexts.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_via'],contexts:e.contexts});}
+  for(const e of this.sharedEdgeRows()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;if(!cur.types.includes('shared_via'))cur.types.push('shared_via');cur.contexts.push(...e.contexts.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_via'],contexts:e.contexts,titles:[]});}
   const edges=[...merged.values()].filter(e=>idMap.has(e.a)&&idMap.has(e.b)).sort((x,y)=>y.weight-x.weight).slice(0,5000).map(e=>({source:idMap.get(e.a),target:idMap.get(e.b),weight:e.weight,types:e.types,contexts:e.contexts.slice(0,3)}));
   const stamps=[...accounts.map(a=>Math.max(a.lastSync,a.job?.lastRun||0)),this.granola().status().lastSync,this.sharedMeta().refreshedAt];
   // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.
   const value={pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Message metadata and meeting attendee lists only; no message bodies. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
-  return this.granolaProvenance(await this.store().attachToGraph(value,'my'));
+  return this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my')));
+ }
+ /**
+  * The meeting title that rode along with a shared signal, turned back into provenance. The
+  * canonical URL is the Granola home page, never the owner's note: the viewer sees
+  * "Meeting <title>" with no link, and the note itself stays with its owner.
+  */
+ private sharedProvenance<T extends {themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T){
+  const shared=graph.themeSignals.filter(s=>s.evidenceRef.startsWith(SHARE_ACCOUNT));
+  if(!shared.length)return graph;
+  const titles=new Map(this.ctx.storage.sql.exec<{signal_id:string;title:string}>('SELECT signal_id,MAX(title) AS title FROM shared_signals GROUP BY signal_id LIMIT 20000').toArray().map(row=>[row.signal_id,row.title]));
+  if(!titles.size)return graph;
+  for(const signal of shared){
+   const title=titles.get(signal.id);if(!title)continue;
+   signal.provenance={canonicalUrl:'https://granola.ai/',publisherHost:'granola.ai',observedAt:signal.observedAt,retrievedAt:signal.ingestedAt,timeBasis:'observed',title};
+  }
+  return graph;
  }
  /** Evidence panels need the meeting behind a Granola signal; the note stays server-side. */
  private granolaProvenance<T extends {themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T){

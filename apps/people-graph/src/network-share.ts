@@ -22,11 +22,12 @@ export const SHARE_CAPS=Object.freeze({people:500,edges:2_000,signals:2_000,them
 const MAX_EMAIL=320,MAX_NAME=160,MAX_SUMMARY=240,MAX_THEME_NAME=120,MAX_TITLE=160,MAX_CONTEXTS=3,MAX_TYPES=4;
 const EMAIL=/^[^\s@,<>"']+@[^\s@,<>"']+\.[^\s@,<>"']+$/;
 /**
- * Source types a shared signal may claim. `public_url`/`public_feed` are deliberately absent:
- * those belong to the owner's public-source pipeline, which forces visibility `public` on
- * persist, and shared evidence must stay `firm`.
+ * Source types a shared signal may claim. Three are deliberately absent: `public_url` and
+ * `public_feed` belong to the owner's public-source pipeline, which forces visibility `public`
+ * on persist while shared evidence must stay `firm`; `obsidian_note` summaries are free text
+ * from the owner's own notes and are never shared at any level.
  */
-const SHARED_SOURCE_TYPES=new Set(['gmail_subject','gmail_body_derived','calendar','granola','obsidian_note','product_activity']);
+const SHARED_SOURCE_TYPES=new Set(['gmail_subject','gmail_body_derived','calendar','granola','product_activity']);
 /**
  * A verbatim quote inside a signal summary. Granola statements are formatted
  * `Ask: “…”`, so the quote characters are the marker; the evidence-ref shape is a second net

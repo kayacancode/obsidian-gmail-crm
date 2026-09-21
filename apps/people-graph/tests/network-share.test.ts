@@ -28,19 +28,22 @@ async function ownerFixture(){
  attendee(f.db,'not_1234567890abcd','cia@meet.test','Cia Ford');
  attendee(f.db,'not_abcdef01234567','bo@design.test','Bo Chen');
  f.db.prepare("INSERT INTO granola_edges VALUES ('not_1234567890abcd','ada@work.test','cia@meet.test')").run();
+ f.db.prepare('INSERT INTO mail_edges VALUES (?,?,?,?,?)').run('me@example.com','m1','ada@work.test','bo@design.test','SECRET SUBJECT LINE');
  const ids=Object.fromEntries(await Promise.all(['ada@work.test','bo@design.test','cia@meet.test','me@example.com']
   .map(async email=>[email,await opaque('owner',email,'identity-key')] as const)));
  const now=new Date('2026-09-15T00:00:00Z').toISOString();
  const theme=(id:string,name:string)=>({id,owner:'owner',canonicalName:name.toLowerCase(),aliases:[name],description:`Theme: ${name}`,status:'active' as const,createdAt:now,updatedAt:now});
- const signal=(id:string,personId:string|undefined,themeId:string,summary:string,sourceType:'granola'|'public_url'='granola')=>
+ const signal=(id:string,personId:string|undefined,themeId:string,summary:string,sourceType:'granola'|'obsidian_note'|'calendar'='granola')=>
   ({id,owner:'owner',account:'granola',personId,themeId,sourceType,visibility:'private' as const,observedAt:'2026-09-12T11:00:00.000Z',ingestedAt:now,confidence:.8,summary,
    evidenceRef:personId?`granola-note:not_1234567890abcd#summary@${id}`:'granola-note:not_1234567890abcd#topic@agent_memory',contentHash:id,extractorVersion:'granola-v2'});
  await (f.service as any).store().ingestWithThemes(
   [theme('theme-pilot','Pilot Rollout'),theme('theme-public','Public Feed')],
   [signal('sig-topic',undefined,'theme-pilot','Meeting matched Agent Memory'),
-   signal('sig-ada','ada@none','theme-pilot','QUOTE-CARRIER')]);
- // The statement signal must point at Ada's real opaque id; rewrite it now that we have one.
- f.db.prepare('UPDATE theme_signals SET person_id=?, summary=? WHERE id=?').run(ids['ada@work.test'],'Ask: “we need a pilot partner”','sig-ada');
+   signal('sig-ada',ids['ada@work.test'],'theme-pilot','PLACEHOLDER'),
+   signal('sig-obsidian',ids['ada@work.test'],'theme-pilot','OBSIDIAN FREE TEXT','obsidian_note'),
+   signal('sig-cal',ids['bo@design.test'],'theme-pilot','Quarterly review on the calendar','calendar')]);
+ // Written after the ingest so the quote characters survive verbatim.
+ f.db.prepare('UPDATE theme_signals SET summary=? WHERE id=?').run('Ask: “we need a pilot partner”','sig-ada');
  // A public-source signal cannot be ingested through the normal path (it would be forced to
  // visibility 'public'), so it is written straight in: the export must still leave it behind.
  f.db.prepare("INSERT INTO theme_signals (id,owner,account,person_id,theme_id,source_type,visibility,observed_at,ingested_at,confidence,summary,evidence_ref,content_hash,extractor_version,model_id) VALUES ('sig-public','owner','public',NULL,'theme-public','public_url','public','2026-09-12T11:00:00.000Z',?,0.7,'Published a paper','public-source:src-1','h','public-v1',NULL)").run(now);
@@ -57,20 +60,31 @@ test('share export honours scope and level and never carries the owner’s own a
   assert.ok(!JSON.stringify(all).includes('me@example.com'),'the owner’s own addresses never leave the object');
   const ada=all.people.find(p=>p.email==='ada@work.test')!;
   assert.equal(ada.name,'Ada Lovelace');assert.equal(ada.meetings,1);assert.equal(ada.lastContact,'2026-09-10T00:00:00.000Z');
-  assert.ok(all.edges.some(e=>[e.a,e.b].sort().join()==='ada@work.test,cia@meet.test'&&e.types.includes('shared_meeting')));
+  const meetingEdge=(slice:{edges:{a:string;b:string;types:string[];contexts:string[]}[]})=>slice.edges.find(e=>[e.a,e.b].sort().join()==='ada@work.test,cia@meet.test')!;
+  assert.ok(meetingEdge(all).types.includes('shared_meeting'));
   assert.ok(all.signals.some(s=>s.summary.includes('we need a pilot partner')),'statements carry the quote');
   assert.ok(!all.signals.some(s=>s.sourceType==='public_url'),'public-source evidence is never shared');
+  assert.ok(!all.signals.some(s=>s.summary==='OBSIDIAN FREE TEXT'),'obsidian note text is never shared, even at statements');
   assert.ok(all.themes.some(t=>t.id==='theme-pilot'&&t.name==='Pilot Rollout'));
 
   const names=await service.exportSlice({kind:'all'},'names');
   assert.deepEqual(names.signals,[]);assert.deepEqual(names.themes,[]);
   assert.equal(names.people.length,3,'names still carries people and edges');
   assert.ok(names.edges.length>0);
+  assert.ok(names.edges.every(e=>e.contexts.length===0),'at names an edge carries types and weight only');
 
   const themes=await service.exportSlice({kind:'all'},'themes');
   assert.ok(themes.themes.some(t=>t.id==='theme-pilot'));
-  assert.ok(themes.signals.some(s=>s.summary==='Meeting matched Agent Memory'),'topic signals survive');
-  assert.ok(!themes.signals.some(s=>s.summary.includes('we need a pilot partner')),'statement quotes are dropped below the statements level');
+  assert.ok(themes.signals.some(s=>s.summary==='Meeting matched Agent Memory'),'theme-level topic signals survive');
+  assert.ok(themes.signals.some(s=>s.summary==='Quarterly review on the calendar'),'calendar signals survive at themes');
+  assert.ok(!themes.signals.some(s=>s.summary.includes('we need a pilot partner')),'person-attached statements are dropped below the statements level');
+  assert.ok(!themes.signals.some(s=>s.summary==='OBSIDIAN FREE TEXT'),'obsidian note text is never shared at themes either');
+
+  // Raw content in edge contexts: subject lines never, meeting titles only from `themes` up.
+  for(const slice of [all,names,themes])assert.ok(!JSON.stringify(slice.edges).includes('SECRET SUBJECT LINE'),'Gmail subject lines never leave the object');
+  assert.deepEqual(meetingEdge(all).contexts,['Pilot sync']);
+  assert.deepEqual(meetingEdge(themes).contexts,['Pilot sync']);
+  assert.deepEqual(meetingEdge(names).contexts,[]);
 
   const folders=await service.exportSlice({kind:'folders',ids:['fld_one']},'names');
   assert.deepEqual(folders.people.map(p=>p.email).sort(),['ada@work.test','cia@meet.test']);
@@ -133,7 +147,19 @@ test('importing a slice merges shared people into the graph and keeps the eviden
   assert.ok(!graph.nodes.some((n:any)=>n.id===ids['me@example.com']),'the viewer is never a node in their own graph');
   const edge=graph.edges.find((e:any)=>[e.source,e.target].sort().join()===[ids['known@work.test'],ids['stranger@vc.test']].sort().join()) as any;
   assert.ok(edge&&edge.types.includes('shared_via'));
-  assert.ok(!JSON.stringify(graph.nodes.map((n:any)=>({...n,via:undefined}))).includes('@'),'emails never reach the graph payload');
+  // `via` and the `share:<owner>:` evidence-ref prefix are the only places the owner's address
+  // may appear; nothing else in the payload may carry an address at all.
+  const scrub=(value:unknown)=>JSON.stringify(value).split('owner@share.test').join('');
+  assert.ok(!scrub(graph.nodes.map((n:any)=>({...n,via:undefined}))).includes('@'),'emails never reach the nodes');
+  assert.ok(!scrub(graph.edges).includes('@'),'emails never reach the edges');
+  assert.ok(!scrub(graph.themeSignals).includes('@'),'emails never reach the signals');
+
+  const evidence=graph.themeSignals.find((s:any)=>s.personId===ids['stranger@vc.test']) as any;
+  assert.ok(evidence,'the shared evidence rides along in the graph payload');
+  assert.equal(evidence.provenance.title,'Pilot sync','the meeting title the owner sent survives the import');
+  assert.equal(evidence.provenance.canonicalUrl,'https://granola.ai/','never a link to the owner’s note');
+  assert.equal(evidence.provenance.publisherHost,'granola.ai');
+  assert.equal(evidence.provenance.timeBasis,'observed');
 
   const row=db.prepare('SELECT * FROM theme_signals').get() as any;
   assert.equal(row.visibility,'firm');
@@ -180,6 +206,43 @@ test('re-importing replaces an owner’s cache and dropShare removes every trace
  }finally{db.close();}
 });
 
+test('a viewer never re-shares the evidence another owner shared with them',async()=>{
+ const {service,db}=await viewerFixture();
+ try{
+  // The viewer has evidence of their own, so an empty export would prove nothing. A topic
+  // signal carries no personId, so nothing but the account check keeps it from travelling on.
+  const stamp=new Date().toISOString();
+  await (service as any).store().ingestWithThemes(
+   [{id:'theme-mine',owner:'viewer',canonicalName:'my own work',aliases:['My Own Work'],description:'Theme',status:'active',createdAt:stamp,updatedAt:stamp}],
+   [{id:'sig-mine',owner:'viewer',account:'granola',themeId:'theme-mine',sourceType:'granola',visibility:'private',observedAt:'2026-09-01T00:00:00.000Z',ingestedAt:stamp,confidence:.8,
+     summary:'MY OWN TOPIC',evidenceRef:'granola-note:not_1111111111aaaa#topic@agent_memory',contentHash:'h1',extractorVersion:'granola-v2'}]);
+  await service.importShares([slice({signals:[...slice().signals,
+   {email:null,themeId:'theme-pilot',summary:'THEIR TOPIC SIGNAL',observedAt:'2026-09-12T11:00:00.000Z',sourceType:'granola',confidence:.6}]})]);
+  const onward=await service.exportSlice({kind:'all'},'statements');
+  const text=JSON.stringify(onward);
+  assert.ok(!text.includes('THEIR TOPIC SIGNAL'),'a shared topic signal is not re-exported');
+  assert.ok(!text.includes('looking for a design partner'),'nor the other owner’s quote');
+  assert.ok(!text.includes('Pilot Rollout'),'nor their theme name');
+  assert.ok(!text.includes('owner@share.test'),'nor any trace of them');
+  assert.deepEqual(onward.signals.map(s=>s.summary),['MY OWN TOPIC'],'the viewer’s own evidence still travels');
+  assert.deepEqual(onward.themes.map(t=>t.name),['My Own Work']);
+  assert.deepEqual(onward.people.map(p=>p.email),['known@work.test'],'only the viewer’s own contacts are theirs to share');
+ }finally{db.close();}
+});
+
+test('an unknown shared last contact stays null and never overwrites a later own one',async()=>{
+ const {service,db,ids}=await viewerFixture();
+ try{
+  await service.importShares([slice({people:[
+   {email:'other@vc.test',name:'Other',lastContact:null,meetings:0},
+   {email:'known@work.test',name:'Known Person',lastContact:'2026-01-01T00:00:00.000Z',meetings:1}],edges:[],themes:[],signals:[]})]);
+  const graph=(await service.graph())!;
+  const other=await opaque('viewer','other@vc.test','identity-key');
+  assert.equal((graph.nodes.find((n:any)=>n.id===other) as any).lastContact,null,'an unknown date stays null, never 1970');
+  assert.equal((graph.nodes.find((n:any)=>n.id===ids['known@work.test']) as any).lastContact,'2026-08-01T00:00:00.000Z','an earlier shared date never overwrites the viewer’s own');
+ }finally{db.close();}
+});
+
 test('drafting a note about a shared-only person writes to the sharing owner instead',async()=>{
  const {service,db,ids}=await viewerFixture();
  const ai=new FakeAI({response:{subject:'Intro to Stranger?',body:'Could you introduce me to Stranger Vc?'}});
@@ -191,6 +254,7 @@ test('drafting a note about a shared-only person writes to the sharing owner ins
   assert.equal(draft.introVia,'owner@share.test');
   assert.equal(draft.name,'Stranger Vc');
   assert.ok(draft.basedOn.length>0,'the shared evidence is what the draft is based on');
+  assert.equal(draft.basedOn[0].title,'Pilot sync','the shared meeting title reaches the draft');
   const system=String(ai.calls[0].input.messages[0].content);
   assert.ok(system.includes('owner@share.test')&&system.includes('Stranger Vc')&&system.includes('do not write to'),'the prompt says this is an introduction request');
   const own=await service.draftNote(ids['known@work.test']);

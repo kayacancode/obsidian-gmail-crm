@@ -218,7 +218,13 @@ export class RelevanceStore {
 	 */
 	async shareSource():Promise<{themes:Array<{id:string;name:string}>;signals:ThemeSignal[]}> {
 		const owner = await this.requiredOwner();
-		return {themes:this.themes(owner).map(theme => ({id:theme.id,name:theme.aliases[0] ?? theme.canonicalName})),signals:this.signals(owner)};
+		// Evidence another owner shared with this one lives under account 'share:<them>'. It is
+		// theirs, shared at a level they chose, with people they chose: it is never re-shared
+		// onward, and neither is a theme that only their signals reference.
+		const incoming = new Set(this.ctx.storage.sql.exec<{id:string}>("SELECT id FROM theme_signals WHERE owner=? AND account LIKE 'share:%'",owner).toArray().map(row => String(row.id)));
+		const signals = this.signals(owner).filter(signal => !incoming.has(signal.id));
+		const used = new Set(signals.map(signal => signal.themeId));
+		return {themes:this.themes(owner).filter(theme => used.has(theme.id)).map(theme => ({id:theme.id,name:theme.aliases[0] ?? theme.canonicalName})),signals};
 	}
 
 	/** Note ids that already carry at least one signal, in one query: the ids live inside
