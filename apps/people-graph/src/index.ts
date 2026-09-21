@@ -5,6 +5,7 @@ import {isRelevancePath,normalizePushedGraph,relevanceRoute} from "./relevance-r
 import type {PushedGraphPayload} from "./relevance-routes";
 import {boundedJSON} from "./bounded-json";
 import {granolaRoute} from "./granola-routes";
+import {isSharePath,refreshShares,shareRoute} from "./share-routes";
 export {MailSync} from "./mail-sync";
 /**
  * People graph viewer — Cloudflare Worker.
@@ -73,6 +74,11 @@ export default {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
 				return await searchRoute(request, env, user.email);
+			}
+			if (isSharePath(pathname)) {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await shareRoute(request, env, user.email);
 			}
 			if (isRelevancePath(pathname)) {
 				const user=await requireGoogleUser(request,env);
@@ -159,6 +165,9 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 	if ("error" in auth) return json({ error: auth.error }, 401);
 
 	if (new URL(request.url).searchParams.get("source") !== "obsidian") {
+		// Shared people come from other owners' objects, so the viewer's cached copy is brought
+		// up to date here, before the graph is read. It never throws and never blocks for long.
+		await refreshShares(env, auth.email);
 		const graph = await env.MAIL.getByName(auth.email).graph();
 		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
 	}
