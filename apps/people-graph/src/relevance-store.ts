@@ -211,6 +211,16 @@ export class RelevanceStore {
 		const owner = await this.requiredOwner();
 		return this.persist(owner,themes.filter(t=>t.owner===owner),signals);
 	}
+	/**
+	 * The owner's own themes and signals, for exporting a bounded network slice to another
+	 * owner's object. Nothing is filtered here: `exportSlice` applies the share's scope, level
+	 * and caps, and no part of this ever reaches a browser.
+	 */
+	async shareSource():Promise<{themes:Array<{id:string;name:string}>;signals:ThemeSignal[]}> {
+		const owner = await this.requiredOwner();
+		return {themes:this.themes(owner).map(theme => ({id:theme.id,name:theme.aliases[0] ?? theme.canonicalName})),signals:this.signals(owner)};
+	}
+
 	/** Note ids that already carry at least one signal, in one query: the ids live inside
 	 *  `granola-note:<id>#<part>@<offset>` evidence refs, which no index can prefix-scan. */
 	granolaNoteIdsWithSignals(account:string,owner:string):Set<string> {

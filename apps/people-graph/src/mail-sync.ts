@@ -15,6 +15,7 @@ import {GranolaSync,type GranolaRange,type GranolaStatus,type GranolaGmailContac
 import {composeDraft,checkDraft} from './draft-note';
 import {jevConfigured,JevError} from './jev';
 import {keywordRank,keywordScores,jevScores,topResults,MAX_QUERY_LENGTH,type SearchEvidence,type SearchResult} from './network-search';
+import {SHARE_CAPS,carriesQuote,levelOfSlice,normalizeShareLevel,normalizeShareScope,normalizeSlice,shareableSourceType,type SharedSlice,type ShareLevel,type ShareScope} from './network-share';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string}
@@ -22,8 +23,11 @@ type Range='recent'|'all';
 interface Job {photoSource?:'saved'|'other';photoPage?:string;photosDone?:boolean;generation:string;range:Range;query:string;pageToken?:string;pending:string[];hasMore:boolean;processed:number;started:number;retries:number;lastRun:number;nextAttempt:number}
 interface Account {revision?:string;otherPhotosEnabled?:boolean;photosEnabled?:boolean;photoStatus?:string;email:string;grant:string;status:string;job:Job|null;lastSync:number;nextSync:number;error:string;range:Range}
 interface Pending {verifier:string;cookie:string;expires:number;range:Range;owner:string;redirect:string}
+interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[]}
+/** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
+interface GraphPersonNode {id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string;meetings:number;lastMeeting:string|null;strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
- constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b));`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.store();this.granola();}
+ constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.store();this.granola();}
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
@@ -370,13 +374,18 @@ export class MailSync extends DurableObject<MailEnv>{
   const basedOn=graph.themeSignals.filter(s=>s.personId===personId)
    .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,8)
    .map(s=>({summary:s.summary,observedAt:s.observedAt,...(s.provenance?.title?{title:s.provenance.title}:{})}));
-  const rawTo=await this.emailForPerson(personId);
+  // A person this owner knows only through somebody else's share has no address here, and the
+  // draft must never be written to them: it becomes an introduction request to the sharer.
+  const ownEmail=await this.emailForPerson(personId);
+  const introVia=ownEmail?null:(await this.sharedPersonFor(personId))?.via[0]??null;
+  const rawTo=ownEmail??introVia;
   // A stored contact email can carry mailto-header-injection characters from a loosely
   // parsed Gmail "From" line (e.g. "victim?bcc=attacker@evil.test"); never hand those to
   // a mailto: link.
   const to=rawTo&&MAILTO_SAFE.test(rawTo)?rawTo:null;
+  const intro=introVia?`This is a note to ${introVia} asking for an introduction to ${node.name}; do not write to ${node.name} directly.`:'';
   const draftInput={name:node.name,company:node.company,lastContact:node.lastContact,evidence:basedOn};
-  let {subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,draftInput);
+  let {subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,draftInput,undefined,intro||undefined);
   let checked=false,warnings:string[]=[];
   // A Jev failure (unauthorized, rate-limited, unavailable, invalid response) never blocks a
   // draft: the owner still gets the unchecked text, just without the "checked" label.
@@ -384,7 +393,7 @@ export class MailSync extends DurableObject<MailEnv>{
    try{
     let result=await checkDraft(this.env,{evidence:basedOn,subject,body});
     if(result.unsupported>=0.5||result.asksForMoneyOrSecrets>=0.5){
-     ({subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,draftInput,undefined,DRAFT_REWRITE_INSTRUCTION));
+     ({subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,draftInput,undefined,`${intro?intro+' ':''}${DRAFT_REWRITE_INSTRUCTION}`));
      result=await checkDraft(this.env,{evidence:basedOn,subject,body});
     }
     checked=true;
@@ -393,7 +402,7 @@ export class MailSync extends DurableObject<MailEnv>{
     if(result.asksForMoneyOrSecrets>=0.5)warnings.push('This draft asks for money or credentials; do not send it as is.');
    }catch(e){if(!(e instanceof JevError))throw e;}
   }
-  return {to,name:node.name,subject,body,checked,warnings,basedOn};
+  return {to,name:node.name,subject,body,checked,warnings,basedOn,introVia};
  }
  /**
   * "Who can help with…" over the owner's own graph. One `graph()` read feeds a keyword pass in
@@ -432,17 +441,164 @@ export class MailSync extends DurableObject<MailEnv>{
   }
   return {query:text,results:topResults(text,ranked,scores,{checked}),checked};
  }
- async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();if(!accounts.length&&!this.granola().status().connected)return null;
-  const rows=this.graphContacts();
-  const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));
-  const nodes=await Promise.all(rows.map(async r=>({id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
-  const idMap=new Map(rows.map((r,i)=>[r.email,nodes[i].id]));
+ /**
+  * A bounded slice of this owner's network for another owner's Durable Object. The scope picks
+  * the people, the level decides how much evidence rides along, and the caps bound the whole
+  * thing. The owner's own addresses are never in it, no note text beyond a signal summary the
+  * owner already sees is, and nothing here is ever served to a browser.
+  */
+ async exportSlice(scope:ShareScope,level:ShareLevel):Promise<SharedSlice>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
+  const shareLevel=normalizeShareLevel(level),shareScope=normalizeShareScope(scope);
+  const own=new Set([...this.rows().map(a=>a.email),...this.granola().ownEmails(),owner]);
+  const contacts=this.graphContacts().filter(row=>!own.has(row.email));
+  let allowed:Set<string>|null=null;
+  if(shareScope.kind==='folders')allowed=this.granola().peopleInFolders(shareScope.ids);
+  else if(shareScope.kind==='people'&&'emails' in shareScope)allowed=new Set(shareScope.emails);
+  else if(shareScope.kind==='people'){
+   // The browser only ever holds opaque node ids, so they are resolved back to addresses here,
+   // inside the owner's own object. An id that matches no contact of theirs is simply ignored.
+   const wanted=new Set(shareScope.personIds),resolved=new Set<string>();
+   for(const row of contacts)if(wanted.has(await opaque(owner,row.email,this.env.TOKEN_SECRET)))resolved.add(row.email);
+   allowed=resolved;
+  }
+  const chosen=contacts.filter(row=>!allowed||allowed.has(row.email)).slice(0,SHARE_CAPS.people);
+  const people=chosen.map(row=>({email:row.email,name:row.name.includes('@')?row.email.split('@')[0]:row.name,lastContact:row.last?new Date(row.last).toISOString():null,meetings:row.meetings}));
+  const emails=new Set(people.map(person=>person.email));
+  const edges=[...this.mergedEdges().values()].filter(edge=>emails.has(edge.a)&&emails.has(edge.b))
+   .sort((x,y)=>y.weight-x.weight).slice(0,SHARE_CAPS.edges)
+   .map(edge=>({a:edge.a,b:edge.b,weight:edge.weight,types:edge.types,contexts:edge.contexts.slice(0,3)}));
+  const slice:SharedSlice={owner,exportedAt:Date.now(),people,edges,themes:[],signals:[]};
+  if(shareLevel==='names')return slice;
+  const byPerson=new Map<string,string>();
+  for(const person of people)byPerson.set(await opaque(owner,person.email,this.env.TOKEN_SECRET),person.email);
+  const source=await this.store().shareSource();
+  const names=new Map(source.themes.map(theme=>[theme.id,theme.name]));
+  const visible=source.signals.filter(signal=>
+   (!signal.personId||byPerson.has(signal.personId))&&names.has(signal.themeId)&&shareableSourceType(signal.sourceType)
+   // `themes` carries topic and metadata evidence; a verbatim quote needs `statements`.
+   &&(shareLevel==='statements'||!carriesQuote(signal)));
+  const titled=this.granolaProvenance({themeSignals:visible.map(({owner:_,...signal})=>signal)}).themeSignals.slice(0,SHARE_CAPS.signals);
+  slice.signals=titled.map(signal=>({email:signal.personId?byPerson.get(signal.personId)??null:null,themeId:signal.themeId,summary:signal.summary,observedAt:signal.observedAt,sourceType:signal.sourceType,confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})}));
+  const used=new Set(slice.signals.map(signal=>signal.themeId));
+  slice.themes=source.themes.filter(theme=>used.has(theme.id)).slice(0,SHARE_CAPS.themes);
+  return slice;
+ }
+ /**
+  * Replace this viewer's cached copy of these owners' slices. A slice arrives from another
+  * Durable Object, so `normalizeSlice` bounds and validates it first. People are keyed by this
+  * viewer's own opaque ids, so a person both sides know stays one node, and the evidence lands
+  * as `firm` signals under `account='share:<owner>'` — visible in the Firm lens, never in Public.
+  */
+ async importShares(slices:SharedSlice[]):Promise<{owners:string[];people:number}>{
+  const viewer=await this.ctx.storage.get<string>('owner');if(!viewer)throw Error('missing_owner');
+  const own=new Set([...this.rows().map(a=>a.email),...this.granola().ownEmails(),viewer]);
+  const owners:string[]=[];let people=0;
+  for(const raw of (Array.isArray(slices)?slices:[]).slice(0,SHARE_CAPS.owners)){
+   const slice=normalizeSlice(raw);
+   // A share from one of this viewer's own addresses is a share with themselves: skip it.
+   if(!slice||own.has(slice.owner)||owners.includes(slice.owner))continue;
+   const kept=slice.people.filter(person=>!own.has(person.email)&&person.email!==slice.owner);
+   const emails=new Set(kept.map(person=>person.email));
+   const stamp=new Date().toISOString(),themes=new Map<string,Theme>(),signals:Array<ThemeSignal&{account:string}>=[];
+   const names=new Map(slice.themes.map(theme=>[theme.id,theme.name]));
+   for(const signal of slice.signals){
+    const name=names.get(signal.themeId);
+    if(!name||(signal.email&&!emails.has(signal.email)))continue;
+    const themeId='theme-'+await opaque(viewer,`share-theme:${slice.owner}:${signal.themeId}`,this.env.TOKEN_SECRET);
+    themes.set(themeId,{id:themeId,owner:viewer,canonicalName:canonicalThemeName(name)||'shared',aliases:[name],description:`Shared with you by ${slice.owner}`,status:'active',createdAt:stamp,updatedAt:stamp});
+    // A slice deliberately carries neither the owner's signal ids nor their evidence refs (both
+    // would leak the owner's note ids), so the reference is derived from the shared content.
+    const hash=await opaque(viewer,`share-signal:${slice.owner}:${signal.themeId}:${signal.email??''}:${signal.observedAt}:${signal.summary}`,this.env.TOKEN_SECRET);
+    signals.push({id:'signal-'+hash,owner:viewer,account:SHARE_ACCOUNT+slice.owner,...(signal.email?{personId:await opaque(viewer,signal.email,this.env.TOKEN_SECRET)}:{}),
+     themeId,sourceType:signal.sourceType as ThemeSignal['sourceType'],visibility:'firm',observedAt:signal.observedAt,ingestedAt:stamp,confidence:signal.confidence,
+     summary:signal.summary,evidenceRef:`${SHARE_ACCOUNT}${slice.owner}:${hash}`,contentHash:hash,extractorVersion:SHARE_EXTRACTOR_VERSION});
+   }
+   await this.store().removeAccountData(SHARE_ACCOUNT+slice.owner);
+   this.ctx.storage.transactionSync(()=>{
+    this.clearShareCache(slice.owner);
+    for(const person of kept)this.ctx.storage.sql.exec('INSERT INTO shared_people (owner,email,name,last_contact,meetings) VALUES (?,?,?,?,?)',slice.owner,person.email,person.name,person.lastContact,person.meetings);
+    for(const edge of slice.edges)if(emails.has(edge.a)&&emails.has(edge.b))this.ctx.storage.sql.exec('INSERT INTO shared_edges (owner,a,b,weight,types,contexts) VALUES (?,?,?,?,?,?)',slice.owner,edge.a,edge.b,edge.weight,JSON.stringify(edge.types),JSON.stringify(edge.contexts));
+    this.ctx.storage.sql.exec('INSERT INTO shared_meta (owner,refreshed_at,level) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET refreshed_at=excluded.refreshed_at,level=excluded.level',slice.owner,Date.now(),levelOfSlice(slice));
+   });
+   if(signals.length)await this.store().ingestWithThemes([...themes.values()],signals);
+   owners.push(slice.owner);people+=kept.length;
+  }
+  await this.ctx.storage.delete('graph');
+  return {owners,people};
+ }
+ /** Revocation, from either side: the cached people, edges and evidence of one owner, gone. */
+ async dropShare(owner:string):Promise<void>{
+  if(typeof owner!=='string'||!owner.trim())return;
+  const key=owner.trim().toLowerCase();
+  this.ctx.storage.transactionSync(()=>{this.clearShareCache(key);this.ctx.storage.sql.exec('DELETE FROM shared_meta WHERE owner=?',key);});
+  await this.store().removeAccountData(SHARE_ACCOUNT+key);
+  await this.ctx.storage.delete('graph');
+ }
+ private clearShareCache(owner:string){
+  this.ctx.storage.sql.exec('DELETE FROM shared_people WHERE owner=?',owner);
+  this.ctx.storage.sql.exec('DELETE FROM shared_edges WHERE owner=?',owner);
+ }
+ /** How fresh the imported cache is, and whose it is; the Worker refreshes on a stale stamp. */
+ sharedMeta():{refreshedAt:number;owners:string[]}{
+  const rows=this.ctx.storage.sql.exec<{owner:string;refreshed_at:number}>('SELECT owner,refreshed_at FROM shared_meta ORDER BY owner ASC').toArray();
+  return {refreshedAt:rows.reduce((newest,row)=>Math.max(newest,Number(row.refreshed_at)||0),0),owners:rows.map(row=>row.owner)};
+ }
+ /** The sharing owner behind a node this viewer knows only through a share, if there is one. */
+ private async sharedPersonFor(personId:string){
+  const viewer=await this.ctx.storage.get<string>('owner');if(!viewer)return null;
+  for(const [email,person] of this.sharedPeople())if(await opaque(viewer,email,this.env.TOKEN_SECRET)===personId)return person;
+  return null;
+ }
+ /** Own co-occurrence edges, by contact address: Gmail threads merged with Granola meetings. */
+ private mergedEdges(){
   const mailEdges=this.ctx.storage.sql.exec<{a:string;b:string;weight:number;subject:string}>('SELECT a,b,COUNT(DISTINCT canonical) AS weight,MAX(subject) AS subject FROM mail_edges GROUP BY a,b ORDER BY weight DESC LIMIT 5000').toArray();
-  const merged=new Map<string,{a:string;b:string;weight:number;types:string[];contexts:string[]}>();
+  const merged=new Map<string,SharedEdgeValue>();
   for(const e of mailEdges){const [a,b]=[e.a,e.b].sort();merged.set(a+'\u0000'+b,{a,b,weight:e.weight,types:['shared_email'],contexts:[e.subject]});}
   for(const e of this.granola().edges()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;cur.types.push('shared_meeting');cur.contexts.push(...e.titles.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_meeting'],contexts:e.titles});}
+  return merged;
+ }
+ /** Cached people other owners have shared with this one, one row per address with its owners. */
+ private sharedPeople(){
+  const out=new Map<string,{email:string;name:string;last:number;meetings:number;via:string[]}>();
+  for(const row of this.ctx.storage.sql.exec<{owner:string;email:string;name:string;last_contact:string|null;meetings:number}>('SELECT owner,email,name,last_contact,meetings FROM shared_people ORDER BY owner ASC,email ASC LIMIT 20000').toArray()){
+   const last=row.last_contact?Date.parse(row.last_contact):0;
+   const at=Number.isFinite(last)?last:0,current=out.get(row.email);
+   if(!current){out.set(row.email,{email:row.email,name:row.name,last:at,meetings:row.meetings,via:[row.owner]});continue;}
+   if(!current.via.includes(row.owner))current.via.push(row.owner);
+   current.meetings+=row.meetings;current.last=Math.max(current.last,at);
+   if(current.name.includes('@')&&!row.name.includes('@'))current.name=row.name;
+  }
+  return out;
+ }
+ private sharedEdgeRows(){
+  return this.ctx.storage.sql.exec<{a:string;b:string;weight:number;contexts:string}>('SELECT a,b,SUM(weight) AS weight,MIN(contexts) AS contexts FROM shared_edges GROUP BY a,b ORDER BY weight DESC LIMIT 5000').toArray()
+   .map(row=>({a:row.a,b:row.b,weight:row.weight,contexts:parseList(row.contexts)}));
+ }
+ async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();
+  const shared=this.sharedPeople();
+  if(!accounts.length&&!this.granola().status().connected&&!shared.size)return null;
+  const rows=this.graphContacts();
+  const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));
+  const nodes:GraphPersonNode[]=await Promise.all(rows.map(async r=>({id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
+  const idMap=new Map(rows.map((r,i)=>[r.email,nodes[i].id]));
+  // Shared people join the owner's own graph: a person both sides know keeps one node and
+  // gains `via`, an unknown one becomes a node labelled with the owners who shared them. The
+  // addresses themselves never leave this object; only the sharing owners' own addresses do.
+  const own=new Set([...accounts.map(a=>a.email),...this.granola().ownEmails(),owner]);
+  for(const person of shared.values()){
+   if(own.has(person.email))continue;
+   const id=idMap.get(person.email);
+   if(id){const node=nodes.find(n=>n.id===id)!;node.via=person.via;if(person.last>Date.parse(node.lastContact))node.lastContact=new Date(person.last).toISOString();continue;}
+   if(nodes.length>=MAX_GRAPH_NODES)continue;
+   const days=person.last?(Date.now()-person.last)/86400000:3650;
+   const node:GraphPersonNode={id:await opaque(owner,person.email,this.env.TOKEN_SECRET),photoUrl:null,name:person.name.includes('@')?person.email.split('@')[0]:person.name,company:person.email.split('@')[1],companySource:'email_domain',lastContact:person.last?new Date(person.last).toISOString():new Date(0).toISOString(),meetings:person.meetings,lastMeeting:null,via:person.via,...emailScore(person.meetings,person.meetings,days)};
+   nodes.push(node);idMap.set(person.email,node.id);
+  }
+  const merged=this.mergedEdges();
+  for(const e of this.sharedEdgeRows()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;if(!cur.types.includes('shared_via'))cur.types.push('shared_via');cur.contexts.push(...e.contexts.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_via'],contexts:e.contexts});}
   const edges=[...merged.values()].filter(e=>idMap.has(e.a)&&idMap.has(e.b)).sort((x,y)=>y.weight-x.weight).slice(0,5000).map(e=>({source:idMap.get(e.a),target:idMap.get(e.b),weight:e.weight,types:e.types,contexts:e.contexts.slice(0,3)}));
-  const stamps=[...accounts.map(a=>Math.max(a.lastSync,a.job?.lastRun||0)),this.granola().status().lastSync];
+  const stamps=[...accounts.map(a=>Math.max(a.lastSync,a.job?.lastRun||0)),this.granola().status().lastSync,this.sharedMeta().refreshedAt];
   // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.
   const value={pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Message metadata and meeting attendee lists only; no message bodies. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
@@ -462,6 +618,12 @@ export class MailSync extends DurableObject<MailEnv>{
  }
 }
 const GRANOLA_NOTE_REF='granola-note:';
+const SHARE_ACCOUNT='share:';
+const SHARE_EXTRACTOR_VERSION='network-share-v1';
+// Own contacts are already capped at 1500 by graphContacts(); shared people are added on top
+// of them up to the same ceiling, so twenty incoming shares can never unbound the payload.
+const MAX_GRAPH_NODES=3000;
+function parseList(value:unknown):string[]{try{const items=JSON.parse(String(value));return Array.isArray(items)?items.filter((item):item is string=>typeof item==='string').slice(0,8):[];}catch{return [];}}
 function noteIdOf(evidenceRef:string){return evidenceRef.slice(GRANOLA_NOTE_REF.length).split('#')[0];}
 // An address safe to place inside a mailto: link without opening header injection
 // (?/&/# start mailto query/fragment syntax, %<>/"' can break out of an href attribute).

@@ -617,6 +617,25 @@ export class GranolaSync {
  }
 
  ownEmails():string[]{const c=this.read();return c?.ownerEmail?[c.ownerEmail]:[];}
+ /**
+  * Attendee addresses of visible notes filed in any of these folders, for a folder-scoped
+  * network share. `folder_ids` is a JSON column, so the folders are matched in code rather
+  * than through an `IN (...)` list that would run into the 100-bound-parameter limit.
+  */
+ peopleInFolders(folderIds:string[]):Set<string>{
+  const wanted=new Set(folderIds.filter(id=>typeof id==='string'&&!!id).slice(0,GranolaSync.SHARE_FOLDER_LIMIT));
+  const out=new Set<string>();
+  if(!wanted.size)return out;
+  const own=new Set(this.ownAddresses()),alias=this.aliases();
+  for(const row of this.ctx.storage.sql.exec<{folder_ids:string;email:string}>('SELECT n.folder_ids AS folder_ids,a.email AS email FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0').toArray()){
+   let folders:unknown;try{folders=JSON.parse(row.folder_ids);}catch{continue;}
+   if(!Array.isArray(folders)||!folders.some(id=>typeof id==='string'&&wanted.has(id)))continue;
+   const email=alias.get(row.email)??row.email;
+   if(!own.has(email))out.add(email);
+  }
+  return out;
+ }
+ private static readonly SHARE_FOLDER_LIMIT=200;
  contacts(){
   const rows=this.ctx.storage.sql.exec<{email:string;name:string;meetings:number;last:string}>('SELECT a.email AS email,MAX(a.name) AS name,COUNT(*) AS meetings,MAX(n.meeting_at) AS last FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 GROUP BY a.email ORDER BY meetings DESC, a.email ASC LIMIT 5000').toArray().map(r=>({email:r.email,name:r.name,meetings:r.meetings,last:Date.parse(r.last)}));
   const alias=this.aliases();if(!alias.size)return rows;
