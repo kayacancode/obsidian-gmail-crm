@@ -4,6 +4,8 @@ import type {RelevanceStore} from './relevance-store';
 import type {MailEnv} from './mail-sync';
 import {canonicalThemeName,type Theme,type ThemeSignal} from './relevance-model';
 import {GranolaExtractor,KIND_LABEL,type GranolaExtraction} from './granola-extractor';
+import {GranolaJevExtractor,type JevExtraction,type JevStatement} from './granola-jev-extractor';
+import {jevConfigured,JevError} from './jev';
 import {THEME_TOPICS,THEME_MODEL} from './theme-extractor';
 
 export type GranolaRange='recent'|'all';
@@ -14,7 +16,9 @@ export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'reconcile
 interface Connection {grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null}
 
 export const GRANOLA_ACCOUNT='granola';
-export const GRANOLA_EXTRACTOR_VERSION='granola-v2';
+export const LLAMA_EXTRACTOR_VERSION='granola-v2',JEV_EXTRACTOR_VERSION='granola-v3-jev';
+/** Which extractor this deployment runs, and so which stored notes are stale. */
+export function extractorVersion(env:{TYPESAFE_API_KEY?:string}):string{return jevConfigured(env)?JEV_EXTRACTOR_VERSION:LLAMA_EXTRACTOR_VERSION;}
 const API_KEY=/^grn_[\x21-\x7e]{4,508}$/;
 const FOLDER_ID=/^fol_[a-zA-Z0-9]{14}$/;
 const HOUR=3_600_000,DAY=86_400_000;
@@ -138,7 +142,7 @@ export class GranolaSync {
   for(let i=0;i<20;i++){const page=await listGranolaFolders(apiKey,cursor);this.checkRun(started);this.ctx.storage.transactionSync(()=>this.upsertFolders(page.folders,now));if(!page.hasMore||!page.cursor)break;cursor=page.cursor;}
   this.ctx.storage.sql.exec('DELETE FROM granola_folders WHERE seen_at<?',now-7*DAY);
   this.recomputeHidden(this.excludedIds());
-  this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction=NULL WHERE extraction_status='done' AND extractor_version<>?",GRANOLA_EXTRACTOR_VERSION);
+  this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction=NULL WHERE extraction_status='done' AND extractor_version<>?",extractorVersion(this.env));
   // A failed note is retried a week after its last attempt (its sync time for rows written
   // before that column existed): one bad model day must not drop a meeting for good.
   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction_attempts=0 WHERE extraction_status='failed' AND COALESCE(extraction_attempted_at,synced_at)<?",now-7*DAY);
@@ -228,11 +232,11 @@ export class GranolaSync {
    // that has since been disconnected or replaced never lands in the table.
    this.checkRun(started);
    const previous=this.ctx.storage.sql.exec<{content_hash:string;extractor_version:string;extraction_status:string}>('SELECT content_hash,extractor_version,extraction_status FROM granola_notes WHERE id=?',item.id).toArray()[0];
-   const unchanged=Boolean(previous&&previous.content_hash===contentHash&&previous.extractor_version===GRANOLA_EXTRACTOR_VERSION&&previous.extraction_status==='done');
+   const unchanged=Boolean(previous&&previous.content_hash===contentHash&&previous.extractor_version===extractorVersion(this.env)&&previous.extraction_status==='done');
    const status=hidden?'skipped':unchanged?'done':'pending';
    this.ctx.storage.transactionSync(()=>{
     this.ctx.storage.sql.exec("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,0,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,web_url=excluded.web_url,meeting_at=excluded.meeting_at,date_basis=excluded.date_basis,updated_at=excluded.updated_at,folder_ids=excluded.folder_ids,summary=excluded.summary,private_notes=excluded.private_notes,transcript=excluded.transcript,content_hash=excluded.content_hash,bytes=excluded.bytes,extraction_status=excluded.extraction_status,extraction=CASE WHEN excluded.extraction_status='done' THEN granola_notes.extraction ELSE NULL END,extractor_version=excluded.extractor_version,extraction_attempts=0,synced_at=excluded.synced_at,hidden=excluded.hidden",
-     item.id,hidden?'':detail.title.slice(0,300),hidden?null:detail.webUrl,detail.meetingAt,detail.dateBasis,detail.createdAt,detail.updatedAt,JSON.stringify(detail.folderIds),hidden?'':summary,hidden?'':privateNotes,transcript,contentHash,bytes,status,GRANOLA_EXTRACTOR_VERSION,now,hidden);
+     item.id,hidden?'':detail.title.slice(0,300),hidden?null:detail.webUrl,detail.meetingAt,detail.dateBasis,detail.createdAt,detail.updatedAt,JSON.stringify(detail.folderIds),hidden?'':summary,hidden?'':privateNotes,transcript,contentHash,bytes,status,extractorVersion(this.env),now,hidden);
     this.ctx.storage.sql.exec('DELETE FROM granola_attendees WHERE note_id=?',item.id);this.ctx.storage.sql.exec('DELETE FROM granola_edges WHERE note_id=?',item.id);
     if(!hidden){
      for(const a of detail.attendees)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_attendees VALUES (?,?,?)',item.id,a.email,a.name);
@@ -256,54 +260,83 @@ export class GranolaSync {
  protected async extractPhase(c:Connection,now:number,started:number):Promise<void>{
   const owner=await this.hooks.owner();if(!owner){await this.finishRun(now,started);return;}
   const budgetStart=Date.now();
-  const rows=this.ctx.storage.sql.exec<{id:string;summary:string;private_notes:string;transcript:string;meeting_at:string;content_hash:string;extraction_attempts:number}>("SELECT id,summary,private_notes,transcript,meeting_at,content_hash,extraction_attempts FROM granola_notes WHERE extraction_status='pending' AND hidden=0 ORDER BY meeting_at DESC LIMIT ?",GranolaSync.EXTRACT_PER_TICK).toArray();
+  const jev=jevConfigured(this.env);
+  const rows=this.ctx.storage.sql.exec<{id:string;title:string;folder_ids:string;summary:string;private_notes:string;transcript:string;meeting_at:string;content_hash:string;extraction_attempts:number}>("SELECT id,title,folder_ids,summary,private_notes,transcript,meeting_at,content_hash,extraction_attempts FROM granola_notes WHERE extraction_status='pending' AND hidden=0 ORDER BY meeting_at DESC LIMIT ?",GranolaSync.EXTRACT_PER_TICK).toArray();
   if(!rows.length){await this.finishRun(now,started);return;}
-  let unavailable=0,extracted=0;
+  let unavailable=0,extracted=0,unauthorized=false;
   for(const row of rows){
    if(Date.now()-budgetStart>GranolaSync.EXTRACT_BUDGET_MS)break;
    const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
-   let extraction:GranolaExtraction;
+   let extraction:GranolaExtraction|JevExtraction;
    const remainingMs=GranolaSync.EXTRACT_BUDGET_MS-(Date.now()-budgetStart);
+   const signal=AbortSignal.timeout(Math.max(1_000,Math.min(remainingMs,180_000)));
+   const text={summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees};
    this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempted_at=? WHERE id=?',Date.now(),row.id);
-   try{extraction=await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract({summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees},AbortSignal.timeout(Math.max(1_000,Math.min(remainingMs,180_000))));}
+   try{extraction=jev
+    ?await new GranolaJevExtractor(this.env).extract({...text,title:row.title,folders:this.jevFolders(row.folder_ids)},signal)
+    :await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract(text,signal);}
    catch(e){
-    const attempts=row.extraction_attempts+1;const failed=attempts>=GranolaSync.MAX_ATTEMPTS||(e instanceof Error&&e.message==='invalid_extraction'&&attempts>=2);
+    const attempts=row.extraction_attempts+1;
+    // A rejected TypeSafe key is not a model wobble: stop this note now and say so on the card.
+    if(e instanceof JevError&&e.code==='jev_unauthorized'){this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_attempts=?,extraction_status='failed' WHERE id=?",attempts,row.id);unauthorized=true;break;}
+    const invalid=e instanceof JevError?e.code==='jev_invalid':e instanceof Error&&e.message==='invalid_extraction';
+    const failed=attempts>=GranolaSync.MAX_ATTEMPTS||(invalid&&attempts>=2);
     this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempts=?,extraction_status=? WHERE id=?',attempts,failed?'failed':'pending',row.id);
-    if(e instanceof Error&&e.message==='ai_unavailable')unavailable++;
+    if(e instanceof JevError?e.code==='jev_unavailable'||e.code==='jev_rate_limited':e instanceof Error&&e.message==='ai_unavailable')unavailable++;
     continue;
    }
    this.checkRun(started);
    await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
    this.checkRun(started);
-   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,GRANOLA_EXTRACTOR_VERSION,row.id,row.content_hash);
+   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,extractorVersion(this.env),row.id,row.content_hash);
    extracted++;
   }
   // One rejected note is one attempt, not an outage: only a missing or mismatched binding,
   // or a tick where every attempt failed with ai_unavailable, ends the run early.
-  const aiDown=!this.env.AI||this.env.THEME_MODEL!==THEME_MODEL||(unavailable>0&&!extracted);
+  const aiDown=unauthorized||(jev?unavailable>0&&!extracted:!this.env.AI||this.env.THEME_MODEL!==THEME_MODEL||(unavailable>0&&!extracted));
   const remaining=this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='pending' AND hidden=0").toArray()[0].n;
   const c2=this.read();if(!c2||!c2.job)return;
   // When the model is unavailable, end this run; pending notes retry on the next hourly run (one attempt per run, five runs to 'failed').
   if(!remaining||aiDown)await this.finishRun(now,started);
   else {c2.job.nextAttempt=Date.now()+1_500;this.commit(c2,started);}
+  // finishRun clears the error, so the paused-key message is written after it, not before.
+  if(unauthorized){const ended=this.read();if(ended){ended.error='jev_unauthorized';this.write(ended);}}
  }
 
- private async ingestExtraction(owner:string,noteId:string,meetingAt:string,contentHash:string,extraction:GranolaExtraction,attendees:{email:string;name:string}[]){
+ /** The note's folders that still have a row, as {id,name} for the Jev theme choice. */
+ private jevFolders(folderIds:string):{id:string;name:string}[]{
+  let ids:unknown;try{ids=JSON.parse(folderIds);}catch{return [];}
+  if(!Array.isArray(ids))return [];
+  const folders:{id:string;name:string}[]=[];
+  for(const id of ids.slice(0,50)){const row=this.ctx.storage.sql.exec<{id:string;name:string}>('SELECT id,name FROM granola_folders WHERE id=?',id).toArray()[0];if(row)folders.push({id:row.id,name:row.name});}
+  return folders;
+ }
+
+ private async ingestExtraction(owner:string,noteId:string,meetingAt:string,contentHash:string,extraction:GranolaExtraction|JevExtraction,attendees:{email:string;name:string}[]){
   await this.removeNoteSignals(noteId);
+  // The stored extraction, not the current env, decides how its numbers are read: a note
+  // extracted by Llama keeps its fixed confidences until it is re-extracted by Jev.
+  const jev=(extraction as JevExtraction).engine==='jev';
+  const version=jev?JEV_EXTRACTOR_VERSION:LLAMA_EXTRACTOR_VERSION;
+  const modelId=jev?this.env.JEV_MODEL??'jev-latest':THEME_MODEL;
   const now=new Date().toISOString();const themes=new Map<string,Theme>();const signals:(ThemeSignal&{account:string})[]=[];
   const topicTheme=async(topicId:keyof typeof THEME_TOPICS)=>{const topic=THEME_TOPICS[topicId];const id='theme-'+await opaque(owner,`body-topic:${topicId}`,this.env.TOKEN_SECRET);themes.set(id,{id,owner,canonicalName:canonicalThemeName(topic.name),aliases:[topic.name],description:topic.summary,status:'active',createdAt:now,updatedAt:now});return id;};
   let best:{id:string;confidence:number}|null=null;
   for(const t of extraction.topics){
    const themeId=await topicTheme(t.topicId);
    if(!best||t.confidence>best.confidence)best={id:themeId,confidence:t.confidence};
-   signals.push({id:await opaque(owner,`granola-topic:${noteId}:${t.topicId}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:t.confidence,summary:`Meeting matched ${THEME_TOPICS[t.topicId].name}`,evidenceRef:`granola-note:${noteId}#topic@${t.topicId}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});
+   signals.push({id:await opaque(owner,`granola-topic:${noteId}:${t.topicId}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:t.confidence,summary:`Meeting matched ${THEME_TOPICS[t.topicId].name}`,evidenceRef:`granola-note:${noteId}#topic@${t.topicId}`,contentHash,extractorVersion:version,modelId});
   }
   // The first folder id of the note that still has a row in granola_folders (folders drop off
   // after 7 days unseen) names the theme for its statements, ahead of the best topic match.
   let folderThemeId:string|null=null;
   const noteRow=this.ctx.storage.sql.exec<{folder_ids:string}>('SELECT folder_ids FROM granola_notes WHERE id=?',noteId).toArray()[0];
   if(noteRow){
-   for(const folderId of JSON.parse(noteRow.folder_ids) as string[]){
+   // A confident Jev folder choice is tried first; everything else keeps the first-folder rule.
+   const folderIds=JSON.parse(noteRow.folder_ids) as string[];
+   const chosen=jev?(extraction as JevExtraction).themeChoice:undefined;
+   const ordered=chosen&&chosen.kind==='folder'&&chosen.probability>=0.5&&folderIds.includes(chosen.id)?[chosen.id,...folderIds]:folderIds;
+   for(const folderId of ordered){
     const folder=this.ctx.storage.sql.exec<{id:string;name:string}>('SELECT id,name FROM granola_folders WHERE id=?',folderId).toArray()[0];
     if(!folder)continue;
     const id='theme-'+await opaque(owner,`granola-folder:${folderId}`,this.env.TOKEN_SECRET);
@@ -318,7 +351,7 @@ export class GranolaSync {
    let themeId=folderThemeId??best?.id;
    if(!themeId){fallback??='theme-'+await opaque(owner,'granola-meetings',this.env.TOKEN_SECRET);themeId=fallback;themes.set(themeId,{id:themeId,owner,canonicalName:'meetings',aliases:['Meetings'],description:'Statements from meeting notes without a matched topic',status:'active',createdAt:now,updatedAt:now});}
    const personId=await opaque(owner,s.email,this.env.TOKEN_SECRET);
-   signals.push({id:await opaque(owner,`granola-statement:${noteId}:${s.email}:${s.kind}:${s.source}:${s.offset}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,personId,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:s.source==='summary'?0.8:s.source==='private_notes'?0.7:0.6,summary:`${KIND_LABEL[s.kind]}: “${s.quote}”`.slice(0,240),evidenceRef:`granola-note:${noteId}#${s.source}@${s.offset}`,contentHash,extractorVersion:GRANOLA_EXTRACTOR_VERSION,modelId:THEME_MODEL});
+   signals.push({id:await opaque(owner,`granola-statement:${noteId}:${s.email}:${s.kind}:${s.source}:${s.offset}:${contentHash}`,this.env.TOKEN_SECRET),owner,account:GRANOLA_ACCOUNT,personId,themeId,sourceType:'granola',visibility:'private',observedAt:meetingAt,ingestedAt:now,confidence:jev?heat(s as JevStatement):s.source==='summary'?0.8:s.source==='private_notes'?0.7:0.6,summary:`${KIND_LABEL[s.kind]}: “${s.quote}”`.slice(0,240),evidenceRef:`granola-note:${noteId}#${s.source}@${s.offset}`,contentHash,extractorVersion:version,modelId});
   }
   await this.hooks.store().ingestWithThemes([...themes.values()],signals);
  }
@@ -389,6 +422,13 @@ export class GranolaSync {
  ownEmails():string[]{const c=this.read();return c?.ownerEmail?[c.ownerEmail]:[];}
  contacts(){return this.ctx.storage.sql.exec<{email:string;name:string;meetings:number;last:string}>('SELECT a.email AS email,MAX(a.name) AS name,COUNT(*) AS meetings,MAX(n.meeting_at) AS last FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 GROUP BY a.email ORDER BY meetings DESC, a.email ASC LIMIT 5000').toArray().map(r=>({email:r.email,name:r.name,meetings:r.meetings,last:Date.parse(r.last)}));}
  edges(){const rows=this.ctx.storage.sql.exec<{a:string;b:string;title:string}>('SELECT e.a AS a,e.b AS b,n.title AS title FROM granola_edges e JOIN granola_notes n ON n.id=e.note_id WHERE n.hidden=0 ORDER BY n.meeting_at DESC, n.title ASC').toArray();const map=new Map<string,{a:string;b:string;weight:number;titles:string[]}>();for(const r of rows){const key=r.a+'\u0000'+r.b;const e=map.get(key)??{a:r.a,b:r.b,weight:0,titles:[]};e.weight++;if(e.titles.length<3&&!e.titles.includes(r.title))e.titles.push(r.title);map.set(key,e);}return [...map.values()].sort((x,y)=>y.weight-x.weight).slice(0,5000);}
+}
+
+const num=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?v:0;
+/** Why-now heat for a Jev statement: attendee/kind probability, time pressure and who owes whom. */
+function heat(s:JevStatement):number{
+ const value=0.35*num(s.probability)+0.35*num(s.urgency)+0.15*num(s.openLoop)+0.15*num(s.theirAsk);
+ return Math.max(0.05,Math.min(1,value));
 }
 
 /** Thrown when the connection row no longer belongs to the run that started this tick. */

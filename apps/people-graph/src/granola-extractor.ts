@@ -25,7 +25,7 @@ export function chunkTranscript(text:string):string[]{
  }
  return chunks.filter(c=>c.length>0);
 }
-const normalise=(s:string)=>s.replace(/\s+/g,' ').trim();
+export const normalise=(s:string)=>s.replace(/\s+/g,' ').trim();
 export function ground(quote:string,input:GranolaExtractionInput):{source:'summary'|'private_notes'|'transcript';offset:number}|null{
  const q=normalise(quote);if(!q||q.length>MAX_QUOTE)return null;
  for(const [source,text] of [['summary',input.summary],['private_notes',input.privateNotes],['transcript',input.transcript]] as const){

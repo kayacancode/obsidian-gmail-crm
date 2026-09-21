@@ -5,6 +5,7 @@ import {GranolaSync} from '../src/granola-sync';
 import {RelevanceStore} from '../src/relevance-store';
 import {unseal,opaque} from '../src/mail-model';
 import {FakeAI} from './worker-stub';
+import {defaultAnswer} from './granola-jev-extractor.test';
 
 export function granolaFixture(opts:{maxNotes?:number}={}){
  const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>(),statements:string[]=[];
@@ -502,4 +503,102 @@ test('a theme’s canonical_name follows a folder rename on re-ingest',async()=>
  assert.equal(ai.calls.length,callsBefore,'re-deriving the theme name costs no AI call');
  assert.equal((f.db.prepare('SELECT canonical_name,aliases FROM themes WHERE id=?').get(pilot) as any).canonical_name,'onboarding');
  assert.deepEqual(JSON.parse((f.db.prepare('SELECT aliases FROM themes WHERE id=?').get(pilot) as any).aliases),['Onboarding']);
+});
+
+// ---- Jev extraction path (TYPESAFE_API_KEY present) ----
+const TS_KEY='ts_fictional_key_123456';
+/** Routes api.typesafe.ai to a fake Jev and everything else to the Granola fake. */
+function withJev(f:ReturnType<typeof granolaFixture>,net:{fake:typeof fetch},opts:{answer?:(id:string,q:any,state:any)=>unknown;status?:number}={}){
+ f.env.TYPESAFE_API_KEY=TS_KEY;
+ const answer=opts.answer??defaultAnswer;const requests:{state:any;questions:Record<string,any>}[]=[];
+ const fake=(async(input:any,init:any)=>{
+  const url=String(input);
+  if(!url.startsWith('https://api.typesafe.ai/'))return net.fake(input,init);
+  const body=JSON.parse(init.body);requests.push(body);
+  assert.ok(!JSON.stringify(body).includes(KEY),'the Granola key never reaches Jev');
+  if(opts.status&&opts.status!==200)return new Response('{"error":"no"}',{status:opts.status});
+  const answers:Record<string,unknown>={};
+  for(const [id,question] of Object.entries<any>(body.questions))answers[id]=answer(id,question,body.state);
+  return Response.json({model:'jev-2026-09-01',answers,usage:{input_tokens:1,output_tokens:0}});
+ }) as typeof fetch;
+ return {fake,requests};
+}
+const JEV_CONFIDENCE=0.35*(0.9*0.8)+0.35*(2/3)+0.15*0.5+0.15*1;
+const twoFolderNote=()=>({...noteRaw(NOTE_A,'Alpha'),folder_membership:[{id:'fol_1234567890abcd',name:'x',parent_folder_id:null},{id:'fol_2234567890abcd',name:'y',parent_folder_id:null}]});
+
+test('Jev extraction stamps granola-v3-jev and ingests composite statement confidences',async()=>{
+ const f=granolaFixture();const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});const jev=withJev(f,net);
+ assert.equal(f.env.AI,undefined,'the Jev path needs no Workers AI binding');
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ const row=f.db.prepare('SELECT extraction_status,extractor_version,extraction FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v3-jev');
+ const stored=JSON.parse(row.extraction);
+ assert.equal(stored.engine,'jev');
+ assert.deepEqual(Object.keys(stored.statements[0]).sort(),['email','kind','offset','openLoop','probability','quote','source','theirAsk','urgency']);
+ const ada=await opaque('owner@example.test','ada@example.test','identity-key');
+ const statement=f.db.prepare("SELECT * FROM theme_signals WHERE account='granola' AND person_id=? AND evidence_ref=?").get(ada,`granola-note:${NOTE_A}#summary@0`) as any;
+ assert.ok(Math.abs(statement.confidence-JEV_CONFIDENCE)<1e-9,`confidence ${statement.confidence}`);
+ assert.equal(statement.summary,'Intro: “Ada asked for an intro to a fintech founder.”');
+ assert.equal(statement.extractor_version,'granola-v3-jev');
+ assert.equal(statement.model_id,'jev-latest');
+ assert.equal(statement.theme_id,'theme-'+await opaque('owner@example.test','granola-folder:fol_1234567890abcd','identity-key'));
+ const topic=f.db.prepare('SELECT theme_id,confidence FROM theme_signals WHERE evidence_ref=?').get(`granola-note:${NOTE_A}#topic@business_strategy`) as any;
+ assert.equal(topic.confidence,0.7);
+ assert.ok(jev.requests.length>0);
+ assert.ok(jev.requests.every(r=>!('transcript' in r.state)&&r.state.title==='Alpha'));
+});
+
+test('a confident Jev folder choice beats the note’s first folder, a weak one does not',async()=>{
+ const personal='theme-'+await opaque('owner@example.test','granola-folder:fol_2234567890abcd','identity-key');
+ const pilot='theme-'+await opaque('owner@example.test','granola-folder:fol_1234567890abcd','identity-key');
+ for(const [probability,expected] of [[0.8,personal],[0.3,pilot]] as const){
+  const f=granolaFixture();const net=network({notes:[twoFolderNote()]});
+  const jev=withJev(f,net,{answer:(id,q,state)=>id==='note_theme'?{type:'choice',choice:'fol_2234567890abcd',probabilities:{fol_2234567890abcd:probability,none:0.1},confidence:probability}:defaultAnswer(id,q)});
+  await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+  const statement=f.db.prepare("SELECT theme_id FROM theme_signals WHERE account='granola' AND person_id IS NOT NULL LIMIT 1").get() as any;
+  assert.equal(statement.theme_id,expected,`probability ${probability}`);
+ }
+});
+
+test('a TypeSafe 401 fails the note and pauses the connection with jev_unauthorized',async()=>{
+ const f=granolaFixture();const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});const jev=withJev(f,net,{status:401});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ const row=f.db.prepare('SELECT extraction_status,extraction_attempts FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'failed');assert.equal(row.extraction_attempts,1);
+ assert.equal(f.sync.status().error,'jev_unauthorized');
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM theme_signals WHERE account='granola'").get()!.n,0);
+});
+
+test('a TypeSafe outage leaves the note pending like an unavailable model',async()=>{
+ const f=granolaFixture();const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});const jev=withJev(f,net,{status:503});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ const row=f.db.prepare('SELECT extraction_status,extraction_attempts FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'pending');assert.equal(row.extraction_attempts,1);
+ assert.equal(f.sync.status().error,'');
+});
+
+test('without the TypeSafe key the Llama extractor and granola-v2 stay in use',async()=>{
+ const f=granolaFixture();const ai=withAI(f,goodAI);const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});
+ const seen:string[]=[];
+ const fake=(async(input:any,init:any)=>{seen.push(String(input));return net.fake(input,init);}) as typeof fetch;
+ await withFetch(fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,fake);
+ assert.ok(!seen.some(u=>u.includes('typesafe')),'no Jev request without the key');
+ assert.ok(ai.calls.length>0);
+ const row=f.db.prepare('SELECT extractor_version,extraction FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extractor_version,'granola-v2');
+ assert.equal(JSON.parse(row.extraction).engine,undefined);
+ assert.equal((f.db.prepare("SELECT confidence FROM theme_signals WHERE evidence_ref=?").get(`granola-note:${NOTE_A}#summary@0`) as any).confidence,0.8);
+});
+
+test('adding the TypeSafe key re-extracts the notes the Llama path stored',async()=>{
+ const f=granolaFixture();withAI(f,goodAI);const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ assert.equal((f.db.prepare('SELECT extractor_version FROM granola_notes WHERE id=?').get(NOTE_A) as any).extractor_version,'granola-v2');
+ const jev=withJev(f,net);
+ bump(f,{nextSync:0});await runToIdle(f,jev.fake);
+ const row=f.db.prepare('SELECT extraction_status,extractor_version FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v3-jev');
+ const statement=f.db.prepare("SELECT confidence,extractor_version FROM theme_signals WHERE account='granola' AND person_id IS NOT NULL LIMIT 1").get() as any;
+ assert.ok(Math.abs(statement.confidence-JEV_CONFIDENCE)<1e-9);
+ assert.equal(statement.extractor_version,'granola-v3-jev');
 });

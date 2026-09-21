@@ -5,6 +5,7 @@ const messages={
   granola_rate_limited:'Granola is receiving too many requests. Wait a moment and try again.',
   granola_timeout:'Granola took too long to respond. Try again.',
   granola_unavailable:'Granola is temporarily unavailable. Try again.',
+  jev_unauthorized:'TypeSafe rejected the key; extraction paused',
   mail_not_configured:'Granola connections are not enabled on this server yet.',
   invalid_request:'That request was not accepted. Reload and try again.',
 };
