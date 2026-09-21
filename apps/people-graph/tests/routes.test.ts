@@ -51,7 +51,7 @@ test('legacy graph payloads preserve dotted and duplicate node ids through push 
 
 test('draft route is session-gated, same-origin, body-checked and maps durable object failures',async()=>{
  const {env}=workerFixture();const calls:string[]=[];
- let result:any={to:'ada@example.test',name:'Ada',subject:'Following up',body:'Hi Ada, good to see you.',basedOn:[{summary:'Ask: “hi”',observedAt:'2026-09-14T11:00:00.000Z',title:'Pilot sync'}]};
+ let result:any={to:'ada@example.test',name:'Ada',subject:'Following up',body:'Hi Ada, good to see you.',checked:true,warnings:['This draft may read as too blunt or off-tone.'],basedOn:[{summary:'Ask: “hi”',observedAt:'2026-09-14T11:00:00.000Z',title:'Pilot sync'}]};
  env.MAIL.getByName=(owner:string)=>({bindOwner:async()=>{calls.push('bind:'+owner);},draftNote:async(personId:string)=>{calls.push('draft:'+personId);if(result instanceof Error)throw result;return result;}});
  const post=(body:string,origin='https://people.test')=>({method:'POST',headers:{origin,'content-type':'application/json'},body});
  assert.equal((await worker.fetch(new Request('https://people.test/api/people/draft',post('{"personId":"ada"}')),env)).status,401);

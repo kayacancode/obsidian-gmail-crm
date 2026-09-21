@@ -4,6 +4,21 @@ import {DatabaseSync} from 'node:sqlite';
 import {MailSync} from '../src/mail-sync';
 import {FakeAI} from './worker-stub';
 import {opaque} from '../src/mail-model';
+import {jevServer,noulA} from './granola-jev-extractor.test';
+
+const JEV_KEY='ts_fictional_key_123456';
+const THEME_MODEL='@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+async function withFetch<T>(fake:typeof fetch,run:()=>Promise<T>):Promise<T>{const o=globalThis.fetch;globalThis.fetch=fake;try{return await run();}finally{globalThis.fetch=o;}}
+/** A minimal single-contact draftNote fixture, ready for the Jev-configured tests below. */
+async function draftFixture(){
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ const ai=new FakeAI({response:{subject:'Following up',body:'Hi Ada, good to see you.'}});
+ Object.assign((service as any).env,{AI:ai,THEME_MODEL});
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+ db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada@example.com','Ada',Date.parse('2026-09-01T00:00:00Z'),'Hello',1,1);
+ const ada=await opaque('owner','ada@example.com','identity-key');
+ return {service,db,kv,ai,ada};
+}
 
 test('final wave retrieval resolves ranked visible contacts across selected accounts',async()=>{
  const {service,db,kv}=fixture();kv.set('owner','owner');
@@ -444,6 +459,8 @@ test('draftNote resolves the person, sends the eight newest signals and never an
   assert.deepEqual(value.basedOn.map((item:any)=>item.summary),[10,9,8,7,6,5,4,3].map(day=>`Ask: “quote ${day}”`));
   assert.equal(value.basedOn.length,8);
   assert.equal(value.basedOn[0].title,'Pilot sync with Ada');
+  assert.equal(value.checked,false,'no TYPESAFE_API_KEY means the draft is never checked');
+  assert.deepEqual(value.warnings,[]);
   const sent=JSON.stringify(ai.calls[0].input);
   assert.ok(!sent.includes('SECRET'),'note bodies, notes and transcripts never reach the model');
   assert.ok(!sent.includes('quote 20'),'another person’s evidence never reaches the model');
@@ -464,5 +481,75 @@ test('draftNote never hands back a contact email that could inject mailto: heade
   const personId=await opaque('owner',victim,'identity-key');
   const value=await service.draftNote(personId);
   assert.equal(value.to,null,'a mailto-unsafe stored email is withheld, not passed through');
+ }finally{db.close();}
+});
+
+test('draftNote checks a clean draft with Jev and reports checked:true with no warnings',async()=>{
+ const {service,db,ai,ada}=await draftFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ try{
+  const jev=jevServer((id)=>{
+   if(id==='unsupported')return noulA(0.1);
+   if(id==='toneOk')return noulA(0.9);
+   if(id==='asksForMoneyOrSecrets')return noulA(0.05);
+   throw Error('unexpected question id '+id);
+  });
+  const value=await withFetch(jev.fake,()=>service.draftNote(ada));
+  assert.equal(value.checked,true);
+  assert.deepEqual(value.warnings,[]);
+  assert.equal(ai.calls.length,1,'a clean draft is never regenerated');
+  assert.equal(jev.requests.length,1);
+ }finally{db.close();}
+});
+
+test('draftNote reports a tone warning without regenerating, since only unsupported or money triggers a rewrite',async()=>{
+ const {service,db,ai,ada}=await draftFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ try{
+  const jev=jevServer((id)=>{
+   if(id==='unsupported')return noulA(0.1);
+   if(id==='toneOk')return noulA(0.2);
+   if(id==='asksForMoneyOrSecrets')return noulA(0.1);
+   throw Error('unexpected question id '+id);
+  });
+  const value=await withFetch(jev.fake,()=>service.draftNote(ada));
+  assert.equal(value.checked,true);
+  assert.deepEqual(value.warnings,['This draft may read as too blunt or off-tone.']);
+  assert.equal(ai.calls.length,1);
+ }finally{db.close();}
+});
+
+test('draftNote regenerates once when unsupported or money-asking, then re-checks the rewrite',async()=>{
+ const {service,db,ai,ada}=await draftFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ try{
+  let firstCheckDone=false;
+  const jev=jevServer((id)=>{
+   if(id==='unsupported')return noulA(firstCheckDone?0.1:0.9);
+   if(id==='toneOk')return noulA(0.9);
+   if(id==='asksForMoneyOrSecrets'){const answer=noulA(0.1);firstCheckDone=true;return answer;}
+   throw Error('unexpected question id '+id);
+  });
+  const value=await withFetch(jev.fake,()=>service.draftNote(ada));
+  assert.equal(value.checked,true);
+  assert.deepEqual(value.warnings,[]);
+  assert.equal(ai.calls.length,2,'composeDraft is called once more to regenerate');
+  const regenerateSystem=ai.calls[1].input.messages[0].content as string;
+  assert.ok(regenerateSystem.includes('Only mention items present in the evidence. Do not ask for money or credentials.'));
+  assert.equal(jev.requests.length,2);
+ }finally{db.close();}
+});
+
+test('draftNote falls back to the unchecked draft when Jev fails, with no user-facing error',async()=>{
+ const {service,db,ai,ada}=await draftFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ try{
+  const unauthorized=(async()=>new Response('{"error":"no"}',{status:401})) as typeof fetch;
+  const value=await withFetch(unauthorized,()=>service.draftNote(ada));
+  assert.equal(value.checked,false);
+  assert.deepEqual(value.warnings,[]);
+  assert.equal(value.subject,'Following up');
+  assert.equal(value.body,'Hi Ada, good to see you.');
+  assert.equal(ai.calls.length,1,'the draft is never regenerated when the check itself fails');
  }finally{db.close();}
 });

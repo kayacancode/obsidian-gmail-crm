@@ -504,6 +504,15 @@ async function startBrowserApp() {
       list.append(entry);
     }
     view.content.append(list);
+    if (draft.checked) {
+      if (draft.warnings?.length) {
+        const warnings = document.createElement('ul');
+        for (const warning of draft.warnings) { const entry = document.createElement('li'); entry.textContent = warning; warnings.append(entry); }
+        view.content.append(warnings);
+      } else {
+        paragraph(view.content, 'Checked against your notes.');
+      }
+    }
     const subjectLabel=document.createElement('label');subjectLabel.textContent='Subject';
     const subject=document.createElement('input');subject.type='text';subject.setAttribute('aria-label','Subject');subject.value=draft.subject;
     subjectLabel.append(subject);

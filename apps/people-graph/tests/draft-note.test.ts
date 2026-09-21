@@ -1,7 +1,12 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {composeDraft} from '../src/draft-note';
+import {composeDraft,checkDraft} from '../src/draft-note';
+import {JevError} from '../src/jev';
 import {FakeAI} from './worker-stub';
+import {jevServer,noulA} from './granola-jev-extractor.test';
+
+async function withFetch<T>(fake:typeof fetch,run:()=>Promise<T>):Promise<T>{const o=globalThis.fetch;globalThis.fetch=fake;try{return await run();}finally{globalThis.fetch=o;}}
+const JEV_KEY='ts_fictional_key_123456';
 
 const MODEL='@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 const input={name:'Ada Rivera',company:'example.test',lastContact:'2026-09-01T00:00:00.000Z',evidence:[
@@ -51,4 +56,34 @@ test('missing binding, wrong model and transport failures surface as ai_unavaila
  await assert.rejects(composeDraft(new FakeAI({response:draft}) as any,'@cf/other/model',input),/ai_unavailable/);
  await assert.rejects(composeDraft(new FakeAI(new Error('boom')) as any,MODEL,input),/ai_unavailable/);
  await assert.rejects(composeDraft(new FakeAI({response:draft}) as any,MODEL,input,AbortSignal.abort()),/ai_unavailable/);
+});
+
+test('composeDraft appends an extra instruction to the system prompt when one is given',async()=>{
+ const ai=new FakeAI({response:draft});
+ await composeDraft(ai as any,MODEL,input,undefined,'Only mention items present in the evidence. Do not ask for money or credentials.');
+ const system=ai.calls[0].input.messages[0].content as string;
+ assert.ok(system.startsWith('You help the owner'));
+ assert.ok(system.includes('Only mention items present in the evidence. Do not ask for money or credentials.'));
+});
+
+test('checkDraft sends only the evidence and the draft, and asks the three Nouls',async()=>{
+ const server=jevServer((id)=>{
+  if(id==='unsupported')return noulA(0.2);
+  if(id==='toneOk')return noulA(0.9);
+  if(id==='asksForMoneyOrSecrets')return noulA(0.05);
+  throw Error('unexpected question id '+id);
+ });
+ const result=await withFetch(server.fake,()=>checkDraft({TYPESAFE_API_KEY:JEV_KEY},{evidence:input.evidence,subject:draft.subject,body:draft.body}));
+ assert.deepEqual(result,{unsupported:0.2,toneOk:0.9,asksForMoneyOrSecrets:0.05});
+ assert.equal(server.requests.length,1);
+ const [request]=server.requests;
+ assert.deepEqual(Object.keys(request.state).sort(),['draft','evidence']);
+ assert.deepEqual(request.state.evidence,input.evidence);
+ assert.deepEqual(request.state.draft,{subject:draft.subject,body:draft.body});
+ assert.deepEqual(Object.keys(request.questions).sort(),['asksForMoneyOrSecrets','toneOk','unsupported']);
+ for(const question of Object.values<any>(request.questions))assert.equal(question.type,'noul');
+});
+
+test('checkDraft surfaces a JevError rather than swallowing it',async()=>{
+ await assert.rejects(checkDraft({},{evidence:[],subject:'s',body:'b'}),(e:unknown)=>e instanceof JevError&&e.code==='jev_unconfigured');
 });

@@ -263,7 +263,7 @@ try {
 
   // Draft a note: the model writes it, the owner edits it, and nothing is ever sent from here.
   const draftBody='Hi Ada, you mentioned wanting an intro to a fintech founder in the pilot sync. I have two people in mind and would be glad to introduce you this week.';
-  let draftResponse={status:200,json:{to:'ada@example.test',name:'Ada Rivera',subject:'Following up on the fintech intro',body:draftBody,
+  let draftResponse={status:200,json:{to:'ada@example.test',name:'Ada Rivera',subject:'Following up on the fintech intro',body:draftBody,checked:true,warnings:[],
     basedOn:[{summary:'Ask: \u201cAda asked for an intro to a fintech founder.\u201d',observedAt:'2026-09-14T12:00:00Z',title:'Pilot sync with Ada'},
       {summary:'Interest: \u201cagent memory\u201d',observedAt:'2026-09-02T12:00:00Z'}]}};
   await page.route('**/api/people/draft',route=>{workflowCalls.push({draft:route.request().postDataJSON()});return route.fulfill(draftResponse);});
@@ -278,6 +278,7 @@ try {
   assert.match(await draftDialog.innerText(),/Based on:/);
   assert.match(await draftDialog.innerText(),/Pilot sync with Ada/);
   assert.match(await draftDialog.innerText(),/Nothing is sent until you send it from your mail client\./);
+  assert.match(await draftDialog.innerText(),/Checked against your notes\./);
   const mailto=draftDialog.getByRole('link',{name:'Open in email \u2197'});
   assert.equal(await mailto.getAttribute('href'),`mailto:ada@example.test?subject=${encodeURIComponent('Following up on the fintech intro')}&body=${encodeURIComponent(draftBody)}`);
   await draftDialog.getByLabel('Subject').fill('Quick hello');
@@ -291,6 +292,23 @@ try {
   await page.getByRole('button',{name:'Draft a note',exact:true}).click();
   await draftDialog.getByLabel('Subject').waitFor();
   assert.equal(await draftDialog.getByRole('link',{name:'Open in email \u2197'}).count(),0,'no address means no mail client link');
+  await page.keyboard.press('Escape');
+  // A checked draft with warnings shows them as a list, and never the "Checked against your
+  // notes." sentence \u2014 the two are mutually exclusive.
+  draftResponse={status:200,json:{...draftResponse.json,to:'ada@example.test',checked:true,
+    warnings:['This draft may mention something not in your notes.','This draft asks for money or credentials; do not send it as is.']}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  await draftDialog.getByLabel('Subject').waitFor();
+  assert.match(await draftDialog.innerText(),/This draft may mention something not in your notes\./);
+  assert.match(await draftDialog.innerText(),/This draft asks for money or credentials; do not send it as is\./);
+  assert.ok(!(await draftDialog.innerText()).includes('Checked against your notes.'),'warnings and the all-clear sentence are mutually exclusive');
+  await page.keyboard.press('Escape');
+  // An unchecked draft (no TYPESAFE_API_KEY, or a failed check) shows neither warnings nor the
+  // all-clear sentence.
+  draftResponse={status:200,json:{...draftResponse.json,checked:false,warnings:[]}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  await draftDialog.getByLabel('Subject').waitFor();
+  assert.ok(!(await draftDialog.innerText()).includes('Checked against your notes.'),'an unchecked draft shows no check status');
   await page.keyboard.press('Escape');
   draftResponse={status:503,json:{error:'ai_unavailable',message:'The drafting model is unavailable. Try again shortly.'}};
   await page.getByRole('button',{name:'Draft a note',exact:true}).click();

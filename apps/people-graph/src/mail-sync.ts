@@ -12,7 +12,8 @@ import {previewPublicSource,fetchPublicSource,withPublicDeadline,publicAwait,saf
 import {normalizePushedGraph,type PushedGraphPayload} from './relevance-routes';
 import {boundedJSON as readBoundedJSON} from './bounded-json';
 import {GranolaSync,type GranolaRange,type GranolaStatus} from './granola-sync';
-import {composeDraft} from './draft-note';
+import {composeDraft,checkDraft} from './draft-note';
+import {jevConfigured,JevError} from './jev';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string}
@@ -354,8 +355,25 @@ export class MailSync extends DurableObject<MailEnv>{
   // parsed Gmail "From" line (e.g. "victim?bcc=attacker@evil.test"); never hand those to
   // a mailto: link.
   const to=rawTo&&MAILTO_SAFE.test(rawTo)?rawTo:null;
-  const {subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,{name:node.name,company:node.company,lastContact:node.lastContact,evidence:basedOn});
-  return {to,name:node.name,subject,body,basedOn};
+  const draftInput={name:node.name,company:node.company,lastContact:node.lastContact,evidence:basedOn};
+  let {subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,draftInput);
+  let checked=false,warnings:string[]=[];
+  // A Jev failure (unauthorized, rate-limited, unavailable, invalid response) never blocks a
+  // draft: the owner still gets the unchecked text, just without the "checked" label.
+  if(jevConfigured(this.env)){
+   try{
+    let result=await checkDraft(this.env,{evidence:basedOn,subject,body});
+    if(result.unsupported>=0.5||result.asksForMoneyOrSecrets>=0.5){
+     ({subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,draftInput,undefined,DRAFT_REWRITE_INSTRUCTION));
+     result=await checkDraft(this.env,{evidence:basedOn,subject,body});
+    }
+    checked=true;
+    if(result.unsupported>=0.5)warnings.push('This draft may mention something not in your notes.');
+    if(result.toneOk<0.5)warnings.push('This draft may read as too blunt or off-tone.');
+    if(result.asksForMoneyOrSecrets>=0.5)warnings.push('This draft asks for money or credentials; do not send it as is.');
+   }catch(e){if(!(e instanceof JevError))throw e;}
+  }
+  return {to,name:node.name,subject,body,checked,warnings,basedOn};
  }
  async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();if(!accounts.length&&!this.granola().status().connected)return null;
   const rows=this.graphContacts();
@@ -391,6 +409,7 @@ function noteIdOf(evidenceRef:string){return evidenceRef.slice(GRANOLA_NOTE_REF.
 // An address safe to place inside a mailto: link without opening header injection
 // (?/&/# start mailto query/fragment syntax, %<>/"' can break out of an href attribute).
 const MAILTO_SAFE=/^[^\s?&#%/<>"']+@[^\s?&#%/<>"']+$/;
+const DRAFT_REWRITE_INSTRUCTION='Only mention items present in the evidence. Do not ask for money or credentials.';
 
 function retrievalView(job:RetrievalJob){return {id:job.id,status:job.status,error:job.error,personId:job.personId,themeId:job.themeId,windowDays:job.windowDays,processed:job.processed,decodedBytes:job.decodedBytes,assertions:job.assertions,maxMessages:50,maxBytes:1_000_000};}
 function publicSourceView(source:PublicSourceState){const {owner:_,generation:__,dueAt:___,pendingRefresh:____,...view}=source;return {...view,visibility:'public' as const};}

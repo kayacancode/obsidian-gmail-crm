@@ -33,7 +33,12 @@ export async function mailRoute(request:Request,env:MailEnv,owner:string){
  if(path==='/api/accounts/disconnect'){await stub.remove(body.email);return json({ok:true});}
  return json({error:'not_found'},404);
 }
-/** POST /api/people/draft — an outreach draft from the person's own evidence. The app never sends it. */
+/**
+ * POST /api/people/draft — an outreach draft from the person's own evidence. The app never
+ * sends it. The response's `checked`/`warnings` come straight from MailSync.draftNote's Jev
+ * check (or `checked:false, warnings:[]` when Jev is not configured or fails); the route only
+ * forwards them.
+ */
 export async function draftRoute(request:Request,env:MailEnv,owner:string){
  const url=new URL(request.url);
  if(request.method!=='POST')return json({error:'method_not_allowed'},405);
