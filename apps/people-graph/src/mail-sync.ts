@@ -11,7 +11,7 @@ import type {RetrievalJob,RetrievalError} from './relevance-store';
 import {previewPublicSource,fetchPublicSource,withPublicDeadline,publicAwait,safePublicError,PUBLIC_EXTRACTOR_VERSION,type PublicSourceInput,type PublicSourceState,type PublicFetchResult} from './public-sources';
 import {normalizePushedGraph,type PushedGraphPayload} from './relevance-routes';
 import {boundedJSON as readBoundedJSON} from './bounded-json';
-import {GranolaSync,type GranolaRange,type GranolaStatus} from './granola-sync';
+import {GranolaSync,type GranolaRange,type GranolaStatus,type GranolaGmailContact,type GranolaIdentitySuggestion} from './granola-sync';
 import {composeDraft,checkDraft} from './draft-note';
 import {jevConfigured,JevError} from './jev';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
@@ -26,7 +26,24 @@ export class MailSync extends DurableObject<MailEnv>{
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
- private granola(){return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{})});}
+ private granola(){return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),contacts:()=>this.gmailContacts()});}
+ /**
+  * Gmail contacts for identity matching: one row per address with its most common display name
+  * and up to five canonical subject theme names. Raw subject lines never leave this object.
+  */
+ private gmailContacts():GranolaGmailContact[]{
+  const own=new Set(this.rows().map(a=>a.email));
+  const rows=this.ctx.storage.sql.exec<{email:string;name:string;subject:string}>('SELECT email,name,subject FROM contributions ORDER BY date DESC LIMIT 20000').toArray();
+  const grouped=new Map<string,{names:Map<string,number>;subjects:Set<string>}>();
+  for(const row of rows){
+   if(own.has(row.email))continue;
+   const entry=grouped.get(row.email)??{names:new Map<string,number>(),subjects:new Set<string>()};
+   entry.names.set(row.name,(entry.names.get(row.name)??0)+1);
+   if(entry.subjects.size<5){const tokens=canonicalThemeName(row.subject).split(' ').filter(Boolean).slice(0,4);if(tokens.length>=2)entry.subjects.add(tokens.join(' '));}
+   grouped.set(row.email,entry);
+  }
+  return [...grouped].slice(0,6000).map(([email,entry])=>({email,name:[...entry.names].sort((x,y)=>y[1]-x[1]||x[0].localeCompare(y[0]))[0][0],subjects:[...entry.subjects]}));
+ }
  private rows(){return this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM accounts').toArray().map(r=>JSON.parse(r.data) as Account);}
  private get(email:string){const row=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM accounts WHERE email=?',email).toArray()[0];return row?JSON.parse(row.data) as Account:null;}
  private put(a:Account){a.revision??=crypto.randomUUID();this.ctx.storage.sql.exec('INSERT INTO accounts VALUES (?,?) ON CONFLICT(email) DO UPDATE SET data=excluded.data',a.email,JSON.stringify(a));}
@@ -42,6 +59,8 @@ export class MailSync extends DurableObject<MailEnv>{
  async granolaExcluded(ids:string[]):Promise<GranolaStatus>{const status=await this.granola().setExcluded(ids);await this.scheduleNextAlarm();return status;}
  async granolaSyncNow():Promise<GranolaStatus>{const status=this.granola().syncNow();await this.scheduleNextAlarm();return status;}
  async granolaDisconnect():Promise<void>{await this.granola().disconnect();await this.scheduleNextAlarm();}
+ granolaIdentities():{suggestions:GranolaIdentitySuggestion[]}{return {suggestions:this.granola().identitySuggestions()};}
+ async granolaIdentity(attendeeEmail:string,decision:'confirm'|'dismiss'):Promise<{suggestions:GranolaIdentitySuggestion[]}>{return {suggestions:await this.granola().resolveIdentity(attendeeEmail,decision)};}
  private active(a:Account){return this.get(a.email)?.job?.generation===a.job?.generation;}
  private async google(url:string,access:string){const r=await fetch(url,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});if(!r.ok){await r.body?.cancel();const e=new Error(r.status===401?'reconnect_required':r.status===403?'gmail_access_denied':`gmail_${r.status}`);throw e;}return readBoundedJSON(r,2_000_000);}
  async alarm(){

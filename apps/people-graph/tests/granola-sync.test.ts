@@ -5,7 +5,7 @@ import {GranolaSync} from '../src/granola-sync';
 import {RelevanceStore} from '../src/relevance-store';
 import {unseal,opaque} from '../src/mail-model';
 import {FakeAI} from './worker-stub';
-import {defaultAnswer} from './granola-jev-extractor.test';
+import {defaultAnswer,noulA,choiceA} from './granola-jev-extractor.test';
 
 export function granolaFixture(opts:{maxNotes?:number}={}){
  const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>(),statements:string[]=[];
@@ -14,8 +14,9 @@ export function granolaFixture(opts:{maxNotes?:number}={}){
  kv.set('owner','owner@example.test');
  const store=new RelevanceStore(ctx as any,()=>ctx.storage.get('owner') as Promise<string|undefined>);
  let invalidations=0;
- const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;}},opts.maxNotes);
- return {sync,db,kv,env,store,statements,invalidations:()=>invalidations};
+ const gmail:{email:string;name:string;subjects:string[]}[]=[];
+ const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;},contacts:()=>gmail},opts.maxNotes);
+ return {sync,db,kv,env,store,statements,gmail,invalidations:()=>invalidations};
 }
 export async function withFetch<T>(fake:typeof fetch,run:()=>Promise<T>):Promise<T>{const o=globalThis.fetch;globalThis.fetch=fake;try{return await run();}finally{globalThis.fetch=o;}}
 const KEY='grn_fictional_key_123456';
@@ -628,4 +629,186 @@ test('adding the TypeSafe key re-extracts the notes the Llama path stored',async
  const statement=f.db.prepare("SELECT confidence,extractor_version FROM theme_signals WHERE account='granola' AND person_id IS NOT NULL LIMIT 1").get() as any;
  assert.ok(Math.abs(statement.confidence-JEV_CONFIDENCE)<1e-9);
  assert.equal(statement.extractor_version,'granola-v3-jev');
+});
+
+// ---- Identity suggestions (feature 5) ----
+/** Answers the identity question with `p` and keeps the extractor happy on any note's attendees. */
+const identityAnswers=(p:number)=>(id:string,q:any)=>{
+ if(id==='same_person')return noulA(p);
+ if(id.startsWith('a'))return choiceA(Object.keys(q?.criteria??{}).find(k=>k!=='none')??'none',0.9,{none:0.05});
+ return defaultAnswer(id,q);
+};
+const withAttendees=(title:string,attendees:{name:string;email:string}[])=>({...noteRaw(NOTE_A,title),attendees});
+const identityRows=(f:ReturnType<typeof granolaFixture>)=>f.db.prepare('SELECT * FROM granola_identity ORDER BY attendee_email').all() as any[];
+const samePerson=(jev:{requests:{state:any;questions:Record<string,any>}[]})=>jev.requests.filter(r=>'same_person' in r.questions);
+
+test('identity candidates pair name-matched attendees with Gmail contacts, at most three each',async()=>{
+ const f=granolaFixture();
+ f.gmail.push(
+  {email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:['pilot rollout','pricing deck','board update','hiring plan','q4 budget','extra theme']},
+  {email:'ada.l@other.test',name:'Ada Lovelace',subjects:[]},
+  {email:'a.lovelace@third.test',name:'Ada Lovelace',subjects:[]},
+  {email:'ada.fourth@fourth.test',name:'Ada Lovelace',subjects:[]},
+  {email:'grace.hopper@work.test',name:'Grace Hopper',subjects:[]},
+  {email:'jose@work.test',name:'Jose Nito',subjects:[]},
+  {email:'bob@example.test',name:'Bob Stone',subjects:[]},
+ );
+ const net=network({notes:[withAttendees('Alpha',[
+  {name:'Me',email:'me@example.test'},
+  {name:'Ada Lovelace',email:'ada@granola.test'},
+  {name:'Grace H.',email:'grace@granola.test'},
+  {name:'Grace Kelly',email:'gracek@granola.test'},
+  {name:'José Ñito',email:'jose@granola.test'},
+  {name:'Bob Stone',email:'bob@example.test'},
+ ])]});
+ const jev=withJev(f,net,{answer:identityAnswers(0.9)});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ const asked=samePerson(jev);
+ assert.deepEqual(asked.map(r=>[r.state.attendee.email,r.state.contact.email]).sort(),[
+  ['ada@granola.test','ada.lovelace@work.test'],['ada@granola.test','ada.l@other.test'],['ada@granola.test','a.lovelace@third.test'],
+  ['grace@granola.test','grace.hopper@work.test'],
+  ['jose@granola.test','jose@work.test'],
+ ].sort(),'owner, existing Gmail contacts and mismatched last initials are never paired');
+ const state=asked.find(r=>r.state.attendee.email==='ada@granola.test'&&r.state.contact.email==='ada.lovelace@work.test')!.state;
+ assert.deepEqual(Object.keys(state).sort(),['attendee','contact']);
+ assert.deepEqual(Object.keys(state.attendee).sort(),['domain','email','meetings','name']);
+ assert.deepEqual(Object.keys(state.contact).sort(),['domain','email','name','recentSubjects']);
+ assert.equal(state.attendee.domain,'granola.test');assert.equal(state.contact.domain,'work.test');
+ assert.deepEqual(state.attendee.meetings,['Alpha']);
+ assert.equal(state.contact.recentSubjects.length,5,'at most five subject theme names');
+ const rows=identityRows(f);
+ assert.deepEqual(rows.map(r=>[r.attendee_email,r.contact_email,r.status]),[
+  ['ada@granola.test','ada.lovelace@work.test','pending'],
+  ['grace@granola.test','grace.hopper@work.test','pending'],
+  ['jose@granola.test','jose@work.test','pending'],
+ ]);
+ const suggestions=f.sync.identitySuggestions();
+ assert.equal(suggestions.length,3);
+ assert.deepEqual(suggestions.map(s=>s.attendeeEmail).sort(),['ada@granola.test','grace@granola.test','jose@granola.test']);
+
+ assert.deepEqual(suggestions.find(s=>s.attendeeEmail==='ada@granola.test'),{attendeeEmail:'ada@granola.test',attendeeName:'Ada Lovelace',contactEmail:'ada.lovelace@work.test',contactName:'Ada Lovelace',probability:0.9});
+});
+
+test('a weak judgment is stored as dismissed and the pair is never asked again',async()=>{
+ const f=granolaFixture();
+ f.gmail.push({email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:[]});
+ const net=network({notes:[withAttendees('Alpha',[{name:'Me',email:'me@example.test'},{name:'Ada Lovelace',email:'ada@granola.test'}])]});
+ const jev=withJev(f,net,{answer:identityAnswers(0.4)});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ assert.deepEqual(identityRows(f).map(r=>[r.attendee_email,r.status,r.probability]),[['ada@granola.test','dismissed',0.4]]);
+ assert.deepEqual(f.sync.identitySuggestions(),[]);
+ const before=samePerson(jev).length;assert.equal(before,1);
+ bump(f,{nextSync:0});await runToIdle(f,jev.fake);
+ assert.equal(samePerson(jev).length,before,'a decided pair is not judged again');
+});
+
+test('at most fifty pairs are judged per run and the rest wait for the next run',async()=>{
+ // 20 attendees x 3 same-name contacts = 60 candidate pairs (a note carries at most 50 attendees).
+ const f=granolaFixture();
+ const attendees=[{name:'Me',email:'me@example.test'}];
+ for(let i=0;i<20;i++){
+  for(const host of ['work','other','third'])f.gmail.push({email:`person${i}@${host}.test`,name:`Person${i} Match`,subjects:[]});
+  attendees.push({name:`Person${i} Match`,email:`person${i}@granola.test`});
+ }
+ const net=network({notes:[withAttendees('Alpha',attendees)]});
+ const jev=withJev(f,net,{answer:identityAnswers(0.9)});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ assert.equal(samePerson(jev).length,50,'the run stops at fifty pairs');
+ const judged=identityRows(f).length;
+ assert.ok(judged>0&&judged<20,`some attendees are still undecided (${judged})`);
+ bump(f,{nextSync:0});await runToIdle(f,jev.fake);
+ assert.equal(identityRows(f).length,20,'the remaining attendees are judged on the next run');
+});
+
+test('a long identity tick reschedules and resumes where it stopped',async()=>{
+ const f=granolaFixture();
+ f.gmail.push({email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:[]},{email:'bob.stone@work.test',name:'Bob Stone',subjects:[]});
+ const net=network({notes:[withAttendees('Alpha',[{name:'Ada Lovelace',email:'ada@granola.test'},{name:'Bob Stone',email:'bob@granola.test'}])]});
+ const real=Date.now;let offset=0;
+ const jev=withJev(f,net,{answer:(id,q)=>{if(id==='same_person'){offset+=21_000;return noulA(0.9);}return identityAnswers(0.9)(id,q);}});
+ try{
+  await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));
+  await tickToPhase(f,jev.fake,'identity');
+  Date.now=()=>real.call(Date)+offset;
+  await withFetch(jev.fake,()=>f.sync.tick(Date.now()));
+  assert.equal(connection(f).job.phase,'identity','the run stays in the identity phase');
+  assert.equal(connection(f).job.identityPairs.length,1,'one pair is left for the next tick');
+  assert.equal(identityRows(f).length,1);
+  assert.ok(f.sync.nextDue()!<=Date.now()+1_500,'the next tick is scheduled soon');
+  await withFetch(jev.fake,()=>f.sync.tick(Date.now()+2000));
+ }finally{Date.now=real;}
+ assert.equal(f.sync.status().status,'connected');
+ assert.equal(identityRows(f).length,2);
+});
+
+test('confirming a match folds the attendee into the contact and re-points its signals',async()=>{
+ const f=granolaFixture();
+ f.gmail.push({email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:['pilot rollout']});
+ const net=network({notes:[withAttendees('Alpha',[{name:'Me',email:'me@example.test'},{name:'Ada Lovelace',email:'ada@example.test'},{name:'Bob',email:'bob@example.test'}])]});
+ const jev=withJev(f,net,{answer:identityAnswers(0.82)});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ const attendee=await opaque('owner@example.test','ada@example.test','identity-key');
+ const contact=await opaque('owner@example.test','ada.lovelace@work.test','identity-key');
+ assert.ok((f.db.prepare("SELECT COUNT(*) AS n FROM theme_signals WHERE person_id=?").get(attendee) as any).n>0);
+ assert.deepEqual(f.sync.identitySuggestions().map(s=>s.attendeeEmail),['ada@example.test']);
+ const before=f.invalidations();
+ const left=await f.sync.resolveIdentity('ada@example.test','confirm');
+ assert.deepEqual(left,[]);
+ assert.ok(f.invalidations()>before,'the graph is invalidated');
+ assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM theme_signals WHERE person_id=?').get(attendee) as any).n,0);
+ assert.ok((f.db.prepare('SELECT COUNT(*) AS n FROM theme_signals WHERE person_id=?').get(contact) as any).n>0,'signals move to the contact');
+ assert.deepEqual(f.sync.contacts().map(c=>c.email).sort(),['ada.lovelace@work.test','bob@example.test','me@example.test']);
+ assert.equal(f.sync.contacts().find(c=>c.email==='ada.lovelace@work.test')!.meetings,1);
+ const edges=f.sync.edges().map(e=>[e.a,e.b]);
+ assert.ok(edges.some(([a,b])=>a==='ada.lovelace@work.test'&&b==='bob@example.test'),'edges follow the alias');
+ assert.ok(!edges.some(([a,b])=>a.includes('ada@example.test')||b.includes('ada@example.test')));
+ assert.ok(!edges.some(([a,b])=>a===b),'no self edges');
+ await assert.rejects(f.sync.resolveIdentity('ada@example.test','confirm'),/invalid_identity/);
+ await assert.rejects(f.sync.resolveIdentity('nobody@example.test','dismiss'),/invalid_identity/);
+});
+
+test('dismissing a match leaves the graph alone and hides the suggestion',async()=>{
+ const f=granolaFixture();
+ f.gmail.push({email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:[]});
+ const net=network({notes:[withAttendees('Alpha',[{name:'Me',email:'me@example.test'},{name:'Ada Lovelace',email:'ada@example.test'}])]});
+ const jev=withJev(f,net,{answer:identityAnswers(0.7)});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ const attendee=await opaque('owner@example.test','ada@example.test','identity-key');
+ assert.deepEqual(await f.sync.resolveIdentity('ada@example.test','dismiss'),[]);
+ assert.equal(identityRows(f)[0].status,'dismissed');
+ assert.ok((f.db.prepare('SELECT COUNT(*) AS n FROM theme_signals WHERE person_id=?').get(attendee) as any).n>0,'signals stay on the attendee');
+ assert.ok(f.sync.contacts().some(c=>c.email==='ada@example.test'));
+ const before=samePerson(jev).length;
+ bump(f,{nextSync:0});await runToIdle(f,jev.fake);
+ assert.equal(samePerson(jev).length,before,'a dismissed pair is not judged again');
+});
+
+test('without the TypeSafe key no identity request is made and no pair is stored',async()=>{
+ const f=granolaFixture();withAI(f,goodAI);
+ f.gmail.push({email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:[]});
+ const net=network({notes:[withAttendees('Alpha',[{name:'Me',email:'me@example.test'},{name:'Ada Lovelace',email:'ada@granola.test'}])]});
+ const seen:string[]=[];
+ const fake=(async(input:any,init:any)=>{seen.push(String(input));return net.fake(input,init);}) as typeof fetch;
+ await withFetch(fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,fake);
+ assert.ok(!seen.some(u=>u.includes('typesafe')));
+ assert.equal(identityRows(f).length,0);
+ assert.deepEqual(f.sync.identitySuggestions(),[]);
+});
+
+test('suggestions list newest first and skip decided rows',async()=>{
+ const f=granolaFixture();
+ const insert=f.db.prepare('INSERT INTO granola_identity VALUES (?,?,?,?,?,?,?)');
+ insert.run('old@granola.test','old@work.test','Old Name','Old Name',0.7,'pending',10);
+ insert.run('new@granola.test','new@work.test','New Name','New Name',0.9,'pending',20);
+ insert.run('gone@granola.test','gone@work.test','Gone','Gone',0.4,'dismissed',30);
+ insert.run('done@granola.test','done@work.test','Done','Done',0.95,'confirmed',40);
+ assert.deepEqual(f.sync.identitySuggestions().map(s=>s.attendeeEmail),['new@granola.test','old@granola.test']);
+});
+
+test('disconnect removes stored identity decisions',async()=>{
+ const f=granolaFixture();
+ await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
+ f.db.prepare("INSERT INTO granola_identity VALUES ('ada@granola.test','ada@work.test','Ada','Ada',0.9,'confirmed',1)").run();
+ await f.sync.disconnect();
+ assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM granola_identity').get() as any).n,0);
 });

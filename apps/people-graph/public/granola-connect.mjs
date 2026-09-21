@@ -8,6 +8,7 @@ const messages={
   jev_unauthorized:'TypeSafe rejected the API key. Extraction is paused until the key is fixed.',
   mail_not_configured:'Granola connections are not enabled on this server yet.',
   invalid_request:'That request was not accepted. Reload and try again.',
+  invalid_identity:'That match is no longer waiting for a decision.',
 };
 const diagnosticCodes=new Set(['transport','http_4xx','http_5xx','http_other','response_json','page_shape','page_cursor','page_terminal_cursor','folder_id','folder_name','folder_parent','note_shape','unexpected']);
 const STATUS_LABEL={syncing:'Syncing meetings · scoring automatically',connected:'Up to date',reconnect_required:'Reconnect required',error:'Sync paused'};
@@ -44,7 +45,10 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
   const foldersHeading=make('h4','Folders');
   const foldersHint=make('p','All folders sync. Uncheck a folder to hide its meetings from your graph and stop syncing it.','granola-disclosure');
   const folderList=make('ul',null,'granola-folders');
-  card.append(cardTitle,cardStatus,progress,syncLine,errorLine,actions,foldersHeading,foldersHint,folderList);
+  const matchesHeading=make('h4','Possible matches');
+  const matchesHint=make('p','These meeting attendees look like people you already email. Confirm to count them as one person.','granola-disclosure');
+  const matchList=make('ul',null,'granola-matches');
+  card.append(cardTitle,cardStatus,progress,syncLine,errorLine,actions,foldersHeading,foldersHint,folderList,matchesHeading,matchesHint,matchList);
   root.replaceChildren(heading,intro,signIn,form,help,statusLine,card);
 
   function abort(){pending?.abort();pending=null;}
@@ -81,6 +85,21 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
     const addLevel=(parentId,depth)=>{for(const f of byParent.get(parentId)??[]){const li=make('li');li.dataset.id=f.id;li.style.setProperty('--depth',String(depth));const label=make('label');const box=make('input');box.type='checkbox';box.value=f.id;box.checked=!f.excluded;box.disabled=busy;box.addEventListener('change',()=>void toggle());label.append(box,document.createTextNode(` ${f.name} `));const count=make('span',`${f.noteCount} meeting${f.noteCount===1?'':'s'}`,'hint');label.append(count);if(f.excluded){count.textContent='Hidden from your graph';}li.append(label);folderList.append(li);addLevel(f.id,depth+1);}};
     addLevel(null,0);
     if(!status.folders.length)folderList.append(make('li','No Granola folders are available yet.'));
+    const matches=status.identities||[];
+    matchesHeading.hidden=matchesHint.hidden=matchList.hidden=!matches.length;
+    matchList.replaceChildren();
+    for(const m of matches){
+      const li=make('li');li.dataset.attendee=m.attendeeEmail;
+      const line=make('span',null,'granola-match');
+      line.append(make('b',m.attendeeName),document.createTextNode(` ${m.attendeeEmail} looks like `),make('b',m.contactName),document.createTextNode(` ${m.contactEmail} \u00b7 ${Math.round(m.probability*100)}%`));
+      const buttons=make('div',null,'buttons');
+      for(const [label,decision] of [['Confirm','confirm'],['Dismiss','dismiss']]){
+        const button=make('button',label);button.type='button';button.disabled=busy;
+        button.addEventListener('click',()=>void decide(m.attendeeEmail,decision));
+        buttons.append(button);
+      }
+      li.append(line,buttons);matchList.append(li);
+    }
   }
   async function request(path,body,method,run){
     const controller=new AbortController();pending=controller;
@@ -114,6 +133,12 @@ export function createGranolaConnection(root,{onUnauthorized}={}){
     if(busy||!status)return;busy=true;const run=generation;
     const excluded=[...folderList.querySelectorAll('input[type=checkbox]')].filter(b=>!b.checked).map(b=>b.value);
     try{status=await request('/api/granola/folders',{excluded},'PATCH',run);render();}
+    catch(error){fail(error);}
+    finally{if(run===generation){busy=false;render();}}
+  }
+  async function decide(attendeeEmail,decision){
+    if(busy||!status)return;busy=true;const run=generation;render();
+    try{const data=await request('/api/granola/identities',{attendeeEmail,decision},'POST',run);status={...status,identities:data.suggestions||[]};render();}
     catch(error){fail(error);}
     finally{if(run===generation){busy=false;render();}}
   }

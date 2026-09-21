@@ -3,6 +3,7 @@ import type {MailEnv} from './mail-sync';
 import type {GranolaRange} from './granola-sync';
 
 const MAX_REQUEST_BYTES=8*1024;
+const MAX_IDENTITY_BYTES=2*1024;
 const API_KEY=/^grn_[\x21-\x7e]{4,508}$/;
 const FOLDER_ID=/^fol_[a-zA-Z0-9]{14}$/;
 
@@ -13,6 +14,8 @@ export async function granolaRoute(request:Request,env:MailEnv,owner:string):Pro
  // object with no owner, which skips extraction and returns a null graph.
  await stub.bindOwner(owner);
  if(path==='/api/granola/status'){if(method!=='GET')return error('method_not_allowed','Use GET for status.',405);return json(await stub.granolaStatus());}
+ // Same-origin GETs carry no Origin header, so reads are answered before the origin check.
+ if(path==='/api/granola/identities'&&method==='GET')return json(await stub.granolaIdentities());
  if(request.headers.get('origin')!==url.origin)return error('invalid_origin','Request origin is not allowed.',403);
  try{
   if(path==='/api/granola/connect'){
@@ -26,6 +29,12 @@ export async function granolaRoute(request:Request,env:MailEnv,owner:string):Pro
    const body=await jsonBody(request);if(!body||!record(body)||!sameKeys(body,['excluded'])||!Array.isArray(body.excluded)||body.excluded.length>500||body.excluded.some(id=>typeof id!=='string'||!FOLDER_ID.test(id)))return invalid();
    return json(await stub.granolaExcluded(body.excluded as string[]));
   }
+  if(path==='/api/granola/identities'){
+   if(method!=='POST')return error('method_not_allowed','Use POST to decide a match.',405);
+   const body=await jsonBody(request,MAX_IDENTITY_BYTES);if(!body||!record(body)||!sameKeys(body,['attendeeEmail','decision']))return invalid();
+   if(typeof body.attendeeEmail!=='string'||!body.attendeeEmail||body.attendeeEmail.length>320||(body.decision!=='confirm'&&body.decision!=='dismiss'))return invalid();
+   return json(await stub.granolaIdentity(body.attendeeEmail,body.decision as 'confirm'|'dismiss'));
+  }
   if(path==='/api/granola/sync'){if(method!=='POST')return error('method_not_allowed','Use POST to sync.',405);return json(await stub.granolaSyncNow());}
   if(path==='/api/granola/connection'){if(method!=='DELETE')return error('method_not_allowed','Use DELETE to disconnect.',405);await stub.granolaDisconnect();return json({ok:true});}
   return error('not_found','Granola route not found.',404);
@@ -37,13 +46,14 @@ export async function granolaRoute(request:Request,env:MailEnv,owner:string):Pro
   if(code.startsWith('granola:')){const [,failure,diagnostic]=code.split(':');return granolaFailure(failure,diagnostic);}
   if(code==='mail_not_configured')return error('mail_not_configured','Granola connections are not enabled on this server yet.',503);
   if(code==='invalid_key'||code==='invalid_folder')return invalid();
+  if(code==='invalid_identity')return error('invalid_identity','That match is no longer available.',400);
   return error('granola_unavailable','Granola is temporarily unavailable.',502);
  }
 }
-async function jsonBody(request:Request):Promise<unknown>{
+async function jsonBody(request:Request,max=MAX_REQUEST_BYTES):Promise<unknown>{
  if(request.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()!=='application/json')throw new UnsupportedMedia();
- const declared=Number(request.headers.get('content-length'));if(Number.isFinite(declared)&&declared>MAX_REQUEST_BYTES)throw new RequestTooLarge();
- const raw=await request.text();if(raw.length>MAX_REQUEST_BYTES)throw new RequestTooLarge();
+ const declared=Number(request.headers.get('content-length'));if(Number.isFinite(declared)&&declared>max)throw new RequestTooLarge();
+ const raw=await request.text();if(raw.length>max)throw new RequestTooLarge();
  try{return JSON.parse(raw);}catch{return null;}
 }
 const invalid=()=>error('invalid_request','Granola request is invalid.',400);

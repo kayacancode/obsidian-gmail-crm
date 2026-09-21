@@ -9,14 +9,15 @@ const browser=await chromium.launch({
 
 const googleStub=`window.google={accounts:{id:{initialize(o){window.login=o.callback},renderButton(el){const b=document.createElement('button');b.textContent='Test Google sign in';b.onclick=()=>window.login({credential:'fictional-google-token'});el.append(b)},disableAutoSelect(){}}}};`;
 
-function status(overrides={}){return {connected:false,status:null,range:null,lastSync:0,nextSync:0,error:'',counts:{folders:0,notes:0,pending:0,extracted:0,failed:0,skipped:0},folders:[],...overrides};}
+function status(overrides={}){return {connected:false,status:null,range:null,lastSync:0,nextSync:0,error:'',counts:{folders:0,notes:0,pending:0,extracted:0,failed:0,skipped:0},folders:[],identities:[],...overrides};}
+const MATCH={attendeeEmail:'ada@granola.test',attendeeName:'Ada Lovelace',contactEmail:'ada.lovelace@work.test',contactName:'Ada L. Lovelace',probability:0.82};
 const FOLDERS=[{id:'fol_1234567890abcd',name:'Pilot',parentId:null,excluded:false,noteCount:3},{id:'fol_2234567890abcd',name:'Personal',parentId:null,excluded:false,noteCount:1}];
 
 async function fixture(options={}){
   const page=await browser.newPage({viewport:{width:1360,height:1000}});
   const errors=[];
   const requests=[];
-  const state={signed:options.signed??false,owner:'owner@example.test',rejectKey:false,granola:status(),statusGate:null};
+  const state={signed:options.signed??false,owner:'owner@example.test',rejectKey:false,granola:status(),statusGate:null,identities:[]};
   page.on('pageerror',error=>errors.push(error.message));
   await page.route('https://accounts.google.com/gsi/client',route=>route.fulfill({contentType:'text/javascript',body:googleStub}));
   await page.route('**/api/config',route=>route.fulfill({json:{googleClientId:'fictional-client'}}));
@@ -45,8 +46,17 @@ async function fixture(options={}){
       await route.fulfill({status:422,json:{error:'granola_unauthorized',message:'Granola rejected this API key. Check it and try again.'}});
       return;
     }
-    state.granola=status({connected:true,status:'syncing',range:body.range,folders:FOLDERS,counts:{folders:FOLDERS.length,notes:4,pending:4,extracted:0,failed:0,skipped:0}});
+    state.granola=status({connected:true,status:'syncing',range:body.range,folders:FOLDERS,identities:state.identities,counts:{folders:FOLDERS.length,notes:4,pending:4,extracted:0,failed:0,skipped:0}});
     await route.fulfill({json:state.granola});
+  });
+  await page.route('**/api/granola/identities',async route=>{
+    const request=route.request();
+    if(request.method()==='GET'){requests.push({url:request.url(),method:'GET',body:null});return route.fulfill({json:{suggestions:state.identities}});}
+    const body=request.postDataJSON();
+    requests.push({url:request.url(),method:'POST',body});
+    state.identities=state.identities.filter(m=>m.attendeeEmail!==body.attendeeEmail);
+    state.granola.identities=state.identities;
+    await route.fulfill({json:{suggestions:state.identities}});
   });
   await page.route('**/api/granola/folders',async route=>{
     const request=route.request();
@@ -202,7 +212,28 @@ try{
     await page.close();
   }
 
-  console.log('PASS: Granola connect, folder exclusion, sync now, disconnect confirm, rejected key, reconnect flow, sign-out reset, mobile layout, and tab-switch persistence.');
+  {
+    // 8. possible matches list: renders one row, Confirm posts the decision, the section hides when empty
+    const test=await fixture();
+    const {page,requests,errors}=test;
+    test.state.identities=[MATCH];
+    await page.goto(origin+'/accounts.html?tab=granola');
+    await signIn(page);
+    await page.fill('#granola-api-key','grn_fictional_key_123456');
+    await page.click('#granola-root button.primary');
+    await page.waitForSelector('.granola-matches li');
+    assert.match(await page.textContent('.granola-matches li'),/Ada Lovelace ada@granola\.test looks like Ada L\. Lovelace ada\.lovelace@work\.test · 82%/);
+    await page.click('.granola-matches li button:has-text("Confirm")');
+    await page.waitForFunction(()=>!document.querySelector('.granola-matches li'));
+    const posted=requests.find(r=>r.url.endsWith('/api/granola/identities')&&r.method==='POST');
+    assert.deepEqual(posted.body,{attendeeEmail:'ada@granola.test',decision:'confirm'});
+    assert.ok(await page.isHidden('.granola-matches'),'the section hides when there is nothing to confirm');
+    assert.ok(await page.isHidden('#granola-root h4:has-text("Possible matches")'));
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  console.log('PASS: Granola connect, folder exclusion, sync now, disconnect confirm, rejected key, reconnect flow, sign-out reset, mobile layout, tab-switch persistence, and identity match confirm.');
 }finally{
   await browser.close();
 }

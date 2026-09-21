@@ -553,3 +553,71 @@ test('draftNote falls back to the unchecked draft when Jev fails, with no user-f
   assert.equal(ai.calls.length,1,'the draft is never regenerated when the check itself fails');
  }finally{db.close();}
 });
+
+const granolaConnectionRow=(db:DatabaseSync)=>db.prepare("INSERT INTO granola_connection (id,grant,data) VALUES (1,'sealed',?)").run(JSON.stringify({ownerEmail:'me@example.com',status:'connected',range:'all',watermark:'w',lastSync:1,nextSync:9e15,lastReconcile:1,error:'',job:null}));
+const granolaNoteRow=(db:DatabaseSync,id:string)=>db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,'Pilot sync',NULL,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','[]','','','','h',0,'done',NULL,'granola-v2',0,0,0)").run(id);
+
+test('Gmail contacts for identity matching carry the most common name and canonical subject themes',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  const insert=db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)');
+  const subjects=['Pilot rollout plan','Pilot rollout plan','Pricing deck review','Board update draft','Hiring plan q4','Budget review notes','Security questionnaire answers'];
+  subjects.forEach((subject,i)=>insert.run('me@example.com','m'+i,'ada@work.test',i===0?'A. Lovelace':'Ada Lovelace',Date.now()-i,subject,1,1));
+  insert.run('me@example.com','own','me@example.com','Me',Date.now(),'Notes to self',1,1);
+  insert.run('me@example.com','short','tiny@work.test','Tiny',Date.now(),'Hi',1,1);
+  const contacts=(service as any).gmailContacts() as {email:string;name:string;subjects:string[]}[];
+  assert.deepEqual(contacts.map(c=>c.email).sort(),['ada@work.test','tiny@work.test'],'the owner account is never a contact');
+  const ada=contacts.find(c=>c.email==='ada@work.test')!;
+  assert.equal(ada.name,'Ada Lovelace','the most common display name wins');
+  assert.equal(ada.subjects.length,5,'at most five subject theme names');
+  assert.ok(ada.subjects.every(s=>s.split(' ').length>=2&&s===s.toLowerCase()),'canonical two-token theme names only');
+  assert.ok(!JSON.stringify(ada.subjects).includes('Pilot rollout plan'),'raw subjects never leave the object');
+  assert.deepEqual(contacts.find(c=>c.email==='tiny@work.test')!.subjects,[],'one-token subjects are dropped');
+ }finally{db.close();}
+});
+
+test('confirming a Granola identity folds the attendee into the Gmail contact node',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada.lovelace@work.test','Ada Lovelace',Date.parse('2026-07-01T00:00:00Z'),'Pilot rollout plan',1,1);
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','bob@example.com','Bob',Date.parse('2026-07-01T00:00:00Z'),'Pilot rollout plan',0,1);
+  granolaConnectionRow(db);granolaNoteRow(db,'not_1234567890abcd');
+  for(const [e,n] of [['me@example.com','Me'],['ada@granola.test','Ada Lovelace'],['bob@example.com','Bob']])db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run('not_1234567890abcd',e,n);
+  db.prepare("INSERT INTO granola_edges VALUES ('not_1234567890abcd','ada@granola.test','bob@example.com')").run();
+  db.prepare("INSERT INTO granola_identity VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.82,'pending',1)").run();
+  assert.deepEqual(service.granolaIdentities(),{suggestions:[{attendeeEmail:'ada@granola.test',attendeeName:'Ada Lovelace',contactEmail:'ada.lovelace@work.test',contactName:'Ada Lovelace',probability:0.82}]});
+  assert.deepEqual(service.granolaStatus().identities.map((s:any)=>s.attendeeEmail),['ada@granola.test'],'the status payload carries the suggestions');
+  const attendeeId=await opaque('owner','ada@granola.test','identity-key');
+  const contactId=await opaque('owner','ada.lovelace@work.test','identity-key');
+  const before=(await service.graph())!;
+  assert.ok(before.nodes.some((n:any)=>n.id===attendeeId)&&before.nodes.some((n:any)=>n.id===contactId),'two nodes before confirming');
+  assert.deepEqual(await service.granolaIdentity('ada@granola.test','confirm'),{suggestions:[]});
+  const graph=(await service.graph())!;
+  assert.ok(!graph.nodes.some((n:any)=>n.id===attendeeId),'the attendee node is gone');
+  const contact=graph.nodes.find((n:any)=>n.id===contactId) as any;
+  assert.equal(contact.meetings,1);assert.equal(contact.lastMeeting,'2026-08-14T11:00:00.000Z');
+  const bobId=await opaque('owner','bob@example.com','identity-key');
+  const edge=graph.edges.find((e:any)=>(e.source===contactId&&e.target===bobId)||(e.source===bobId&&e.target===contactId)) as any;
+  assert.ok(edge.types.includes('shared_meeting'),'the meeting edge follows the alias');
+  await assert.rejects(service.granolaIdentity('ada@granola.test','confirm'),/invalid_identity/);
+  await assert.rejects(service.granolaIdentity('who@granola.test','dismiss'),/invalid_identity/);
+ }finally{db.close();}
+});
+
+test('dismissing a Granola identity keeps both nodes and clears the suggestion',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada.lovelace@work.test','Ada Lovelace',Date.parse('2026-07-01T00:00:00Z'),'Pilot rollout plan',1,1);
+  granolaConnectionRow(db);granolaNoteRow(db,'not_1234567890abcd');
+  db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run('not_1234567890abcd','ada@granola.test','Ada Lovelace');
+  db.prepare("INSERT INTO granola_identity VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.7,'pending',1)").run();
+  assert.deepEqual(await service.granolaIdentity('ada@granola.test','dismiss'),{suggestions:[]});
+  const graph=(await service.graph())!;
+  const attendeeId=await opaque('owner','ada@granola.test','identity-key');
+  assert.ok(graph.nodes.some((n:any)=>n.id===attendeeId),'the attendee keeps its own node');
+  assert.equal((db.prepare('SELECT status FROM granola_identity WHERE attendee_email=?').get('ada@granola.test') as any).status,'dismissed');
+ }finally{db.close();}
+});

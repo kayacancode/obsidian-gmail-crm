@@ -17,7 +17,10 @@ const stub={
  async granolaExcluded(...args:unknown[]){calls.push({name:'granolaExcluded',args});if(stubError)throw stubError;return statusValue;},
  async granolaSyncNow(){calls.push({name:'granolaSyncNow',args:[]});return statusValue;},
  async granolaDisconnect(){calls.push({name:'granolaDisconnect',args:[]});},
+ granolaIdentities(){calls.push({name:'granolaIdentities',args:[]});return identitiesValue;},
+ async granolaIdentity(...args:unknown[]){calls.push({name:'granolaIdentity',args});if(stubError)throw stubError;return {suggestions:[]};},
 };
+const identitiesValue={suggestions:[{attendeeEmail:'ada@granola.test',attendeeName:'Ada Lovelace',contactEmail:'ada@work.test',contactName:'Ada Lovelace',probability:0.82}]};
 
 function fixtureEnv(){
  let storageCalls=0;
@@ -101,9 +104,34 @@ test('folders PATCH, sync POST and connection DELETE call the owner object',asyn
  assert.equal((await granolaRequest('/api/granola/notes',{})).response.status,404);
 });
 
+test('identities GET lists pending matches and POST records one decision',async()=>{
+ calls.length=0;stubError=null;
+ const list=await granolaRequest('/api/granola/identities',null,{method:'GET',headers:{origin:'https://elsewhere.test'}});
+ assert.equal(list.response.status,200);assert.deepEqual(await list.response.json(),identitiesValue);
+ assert.equal(list.response.headers.get('cache-control'),'no-store');
+ const ok=await granolaRequest('/api/granola/identities',{attendeeEmail:'ada@granola.test',decision:'confirm'});
+ assert.equal(ok.response.status,200);assert.deepEqual(await ok.response.json(),{suggestions:[]});
+ assert.deepEqual(calls.at(-1),{name:'granolaIdentity',args:['ada@granola.test','confirm']});
+ for(const bad of [{attendeeEmail:'ada@granola.test'},{attendeeEmail:'ada@granola.test',decision:'maybe'},{attendeeEmail:1,decision:'confirm'},{attendeeEmail:'ada@granola.test',decision:'confirm',extra:1},[]]){
+  assert.equal((await granolaRequest('/api/granola/identities',bad)).response.status,400,JSON.stringify(bad));
+ }
+ const cross=await granolaRequest('/api/granola/identities',{attendeeEmail:'ada@granola.test',decision:'confirm'},{headers:{origin:'https://elsewhere.test'}});
+ assert.equal(cross.response.status,403);
+ const wrongVerb=await granolaRequest('/api/granola/identities',{attendeeEmail:'ada@granola.test',decision:'confirm'},{method:'PATCH'});
+ assert.equal(wrongVerb.response.status,405);
+ const big=await granolaRequest('/api/granola/identities',{attendeeEmail:'a'.repeat(4000)+'@granola.test',decision:'confirm'});
+ assert.equal(big.response.status,413);
+ stubError=Error('invalid_identity');
+ const gone=await granolaRequest('/api/granola/identities',{attendeeEmail:'ada@granola.test',decision:'confirm'});
+ assert.equal(gone.response.status,400);assert.equal((await gone.response.json() as any).error,'invalid_identity');
+ stubError=null;
+});
+
 test('every Granola route binds the session owner to the object before dispatching',async()=>{
  const routes:[string,unknown,RequestInit][]=[
   ['/api/granola/status',null,{method:'GET'}],
+  ['/api/granola/identities',null,{method:'GET'}],
+  ['/api/granola/identities',{attendeeEmail:'ada@granola.test',decision:'dismiss'},{}],
   ['/api/granola/connect',{apiKey:API_KEY,range:'all'},{}],
   ['/api/granola/folders',{excluded:[FOLDER_ID]},{method:'PATCH'}],
   ['/api/granola/sync',null,{}],
