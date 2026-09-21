@@ -13,7 +13,7 @@ export type GranolaConnectionStatus='syncing'|'connected'|'reconnect_required'|'
 export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus|null;range:GranolaRange|null;lastSync:number;nextSync:number;error:string;counts:{folders:number;notes:number;pending:number;extracted:number;failed:number;skipped:number};folders:{id:string;name:string;parentId:string|null;excluded:boolean;noteCount:number}[]}
 export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>}
 export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean;capDropped?:boolean}
-interface Connection {grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null}
+interface Connection {grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null;/** When TypeSafe first rejected the key; holds the paused state until a Jev call succeeds. */jevUnauthorizedAt?:number}
 
 export const GRANOLA_ACCOUNT='granola';
 export const LLAMA_EXTRACTOR_VERSION='granola-v2',JEV_EXTRACTOR_VERSION='granola-v3-jev';
@@ -123,7 +123,7 @@ export class GranolaSync {
    else if(c.job.phase==='list')await this.listPhase(c,apiKey,now,started);
    else if(c.job.phase==='fetch')await this.fetchPhase(c,apiKey,now,started);
    else if(c.job.phase==='extract')await this.extractPhase(c,now,started);
-   const after=this.read();if(after?.job&&after.job.started===started){after.job.retries=0;after.job.nextAttempt=0;after.error='';this.write(after);}
+   const after=this.read();if(after?.job&&after.job.started===started){after.job.retries=0;after.job.nextAttempt=0;after.error=after.jevUnauthorizedAt?'jev_unauthorized':'';this.write(after);}
   }catch(e){
    // A disconnect or a new connect during this tick ends the run silently: retries and the
    // error belong to a job that no longer exists.
@@ -263,7 +263,7 @@ export class GranolaSync {
   const jev=jevConfigured(this.env);
   const rows=this.ctx.storage.sql.exec<{id:string;title:string;folder_ids:string;summary:string;private_notes:string;transcript:string;meeting_at:string;content_hash:string;extraction_attempts:number}>("SELECT id,title,folder_ids,summary,private_notes,transcript,meeting_at,content_hash,extraction_attempts FROM granola_notes WHERE extraction_status='pending' AND hidden=0 ORDER BY meeting_at DESC LIMIT ?",GranolaSync.EXTRACT_PER_TICK).toArray();
   if(!rows.length){await this.finishRun(now,started);return;}
-  let unavailable=0,extracted=0,unauthorized=false;
+  let unavailable=0,extracted=0,unauthorizedAt=0;
   for(const row of rows){
    if(Date.now()-budgetStart>GranolaSync.EXTRACT_BUDGET_MS)break;
    const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT email,name FROM granola_attendees WHERE note_id=?',row.id).toArray();
@@ -271,14 +271,15 @@ export class GranolaSync {
    const remainingMs=GranolaSync.EXTRACT_BUDGET_MS-(Date.now()-budgetStart);
    const signal=AbortSignal.timeout(Math.max(1_000,Math.min(remainingMs,180_000)));
    const text={summary:row.summary,privateNotes:row.private_notes,transcript:row.transcript,attendees};
-   this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempted_at=? WHERE id=?',Date.now(),row.id);
+   const attemptedAt=Date.now();
+   this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempted_at=? WHERE id=?',attemptedAt,row.id);
    try{extraction=jev
     ?await new GranolaJevExtractor(this.env).extract({...text,title:row.title,folders:this.jevFolders(row.folder_ids)},signal)
     :await new GranolaExtractor(this.env.AI,this.env.THEME_MODEL).extract(text,signal);}
    catch(e){
     const attempts=row.extraction_attempts+1;
     // A rejected TypeSafe key is not a model wobble: stop this note now and say so on the card.
-    if(e instanceof JevError&&e.code==='jev_unauthorized'){this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_attempts=?,extraction_status='failed' WHERE id=?",attempts,row.id);unauthorized=true;break;}
+    if(e instanceof JevError&&e.code==='jev_unauthorized'){this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_attempts=?,extraction_status='failed' WHERE id=?",attempts,row.id);unauthorizedAt=attemptedAt;break;}
     const invalid=e instanceof JevError?e.code==='jev_invalid':e instanceof Error&&e.message==='invalid_extraction';
     const failed=attempts>=GranolaSync.MAX_ATTEMPTS||(invalid&&attempts>=2);
     this.ctx.storage.sql.exec('UPDATE granola_notes SET extraction_attempts=?,extraction_status=? WHERE id=?',attempts,failed?'failed':'pending',row.id);
@@ -290,17 +291,26 @@ export class GranolaSync {
    this.checkRun(started);
    this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,extractorVersion(this.env),row.id,row.content_hash);
    extracted++;
+   // A Jev call that works ends the paused state and re-queues everything the rejected key
+   // failed, so fixing the secret does not leave those meetings waiting for the 7-day sweep.
+   if(jev){
+    const paused=this.read();
+    if(paused?.jevUnauthorizedAt){
+     this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction_attempts=0 WHERE extraction_status='failed' AND extraction_attempted_at>=?",paused.jevUnauthorizedAt);
+     paused.jevUnauthorizedAt=undefined;paused.error='';this.commit(paused,started);
+    }
+   }
   }
   // One rejected note is one attempt, not an outage: only a missing or mismatched binding,
   // or a tick where every attempt failed with ai_unavailable, ends the run early.
-  const aiDown=unauthorized||(jev?unavailable>0&&!extracted:!this.env.AI||this.env.THEME_MODEL!==THEME_MODEL||(unavailable>0&&!extracted));
+  const aiDown=Boolean(unauthorizedAt)||(jev?unavailable>0&&!extracted:!this.env.AI||this.env.THEME_MODEL!==THEME_MODEL||(unavailable>0&&!extracted));
   const remaining=this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='pending' AND hidden=0").toArray()[0].n;
+  // The latch is written before any early return, and holds the earliest rejection time.
+  if(unauthorizedAt){const paused=this.read();if(paused){paused.jevUnauthorizedAt??=unauthorizedAt;paused.error='jev_unauthorized';this.commit(paused,started);}}
   const c2=this.read();if(!c2||!c2.job)return;
   // When the model is unavailable, end this run; pending notes retry on the next hourly run (one attempt per run, five runs to 'failed').
   if(!remaining||aiDown)await this.finishRun(now,started);
   else {c2.job.nextAttempt=Date.now()+1_500;this.commit(c2,started);}
-  // finishRun clears the error, so the paused-key message is written after it, not before.
-  if(unauthorized){const ended=this.read();if(ended){ended.error='jev_unauthorized';this.write(ended);}}
  }
 
  /** The note's folders that still have a row, as {id,name} for the Jev theme choice. */
@@ -379,6 +389,8 @@ export class GranolaSync {
   // to skip by their stored updated_at, so this only costs a bit of re-listing.
   if(c.job.capDropped)c.error='note_cap_reached';
   else{if(c.job.maxUpdated)c.watermark=c.job.maxUpdated;c.error='';}
+  // The rejected-key latch outranks a cleared error: only a working Jev call lifts it.
+  if(c.jevUnauthorizedAt)c.error='jev_unauthorized';
   // The first full sync never goes through reconcilePhase (which is what normally
   // stamps lastReconcile), so without this the very next due sync would see a
   // 7-day-old lastReconcile of 0 and reconcile immediately instead of listing.

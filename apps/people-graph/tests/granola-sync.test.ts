@@ -569,6 +569,33 @@ test('a TypeSafe 401 fails the note and pauses the connection with jev_unauthori
  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM theme_signals WHERE account='granola'").get()!.n,0);
 });
 
+test('the jev_unauthorized pause latches across a later run with nothing to do',async()=>{
+ const f=granolaFixture();const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});const jev=withJev(f,net,{status:401});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ assert.equal(f.sync.status().error,'jev_unauthorized');
+ assert.ok(connection(f).jevUnauthorizedAt>0,'the rejection time is remembered');
+ const before=jev.requests.length;
+ bump(f,{nextSync:0});await runToIdle(f,jev.fake);
+ assert.equal(jev.requests.length,before,'the failed note is not retried this run');
+ assert.equal(f.sync.status().error,'jev_unauthorized','the pause survives a clean run');
+});
+
+test('a working TypeSafe key lifts the pause and re-extracts what it failed',async()=>{
+ const f=granolaFixture();const net=network();const rejecting=withJev(f,net,{status:401});
+ await withFetch(rejecting.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,rejecting.fake);
+ const failed=f.db.prepare("SELECT id FROM granola_notes WHERE extraction_status='failed'").all() as any[];
+ assert.equal(failed.length,1);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='pending'").get()!.n,1);
+ assert.equal(f.sync.status().error,'jev_unauthorized');
+ const working=withJev(f,net);
+ bump(f,{nextSync:0});await runToIdle(f,working.fake);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM granola_notes WHERE extraction_status='done'").get()!.n,2,'both notes are extracted');
+ const revived=f.db.prepare('SELECT extraction_status,extraction_attempts,extractor_version FROM granola_notes WHERE id=?').get(failed[0].id) as any;
+ assert.equal(revived.extraction_status,'done');assert.equal(revived.extractor_version,'granola-v3-jev');
+ assert.equal(f.sync.status().error,'','the pause is lifted');
+ assert.equal(connection(f).jevUnauthorizedAt,undefined);
+});
+
 test('a TypeSafe outage leaves the note pending like an unavailable model',async()=>{
  const f=granolaFixture();const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});const jev=withJev(f,net,{status:503});
  await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);

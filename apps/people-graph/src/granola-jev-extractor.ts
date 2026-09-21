@@ -11,6 +11,9 @@ const MIN_SPAN=20,MAX_SPAN=300,MAX_SPANS=400;
 const GATE_MIN=0.5,MAX_JUDGED=60;
 const MIN_ATTENDEE=0.4,MIN_TOPIC=0.35,URGENCY_MAX=3;
 const MAX_ATTENDEES=200,MAX_FOLDERS=50,MAX_TITLE=300;
+// The per-note topic and folder choices see the whole note in miniature: a summary excerpt
+// plus a handful of representative spans, never just whichever spans a judge batch held.
+const NOTE_SPANS=12,NOTE_SUMMARY_CHARS=2_000;
 // 20k of the 64k request budget: five questions per span plus their criteria are repeated
 // per span in the body, so the safe span count per request is well under the hard limit.
 // SPAN_OVERHEAD covers the quoting, commas and question-id keys the estimate per item misses;
@@ -71,7 +74,6 @@ export class GranolaJevExtractor {
   }
   const kept=scored.sort((a,b)=>b.probability-a.probability).slice(0,MAX_JUDGED).map(x=>x.span);
 
-  // Stage 2: the judgments themselves, plus the two per-note choices on the first request.
   const attendeeCriteria:Record<string,string>={...Object.fromEntries(attendees.map(a=>[a.email,a.name?`${a.name} <${a.email}>: the span is about them, or they said it.`:`${a.email}: the span is about them, or they said it.`])),none:'No attendee in particular, or only the note owner.'};
   const folderCriteria:Record<string,string>={...Object.fromEntries(folders.map(f=>[f.id,`The folder named ${f.name}.`])),none:'None of these folders describes this meeting.'};
   const judgeState={title,attendees,topics:TOPIC_LIST,folders};
@@ -80,14 +82,27 @@ export class GranolaJevExtractor {
   const statements:JevStatement[]=[];
   let topics:{topicId:TopicId;confidence:number}[]=[];
   let themeChoice:JevExtraction['themeChoice'];
-  const batches=kept.length?batchQuestions(kept,s=>estimateTokens(s.text)+judgeCost+SPAN_OVERHEAD,judgeBudget):[[]];
-  for(const [index,batch] of batches.entries()){
+
+  // Stage 2a: one small request for the two per-note choices, always made — a note with no
+  // attendees still belongs to a topic and a folder.
+  const noteSpans=(kept.length?kept:spans).slice(0,NOTE_SPANS).map(s=>s.text);
+  const noteQuestions:Record<string,JevQuestion>={note_topic:choice({question:'Which topic best describes this meeting?',title,summary:'`summary`',spans:'`spans`'},TOPIC_CRITERIA)};
+  if(folders.length)noteQuestions.note_theme=choice({question:'Which folder best describes this meeting?',title,summary:'`summary`',spans:'`spans`'},folderCriteria);
+  const noteResult=await askJev(this.env,{title,folders,topics:TOPIC_LIST,summary:normalise(input.summary).slice(0,NOTE_SUMMARY_CHARS),spans:noteSpans},noteQuestions,signal);calls++;
+  const topic=noteResult.answers.note_topic;
+  if(topic?.type==='choice'&&topic.choice!=='none'&&Object.hasOwn(THEME_TOPICS,topic.choice)){
+   const confidence=topic.probabilities[topic.choice]??0;
+   if(confidence>=MIN_TOPIC)topics=[{topicId:topic.choice as TopicId,confidence}];
+  }
+  const theme=noteResult.answers.note_theme;
+  if(theme?.type==='choice')themeChoice=theme.choice==='none'
+   ?{kind:'none',id:'',probability:theme.probabilities.none??0}
+   :{kind:'folder',id:theme.choice,probability:theme.probabilities[theme.choice]??0};
+
+  // Stage 2b: the per-span judgments.
+  for(const batch of kept.length?batchQuestions(kept,s=>estimateTokens(s.text)+judgeCost+SPAN_OVERHEAD,judgeBudget):[]){
    const questions:Record<string,JevQuestion>={};
    batch.forEach((_s,i)=>Object.assign(questions,this.spanQuestions(i,attendeeCriteria)));
-   if(index===0){
-    questions.note_topic=choice({question:'Which topic best describes this meeting?',title,spans:'`spans`'},TOPIC_CRITERIA);
-    if(folders.length)questions.note_theme=choice({question:'Which folder best describes this meeting?',title,spans:'`spans`'},folderCriteria);
-   }
    const result=await askJev(this.env,{...judgeState,spans:batch.map(s=>s.text)},questions,signal);calls++;
    batch.forEach((span,i)=>{
     const who=result.answers['a'+i],kind=result.answers['k'+i],urgency=result.answers['u'+i],openLoop=result.answers['o'+i],theirAsk=result.answers['r'+i];
@@ -98,15 +113,6 @@ export class GranolaJevExtractor {
     statements.push({email:who.choice,kind:kind.choice as StatementKind,quote:span.text,source:span.source,offset:span.offset,
      probability:clamp(attendeeProbability*(kind.probabilities[kind.choice]??0),0,1),urgency:clamp(urgency.score/URGENCY_MAX,0,1),openLoop:openLoop.noul,theirAsk:theirAsk.noul});
    });
-   const topic=result.answers.note_topic;
-   if(topic?.type==='choice'&&topic.choice!=='none'&&Object.hasOwn(THEME_TOPICS,topic.choice)){
-    const confidence=topic.probabilities[topic.choice]??0;
-    if(confidence>=MIN_TOPIC)topics=[{topicId:topic.choice as TopicId,confidence}];
-   }
-   const theme=result.answers.note_theme;
-   if(theme?.type==='choice')themeChoice=theme.choice==='none'
-    ?{kind:'none',id:'',probability:theme.probabilities.none??0}
-    :{kind:'folder',id:theme.choice,probability:theme.probabilities[theme.choice]??0};
   }
   return {engine:'jev',topics,statements,themeChoice,calls,returned:{topics:1,statements:kept.length}};
  }

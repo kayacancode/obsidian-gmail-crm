@@ -116,6 +116,7 @@ test('extract asks no folder question when the note has no folders',async()=>{
  const server=jevServer(defaultAnswer);
  const out=await withFetch(server.fake,()=>new GranolaJevExtractor(env).extract({...full(),folders:[]}));
  assert.equal(out.themeChoice,undefined);
+ assert.equal(server.requests.filter(r=>'note_topic' in r.questions).length,1);
  assert.ok(!server.requests.some(r=>'note_theme' in r.questions));
 });
 
@@ -124,9 +125,9 @@ test('extract sends only the title, attendees, spans, folders and the fixed topi
  await withFetch(server.fake,()=>new GranolaJevExtractor({...env,JEV_MODEL:'jev-pinned'}).extract(full()));
  for(const request of server.requests){
   assert.equal(request.model,'jev-pinned');
-  assert.ok(Object.keys(request.state).every(k=>['attendees','folders','spans','title','topics'].includes(k)),Object.keys(request.state).join(','));
+  assert.ok(Object.keys(request.state).every(k=>['attendees','folders','spans','summary','title','topics'].includes(k)),Object.keys(request.state).join(','));
   assert.ok(Array.isArray(request.state.spans)&&request.state.spans.every((s:unknown)=>typeof s==='string'));
-  assert.deepEqual(request.state.attendees,attendees);
+  if('attendees' in request.state)assert.deepEqual(request.state.attendees,attendees);
   if('folders' in request.state)assert.deepEqual(request.state.folders,[{id:'fol_1234567890abcd',name:'Pilot'}]);
   assert.equal(request.state.title,'Pilot kickoff');
   const body=JSON.stringify(request);
@@ -169,11 +170,36 @@ test('extract surfaces Jev errors to the caller',async()=>{
  await assert.rejects(new GranolaJevExtractor({}).extract(full()),(e:any)=>e instanceof JevError&&e.code==='jev_unconfigured');
 });
 
-test('extract judges nothing when the note has no attendees',async()=>{
+test('extract judges nothing when the note has no attendees but still places the note',async()=>{
  const server=jevServer(defaultAnswer);
  const out:JevExtraction=await withFetch(server.fake,()=>new GranolaJevExtractor(env).extract({...full(),attendees:[]}));
  assert.deepEqual(out.statements,[]);
  assert.equal(out.returned.statements,0);
  assert.deepEqual(out.topics,[{topicId:'business_strategy',confidence:0.7}]);
- assert.equal(server.requests.length,1,'only the per-note questions are asked');
+ assert.deepEqual(out.themeChoice,{kind:'folder',id:'fol_1234567890abcd',probability:0.9});
+ assert.equal(server.requests.length,1,'only the per-note request is made');
+ const state=server.requests[0].state;
+ assert.deepEqual(Object.keys(state).sort(),['folders','spans','summary','title','topics']);
+ assert.equal(state.summary,normalise(SUMMARY),'the note-level request carries the summary excerpt');
+ // With no attendees nothing is gated, so the candidates themselves stand in for the note.
+ assert.ok(state.spans.includes('Ada asked for an intro to a fintech founder.'));
+});
+
+test('the per-note topic and theme are judged in their own request, on up to 12 spans',async()=>{
+ const transcript=Array.from({length:100},(_,i)=>`Line ${String(i).padStart(3,'0')} is a long enough candidate span.`).join('\n');
+ // Gate probability rises with the line number, so the 12 sent are the 12 strongest kept.
+ const server=jevServer((id,q,state)=>{
+  if(id.startsWith('g')){const text=state.spans[Number(id.slice(1))] as string;return noulA(0.5+Number(text.match(/Line (\d+)/)?.[1]??0)/1000);}
+  return defaultAnswer(id,q);
+ });
+ const out=await withFetch(server.fake,()=>new GranolaJevExtractor(env).extract({...full(),transcript}));
+ assert.equal(out.returned.statements,60);
+ const noteRequests=server.requests.filter(r=>'note_topic' in r.questions);
+ assert.equal(noteRequests.length,1,'exactly one per-note request');
+ const state=noteRequests[0].state;
+ assert.equal(state.spans.length,12);
+ assert.deepEqual(state.spans.map((t:string)=>Number(t.match(/Line (\d+)/)![1])),[99,98,97,96,95,94,93,92,91,90,89,88]);
+ assert.equal(state.summary,normalise(SUMMARY));
+ assert.ok(!('attendees' in state),'the per-note request carries no span judgments');
+ assert.ok(server.requests.filter(r=>'a0' in r.questions).every(r=>!('note_topic' in r.questions)),'judge batches carry no per-note questions');
 });
