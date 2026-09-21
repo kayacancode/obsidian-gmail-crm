@@ -1,5 +1,10 @@
 const PRIVATE_STATE = { lens: 'my', relevance: null, relevanceEnvelope: null, evidence: null, retrievalPreview: null, publicPreview: null, retrievalJob: null, publicJob: null, workflowMessage: '' };
 const EMPTY_STATE = Object.freeze({ phase: 'idle', account: null, graph: null, source: 'best', message: '', ...PRIVATE_STATE });
+// An address safe to place inside a mailto: link without opening header injection
+// (?/&/# start mailto query/fragment syntax, %<>/"' can break out of an href attribute).
+// The server applies the same rule (see MAILTO_SAFE in src/mail-sync.ts) and returns
+// to:null when it does not hold, but this is not trusted client input: re-check here too.
+const MAILTO_SAFE = /^[^\s?&#%/<>"']+@[^\s?&#%/<>"']+$/;
 
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -64,7 +69,15 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
       ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin, ...(key ? { 'Idempotency-Key': key } : {}) } }) });
     current(ctx);
     if (response.status === 401) { signedOut('Your session expired. Sign in again to continue.'); throw Error('Your session expired.'); }
-    if (!response.ok) throw Error(`Context request failed (${response.status}). Please retry.`);
+    if (!response.ok) {
+      const error = Error(`Context request failed (${response.status}). Please retry.`);
+      // Attach the status and, when the body carries one, the server's own message, so a
+      // caller that wants readable copy (e.g. openDraftNote) can use it instead of this
+      // generic text. Existing callers are unaffected: error.message is unchanged.
+      error.status = response.status;
+      try { const failedBody = await response.json(); if (failedBody && typeof failedBody.message === 'string') error.serverMessage = failedBody.message; } catch {}
+      throw error;
+    }
     const data = await response.json(); current(ctx);
     if (data.account && data.account !== ctx.account && path.startsWith('/api/graph')) throw Error('The graph account changed.');
     return data;
@@ -473,7 +486,14 @@ async function startBrowserApp() {
     view.message.textContent='Writing a draft\u2026';
     let draft;
     try{draft=await controller.draftNote(personId);}
-    catch(error){if(view.element.isConnected)view.message.textContent=error.message;return;}
+    catch(error){
+      if(!view.element.isConnected)return;
+      // request() throws a generic "Context request failed (503)." for every non-OK
+      // response; when it also carried the server's own message (see request()), show
+      // that instead so a drafting failure reads as something the owner can act on.
+      view.message.textContent=error.status?(error.serverMessage||'Could not draft a note right now. Try again in a moment.'):error.message;
+      return;
+    }
     if(!view.element.isConnected)return;
     view.message.textContent='';
     paragraph(view.content,'Based on:');
@@ -495,7 +515,7 @@ async function startBrowserApp() {
       try{await navigator.clipboard.writeText(`${subject.value}\n\n${body.value}`);view.message.textContent='Copied';}
       catch{view.message.textContent='Copy failed. Select the draft and copy it yourself.';}
     });
-    if(draft.to){
+    if(draft.to&&MAILTO_SAFE.test(draft.to)){
       const mail=document.createElement('a');mail.textContent='Open in email \u2197';mail.rel='noopener';
       const rebuild=()=>{mail.href=`mailto:${draft.to}?subject=${encodeURIComponent(subject.value)}&body=${encodeURIComponent(body.value)}`;};
       rebuild();subject.oninput=body.oninput=rebuild;view.content.append(mail);

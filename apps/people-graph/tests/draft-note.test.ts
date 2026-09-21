@@ -33,6 +33,7 @@ test('draft validation rejects markup, links, placeholders and over-length outpu
   {...draft,subject:'A <b>bold</b> subject'},
   {...draft,body:'Hi Ada, see http://example.test/deck for the deck.'},
   {...draft,body:'Hi [Name], good to see you again.'},
+  {...draft,subject:'Hello [Name]'},
   {...draft,body:'word '.repeat(121)},
   {...draft,body:'x'.repeat(901)},
   {...draft,subject:'s'.repeat(121)},

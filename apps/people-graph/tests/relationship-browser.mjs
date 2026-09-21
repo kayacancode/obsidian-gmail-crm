@@ -292,10 +292,24 @@ try {
   await draftDialog.getByLabel('Subject').waitFor();
   assert.equal(await draftDialog.getByRole('link',{name:'Open in email \u2197'}).count(),0,'no address means no mail client link');
   await page.keyboard.press('Escape');
-  draftResponse={status:503,json:{error:'ai_unavailable'}};
+  draftResponse={status:503,json:{error:'ai_unavailable',message:'The drafting model is unavailable. Try again shortly.'}};
   await page.getByRole('button',{name:'Draft a note',exact:true}).click();
-  await page.locator('.workflow-dialog [role="status"]').filter({hasText:'503'}).waitFor();
+  await page.locator('.workflow-dialog [role="status"]').filter({hasText:'The drafting model is unavailable. Try again shortly.'}).waitFor();
   assert.equal(await draftDialog.getByLabel('Subject').count(),0,'a failed draft shows nothing to copy or send');
+  await page.keyboard.press('Escape');
+  // A server error body with no message falls back to readable copy, never the raw "Context
+  // request failed (…)." text.
+  draftResponse={status:502,json:{error:'invalid_draft'}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  await page.locator('.workflow-dialog [role="status"]').filter({hasText:'Could not draft a note right now. Try again in a moment.'}).waitFor();
+  assert.equal(await draftDialog.getByLabel('Subject').count(),0,'a failed draft shows nothing to copy or send');
+  await page.keyboard.press('Escape');
+  // A mailto-unsafe stored address (header-injection characters) never renders a link, even
+  // if the server ever sent one back: the client re-checks independently of the server.
+  draftResponse={status:200,json:{to:'victim?bcc=attacker@evil.test',name:'Ada Rivera',subject:'Following up on the fintech intro',body:draftBody,basedOn:[]}};
+  await page.getByRole('button',{name:'Draft a note',exact:true}).click();
+  await draftDialog.getByLabel('Subject').waitFor();
+  assert.equal(await draftDialog.getByRole('link',{name:'Open in email ↗'}).count(),0,'a mailto-unsafe address renders no mail client link');
   await page.keyboard.press('Escape');
 
   // Mount the real renderer with controllable host boundaries. Removing lens filtering,

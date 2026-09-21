@@ -339,7 +339,7 @@ export class RelevanceStore {
 		this.ctx.storage.transactionSync(()=>{
 			for (const theme of themes.slice(0,200)) {
 				if (theme.owner !== owner) continue;
-				this.ctx.storage.sql.exec('INSERT INTO themes (id,owner,canonical_name,aliases,description,status,merged_into,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET aliases=excluded.aliases,description=excluded.description,status=excluded.status,merged_into=excluded.merged_into,updated_at=excluded.updated_at WHERE themes.owner=excluded.owner',theme.id,owner,theme.canonicalName,JSON.stringify(theme.aliases.slice(0,20)),cap(theme.description,240),theme.status,theme.mergedInto ?? null,theme.createdAt,theme.updatedAt);
+				this.ctx.storage.sql.exec('INSERT INTO themes (id,owner,canonical_name,aliases,description,status,merged_into,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET canonical_name=excluded.canonical_name,aliases=excluded.aliases,description=excluded.description,status=excluded.status,merged_into=excluded.merged_into,updated_at=excluded.updated_at WHERE themes.owner=excluded.owner',theme.id,owner,theme.canonicalName,JSON.stringify(theme.aliases.slice(0,20)),cap(theme.description,240),theme.status,theme.mergedInto ?? null,theme.createdAt,theme.updatedAt);
 				writtenThemes++;
 			}
 			for (let signal of signals.slice(0,5_000)) {
@@ -362,7 +362,7 @@ export class RelevanceStore {
 			this.ctx.storage.sql.exec("DELETE FROM theme_signals WHERE owner=? AND account=? AND source_type='gmail_subject'",owner,account);
 			for (const theme of themes.slice(0,200)) {
 				if (theme.owner !== owner) continue;
-				this.ctx.storage.sql.exec('INSERT INTO themes (id,owner,canonical_name,aliases,description,status,merged_into,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET aliases=excluded.aliases,description=excluded.description,status=excluded.status,merged_into=excluded.merged_into,updated_at=excluded.updated_at WHERE themes.owner=excluded.owner',theme.id,owner,theme.canonicalName,JSON.stringify(theme.aliases.slice(0,20)),cap(theme.description,240),theme.status,theme.mergedInto ?? null,theme.createdAt,theme.updatedAt);
+				this.ctx.storage.sql.exec('INSERT INTO themes (id,owner,canonical_name,aliases,description,status,merged_into,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET canonical_name=excluded.canonical_name,aliases=excluded.aliases,description=excluded.description,status=excluded.status,merged_into=excluded.merged_into,updated_at=excluded.updated_at WHERE themes.owner=excluded.owner',theme.id,owner,theme.canonicalName,JSON.stringify(theme.aliases.slice(0,20)),cap(theme.description,240),theme.status,theme.mergedInto ?? null,theme.createdAt,theme.updatedAt);
 				writtenThemes++;
 			}
 			for (const signal of signals.slice(0,5_000)) {

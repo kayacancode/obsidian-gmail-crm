@@ -1124,8 +1124,11 @@ export function mountGraph(element, options = {}) {
       requestRelevance(action === 'retrieve-person-context' ? callbacks.onRetrievePreview : callbacks.onOpenPublicSource,
         { personId: selectedId }, 'Context request completed.');
     } else if (action === 'draft-person-note') {
+      // onDraftNote opens its own dialog and handles its own errors (openDraftNote in
+      // relationship-host.mjs catches everything and returns normally), so this never goes
+      // through requestRelevance: no "Updating relevance…" status, no snapshot re-render.
       if (relevancePending || !selectedId) return;
-      requestRelevance(callbacks.onDraftNote, selectedId, 'Draft ready for your review.');
+      callbacks.onDraftNote(selectedId);
     } else if (action === 'retrieve-context' || action === 'open-public-source') {
       if (relevancePending) return;
       requestRelevance(action === 'retrieve-context' ? callbacks.onRetrievePreview : callbacks.onOpenPublicSource,

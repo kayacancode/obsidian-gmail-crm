@@ -370,12 +370,19 @@ export class GranolaSync {
 
  protected async removeNoteSignals(noteId:string){await this.hooks.store().removeSignalsByEvidencePrefix(GRANOLA_ACCOUNT,`granola-note:${noteId}#`);}
 
+ // Durable Object SQLite allows at most 100 bound parameters per query, so an IN (...) list
+ // built from caller-supplied ids must be chunked rather than bound in one statement.
+ private static readonly SQL_IN_CHUNK=100;
+
  /** Read-time meta for evidence panels: visible notes only, so hidden notes stay title-less. */
  noteMeta(noteIds:string[]){
   const out=new Map<string,{title:string;meetingAt:string;webUrl:string|null;syncedAt:number}>();
   const ids=[...new Set(noteIds)].slice(0,GranolaSync.NOTE_META_LIMIT);
   if(!ids.length)return out;
-  for(const row of this.ctx.storage.sql.exec<{id:string;title:string;web_url:string|null;meeting_at:string;synced_at:number}>(`SELECT id,title,web_url,meeting_at,synced_at FROM granola_notes WHERE hidden=0 AND id IN (${ids.map(()=>'?').join(',')})`,...ids).toArray())out.set(row.id,{title:row.title,meetingAt:row.meeting_at,webUrl:row.web_url,syncedAt:row.synced_at});
+  for(let i=0;i<ids.length;i+=GranolaSync.SQL_IN_CHUNK){
+   const chunk=ids.slice(i,i+GranolaSync.SQL_IN_CHUNK);
+   for(const row of this.ctx.storage.sql.exec<{id:string;title:string;web_url:string|null;meeting_at:string;synced_at:number}>(`SELECT id,title,web_url,meeting_at,synced_at FROM granola_notes WHERE hidden=0 AND id IN (${chunk.map(()=>'?').join(',')})`,...chunk).toArray())out.set(row.id,{title:row.title,meetingAt:row.meeting_at,webUrl:row.web_url,syncedAt:row.synced_at});
+  }
   return out;
  }
 

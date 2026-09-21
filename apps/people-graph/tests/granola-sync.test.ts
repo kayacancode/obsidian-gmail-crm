@@ -464,3 +464,42 @@ test('Granola statement signals reach the my lens only, never firm or public',as
   assert.ok([...granolaIds].every(id=>!visible.has(id)),`${lens} excludes meeting statements`);
  }
 });
+
+test('noteMeta chunks IN (...) lookups to at most 100 bound ids per statement, whatever the input size',async()=>{
+ const f=granolaFixture();
+ const insert=f.db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,NULL,?,?,?,?,'[]',?,?,?,?,0,'done',NULL,'granola-v1',0,0,0)");
+ const N=250;const ids:string[]=[];
+ for(let i=0;i<N;i++){
+  const id=`not_${String(i).padStart(4,'0')}567890ab`;ids.push(id);
+  insert.run(id,'Note '+i,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','s','p','t','h'+i);
+ }
+ f.statements.length=0;
+ const meta=f.sync.noteMeta(ids);
+ const inStatements=f.statements.filter(s=>s.includes('granola_notes')&&s.includes(' IN ('));
+ assert.ok(inStatements.length>=3,`expected the 250 ids split across multiple statements, got ${inStatements.length}`);
+ for(const s of inStatements){
+  const placeholders=(s.match(/\?/g)??[]).length;
+  assert.ok(placeholders<=100,`a noteMeta statement bound ${placeholders} params (> 100): ${s.slice(0,120)}`);
+ }
+ assert.equal(meta.size,N,'results from every chunk, including the last (partial) one, are merged');
+ assert.equal(meta.get(ids[0])?.title,'Note 0','a result from the first chunk is present');
+ assert.equal(meta.get(ids[149])?.title,'Note 149','a result from the second chunk is present');
+ assert.equal(meta.get(ids[249])?.title,'Note 249','a result from the last, partial chunk is present');
+});
+
+test('a theme’s canonical_name follows a folder rename on re-ingest',async()=>{
+ const f=granolaFixture();const ai=withAI(f,goodAI);const net=network();
+ await withFetch(net.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,net.fake);
+ const pilot='theme-'+await opaque('owner@example.test','granola-folder:fol_1234567890abcd','identity-key');
+ assert.equal((f.db.prepare('SELECT canonical_name FROM themes WHERE id=?').get(pilot) as any).canonical_name,'pilot');
+ f.db.prepare('UPDATE granola_folders SET name=? WHERE id=?').run('Onboarding','fol_1234567890abcd');
+ // Hiding then re-including the folder re-ingests the already-extracted note's statements
+ // (see 'hiding a folder removes its signals and re-including restores them without AI'
+ // above) without another AI call, which is enough to re-derive the folder theme's name.
+ const callsBefore=ai.calls.length;
+ await f.sync.setExcluded(['fol_1234567890abcd']);
+ await f.sync.setExcluded([]);
+ assert.equal(ai.calls.length,callsBefore,'re-deriving the theme name costs no AI call');
+ assert.equal((f.db.prepare('SELECT canonical_name,aliases FROM themes WHERE id=?').get(pilot) as any).canonical_name,'onboarding');
+ assert.deepEqual(JSON.parse((f.db.prepare('SELECT aliases FROM themes WHERE id=?').get(pilot) as any).aliases),['Onboarding']);
+});

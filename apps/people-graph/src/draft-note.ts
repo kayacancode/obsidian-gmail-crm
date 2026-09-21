@@ -24,7 +24,7 @@ export async function composeDraft(ai:Env['AI']|undefined,model:string|undefined
   if(!isRecord(output)||Object.keys(output).sort().join(',')!=='body,subject')throw Error();
   const {subject,body}=output as {subject:unknown;body:unknown};
   if(typeof subject!=='string'||typeof body!=='string'||!subject.trim()||!body.trim()||subject.length>MAX_SUBJECT||body.length>MAX_BODY)throw Error();
-  if(body.trim().split(/\s+/).length>MAX_WORDS||body.includes('[')||/[<>]|http/i.test(`${subject}\n${body}`))throw Error();
+  if(body.trim().split(/\s+/).length>MAX_WORDS||subject.includes('[')||body.includes('[')||/[<>]|http/i.test(`${subject}\n${body}`))throw Error();
   return {subject,body};
  }catch{throw Error('invalid_draft');}
 }

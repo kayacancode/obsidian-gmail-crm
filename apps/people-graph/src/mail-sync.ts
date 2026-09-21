@@ -349,7 +349,11 @@ export class MailSync extends DurableObject<MailEnv>{
   const basedOn=graph.themeSignals.filter(s=>s.personId===personId)
    .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,8)
    .map(s=>({summary:s.summary,observedAt:s.observedAt,...(s.provenance?.title?{title:s.provenance.title}:{})}));
-  const to=await this.emailForPerson(personId);
+  const rawTo=await this.emailForPerson(personId);
+  // A stored contact email can carry mailto-header-injection characters from a loosely
+  // parsed Gmail "From" line (e.g. "victim?bcc=attacker@evil.test"); never hand those to
+  // a mailto: link.
+  const to=rawTo&&MAILTO_SAFE.test(rawTo)?rawTo:null;
   const {subject,body}=await composeDraft(this.env.AI,this.env.THEME_MODEL,{name:node.name,company:node.company,lastContact:node.lastContact,evidence:basedOn});
   return {to,name:node.name,subject,body,basedOn};
  }
@@ -384,6 +388,9 @@ export class MailSync extends DurableObject<MailEnv>{
 }
 const GRANOLA_NOTE_REF='granola-note:';
 function noteIdOf(evidenceRef:string){return evidenceRef.slice(GRANOLA_NOTE_REF.length).split('#')[0];}
+// An address safe to place inside a mailto: link without opening header injection
+// (?/&/# start mailto query/fragment syntax, %<>/"' can break out of an href attribute).
+const MAILTO_SAFE=/^[^\s?&#%/<>"']+@[^\s?&#%/<>"']+$/;
 
 function retrievalView(job:RetrievalJob){return {id:job.id,status:job.status,error:job.error,personId:job.personId,themeId:job.themeId,windowDays:job.windowDays,processed:job.processed,decodedBytes:job.decodedBytes,assertions:job.assertions,maxMessages:50,maxBytes:1_000_000};}
 function publicSourceView(source:PublicSourceState){const {owner:_,generation:__,dueAt:___,pendingRefresh:____,...view}=source;return {...view,visibility:'public' as const};}

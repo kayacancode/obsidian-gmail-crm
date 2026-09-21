@@ -452,3 +452,17 @@ test('draftNote resolves the person, sends the eight newest signals and never an
   await assert.rejects(service.draftNote(''),/unknown_person/);
  }finally{db.close();}
 });
+
+test('draftNote never hands back a contact email that could inject mailto: headers',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ const ai=new FakeAI({response:{subject:'Following up',body:'Hi, following up.'}});
+ Object.assign((service as any).env,{AI:ai,THEME_MODEL:'@cf/meta/llama-3.3-70b-instruct-fp8-fast'});
+ try{
+  const victim='victim?bcc=attacker@evil.test';
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1',victim,'Victim',Date.now(),'Hello',1,1);
+  const personId=await opaque('owner',victim,'identity-key');
+  const value=await service.draftNote(personId);
+  assert.equal(value.to,null,'a mailto-unsafe stored email is withheld, not passed through');
+ }finally{db.close();}
+});
