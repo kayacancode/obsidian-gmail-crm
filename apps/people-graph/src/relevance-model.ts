@@ -97,7 +97,7 @@ export function scoreRelevance(signals:ThemeSignal[], feedback:RelevanceFeedback
 	const lookup = new Map(themes.map(theme => [theme.id,theme]));
 	const groups = new Map<string,ThemeSignal[]>();
 	for (const source of signals.slice(0,5_000)) {
-		if (!permitted(source.visibility,lens)) continue;
+		if (!permitted(source.visibility,lens,source.evidenceRef)) continue;
 		const themeId = resolveCorrection(source.themeId,corrections,source.personId);
 		const theme = lookup.get(themeId);
 		if (theme && theme.status !== 'active') continue;
@@ -166,7 +166,17 @@ export function rankSerendipity(input:{nodes:GraphNode[];edges:GraphEdge[];relev
 	return results.sort((a,b) => b.score-a.score || a.nodeId.localeCompare(b.nodeId)).slice(0,5);
 }
 
-function permitted(visibility:SignalVisibility,lens:RelevanceLens):boolean { return lens === 'my' || visibility === lens; }
+/**
+ * Evidence another owner shared lands as `firm` under a `share:<owner>` evidence ref. `firm` is
+ * the only lens it belongs in: `my` is this owner's own mind, and a superset visibility rule
+ * would quietly mix somebody else's notes into it, which is the opposite of what the sharing
+ * copy promises. Public stays excluded by the visibility rule itself.
+ */
+const SHARED_EVIDENCE_REF='share:';
+function permitted(visibility:SignalVisibility,lens:RelevanceLens,evidenceRef?:string):boolean {
+	if (lens === 'my' && evidenceRef?.startsWith(SHARED_EVIDENCE_REF)) return false;
+	return lens === 'my' || visibility === lens;
+}
 function permittedNode(node:GraphNode,lens:RelevanceLens):boolean { return node.visibility ? permitted(node.visibility,lens) : lens === 'my'; }
 function relevanceCalculationTime(relevance:Pick<RelevanceSnapshot,'themes'|'connectors'>):number { const observed = relevance.themes.flatMap(theme => theme.components.map(component => Date.parse(component.observedAt))).filter(Number.isFinite); return observed.length ? Math.max(...observed) : 0; }
 function feedbackKey(themeId:string,personId?:string):string {return JSON.stringify([themeId,personId??null]);}

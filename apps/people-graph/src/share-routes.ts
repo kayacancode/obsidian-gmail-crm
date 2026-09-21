@@ -16,11 +16,18 @@ import type {ShareScope,SharedSlice} from './network-share';
  */
 export interface ShareEnv extends MailEnv {DB:D1Database}
 
-const MAX_BODY=8*1024;
+// An opaque node id is base64url SHA-256 — 43 characters, ~46 bytes inside a JSON array — so a
+// full 200-person selection from the picker costs about 9 KB. 16 KB carries it with room over.
+const MAX_BODY=16*1024;
 /** An owner may share with this many viewers; the plan's per-viewer cap is `SHARE_CAPS.owners`. */
 const MAX_OUTGOING=50;
+/** How often one (owner, viewer) pair may push immediately; the row write is never throttled. */
+const PUSH_INTERVAL_MS=60_000;
 /** A viewer's graph load refreshes at most this often, and one run may take at most this long. */
 const REFRESH_INTERVAL_MS=10*60*1000,REFRESH_BUDGET_MS=20_000;
+let refreshBudgetMs=REFRESH_BUDGET_MS;
+/** Test-only hook: shrink the refresh budget. Pass null to restore the real one. */
+export function __setRefreshBudgetForTests(ms:number|null):void{refreshBudgetMs=ms??REFRESH_BUDGET_MS;}
 const EMAIL=/^[^\s@,<>"']+@[^\s@,<>"']+\.[^\s@,<>"']+$/;
 const MAX_ID=200;
 
@@ -99,12 +106,23 @@ async function createShare(env:ShareEnv,owner:string,body:Record<string,unknown>
  const rows=await outgoingRows(env.DB,owner);
  const existing=rows.find(row=>row.viewer_email===viewer);
  if(!existing&&rows.length>=MAX_OUTGOING)return json({error:'share_limit',message:`You can share with at most ${MAX_OUTGOING} people.`},409);
+ // The viewer's own cap, enforced here as well as on their refresh: a twenty-first owner would
+ // otherwise be pushed straight into their object and go missing at their next refresh anyway.
+ // Hidden rows count — a share a viewer declined is still a share they hold.
+ if(!existing){
+  const incoming=await incomingRows(env.DB,viewer,true);
+  if(incoming.length>=SHARE_CAPS.owners)return json({error:'viewer_limit',message:'That person already receives the maximum number of shared networks.'},409);
+ }
  const now=Date.now();
  await env.DB.prepare(`INSERT INTO shares (owner_email, viewer_email, scope, level, created_at, updated_at, hidden) VALUES (?, ?, ?, ?, ?, ?, 0)
   ON CONFLICT(owner_email, viewer_email) DO UPDATE SET scope = excluded.scope, level = excluded.level, updated_at = excluded.updated_at`)
   .bind(owner,viewer,JSON.stringify(scope),level,now,now).run();
  // The viewer declined this owner earlier; changing the share does not undo that.
  if(existing?.hidden)return json({ok:true,people:0});
+ // An import rewrites the viewer's whole cached copy of this owner and drops their graph blob,
+ // so one owner must not be able to loop this route. Inside the cooldown the row still changes;
+ // only the immediate push waits for the viewer's own refresh.
+ if(existing&&now-(Number(existing.updated_at)||0)<PUSH_INTERVAL_MS)return json({ok:true,people:null});
  // The row is the share; the push below is only how the viewer sees it without waiting for
  // their next refresh. A failure here surfaces as a 500 and the share still stands — the
  // viewer's refresh picks it up, and the owner retrying is an idempotent upsert.
@@ -122,7 +140,10 @@ async function revokeShare(env:ShareEnv,owner:string,body:Record<string,unknown>
  const viewer=readEmail(body.viewerEmail);
  if(!viewer||viewer===owner)return invalid();
  await ensureShares(env.DB);
- await env.DB.prepare('DELETE FROM shares WHERE owner_email = ? AND viewer_email = ?').bind(owner,viewer).run();
+ const deleted=await env.DB.prepare('DELETE FROM shares WHERE owner_email = ? AND viewer_email = ?').bind(owner,viewer).run();
+ // Nothing was deleted: this owner never shared with that address, and asking the namespace for
+ // it would create a Durable Object for any string the owner cares to type.
+ if(!Number(deleted.meta?.changes))return json({ok:true});
  await env.MAIL.getByName(viewer).dropShare(owner);
  return json({ok:true});
 }
@@ -149,7 +170,17 @@ async function hideShare(env:ShareEnv,viewer:string,body:Record<string,unknown>)
  * being unavailable means their people are a few minutes stale, not that the viewer's own graph
  * is gone, so every failure is swallowed and nothing about it is logged.
  */
-export async function refreshShares(env:ShareEnv,viewer:string,force=false):Promise<void>{
+export function refreshShares(env:ShareEnv,viewer:string,force=false):Promise<void>{
+ // Two graph loads, or a graph load beside an un-hide, must not run two refreshes at the same
+ // viewer's object: the second joins the first rather than re-exporting every owner.
+ const running=inflight.get(viewer);
+ if(running)return running;
+ const run=runRefresh(env,viewer,force).finally(()=>{inflight.delete(viewer);});
+ inflight.set(viewer,run);
+ return run;
+}
+const inflight=new Map<string,Promise<void>>();
+async function runRefresh(env:ShareEnv,viewer:string,force:boolean):Promise<void>{
  try{
   const stub=env.MAIL.getByName(viewer);
   const meta=await stub.sharedMeta();
@@ -159,7 +190,11 @@ export async function refreshShares(env:ShareEnv,viewer:string,force=false):Prom
   await ensureShares(env.DB);
   const rows=await incomingRows(env.DB,viewer,false);
   const live=new Set(rows.map(row=>row.owner_email));
-  const deadline=now+REFRESH_BUDGET_MS;
+  // Anyone whose cached copy is here but who no longer shares — revoked, or hidden by the
+  // viewer — goes. This runs before the import so that a failing ingest cannot leave a revoked
+  // owner's people on screen; an owner whose export fails is still sharing, so their copy stays.
+  for(const cached of meta.owners)if(!live.has(cached))await stub.dropShare(cached);
+  const deadline=now+refreshBudgetMs;
   const slices:SharedSlice[]=[];
   for(const row of rows){
    if(Date.now()>deadline)break;
@@ -169,15 +204,20 @@ export async function refreshShares(env:ShareEnv,viewer:string,force=false):Prom
     const scope=readScope(row.scope),level=normalizeShareLevel(row.level);
     if(!scope)continue;
     const ownerStub=env.MAIL.getByName(owner);
-    await ownerStub.bindOwner(owner);
-    slices.push(await ownerStub.exportSlice(scope,level));
+    // One owner whose object never answers must cost this refresh its remaining budget, not
+    // the whole request: past the deadline they are skipped exactly as a thrown export is.
+    slices.push(await withDeadline((async()=>{await ownerStub.bindOwner(owner);return await ownerStub.exportSlice(scope,level);})(),deadline-Date.now()));
    }catch{/* this owner stays as it was; the others still refresh */}
   }
   if(slices.length){await stub.bindOwner(viewer);await stub.importShares(slices);}
-  // Anyone whose cached copy is here but who no longer shares — revoked, or hidden by the
-  // viewer — goes. An owner whose export just failed is still sharing, so their copy stays.
-  for(const cached of meta.owners)if(!live.has(cached))await stub.dropShare(cached);
  }catch{/* a refresh never fails the graph */}
+}
+/** `promise`, or a rejection once `ms` have passed. The timer is cleared whichever way it ends. */
+function withDeadline<T>(promise:Promise<T>,ms:number):Promise<T>{
+ return new Promise<T>((resolve,reject)=>{
+  const timer=setTimeout(()=>reject(new Error('timeout')),Math.max(0,ms));
+  promise.then(value=>{clearTimeout(timer);resolve(value);},cause=>{clearTimeout(timer);reject(cause);});
+ });
 }
 
 function outgoingRows(db:D1Database,owner:string){

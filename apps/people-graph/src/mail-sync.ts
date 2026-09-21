@@ -15,7 +15,7 @@ import {GranolaSync,type GranolaRange,type GranolaStatus,type GranolaGmailContac
 import {composeDraft,checkDraft} from './draft-note';
 import {jevConfigured,JevError} from './jev';
 import {keywordRank,keywordScores,jevScores,topResults,MAX_QUERY_LENGTH,type SearchEvidence,type SearchResult} from './network-search';
-import {SHARE_CAPS,carriesQuote,levelOfSlice,normalizeShareLevel,normalizeShareScope,normalizeSlice,shareableSourceType,type SharedSlice,type ShareLevel,type ShareScope} from './network-share';
+import {SHARE_CAPS,carriesQuote,levelOfSlice,normalizeShareLevel,normalizeShareScope,normalizeSlice,shareableSourceType,sharedDisplayName,type SharedSlice,type ShareLevel,type ShareScope} from './network-share';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string}
@@ -371,13 +371,16 @@ export class MailSync extends DurableObject<MailEnv>{
   if(typeof personId!=='string'||!personId||personId.includes('@')||personId.length>200)throw Error('unknown_person');
   const graph=await this.graph();const node=graph?.nodes.find(n=>n.id===personId);
   if(!graph||!node)throw Error('unknown_person');
-  const basedOn=graph.themeSignals.filter(s=>s.personId===personId)
-   .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,8)
-   .map(s=>({summary:s.summary,observedAt:s.observedAt,...(s.provenance?.title?{title:s.provenance.title}:{})}));
   // A person this owner knows only through somebody else's share has no address here, and the
   // draft must never be written to them: it becomes an introduction request to the sharer.
   const ownEmail=await this.emailForPerson(personId);
   const introVia=ownEmail?null:(await this.sharedPersonFor(personId))?.via[0]??null;
+  // A draft addressed to the person themselves may only rest on this owner's own evidence: a
+  // person they know independently can also have been shared with them, and another owner's
+  // private quote about Bob must never be pasted into an email to Bob.
+  const basedOn=graph.themeSignals.filter(s=>s.personId===personId&&(introVia!==null||!s.evidenceRef.startsWith(SHARE_ACCOUNT)))
+   .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,8)
+   .map(s=>({summary:s.summary,observedAt:s.observedAt,...(s.provenance?.title?{title:s.provenance.title}:{})}));
   const rawTo=ownEmail??introVia;
   // A stored contact email can carry mailto-header-injection characters from a loosely
   // parsed Gmail "From" line (e.g. "victim?bcc=attacker@evil.test"); never hand those to
@@ -417,15 +420,22 @@ export class MailSync extends DurableObject<MailEnv>{
   if(!text||text.length>MAX_QUERY_LENGTH)throw Error('invalid_request');
   const graph=await this.graph();
   if(!graph)return {query:text,results:[] as SearchResult[],checked:false};
-  const evidence=new Map<string,SearchEvidence[]>();
+  // Two views of the same evidence: the keyword pass ranks over everything the owner can see,
+  // but only their own evidence may leave to a third party — `own*` drops what another owner
+  // shared (`share:` refs) and the edge contexts that came with a share.
+  const evidence=new Map<string,SearchEvidence[]>(),ownEvidence=new Map<string,SearchEvidence[]>();
   for(const signal of graph.themeSignals){
    const personId=signal.personId;if(!personId)continue;
-   const list=evidence.get(personId)??[];
-   list.push({summary:signal.summary,observedAt:signal.observedAt,...(signal.provenance?.title?{title:signal.provenance.title}:{})});
-   evidence.set(personId,list);
+   const item={summary:signal.summary,observedAt:signal.observedAt,...(signal.provenance?.title?{title:signal.provenance.title}:{})};
+   evidence.set(personId,[...(evidence.get(personId)??[]),item]);
+   if(!signal.evidenceRef.startsWith(SHARE_ACCOUNT))ownEvidence.set(personId,[...(ownEvidence.get(personId)??[]),item]);
   }
-  const contexts=new Map<string,string[]>();
-  for(const edge of graph.edges)for(const id of [edge.source,edge.target])if(id)contexts.set(id,[...(contexts.get(id)??[]),...edge.contexts]);
+  const contexts=new Map<string,string[]>(),ownContexts=new Map<string,string[]>();
+  for(const edge of graph.edges)for(const id of [edge.source,edge.target]){
+   if(!id)continue;
+   contexts.set(id,[...(contexts.get(id)??[]),...edge.contexts]);
+   if(!edge.types.includes('shared_via'))ownContexts.set(id,[...(ownContexts.get(id)??[]),...edge.contexts]);
+  }
   const themes=new Map<string,string[]>();
   for(const theme of graph.relevance?.themes??[])for(const id of theme.nodeIds)themes.set(id,[...(themes.get(id)??[]),theme.name]);
   const candidates=graph.nodes.map(node=>({personId:node.id,name:node.name,company:node.company??null,lastContact:node.lastContact??null,
@@ -436,7 +446,8 @@ export class MailSync extends DurableObject<MailEnv>{
    // One deadline for the whole rerank, not per request: the batches run one after another,
    // each with its own 20s fetch timeout and a possible 429 back-off. Past the deadline the
    // abort surfaces as jev_unavailable and the owner gets the keyword ranking instead.
-   try{scores=await jevScores(this.env,text,ranked,AbortSignal.timeout(searchDeadlineMs));checked=true;}
+   const outbound=ranked.map(person=>({...person,evidence:ownEvidence.get(person.personId)??[],contexts:ownContexts.get(person.personId)??[]}));
+   try{scores=await jevScores(this.env,text,outbound,AbortSignal.timeout(searchDeadlineMs));checked=true;}
    catch(e){if(!(e instanceof JevError))throw e;scores=keywordScores(ranked);checked=false;}
   }
   return {query:text,results:topResults(text,ranked,scores,{checked}),checked};
@@ -463,7 +474,7 @@ export class MailSync extends DurableObject<MailEnv>{
    allowed=resolved;
   }
   const chosen=contacts.filter(row=>!allowed||allowed.has(row.email)).slice(0,SHARE_CAPS.people);
-  const people=chosen.map(row=>({email:row.email,name:row.name.includes('@')?row.email.split('@')[0]:row.name,lastContact:row.last?new Date(row.last).toISOString():null,meetings:row.meetings}));
+  const people=chosen.map(row=>({email:row.email,name:sharedDisplayName(row.name,row.email),lastContact:row.last?new Date(row.last).toISOString():null,meetings:row.meetings}));
   const emails=new Set(people.map(person=>person.email));
   const edges=[...this.mergedEdges().values()].filter(edge=>emails.has(edge.a)&&emails.has(edge.b))
    .sort((x,y)=>y.weight-x.weight).slice(0,SHARE_CAPS.edges)
@@ -484,8 +495,9 @@ export class MailSync extends DurableObject<MailEnv>{
    if(!names.has(signal.themeId))return false;
    if(signal.personId&&!byPerson.has(signal.personId))return false;
    // `themes` carries theme-level evidence only — topic and metadata signals, plus calendar.
-   // A person-attached statement carries the owner's verbatim quote and needs `statements`.
-   return shareLevel==='statements'||!signal.personId||signal.sourceType==='calendar';
+   // A person-attached statement carries the owner's verbatim quote and needs `statements`,
+   // and so does any other theme-level summary that turns out to quote the owner's notes.
+   return shareLevel==='statements'||((!signal.personId||signal.sourceType==='calendar')&&!carriesQuote(signal));
   });
   const titled=this.granolaProvenance({themeSignals:visible.map(({owner:_,...signal})=>signal)}).themeSignals.slice(0,SHARE_CAPS.signals);
   // The theme cap is applied first and the signals are then trimmed to what survived it, so a
@@ -611,6 +623,8 @@ export class MailSync extends DurableObject<MailEnv>{
   const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));
   const nodes:GraphPersonNode[]=await Promise.all(rows.map(async r=>({id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
   const idMap=new Map(rows.map((r,i)=>[r.email,nodes[i].id]));
+  // Shared people are looked up by id below; at the caps that is 1500 × 1500 with `find`.
+  const nodeById=new Map(nodes.map(node=>[node.id,node]));
   // Shared people join the owner's own graph: a person both sides know keeps one node and
   // gains `via`, an unknown one becomes a node labelled with the owners who shared them. The
   // addresses themselves never leave this object; only the sharing owners' own addresses do.
@@ -620,11 +634,11 @@ export class MailSync extends DurableObject<MailEnv>{
    const id=idMap.get(person.email);
    // A node keeps its own last contact unless the shared one is genuinely later; a share with
    // no date at all leaves it alone, and an unknown date stays null rather than becoming 1970.
-   if(id){const node=nodes.find(n=>n.id===id)!;node.via=person.via;if(person.last&&(!node.lastContact||person.last>Date.parse(node.lastContact)))node.lastContact=new Date(person.last).toISOString();continue;}
+   if(id){const node=nodeById.get(id)!;node.via=person.via;if(person.last&&(!node.lastContact||person.last>Date.parse(node.lastContact)))node.lastContact=new Date(person.last).toISOString();continue;}
    if(nodes.length>=MAX_GRAPH_NODES)continue;
    const days=person.last?(Date.now()-person.last)/86400000:3650;
    const node:GraphPersonNode={id:await opaque(owner,person.email,this.env.TOKEN_SECRET),photoUrl:null,name:person.name.includes('@')?person.email.split('@')[0]:person.name,company:person.email.split('@')[1],companySource:'email_domain',lastContact:person.last?new Date(person.last).toISOString():null,meetings:person.meetings,lastMeeting:null,via:person.via,...emailScore(person.meetings,person.meetings,days)};
-   nodes.push(node);idMap.set(person.email,node.id);
+   nodes.push(node);idMap.set(person.email,node.id);nodeById.set(node.id,node);
   }
   const merged=this.mergedEdges();
   for(const e of this.sharedEdgeRows()){const key=e.a+'\u0000'+e.b;const cur=merged.get(key);if(cur){cur.weight+=e.weight;if(!cur.types.includes('shared_via'))cur.types.push('shared_via');cur.contexts.push(...e.contexts.slice(0,2));}else merged.set(key,{a:e.a,b:e.b,weight:e.weight,types:['shared_via'],contexts:e.contexts,titles:[]});}

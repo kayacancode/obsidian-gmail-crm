@@ -212,6 +212,39 @@ test('firm and public lenses retain only their exact visibility while my retains
   assert.deepEqual(filterRelevance(graph, 'public').relevance.themes[0].nodeIds, ['local-cy']);
 });
 
+test('a twenty-first sharing owner is trimmed off a node rather than breaking the graph', () => {
+  const via = Array.from({ length: 21 }, (_, index) => `owner${index}@vc.test`);
+  const graph = normalizeGraph({
+    nodes: [{ id: 'local-ada', name: 'Ada', type: 'person', via }, { id: 'local-bo', name: 'Bo', type: 'person' }],
+    edges: [],
+  });
+  assert.equal(graph.nodes[0].via.length, 20, '`via` is server-produced data a viewer cannot correct');
+  assert.deepEqual(graph.nodes[0].via, via.slice(0, 20));
+  assert.deepEqual(graph.nodes[1].via, []);
+});
+
+test('evidence another owner shared stays in the firm lens and never joins my mind', () => {
+  const input = graphFixture();
+  input.themeSignals.push(signal({
+    id: 'signal-shared',
+    personId: 'local-cy',
+    sourceType: 'granola',
+    visibility: 'firm',
+    summary: 'Ask: “shared quote from another owner”',
+    evidenceRef: 'share:owner@share.test:abc123',
+    extractorVersion: 'network-share-v1',
+  }));
+  input.relevance.themes[0].components.push({
+    signalId: 'signal-shared', sourceType: 'granola', observedAt: '2026-09-13T12:00:00.000Z', contribution: 0.5,
+  });
+  const graph = normalizeGraph(input);
+  const mine = filterRelevance(graph, 'my');
+  assert.ok(!mine.themeSignals.some((item) => item.id === 'signal-shared'), 'shared evidence is not the viewer’s own');
+  assert.ok(!JSON.stringify(mine.themeSignals).includes('shared quote from another owner'));
+  assert.ok(filterRelevance(graph, 'firm').themeSignals.some((item) => item.id === 'signal-shared'), 'the Firm lens is where it belongs');
+  assert.ok(!filterRelevance(graph, 'public').themeSignals.some((item) => item.id === 'signal-shared'));
+});
+
 test('normalization preserves legacy defaults and inspectable relationship strength and types', () => {
   const legacy = normalizeGraph({
     nodes: [{ id: 'a', name: 'Ada' }, { id: 'b', name: 'Bo' }],
@@ -290,8 +323,8 @@ test('shared people keep the owners who shared them, bounded, and shared_via edg
   assert.deepEqual(shared.edges[0].types, ['shared_via']);
   assert.equal(shared.edges[0].label, 'shared via');
 
-  // A non-array, an over-long owner, or too many owners is a producer bug, not something to render.
+  // A non-array or an over-long owner is a producer bug, not something to render. Too many
+  // owners is not: see the twenty-first-owner case below, which trims instead of throwing.
   assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: 'owner@example.test' }], edges: [] }), /via/i);
   assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: ['x'.repeat(321)] }], edges: [] }), /via/i);
-  assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: Array.from({ length: 21 }, (_, i) => `o${i}@example.test`) }], edges: [] }), /via/i);
 });

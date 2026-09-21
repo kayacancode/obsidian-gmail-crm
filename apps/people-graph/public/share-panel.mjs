@@ -4,23 +4,24 @@ const make=(tag,text,className)=>{const node=document.createElement(tag);if(text
 // the viewer's graph. Keep both in one place so they can never drift apart.
 const LEVELS=[
   ['names','Names and companies only','They see who you know and where those people work. No themes, no quotes.'],
-  ['themes','Plus themes','They also see what those people are working on, as theme names.'],
+  ['themes','Plus themes and meeting titles','They also see what those people are working on, as theme names, and the titles of the meetings those people were in.'],
   ['statements','Plus quoted statements','They also see short quotes from your notes about those people.'],
 ];
 const LEVEL_LABEL=new Map(LEVELS.map(([value,label])=>[value,label]));
 
-const messages={
-  invalid_request:'That was not accepted. Check the email address and what you chose to share.',
-  share_limit:'You can share with up to 50 people. Stop sharing with someone first.',
-  request_too_large:'That is too much to send at once. Choose fewer people or folders.',
-  unknown_share:'That share is no longer there. Reload this page.',
-  server_error:'Sharing is temporarily unavailable. Try again.',
-};
-// A viewer may hold at most 20 incoming shares, and the route accepts an 8 KB body; keep the
-// people picker well inside both so a large selection fails in the form, not at the server.
+// A viewer may hold at most 20 incoming shares. The route accepts a 16 KB body, which carries
+// this many opaque ids with room over, so the number the picker promises is one it can send.
 const MAX_PEOPLE=200;
 const MAX_VISIBLE_PEOPLE=60;
 
+const messages={
+  invalid_request:'That was not accepted. Check the email address and what you chose to share.',
+  share_limit:'You can share with up to 50 people. Stop sharing with someone first.',
+  viewer_limit:'That person already receives the maximum number of shared networks.',
+  request_too_large:`That is too much to send at once. Choose at most ${MAX_PEOPLE} people, or fewer folders.`,
+  unknown_share:'That share is no longer there. Reload this page.',
+  server_error:'Sharing is temporarily unavailable. Try again.',
+};
 export function createSharePanel(root,{onUnauthorized}={}){
   let account=null,busy=false,generation=0,pending=null;
   let shares={outgoing:[],incoming:[]};
@@ -88,7 +89,9 @@ export function createSharePanel(root,{onUnauthorized}={}){
     level.value='names';
     status.textContent='';
   }
-  function clear(){generation++;reset();render();}
+  // Clearing is a full sign-out of the panel: the account goes too, or a direct `clear()` from
+  // sign-out or pagehide would leave an empty signed-in form on screen.
+  function clear(){generation++;reset();account=null;render();}
   function suspend(){generation++;abort();busy=false;}
   function setAccount(next){if(next===account)return;clear();account=next;render();if(account)void load();}
 
@@ -206,7 +209,7 @@ export function createSharePanel(root,{onUnauthorized}={}){
   }
   function fail(error){
     if(error?.name==='AbortError'||error?.stale)return;
-    if(error?.status===401){clear();account=null;render();onUnauthorized?.();return;}
+    if(error?.status===401){clear();onUnauthorized?.();return;}
     status.textContent=messages[error?.code]??messages.server_error;
     render();
   }
@@ -227,7 +230,9 @@ export function createSharePanel(root,{onUnauthorized}={}){
   async function loadPeople(){
     const run=generation;
     try{const data=await request('/api/graph',null,'GET',run);if(run!==generation)return;
-      people=(data.graph?.nodes??[]).filter(node=>(node.type??'person')==='person')
+      // A node carrying `via` reached this graph through somebody else's share; it is not this
+      // owner's to pass on, and choosing one would silently share nothing.
+      people=(data.graph?.nodes??[]).filter(node=>(node.type??'person')==='person'&&!node.via?.length)
         .map(node=>({id:node.id,name:node.name,company:node.company??''}))
         .sort((a,b)=>a.name.localeCompare(b.name));
       peopleError=false;}
@@ -255,9 +260,13 @@ export function createSharePanel(root,{onUnauthorized}={}){
     try{
       const data=await request('/api/shares',{viewerEmail,scope:scopeBody(),level:level.value},'POST',run);
       if(run!==generation)return;
-      status.textContent=data.people
-        ? `Shared with ${viewerEmail}. ${data.people.toLocaleString()} ${data.people===1?'person is':'people are'} now in their network.`
-        : `Shared with ${viewerEmail}. Nothing is in their network yet; they may have hidden this share.`;
+      // `people: null` means the change was saved but not pushed — the server is spacing out
+      // pushes at the same pair, and the viewer picks it up on their own next refresh.
+      status.textContent=data.people===null||data.people===undefined
+        ? `Shared with ${viewerEmail}. Their network updates the next time they open theirs.`
+        : data.people
+          ? `Shared with ${viewerEmail}. ${data.people.toLocaleString()} ${data.people===1?'person is':'people are'} now in their network.`
+          : `Shared with ${viewerEmail}. Nothing is in their network yet; they may have hidden this share.`;
       viewer.value='';
       await load();
     }catch(error){fail(error);}

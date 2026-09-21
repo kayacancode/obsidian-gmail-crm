@@ -150,8 +150,9 @@ function photoUrl(value) {
 function sharedOwners(raw, index) {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new Error(`Node ${index} via must be an array`);
-  if (raw.length > MAX_VIA_OWNERS) throw new Error(`Node ${index} via must hold at most ${MAX_VIA_OWNERS} owners`);
-  return raw.map((value, ownerIndex) => (
+  // `via` is server-produced and a viewer cannot correct it, so an over-long list is trimmed
+  // rather than thrown: one node gaining a twenty-first owner must not lose the whole graph.
+  return raw.slice(0, MAX_VIA_OWNERS).map((value, ownerIndex) => (
     boundedString(value, `Node ${index} via owner ${ownerIndex}`, MAX_VIA_LENGTH)
   ));
 }

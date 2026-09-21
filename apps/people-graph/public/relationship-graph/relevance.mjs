@@ -1,8 +1,13 @@
 const LENSES = new Set(['my', 'firm', 'public']);
+// Evidence another owner shared with this viewer arrives as `firm` under a `share:<owner>`
+// evidence ref. It belongs in the Firm lens and nowhere else: My mind is the viewer's own.
+const SHARED_EVIDENCE_REF = 'share:';
 
-function accepts(lens, visibility) {
-  if (lens === 'my') return visibility === 'private' || visibility === 'firm' || visibility === 'public';
-  return visibility === lens;
+function accepts(lens, signal) {
+  const visibility = signal?.visibility;
+  if (lens !== 'my') return visibility === lens;
+  if (typeof signal?.evidenceRef === 'string' && signal.evidenceRef.startsWith(SHARED_EVIDENCE_REF)) return false;
+  return visibility === 'private' || visibility === 'firm' || visibility === 'public';
 }
 
 function lensValue(lens) {
@@ -90,7 +95,7 @@ function filteredSnapshot(relevance, signals, retainedThemeIds, lens) {
  */
 export function filterRelevance(graph, lens) {
   lensValue(lens);
-  const signals = (graph?.themeSignals ?? []).filter((signal) => accepts(lens, signal.visibility));
+  const signals = (graph?.themeSignals ?? []).filter((signal) => accepts(lens, signal));
   const retainedThemeIds = new Set(signals.map((signal) => signal.themeId));
   const signalIds=new Set(signals.map(signal=>signal.id));
   for(const theme of graph?.relevance?.themes??[])if(theme.components.some(component=>signalIds.has(component.signalId)))retainedThemeIds.add(theme.themeId);

@@ -22,12 +22,26 @@ export const SHARE_CAPS=Object.freeze({people:500,edges:2_000,signals:2_000,them
 const MAX_EMAIL=320,MAX_NAME=160,MAX_SUMMARY=240,MAX_THEME_NAME=120,MAX_TITLE=160,MAX_CONTEXTS=3,MAX_TYPES=4;
 const EMAIL=/^[^\s@,<>"']+@[^\s@,<>"']+\.[^\s@,<>"']+$/;
 /**
- * Source types a shared signal may claim. Three are deliberately absent: `public_url` and
+ * Source types a shared signal may claim. Four are deliberately absent: `public_url` and
  * `public_feed` belong to the owner's public-source pipeline, which forces visibility `public`
  * on persist while shared evidence must stay `firm`; `obsidian_note` summaries are free text
- * from the owner's own notes and are never shared at any level.
+ * from the owner's own notes; and a `gmail_subject` theme name is two canonical tokens of the
+ * owner's own subject line — raw mailbox content, never shared at any level. `gmail_body_derived`
+ * stays because its summaries come from a fixed server vocabulary, not from the message.
  */
-const SHARED_SOURCE_TYPES=new Set(['gmail_subject','gmail_body_derived','calendar','granola','product_activity']);
+const SHARED_SOURCE_TYPES=new Set(['gmail_body_derived','calendar','granola','product_activity']);
+/**
+ * What a shared person is called in the viewer's graph. A stored contact name is often only the
+ * local part of the address (a Cc line with no display name), and the viewer's node already
+ * carries the domain as `company` — so a local-part name would hand the browser the address in
+ * two halves. Anything that is not a real display name becomes the domain alone.
+ */
+export function sharedDisplayName(name:string|null|undefined,email:string):string {
+ const [local,domain]=[email.slice(0,email.lastIndexOf('@')),email.slice(email.lastIndexOf('@')+1)];
+ const display=(name??'').trim();
+ if(!display||display.includes('@')||display.toLowerCase()===local.toLowerCase())return `Someone at ${domain}`;
+ return display;
+}
 /**
  * A verbatim quote inside a signal summary. Granola statements are formatted
  * `Ask: “…”`, so the quote characters are the marker; the evidence-ref shape is a second net
@@ -85,7 +99,7 @@ export function normalizeSlice(value:unknown):SharedSlice|null {
   const email=typeof person.email==='string'?person.email.trim().toLowerCase():'';
   if(!email||email.length>MAX_EMAIL||!EMAIL.test(email)||seen.has(email))continue;
   seen.add(email);
-  people.push({email,name:text(person.name,MAX_NAME)||email.split('@')[0],lastContact:stamp(person.lastContact),meetings:count(person.meetings)});
+  people.push({email,name:sharedDisplayName(text(person.name,MAX_NAME),email),lastContact:stamp(person.lastContact),meetings:count(person.meetings)});
  }
  const edges:SharedEdge[]=[],pairs=new Set<string>();
  for(const item of list(raw.edges)){

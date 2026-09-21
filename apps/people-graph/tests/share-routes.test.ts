@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {makeSession,sessionCookie} from '../src/session';
+import {__setRefreshBudgetForTests} from '../src/share-routes';
 import worker from '../src/index';
 
 /**
@@ -118,7 +119,7 @@ test('creating a share validates the request, caps outgoing shares and pushes th
   assert.equal(bad.status,400,body.slice(0,60));
   assert.equal((await bad.json() as any).error,'invalid_request',body.slice(0,60));
  }
- const huge=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:'ada@vc.test',scope:{kind:'people',emails:['x@y.test']},level:'names',pad:'p'.repeat(9000)})));
+ const huge=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:'ada@vc.test',scope:{kind:'people',emails:['x@y.test']},level:'names',pad:'p'.repeat(20_000)})));
  assert.equal(huge.status,413);
  assert.deepEqual(rows,[],'a rejected share is never written');
  assert.deepEqual(calls,[],'a rejected share never reaches a durable object');
@@ -134,12 +135,20 @@ test('creating a share validates the request, caps outgoing shares and pushes th
  assert.deepEqual(JSON.parse(rows[0].scope),{kind:'people',personIds:['abc123']});
  assert.ok(rows[0].created_at>0&&rows[0].updated_at>0);
 
+ // A second change to the same pair within the cooldown writes the row but does not push: an
+ // owner must not be able to loop this route and keep the viewer's object busy.
  calls.length=0;
  const again=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:'ADA@vc.test',scope:{kind:'all'},level:'names'})));
  assert.equal(again.status,200);
+ assert.deepEqual(await again.json(),{ok:true,people:null},'a rapid second push is left to the viewer’s own refresh');
  assert.equal(rows.length,1,'the same viewer is upserted, not duplicated');
  assert.equal(rows[0].level,'names');assert.deepEqual(JSON.parse(rows[0].scope),{kind:'all'});
- assert.ok(calls.includes('export:'+OWNER+':names:{"kind":"all"}'));
+ assert.deepEqual(calls,[],'nothing reaches either durable object while the cooldown holds');
+
+ rows[0].updated_at=Date.now()-120_000;calls.length=0;
+ const later=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:'ada@vc.test',scope:{kind:'all'},level:'names'})));
+ assert.equal(later.status,200);
+ assert.ok(calls.includes('export:'+OWNER+':names:{"kind":"all"}'),'past the cooldown the change is pushed straight away again');
 
  // A viewer who declined keeps their decision: the row is updated, nothing is pushed at them.
  rows[0].hidden=1;calls.length=0;
@@ -176,6 +185,84 @@ test('revoking a share deletes the row and drops the viewer’s cached copy',asy
  calls.length=0;
  const twice=await signed('/api/shares',env,del('{"viewerEmail":"ada@vc.test"}'));
  assert.equal(twice.status,200,'revoking twice is not an error');
+ assert.deepEqual(calls,[],'a revoke that deleted nothing never creates a durable object for the address');
+ const stranger=await signed('/api/shares',env,del('{"viewerEmail":"never-heard-of@vc.test"}'));
+ assert.equal(stranger.status,200);
+ assert.deepEqual(calls,[],'nor for an address this owner never shared with');
+});
+
+test('a viewer already holding twenty shares is refused, and a hidden share still counts',async()=>{
+ const viewer='full@vc.test';
+ const rows=Array.from({length:20},(_,i)=>({owner_email:`o${i}@vc.test`,viewer_email:viewer,scope:'{"kind":"all"}',level:'names',created_at:1,updated_at:100-i,hidden:i===0?1:0}));
+ const {env,calls}=fixture(rows);
+ const capped=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:viewer,scope:{kind:'all'},level:'names'})));
+ assert.equal(capped.status,409);
+ const body=await capped.json() as any;
+ assert.equal(body.error,'viewer_limit');
+ assert.match(body.message,/maximum number of shared networks/);
+ assert.ok(!rows.some((row:any)=>row.owner_email===OWNER),'a refused share is never written');
+ assert.deepEqual(calls,[],'and never reaches the viewer’s object');
+
+ // One of the twenty changing their own share is not a twenty-first owner.
+ const existing=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:viewer,scope:{kind:'all'},level:'themes'})),'o5@vc.test');
+ assert.equal(existing.status,200);
+ assert.equal(rows.find((row:any)=>row.owner_email==='o5@vc.test').level,'themes');
+});
+
+test('the picker’s two-hundred-person selection fits the route’s body cap',async()=>{
+ const {env,rows}=fixture();
+ // An opaque node id is base64url SHA-256: 43 characters, ~46 bytes inside a JSON array.
+ const personIds=Array.from({length:200},(_,index)=>`p${String(index).padStart(3,'0')}`.padEnd(43,'x'));
+ assert.equal(personIds[0].length,43);
+ const response=await signed('/api/shares',env,post(JSON.stringify({viewerEmail:'ada@vc.test',scope:{kind:'people',personIds},level:'names'})));
+ assert.equal(response.status,200,'the number the picker promises is a number the route accepts');
+ assert.equal(JSON.parse(rows[0].scope).personIds.length,200);
+});
+
+test('two refreshes at once for one viewer run as one',async()=>{
+ // The per-isolate attempt stamp already collapses two ordinary graph loads; what it cannot
+ // collapse is the forced refresh an un-hide runs, which skips the interval check entirely.
+ const viewer='viewer-concurrent@example.test';
+ const {env,calls}=fixture([
+  {owner_email:'bo@vc.test',viewer_email:viewer,scope:'{"kind":"all"}',level:'names',created_at:1,updated_at:30,hidden:1},
+  {owner_email:'cara@vc.test',viewer_email:viewer,scope:'{"kind":"all"}',level:'themes',created_at:1,updated_at:20,hidden:0},
+ ]);
+ // A real object round trip is not instant; without that the two requests never overlap at all.
+ env.MAIL.getByName=((inner:(name:string)=>any)=>(name:string)=>{
+  const object=inner(name);
+  return {...object,sharedMeta:async()=>{await new Promise(resolve=>setTimeout(resolve,20));return object.sharedMeta();}};
+ })(env.MAIL.getByName);
+ const headers={cookie:sessionCookie(await makeSession(viewer,env.TOKEN_SECRET)).split(';')[0],origin:'https://people.test','content-type':'application/json'};
+ const unhide=()=>worker.fetch(new Request('https://people.test/api/shares/hide',
+  {method:'POST',headers,body:'{"ownerEmail":"bo@vc.test","hidden":false}'}),env);
+ const [first,second]=await Promise.all([unhide(),unhide()]);
+ assert.equal(first.status,200);assert.equal(second.status,200);
+ assert.deepEqual(calls.filter(call=>call.startsWith('export:')).sort(),
+  ['export:bo@vc.test:names:{"kind":"all"}','export:cara@vc.test:themes:{"kind":"all"}'],
+  'one export per owner, not one per concurrent refresh');
+ assert.equal(calls.filter(call=>call.startsWith('import:')).length,1);
+});
+
+test('an owner whose export never answers cannot consume the whole refresh',async()=>{
+ const viewer='viewer-hang@example.test';
+ const {env,calls}=fixture([
+  {owner_email:'fast@vc.test',viewer_email:viewer,scope:'{"kind":"all"}',level:'names',created_at:1,updated_at:30,hidden:0},
+  {owner_email:'hang@vc.test',viewer_email:viewer,scope:'{"kind":"all"}',level:'names',created_at:1,updated_at:20,hidden:0},
+ ]);
+ env.MAIL.getByName=((inner:(name:string)=>any)=>(name:string)=>{
+  const object=inner(name);
+  return name==='hang@vc.test'?{...object,exportSlice:()=>new Promise(()=>{})}:object;
+ })(env.MAIL.getByName);
+ __setRefreshBudgetForTests(100);
+ try{
+  const outcome=await Promise.race([
+   signed('/api/graph',env,{},viewer).then(response=>response.status),
+   new Promise(resolve=>setTimeout(()=>resolve('hung'),5_000)),
+  ]);
+  assert.equal(outcome,200,'the refresh gives up on the hanging owner instead of hanging with it');
+ }finally{__setRefreshBudgetForTests(null);}
+ assert.deepEqual(calls.filter(call=>call.startsWith('import:')),[`import:${viewer}:fast@vc.test`],
+  'the owner who did answer is still imported');
 });
 
 test('hiding an incoming share drops its cache and unhiding refreshes it',async()=>{

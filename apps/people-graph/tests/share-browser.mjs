@@ -13,7 +13,9 @@ const FOLDERS=[{id:'fol_1234567890abcd',name:'Pilot',parentId:null,excluded:fals
   {id:'fol_2234567890abcd',name:'Personal',parentId:null,excluded:false,noteCount:1}];
 const NODES=[{id:'person-ada',name:'Ada Rivera',company:'fintech.example',type:'person'},
   {id:'person-bo',name:'Bo Chen',company:'design.example',type:'person'},
-  {id:'person-cia',name:'Cia Ford',company:'ops.example',type:'person'}];
+  {id:'person-cia',name:'Cia Ford',company:'ops.example',type:'person'},
+  // Reached this graph through somebody else's share: not this owner's to pass on.
+  {id:'person-dee',name:'Dee Shared',company:'via.example',type:'person',via:['friend@example.test']}];
 
 async function fixture(options={}){
   const page=await browser.newPage({viewport:{width:1360,height:1000}});
@@ -97,7 +99,7 @@ try{
 
     // The level names are plain language, not the server's codes.
     assert.deepEqual(await page.locator('#share-level option').allTextContents(),
-      ['Names and companies only','Plus themes','Plus quoted statements']);
+      ['Names and companies only','Plus themes and meeting titles','Plus quoted statements']);
     assert.match(await page.textContent('#share-root'),/No themes, no quotes\./);
     await page.selectOption('#share-level','statements');
     await page.waitForFunction(()=>document.querySelector('#share-root').textContent.includes('short quotes'));
@@ -160,6 +162,8 @@ try{
     await page.waitForSelector('.share-people li[data-person-id="person-ada"]');
     assert.ok(requests.some(r=>r.path==='/api/graph'));
     assert.equal(await page.locator('.share-people li[data-person-id]').count(),3);
+    assert.equal(await page.locator('.share-people li[data-person-id="person-dee"]').count(),0,
+      'a person somebody else shared is not this owner’s to share on');
     await page.check('.share-people input[value="person-bo"]');
     await page.fill('#share-person-search','ada');
     await page.waitForFunction(()=>document.querySelectorAll('.share-people li[data-person-id]').length===1);
@@ -244,6 +248,29 @@ try{
   }
 
   {
+    // 8b. `clear()` on its own — what sign-out and pagehide call — returns the panel to its
+    // signed-out state, account included, not to an empty signed-in form.
+    const test=await fixture();
+    const {page,errors}=test;
+    await page.goto(origin+'/accounts.html?tab=share');
+    await signIn(page);
+    const state=await page.evaluate(async()=>{
+      const {createSharePanel}=await import('/share-panel.mjs');
+      const root=document.createElement('div');root.id='clear-probe';document.body.append(root);
+      const panel=createSharePanel(root,{});
+      panel.setAccount('a@x.test');
+      const signedIn={prompt:root.querySelector('.share-signin').hidden,form:root.querySelector('.share-form').hidden};
+      panel.clear();
+      return {signedIn,prompt:root.querySelector('.share-signin').hidden,form:root.querySelector('.share-form').hidden};
+    });
+    assert.deepEqual(state.signedIn,{prompt:true,form:false},'setAccount shows the form and hides the prompt');
+    assert.equal(state.prompt,false,'clear() shows the sign-in prompt again');
+    assert.equal(state.form,true,'and hides the share form');
+    assert.deepEqual(errors,[]);
+    await page.close();
+  }
+
+  {
     // 9. Switching tabs keeps the Gmail and Granola panels working, and the URL names the tab.
     const test=await fixture();
     const {page,errors}=test;
@@ -264,7 +291,7 @@ try{
     await page.close();
   }
 
-  console.log('PASS: Sharing tab creation, folder and people scopes, plain-language levels, share list, revoke confirm, hide/show, refusals, sign-out reset, mobile layout and tab switching.');
+  console.log('PASS: Sharing tab creation, folder and people scopes, plain-language levels, share list, revoke confirm, hide/show, refusals, sign-out reset, clear() reset, mobile layout and tab switching.');
 }finally{
   await browser.close();
 }
