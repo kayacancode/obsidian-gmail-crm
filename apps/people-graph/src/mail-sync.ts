@@ -344,9 +344,23 @@ export class MailSync extends DurableObject<MailEnv>{
   // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.
   const value={pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Message metadata and meeting attendee lists only; no message bodies. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
-  return this.store().attachToGraph(value,'my');
+  return this.granolaProvenance(await this.store().attachToGraph(value,'my'));
+ }
+ /** Evidence panels need the meeting behind a Granola signal; the note stays server-side. */
+ private granolaProvenance<T extends {themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T){
+  const refs=graph.themeSignals.filter(s=>s.evidenceRef.startsWith(GRANOLA_NOTE_REF)).map(s=>noteIdOf(s.evidenceRef));
+  if(!refs.length)return graph;
+  const meta=this.granola().noteMeta(refs);
+  for(const signal of graph.themeSignals){
+   if(!signal.evidenceRef.startsWith(GRANOLA_NOTE_REF))continue;
+   const note=meta.get(noteIdOf(signal.evidenceRef));if(!note)continue;
+   signal.provenance={canonicalUrl:note.webUrl??'https://granola.ai/',publisherHost:'granola.ai',observedAt:note.meetingAt,retrievedAt:new Date(note.syncedAt).toISOString(),timeBasis:'observed',title:note.title};
+  }
+  return graph;
  }
 }
+const GRANOLA_NOTE_REF='granola-note:';
+function noteIdOf(evidenceRef:string){return evidenceRef.slice(GRANOLA_NOTE_REF.length).split('#')[0];}
 
 function retrievalView(job:RetrievalJob){return {id:job.id,status:job.status,error:job.error,personId:job.personId,themeId:job.themeId,windowDays:job.windowDays,processed:job.processed,decodedBytes:job.decodedBytes,assertions:job.assertions,maxMessages:50,maxBytes:1_000_000};}
 function publicSourceView(source:PublicSourceState){const {owner:_,generation:__,dueAt:___,pendingRefresh:____,...view}=source;return {...view,visibility:'public' as const};}

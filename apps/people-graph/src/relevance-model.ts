@@ -10,7 +10,7 @@ export interface ThemeSignal {
 	id:string; owner:string; personId?:string; themeId:string; sourceType:SignalSourceType;
 	visibility:SignalVisibility; observedAt:string; ingestedAt:string; confidence:number;
 	summary:string; evidenceRef:string; contentHash:string; extractorVersion:string; modelId?:string;
-	provenance?:{canonicalUrl:string;publisherHost:string;observedAt:string;retrievedAt:string;timeBasis:'observed'};
+	provenance?:{canonicalUrl:string;publisherHost:string;observedAt:string;retrievedAt:string;timeBasis:'observed';title?:string};
 }
 export interface RelevanceFeedback {
 	id:string; owner:string; themeId:string; personId?:string; action:'pin'|'mute'|'correct'|'expire';

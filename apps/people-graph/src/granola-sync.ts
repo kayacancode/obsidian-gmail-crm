@@ -27,6 +27,7 @@ export class GranolaSync {
  private static readonly MAX_NOTE_CHARS=400*1024;
  private static readonly MAX_NOTES=20_000;
  private static readonly RECONCILE_EVERY=7*DAY;
+ private static readonly NOTE_META_LIMIT=2_000;
 
  constructor(private readonly ctx:DurableObjectState,private readonly env:MailEnv,private readonly hooks:GranolaHooks,private readonly maxNotes:number=GranolaSync.MAX_NOTES){
   ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS granola_connection (id INTEGER PRIMARY KEY CHECK (id=1),grant TEXT NOT NULL,data TEXT NOT NULL);
@@ -368,6 +369,15 @@ export class GranolaSync {
  }
 
  protected async removeNoteSignals(noteId:string){await this.hooks.store().removeSignalsByEvidencePrefix(GRANOLA_ACCOUNT,`granola-note:${noteId}#`);}
+
+ /** Read-time meta for evidence panels: visible notes only, so hidden notes stay title-less. */
+ noteMeta(noteIds:string[]){
+  const out=new Map<string,{title:string;meetingAt:string;webUrl:string|null;syncedAt:number}>();
+  const ids=[...new Set(noteIds)].slice(0,GranolaSync.NOTE_META_LIMIT);
+  if(!ids.length)return out;
+  for(const row of this.ctx.storage.sql.exec<{id:string;title:string;web_url:string|null;meeting_at:string;synced_at:number}>(`SELECT id,title,web_url,meeting_at,synced_at FROM granola_notes WHERE hidden=0 AND id IN (${ids.map(()=>'?').join(',')})`,...ids).toArray())out.set(row.id,{title:row.title,meetingAt:row.meeting_at,webUrl:row.web_url,syncedAt:row.synced_at});
+  return out;
+ }
 
  ownEmails():string[]{const c=this.read();return c?.ownerEmail?[c.ownerEmail]:[];}
  contacts(){return this.ctx.storage.sql.exec<{email:string;name:string;meetings:number;last:string}>('SELECT a.email AS email,MAX(a.name) AS name,COUNT(*) AS meetings,MAX(n.meeting_at) AS last FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 GROUP BY a.email ORDER BY meetings DESC, a.email ASC LIMIT 5000').toArray().map(r=>({email:r.email,name:r.name,meetings:r.meetings,last:Date.parse(r.last)}));}

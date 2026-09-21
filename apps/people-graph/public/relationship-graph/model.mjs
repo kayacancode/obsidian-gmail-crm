@@ -283,20 +283,25 @@ function normalizeThemeSignal(raw, index, nodeIds, themeIds) {
     contentHash: boundedString(raw.contentHash, `Theme signal ${id} contentHash`, 128),
     extractorVersion: boundedString(raw.extractorVersion, `Theme signal ${id} extractorVersion`, 100),
     modelId: boundedString(raw.modelId, `Theme signal ${id} modelId`, 200, { optional: true }),
-    provenance: normalizePublicProvenance(raw),
+    provenance: normalizeSignalProvenance(raw),
   };
 }
 
-function normalizePublicProvenance(signal) {
-  if (signal.visibility !== 'public' || !['public_url', 'public_feed'].includes(signal.sourceType)) return null;
+// Public sources and Granola meetings both carry provenance; only meetings carry a title.
+function normalizeSignalProvenance(signal) {
+  const publicSource = signal.visibility === 'public' && ['public_url', 'public_feed'].includes(signal.sourceType);
+  const meeting = signal.sourceType === 'granola';
+  if (!publicSource && !meeting) return null;
   const raw=signal.provenance;
   if (!raw || raw.timeBasis !== 'observed') return null;
   try {
     if (typeof raw.canonicalUrl !== 'string' || raw.canonicalUrl.length > 2048 || /[\s\\#]/.test(raw.canonicalUrl)) return null;
     const url=navigationUrl(raw.canonicalUrl);
     if (!url || raw.canonicalUrl.split('/')[2]?.includes('@')) return null;
+    const title = meeting ? boundedString(raw.title, 'Meeting title', 300, {optional:true}) : null;
     return {canonicalUrl:url,publisherHost:boundedString(raw.publisherHost,'Public publisher',253),
-      observedAt:timestamp(raw.observedAt,'Public observedAt'),retrievedAt:timestamp(raw.retrievedAt,'Public retrievedAt'),timeBasis:'observed'};
+      observedAt:timestamp(raw.observedAt,'Public observedAt'),retrievedAt:timestamp(raw.retrievedAt,'Public retrievedAt'),timeBasis:'observed',
+      ...(title ? {title} : {})};
   } catch { return null; }
 }
 

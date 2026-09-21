@@ -321,9 +321,10 @@ try {
   const why = page.getByLabel('Why this is hot now', {exact:true});
   assert.match(await why.innerText(), /PRIVATE EVIDENCE/);
   assert.match(await why.innerText(), /PUBLIC EVIDENCE/);
-  assert.match(await why.innerText(), /granola|Granola/);
-  assert.match(await why.innerText(), /2026-09-14/);
-  assert.match(await why.innerText(), /80% confidence/);
+  assert.match(await why.innerText(), /Meeting · 2026-09-14/, 'evidence reads as a source label and a date');
+  assert.doesNotMatch(await why.innerText(), /80% confidence/, 'scoring internals stay behind the details toggle');
+  await why.locator('.rg-evidence-details summary').first().click();
+  assert.match(await why.innerText(), /80% confidence · contribution 40\.00/);
   assert.match(await page.getByLabel('Adjacent discoveries').innerText(), /documented bridge/i);
   assert.equal(await page.locator('.rg-discovery').count(), 5);
   assert.equal(await page.locator('.rg-directory-item').count(), 2, 'theme selection narrows the directory');

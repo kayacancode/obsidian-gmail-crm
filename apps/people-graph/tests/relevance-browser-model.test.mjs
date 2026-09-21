@@ -4,6 +4,7 @@ import test from 'node:test';
 import { normalizeGraph, searchGraph } from '../public/relationship-graph/model.mjs';
 import { filterRelevance, themeFields } from '../public/relationship-graph/relevance.mjs';
 import { findPaths } from '../public/relationship-graph/paths.mjs';
+import { evidenceLines } from '../public/relationship-graph/graph.mjs';
 
 const NOW = '2026-09-14T12:00:00.000Z';
 
@@ -15,6 +16,34 @@ test('final wave browser retains safe public provenance and rejects unsafe navig
  for(const canonicalUrl of ['javascript:alert(1)','https://user:pass@example.com','https://example.com/#x']){
   s.provenance={...provenance,canonicalUrl};assert.equal(normalizeGraph(input).themeSignals.find(x=>x.id===s.id).provenance,null);
  }
+});
+
+test('meeting provenance survives normalisation and evidence lines read as sentences',()=>{
+ const input=graphFixture();
+ const meeting={id:'signal-meeting',personId:'local-ada',sourceType:'granola',visibility:'private',
+  summary:'Ask: \u201cAda asked for an intro\u201d',evidenceRef:'granola-note:not_1234567890abcd#summary@12',
+  provenance:{canonicalUrl:'https://notes.granola.ai/d/not_1234567890abcd',publisherHost:'granola.ai',
+   observedAt:'2026-08-14T11:00:00.000Z',retrievedAt:NOW,timeBasis:'observed',title:'Pilot sync with Ada'}};
+ input.themeSignals.push(signal(meeting));
+ input.relevance.themes[0].components.push({signalId:'signal-meeting',sourceType:'granola',observedAt:meeting.provenance.observedAt,contribution:0.7});
+ const graph=normalizeGraph(input);
+ const normalized=graph.themeSignals.find(s=>s.id==='signal-meeting');
+ assert.deepEqual(normalized.provenance,meeting.provenance);
+ const lines=evidenceLines(normalized,{contribution:0.7});
+ assert.equal(lines.summary,'Ask: \u201cAda asked for an intro\u201d');
+ assert.equal(lines.source,'Meeting \u201cPilot sync with Ada\u201d \u00b7 2026-08-14');
+ assert.deepEqual(lines.link,{label:'Open in Granola \u2197',href:'https://notes.granola.ai/d/not_1234567890abcd'});
+ assert.ok(lines.details.some(line=>line.includes('granola-note:not_1234567890abcd')));
+
+ // A note with no web url renders a title and date, never a link.
+ const unlinked=evidenceLines({...normalized,provenance:{...normalized.provenance,canonicalUrl:'https://granola.ai/'}},{contribution:0.7});
+ assert.equal(unlinked.link,null);
+ assert.equal(unlinked.source,'Meeting \u201cPilot sync with Ada\u201d \u00b7 2026-08-14');
+
+ const subject=evidenceLines({...normalized,sourceType:'gmail_subject',provenance:null,summary:'Subject metadata matched Beebot Beta'},{contribution:0.2});
+ assert.equal(subject.summary,'Emails titled \u201cBeebot Beta\u201d');
+ assert.equal(subject.source,'Email subject \u00b7 2026-09-13');// a non-meeting item keeps the signal's own date
+ assert.equal(subject.link,null);
 });
 
 test('final wave browser keeps person pin scores and field membership from scored evidence',()=>{

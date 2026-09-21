@@ -359,6 +359,35 @@ test('graph merges Gmail contributions with Granola meetings on one node and one
  }finally{db.close();}
 });
 
+test('graph enriches Granola theme signals with meeting title, date and note link',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:'unused',revision:'rev',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+100000}));
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada@example.com','Ada',Date.now(),'Hello',1,1);
+  const ada=await opaque('owner','ada@example.com','identity-key');
+  const note=(id:string,title:string,webUrl:string|null,hidden:number)=>db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,?,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','[]','','','','h',0,'done',NULL,'granola-v2',0,?,?)").run(id,title,webUrl,Date.parse('2026-08-16T09:00:00Z'),hidden);
+  note('not_1234567890abcd','Pilot sync with Ada','https://notes.granola.ai/d/not_1234567890abcd',0);
+  note('not_2234567890abcd','Unlinked meeting',null,0);
+  note('not_3234567890abcd','',null,1);
+  const now=new Date().toISOString();
+  const signal=(id:string,ref:string)=>({id,owner:'owner',account:'granola',personId:ada,themeId:'theme-x',sourceType:'granola',visibility:'private',observedAt:now,ingestedAt:now,confidence:.8,summary:'Ask: \u201chi\u201d',evidenceRef:ref,contentHash:'h',extractorVersion:'granola-v2'});
+  await (service as any).store().ingest([
+   signal('sig-linked','granola-note:not_1234567890abcd#summary@12'),
+   signal('sig-plain','granola-note:not_2234567890abcd#private_notes@3'),
+   signal('sig-hidden','granola-note:not_3234567890abcd#topic@research'),
+   signal('sig-unknown','granola-note:not_9999999999abcd#summary@1'),
+  ]);
+  const graph=(await service.graph())!;
+  const by=new Map(graph.themeSignals.map((s:any)=>[s.id,s]));
+  assert.deepEqual((by.get('sig-linked') as any).provenance,{canonicalUrl:'https://notes.granola.ai/d/not_1234567890abcd',publisherHost:'granola.ai',observedAt:'2026-08-14T11:00:00Z',retrievedAt:'2026-08-16T09:00:00.000Z',timeBasis:'observed',title:'Pilot sync with Ada'});
+  assert.equal((by.get('sig-plain') as any).provenance.canonicalUrl,'https://granola.ai/');
+  assert.equal((by.get('sig-plain') as any).provenance.title,'Unlinked meeting');
+  // Hidden notes carry no title or url, and an unknown note id stays an opaque reference.
+  assert.equal((by.get('sig-hidden') as any).provenance,undefined);
+  assert.equal((by.get('sig-unknown') as any).provenance,undefined);
+ }finally{db.close();}
+});
+
 test('graph exists with Granola alone, and alarm runs a Granola tick and schedules it',async()=>{
  const {service,db,kv}=fixture();kv.set('owner','owner');
  try{

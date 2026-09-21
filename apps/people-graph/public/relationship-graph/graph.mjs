@@ -42,6 +42,45 @@ function positionFor(node, index, layout) {
   };
 }
 
+// Evidence reads as sentences: a plain-language summary, then the source and its date.
+// Scoring internals stay available behind a disclosure so the panel is scannable.
+const SOURCE_LABELS = {
+  gmail_subject: 'Email subject',
+  gmail_body_derived: 'Email content',
+  granola: 'Meeting',
+  obsidian_note: 'Note',
+  calendar: 'Calendar',
+  product_activity: 'Activity',
+  public_url: 'Public source',
+  public_feed: 'Public source',
+};
+
+function granolaLink(canonicalUrl) {
+  if (typeof canonicalUrl !== 'string' || !canonicalUrl.startsWith('https://')) return null;
+  const host = canonicalUrl.split('/')[2] ?? '';
+  if (host !== 'granola.ai' && !host.endsWith('.granola.ai')) return null;
+  // A note without a web url falls back to the bare host: show the meeting, offer no link.
+  if (/^https:\/\/granola\.ai\/?$/.test(canonicalUrl)) return null;
+  return { label: 'Open in Granola \u2197', href: canonicalUrl };
+}
+
+export function evidenceLines(signal, component) {
+  const meeting = signal.sourceType === 'granola' ? signal.provenance : null;
+  const subject = signal.sourceType === 'gmail_subject' && /^Subject metadata matched (.+)$/.exec(signal.summary ?? '');
+  const summary = subject ? `Emails titled \u201c${subject[1]}\u201d` : (signal.summary || 'Source summary unavailable');
+  const label = SOURCE_LABELS[signal.sourceType] ?? signal.sourceType.replaceAll('_', ' ');
+  const date = (meeting?.observedAt ?? signal.observedAt).slice(0, 10);
+  const source = meeting?.title ? `${label} \u201c${meeting.title}\u201d \u00b7 ${date}` : `${label} \u00b7 ${date}`;
+  const details = [
+    `${Math.round(signal.confidence * 100)}% confidence \u00b7 contribution ${component.contribution.toFixed(2)}`,
+    `Observed ${signal.observedAt.slice(0, 10)} \u00b7 ingested ${signal.ingestedAt.slice(0, 10)}`,
+    `Extraction: ${signal.extractorVersion}${signal.modelId ? ` \u00b7 ${signal.modelId}` : ''}`,
+    // Evidence refs are opaque. Rendering as text avoids inventing a navigation URL.
+    signal.evidenceRef,
+  ];
+  return { summary, source, link: meeting ? granolaLink(meeting.canonicalUrl) : null, details };
+}
+
 export function mountGraph(element, options = {}) {
   if (!element?.ownerDocument || typeof element.replaceChildren !== 'function') {
     throw new Error('mountGraph requires a DOM element');
@@ -573,19 +612,24 @@ export function mountGraph(element, options = {}) {
       for (const signal of group) {
         const item = make('article', 'rg-evidence-item');
         const component = components.get(signal.id);
-        item.append(make('p', 'rg-copy', signal.summary || 'Source summary unavailable'),
-          make('p', 'rg-source', `${signal.sourceType.replaceAll('_', ' ')} · observed ${signal.observedAt.slice(0, 10)} · ${Math.round(signal.confidence * 100)}% confidence`),
-          make('p', 'rg-source', `Contribution ${component.contribution.toFixed(2)} · ingested ${signal.ingestedAt.slice(0, 10)}`),
-          make('p', 'rg-source', `Extraction: ${signal.extractorVersion}${signal.modelId ? ` · ${signal.modelId}` : ''}`),
-          // Evidence refs are opaque. Rendering as text avoids inventing a navigation URL.
-          make('p', 'rg-source rg-evidence-ref', signal.evidenceRef));
-        if(signal.provenance){
+        const lines = evidenceLines(signal, component);
+        item.append(make('p', 'rg-copy', lines.summary), make('p', 'rg-source', lines.source));
+        if (lines.link) {
+          const note = make('a', 'rg-source-link', lines.link.label);
+          note.href = lines.link.href; note.target = '_blank'; note.rel = 'noopener noreferrer';
+          item.append(note);
+        }
+        if(signal.provenance && signal.sourceType !== 'granola'){
           const provenance=signal.provenance;
           const link=make('a','rg-source',`Open source: ${provenance.publisherHost}`);
           link.href=provenance.canonicalUrl;link.target='_blank';link.rel='noopener noreferrer';
           item.append(make('p','rg-source',`Publisher: ${provenance.publisherHost}`),
             make('p','rg-source',`Observed ${provenance.observedAt.slice(0,10)} · Retrieved ${provenance.retrievedAt.slice(0,10)} · publication date unavailable`),link);
         }
+        const details = make('details', 'rg-evidence-details');
+        details.append(make('summary', '', 'Details'));
+        for (const line of lines.details) details.append(make('p', line === signal.evidenceRef ? 'rg-source rg-evidence-ref' : 'rg-source', line));
+        item.append(details);
         panel.append(item);
       }
     }

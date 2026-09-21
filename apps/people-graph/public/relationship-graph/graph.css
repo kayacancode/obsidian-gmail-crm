@@ -433,6 +433,21 @@
   border-left: 2px solid var(--rg-orange);
 }
 
+.rg-evidence-details {
+  margin-top: 6px;
+  color: var(--rg-muted);
+  font-size: 11px;
+}
+
+.rg-evidence-details summary {
+  cursor: pointer;
+  color: var(--rg-orange);
+}
+
+.rg-evidence-details p {
+  margin: 4px 0 0;
+}
+
 .rg-person-action {
   display: block;
   width: 100%;
