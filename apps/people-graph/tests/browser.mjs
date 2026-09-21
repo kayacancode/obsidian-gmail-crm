@@ -25,5 +25,32 @@ await page.evaluate(()=>{Storage.prototype.setItem=function(){throw Error('quota
 status=500;await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.getByRole('button',{name:'Retry',exact:true}).waitFor();assert.match(await page.locator('#gate').innerText(),/500/);assert.ok(await page.locator('#workspace').isHidden());
 status=401;await page.getByRole('button',{name:'Retry',exact:true}).click();await page.getByText('Your session expired.',{exact:false}).waitFor();assert.match(await page.locator('#gate').innerText(),/session expired/);assert.equal(await page.locator('.orb').count(),0);
 status=200;empty=true;await page.getByRole('button',{name:'Test sign in'}).click();await page.locator('#gate').getByRole('button',{name:'Connect Obsidian',exact:true}).click();await page.getByRole('button',{name:'Get my push token'}).click();assert.equal(await page.getByRole('textbox',{name:'Private graph push token'}).inputValue(),'private-test-token');await page.getByRole('button',{name:'Sign out',exact:true}).click();await page.locator('#signin').waitFor({state:'visible'});assert.ok(!(await page.locator('body').innerText()).includes('private-test-token'));
-assert.deepEqual(errors,[]);console.log('PASS: authenticated loading, complete scene, pagination, grounded search, person/company cards, drafts and shortlist persistence, tenant isolation, empty search, mobile layout, server errors, expiry and token setup.');
+let searchStatus=200;
+await page.route('**/api/people/search',route=>{
+ if(searchStatus!==200)return route.fulfill({status:searchStatus,json:{error:'unavailable'}});
+ return route.fulfill({json:{query:route.request().postDataJSON().query,checked:true,results:[
+  {personId:'id0',name:'Ada Chen',company:'Frontier',lastContact:'2026-09-01',score:0.9,reasons:[{summary:'Met at the context engineering roundtable',observedAt:'2026-09-01'}]},
+  {personId:'id2',name:'Person 2',company:'Frontier',lastContact:'2026-09-01',score:0.8,reasons:[{summary:'Exchanged budget planning notes',observedAt:'2026-08-15'}]}
+ ]}});
+});
+empty=false;await page.getByRole('button',{name:'Test sign in'}).click();await page.locator('#workspace').waitFor({state:'visible'});
+await page.getByRole('textbox',{name:'Search your network'}).fill('context engineering');await page.getByRole('button',{name:'Explore question'}).click();
+await page.getByText('Ranked by Jev',{exact:false}).waitFor();
+const jevCard=await page.locator('#card').innerText();
+assert.match(jevCard,/Ranked by Jev/i);
+assert.match(jevCard,/Met at the context engineering roundtable/);
+assert.match(jevCard,/Exchanged budget planning notes/);
+assert.ok(jevCard.indexOf('Ada Updated')<jevCard.indexOf('Person 2'),'Jev-ranked people are listed in ranked order');
+await page.locator('#card .candidate').first().click();
+assert.match(await page.locator('#card').innerText(),/Ada Updated/);
+await page.getByRole('button',{name:'Clear search',exact:true}).click();
+assert.doesNotMatch(await page.locator('#card').innerText(),/Ranked by Jev/i);
+searchStatus=503;
+await page.getByRole('textbox',{name:'Search your network'}).fill('context engineering');await page.getByRole('button',{name:'Explore question'}).click();
+await page.waitForFunction(()=>!document.querySelector('#card').innerText.includes('Searching your network'));
+const fallbackCard=await page.locator('#card').innerText();
+assert.doesNotMatch(fallbackCard,/Ranked by Jev/i);
+assert.doesNotMatch(fallbackCard,/Keyword match only/i);
+assert.match(fallbackCard,/2 people/);
+assert.deepEqual(errors,[]);console.log('PASS: authenticated loading, complete scene, pagination, grounded search, person/company cards, drafts and shortlist persistence, tenant isolation, empty search, mobile layout, server errors, expiry, token setup, and Jev-ranked network search with graceful fallback.');
 }finally{await browser.close();}
