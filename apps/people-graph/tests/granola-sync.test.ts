@@ -15,8 +15,9 @@ export function granolaFixture(opts:{maxNotes?:number}={}){
  const store=new RelevanceStore(ctx as any,()=>ctx.storage.get('owner') as Promise<string|undefined>);
  let invalidations=0;
  const gmail:{email:string;name:string;subjects:string[]}[]=[];
- const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;},contacts:()=>gmail},opts.maxNotes);
- return {sync,db,kv,env,store,statements,gmail,invalidations:()=>invalidations};
+ const accounts:string[]=[];
+ const sync=new GranolaSync(ctx as any,env,{owner:()=>ctx.storage.get('owner') as Promise<string|undefined>,store:()=>store,invalidateGraph:async()=>{invalidations++;},contacts:()=>gmail,accounts:()=>accounts},opts.maxNotes);
+ return {sync,db,kv,env,store,statements,gmail,accounts,invalidations:()=>invalidations};
 }
 export async function withFetch<T>(fake:typeof fetch,run:()=>Promise<T>):Promise<T>{const o=globalThis.fetch;globalThis.fetch=fake;try{return await run();}finally{globalThis.fetch=o;}}
 const KEY='grn_fictional_key_123456';
@@ -713,7 +714,7 @@ test('at most fifty pairs are judged per run and the rest wait for the next run'
  const net=network({notes:[withAttendees('Alpha',attendees)]});
  const jev=withJev(f,net,{answer:identityAnswers(0.9)});
  await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
- assert.equal(samePerson(jev).length,50,'the run stops at fifty pairs');
+ assert.equal(samePerson(jev).length,48,'the run stops below fifty rather than splitting the seventeenth attendee’s three pairs');
  const judged=identityRows(f).length;
  assert.ok(judged>0&&judged<20,`some attendees are still undecided (${judged})`);
  bump(f,{nextSync:0});await runToIdle(f,jev.fake);
@@ -797,7 +798,7 @@ test('without the TypeSafe key no identity request is made and no pair is stored
 
 test('suggestions list newest first and skip decided rows',async()=>{
  const f=granolaFixture();
- const insert=f.db.prepare('INSERT INTO granola_identity VALUES (?,?,?,?,?,?,?)');
+ const insert=f.db.prepare('INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES (?,?,?,?,?,?,?)');
  insert.run('old@granola.test','old@work.test','Old Name','Old Name',0.7,'pending',10);
  insert.run('new@granola.test','new@work.test','New Name','New Name',0.9,'pending',20);
  insert.run('gone@granola.test','gone@work.test','Gone','Gone',0.4,'dismissed',30);
@@ -808,7 +809,114 @@ test('suggestions list newest first and skip decided rows',async()=>{
 test('disconnect removes stored identity decisions',async()=>{
  const f=granolaFixture();
  await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
- f.db.prepare("INSERT INTO granola_identity VALUES ('ada@granola.test','ada@work.test','Ada','Ada',0.9,'confirmed',1)").run();
+ f.db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES ('ada@granola.test','ada@work.test','Ada','Ada',0.9,'confirmed',1)").run();
  await f.sync.disconnect();
  assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM granola_identity').get() as any).n,0);
+});
+
+/** One visible note to hang attendees and edges off, without going through a sync. */
+function noteRow(f:ReturnType<typeof granolaFixture>,id=NOTE_A,title='Alpha'){
+ f.db.prepare("INSERT INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,NULL,'2026-08-14T11:00:00Z','scheduled','2026-08-14T12:00:00Z','2026-08-15T12:00:00Z','[]','','','','h',0,'done',NULL,'granola-v3-jev',0,0,0)").run(id,title);
+}
+
+test('removing the TypeSafe key lifts the rejected-key pause on the next run',async()=>{
+ const f=granolaFixture();const net=network({notes:[noteRaw(NOTE_A,'Alpha')]});const jev=withJev(f,net,{status:401});
+ await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));await runToIdle(f,jev.fake);
+ assert.equal(f.sync.status().error,'jev_unauthorized');
+ assert.ok(connection(f).jevUnauthorizedAt>0);
+ delete f.env.TYPESAFE_API_KEY;withAI(f,goodAI);
+ bump(f,{nextSync:0});await runToIdle(f,net.fake);
+ assert.equal(connection(f).jevUnauthorizedAt,undefined,'a key that is gone cannot be rejected again');
+ assert.equal(f.sync.status().error,'','the card stops showing a rejected key');
+ const row=f.db.prepare('SELECT extraction_status,extractor_version FROM granola_notes WHERE id=?').get(NOTE_A) as any;
+ assert.equal(row.extraction_status,'done');assert.equal(row.extractor_version,'granola-v2','the Llama path picks the note back up');
+});
+
+test('undecided attendees behind thousands of decided ones are still paired',async()=>{
+ const f=granolaFixture();
+ await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
+ noteRow(f);
+ const attendee=f.db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)');
+ const decided=f.db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES (?,?,?,?,0.4,'dismissed',1)");
+ for(let i=0;i<5100;i++){
+  const email=`person${String(i).padStart(4,'0')}@granola.test`,name=`Person${String(i).padStart(4,'0')} Match`;
+  attendee.run(NOTE_A,email,name);
+  // The first 5,050 addresses in the ORDER BY a.email order are already judged.
+  if(i<5050)decided.run(email,`decided${i}@work.test`,name,name);
+  else f.gmail.push({email:`person${String(i).padStart(4,'0')}@work.test`,name,subjects:[]});
+ }
+ const pairs=(f.sync as any).identityCandidates() as {attendeeEmail:string}[];
+ assert.equal(pairs.length,50,'the 5,000-row limit is spent on undecided attendees, not on the decided backlog');
+ assert.deepEqual(pairs.map(p=>p.attendeeEmail).sort(),f.gmail.map(c=>c.email.replace('@work.test','@granola.test')).sort());
+});
+
+test('no undecided attendee means the Gmail contacts are never read',async()=>{
+ const f=granolaFixture();
+ await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
+ noteRow(f);
+ f.db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run(NOTE_A,'ada@granola.test','Ada Lovelace');
+ f.db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES ('ada@granola.test','ada@work.test','Ada Lovelace','Ada Lovelace',0.4,'dismissed',1)").run();
+ f.gmail.push({email:'ada@work.test',name:'Ada Lovelace',subjects:[]});
+ let reads=0;
+ const hooks=(f.sync as any).hooks;
+ (f.sync as any).hooks={...hooks,contacts:()=>{reads++;return hooks.contacts();}};
+ assert.deepEqual((f.sync as any).identityCandidates(),[]);
+ assert.equal(reads,0,'building the contact index is the expensive part; nothing to pair means nothing to build');
+});
+
+test('an owner dismissal between two pairs of one attendee is never overwritten',async()=>{
+ const f=granolaFixture();
+ f.gmail.push({email:'ada.lovelace@work.test',name:'Ada Lovelace',subjects:[]},{email:'ada.l@other.test',name:'Ada Lovelace',subjects:[]});
+ const net=network({notes:[withAttendees('Alpha',[{name:'Me',email:'me@example.test'},{name:'Ada Lovelace',email:'ada@granola.test'}])]});
+ const real=Date.now;let offset=0,judged=0;
+ // The first pair uses up the tick's budget, so the owner can decide before the second is judged.
+ const jev=withJev(f,net,{answer:(id,q)=>{if(id==='same_person'){offset+=21_000;return noulA(judged++===0?0.7:0.99);}return identityAnswers(0.9)(id,q);}});
+ try{
+  await withFetch(jev.fake,()=>f.sync.connect(KEY,'all'));
+  await tickToPhase(f,jev.fake,'identity');
+  Date.now=()=>real.call(Date)+offset;
+  await withFetch(jev.fake,()=>f.sync.tick(Date.now()));
+  assert.equal(identityRows(f).length,1,'one pair judged so far');
+  assert.deepEqual(await f.sync.resolveIdentity('ada@granola.test','dismiss'),[]);
+  await withFetch(jev.fake,()=>f.sync.tick(Date.now()+2000));
+ }finally{Date.now=real;}
+ assert.equal(judged,2,'the second pair was still judged');
+ const row=identityRows(f)[0];
+ assert.equal(row.status,'dismissed','a stronger auto judgment never resurrects an owner decision');
+ assert.equal(row.decided_by,'owner');
+ assert.equal(row.probability,0.7);
+ assert.deepEqual(f.sync.identitySuggestions(),[]);
+});
+
+test('an own address is never a confirmable identity, and never an alias',async()=>{
+ const f=granolaFixture();
+ f.accounts.push('me@mail.test');
+ await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
+ bump(f,{ownerEmail:'me@example.test'});
+ noteRow(f);
+ const insert=f.db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES (?,?,'Me','Me',0.9,'pending',1)");
+ insert.run('ada@granola.test','me@mail.test');
+ insert.run('bob@granola.test','me@example.test');
+ await assert.rejects(f.sync.resolveIdentity('ada@granola.test','confirm'),/invalid_identity/,'a connected mail account is not a person to merge into');
+ await assert.rejects(f.sync.resolveIdentity('bob@granola.test','confirm'),/invalid_identity/,'nor is the Granola account address');
+ assert.deepEqual(await f.sync.resolveIdentity('ada@granola.test','dismiss'),f.sync.identitySuggestions(),'dismissing such a suggestion still works');
+ f.db.prepare("UPDATE granola_identity SET status='confirmed' WHERE attendee_email='bob@granola.test'").run();
+ assert.equal(f.sync.aliases().size,0,'a row that points at the owner is ignored wherever aliases are read');
+});
+
+test('a meeting with both an aliased address and its contact counts once',async()=>{
+ const f=granolaFixture();
+ await withFetch((async()=>foldersResponse()) as typeof fetch,()=>f.sync.connect(KEY,'all'));
+ noteRow(f);
+ const attendee=f.db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)');
+ for(const [email,name] of [['ada@granola.test','Ada Lovelace'],['ada.lovelace@work.test','Ada Lovelace'],['bob@example.test','Bob Stone']])attendee.run(NOTE_A,email,name);
+ const edge=f.db.prepare('INSERT INTO granola_edges VALUES (?,?,?)');
+ edge.run(NOTE_A,'ada@granola.test','ada.lovelace@work.test');
+ edge.run(NOTE_A,'ada@granola.test','bob@example.test');
+ edge.run(NOTE_A,'ada.lovelace@work.test','bob@example.test');
+ f.db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.9,'confirmed',1)").run();
+ const edges=f.sync.edges();
+ assert.deepEqual(edges.map(e=>[e.a,e.b,e.weight]),[['ada.lovelace@work.test','bob@example.test',1]],
+  'one meeting is one point of weight, however many of its addresses fold into the same person');
+ assert.deepEqual(edges[0].titles,['Alpha']);
 });

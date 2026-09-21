@@ -47,6 +47,9 @@ export async function askJev(env:{TYPESAFE_API_KEY?:string;JEV_MODEL?:string},st
 }
 
 async function send(key:string,body:string,signal?:AbortSignal):Promise<Response>{
+ // A caller's deadline that ran out during an earlier batch or a 429 back-off: do not start
+ // another request just to have it aborted.
+ if(signal?.aborted)throw new JevError('jev_unavailable');
  const timeout=AbortSignal.timeout(TIMEOUT_MS);
  const merged=signal?AbortSignal.any([signal,timeout]):timeout;
  try{return await fetch(BASE_URL,{method:'POST',headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body,redirect:'manual',signal:merged});}
@@ -54,8 +57,10 @@ async function send(key:string,body:string,signal?:AbortSignal):Promise<Response
 }
 
 function retryDelayMs(header:string|null):number{
- if(header!==null){
-  const seconds=Number(header);
+ // A blank or whitespace-only header is no header at all: Number('') is 0, which would retry
+ // into the same rate limit immediately.
+ if(header!==null&&header.trim()!==''){
+  const seconds=Number(header.trim());
   if(Number.isFinite(seconds))return Math.max(0,Math.min(seconds,MAX_RETRY_MS/1000))*1000;
  }
  return DEFAULT_RETRY_MS;

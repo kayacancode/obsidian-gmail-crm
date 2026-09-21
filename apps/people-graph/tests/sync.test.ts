@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {MailSync} from '../src/mail-sync';
+import {MailSync,__setSearchDeadlineForTests} from '../src/mail-sync';
 import {FakeAI} from './worker-stub';
 import {opaque} from '../src/mail-model';
 import {jevServer,noulA,scoreA} from './granola-jev-extractor.test';
@@ -586,7 +586,7 @@ test('confirming a Granola identity folds the attendee into the Gmail contact no
   granolaConnectionRow(db);granolaNoteRow(db,'not_1234567890abcd');
   for(const [e,n] of [['me@example.com','Me'],['ada@granola.test','Ada Lovelace'],['bob@example.com','Bob']])db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run('not_1234567890abcd',e,n);
   db.prepare("INSERT INTO granola_edges VALUES ('not_1234567890abcd','ada@granola.test','bob@example.com')").run();
-  db.prepare("INSERT INTO granola_identity VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.82,'pending',1)").run();
+  db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.82,'pending',1)").run();
   assert.deepEqual(service.granolaIdentities(),{suggestions:[{attendeeEmail:'ada@granola.test',attendeeName:'Ada Lovelace',contactEmail:'ada.lovelace@work.test',contactName:'Ada Lovelace',probability:0.82}]});
   assert.deepEqual(service.granolaStatus().identities.map((s:any)=>s.attendeeEmail),['ada@granola.test'],'the status payload carries the suggestions');
   const attendeeId=await opaque('owner','ada@granola.test','identity-key');
@@ -613,7 +613,7 @@ test('dismissing a Granola identity keeps both nodes and clears the suggestion',
   db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada.lovelace@work.test','Ada Lovelace',Date.parse('2026-07-01T00:00:00Z'),'Pilot rollout plan',1,1);
   granolaConnectionRow(db);granolaNoteRow(db,'not_1234567890abcd');
   db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run('not_1234567890abcd','ada@granola.test','Ada Lovelace');
-  db.prepare("INSERT INTO granola_identity VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.7,'pending',1)").run();
+  db.prepare("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES ('ada@granola.test','ada.lovelace@work.test','Ada Lovelace','Ada Lovelace',0.7,'pending',1)").run();
   assert.deepEqual(await service.granolaIdentity('ada@granola.test','dismiss'),{suggestions:[]});
   const graph=(await service.graph())!;
   const attendeeId=await opaque('owner','ada@granola.test','identity-key');
@@ -651,14 +651,16 @@ test('searchPeople ranks the owner’s own graph by keywords when Jev is not con
   const value=await service.searchPeople('  fintech fundraising  ');
   assert.equal(value.query,'fintech fundraising');
   assert.equal(value.checked,false,'no TYPESAFE_API_KEY means keyword ranking only');
-  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia,bo]);
+  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia],'a person the query does not match is a candidate for the model, never a result');
+  assert.ok(!value.results.some(r=>r.personId===bo));
   assert.equal(value.results[0].name,'Ada Rivera');
   assert.equal(value.results[0].company,'fintech.example');
   assert.equal(value.results[0].lastContact,'2026-09-10T00:00:00.000Z');
   assert.equal(value.results[0].score,1);
   assert.deepEqual(value.results[0].reasons.map(r=>r.summary),['Raising a seed round for a fintech product']);
   assert.equal(value.results[0].reasons[0].title,'Pilot sync','a reason carries the meeting it came from');
-  assert.deepEqual(value.results[2].reasons.map(r=>r.summary),['Redesigned the onboarding flow'],'no shared term falls back to the newest evidence');
+  assert.deepEqual(value.results[1].reasons.map(r=>r.summary),['Knows a fundraising advisor']);
+  assert.deepEqual((await service.searchPeople('kitesurfing')).results,[],'a query nobody matches has an empty result, not the most recent people');
   assert.ok(!JSON.stringify(value).includes('@'),'the search result never carries an email address');
   await assert.rejects(service.searchPeople(''),/invalid_request/);
   await assert.rejects(service.searchPeople('   '),/invalid_request/);
@@ -697,8 +699,28 @@ test('searchPeople falls back to the keyword ranking when Jev fails, with no use
   const unauthorized=(async()=>new Response('{"error":"no"}',{status:401})) as typeof fetch;
   const value=await withFetch(unauthorized,()=>service.searchPeople('fintech fundraising'));
   assert.equal(value.checked,false);
-  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia,bo]);
+  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia]);
  }finally{db.close();}
+});
+
+test('searchPeople gives up on Jev at the deadline and answers from keywords',async()=>{
+ const {service,db,ada,cia}=await searchFixture();
+ Object.assign((service as any).env,{TYPESAFE_API_KEY:JEV_KEY});
+ __setSearchDeadlineForTests(25);
+ // Jev accepts the request and never answers: only the search-wide deadline ends the wait,
+ // since each request's own 20s timeout and the 429 back-off would run far past it.
+ let started=0;
+ const hangs=((_input:any,init:any)=>{started++;return new Promise<Response>((_resolve,reject)=>{
+  init.signal.addEventListener('abort',()=>reject(init.signal.reason??Error('aborted')));
+ });}) as unknown as typeof fetch;
+ try{
+  const at=Date.now();
+  const value=await withFetch(hangs,()=>service.searchPeople('fintech fundraising'));
+  assert.ok(Date.now()-at<2_000,`the search waits for its own deadline, not for the request's 20s timeout (${Date.now()-at}ms)`);
+  assert.equal(started,1,'the request was really made, then abandoned');
+  assert.equal(value.checked,false,'an unanswered ranking is never labelled checked');
+  assert.deepEqual(value.results.map(r=>r.personId),[ada,cia],'the keyword ranking still answers');
+ }finally{__setSearchDeadlineForTests(null);db.close();}
 });
 
 test('searchPeople returns at most ten people and never another owner’s graph',async()=>{

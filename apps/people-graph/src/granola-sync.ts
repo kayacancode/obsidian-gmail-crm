@@ -15,7 +15,7 @@ export interface GranolaIdentitySuggestion {attendeeEmail:string;attendeeName:st
 export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus|null;range:GranolaRange|null;lastSync:number;nextSync:number;error:string;counts:{folders:number;notes:number;pending:number;extracted:number;failed:number;skipped:number};folders:{id:string;name:string;parentId:string|null;excluded:boolean;noteCount:number}[];identities:GranolaIdentitySuggestion[]}
 /** One Gmail contact, with the name and the canonical subject themes Jev may see. Never raw subjects. */
 export interface GranolaGmailContact {email:string;name:string;subjects:string[]}
-export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;contacts:()=>GranolaGmailContact[]}
+export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
 /** One attendee/contact pair queued for a single Jev judgment, carried in the job across ticks. */
 interface IdentityPair {attendeeEmail:string;attendeeName:string;contactEmail:string;contactName:string;meetings:string[];recentSubjects:string[]}
 export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'identity'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];identityPairs?:IdentityPair[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean;capDropped?:boolean}
@@ -55,6 +55,9 @@ export class GranolaSync {
   // Added after the first release: when extraction was last attempted, so a 'failed' note
   // can be retried a week later without re-fetching it.
   if(!ctx.storage.sql.exec("SELECT name FROM pragma_table_info('granola_notes') WHERE name='extraction_attempted_at'").toArray().length)ctx.storage.sql.exec('ALTER TABLE granola_notes ADD COLUMN extraction_attempted_at INTEGER');
+  // Added after the first release: who decided this row. An owner decision ('owner') is final —
+  // a later auto judgment of another pair for the same attendee must never resurrect it.
+  if(!ctx.storage.sql.exec("SELECT name FROM pragma_table_info('granola_identity') WHERE name='decided_by'").toArray().length)ctx.storage.sql.exec("ALTER TABLE granola_identity ADD COLUMN decided_by TEXT NOT NULL DEFAULT 'auto'");
  }
  private read():Connection|null{const row=this.ctx.storage.sql.exec<{grant:string;data:string}>('SELECT grant,data FROM granola_connection WHERE id=1').toArray()[0];if(!row)return null;return {...JSON.parse(row.data),grant:row.grant} as Connection;}
  private write(c:Connection){const {grant,...data}=c;this.ctx.storage.sql.exec('INSERT INTO granola_connection (id,grant,data) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET grant=excluded.grant,data=excluded.data',grant,JSON.stringify(data));}
@@ -269,6 +272,13 @@ export class GranolaSync {
  private static readonly MAX_ATTEMPTS=5;
 
  protected async extractPhase(c:Connection,now:number,started:number):Promise<void>{
+  // A key that is no longer configured can never be rejected again, so the paused state has
+  // nothing left to hold: drop the latch before anything else reads it (tick and finishRun
+  // both re-assert the error from it) and let this run re-queue what the rejection failed.
+  if(c.jevUnauthorizedAt&&!jevConfigured(this.env)){
+   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction_attempts=0 WHERE extraction_status='failed' AND extraction_attempted_at>=?",c.jevUnauthorizedAt);
+   c.jevUnauthorizedAt=undefined;c.error='';this.commit(c,started);
+  }
   const owner=await this.hooks.owner();if(!owner){await this.finishRun(now,started);return;}
   const budgetStart=Date.now();
   const jev=jevConfigured(this.env);
@@ -433,10 +443,14 @@ export class GranolaSync {
   * Code only: name normalisation and equality decide who is even worth asking about.
   */
  private identityCandidates():IdentityPair[]{
+  // Undecided attendees only, decided in SQL: a large backlog of already-judged addresses
+  // sorted ahead of them must never push undecided attendees past the row limit. Reading the
+  // Gmail contacts is the expensive part, so it only happens when there is someone to pair.
+  const own=[...new Set(this.ownAddresses())];
+  if(!this.undecidedAttendees(own,[],1).length)return [];
   const contacts=this.hooks.contacts();
   if(!contacts.length)return [];
-  const own=new Set(this.ownEmails()),known=new Set(contacts.map(x=>x.email));
-  const decided=new Set(this.ctx.storage.sql.exec<{attendee_email:string}>('SELECT attendee_email FROM granola_identity').toArray().map(r=>r.attendee_email));
+  const ownSet=new Set(own),known=new Set(contacts.map(x=>x.email));
   const byFull=new Map<string,GranolaGmailContact[]>(),byInitial=new Map<string,GranolaGmailContact[]>();
   const add=(index:Map<string,GranolaGmailContact[]>,key:string,contact:GranolaGmailContact)=>{const list=index.get(key);if(list)list.push(contact);else index.set(key,[contact]);};
   for(const contact of contacts){
@@ -444,11 +458,12 @@ export class GranolaSync {
    add(byFull,tokens.join(' '),contact);
    if(tokens.length>1)add(byInitial,firstAndInitial(tokens),contact);
   }
-  const attendees=this.ctx.storage.sql.exec<{email:string;name:string}>('SELECT a.email AS email,MAX(a.name) AS name FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 GROUP BY a.email ORDER BY a.email ASC LIMIT ?',GranolaSync.IDENTITY_ATTENDEE_LIMIT).toArray();
+  const attendees=this.undecidedAttendees(own,[...known],GranolaSync.IDENTITY_ATTENDEE_LIMIT);
   const pairs:IdentityPair[]=[];
   for(const attendee of attendees){
    if(pairs.length>=GranolaSync.IDENTITY_MAX_PAIRS)break;
-   if(own.has(attendee.email)||known.has(attendee.email)||decided.has(attendee.email))continue;
+   // A net under the SQL filters: with too many addresses to bind they are excluded here.
+   if(ownSet.has(attendee.email)||known.has(attendee.email))continue;
    const tokens=nameTokens(attendee.name);if(!tokens.length)continue;
    const matches:GranolaGmailContact[]=[],seen=new Set<string>();
    for(const contact of [...(byFull.get(tokens.join(' '))??[]),...(tokens.length>1?byInitial.get(firstAndInitial(tokens))??[]:[])]){
@@ -457,13 +472,36 @@ export class GranolaSync {
     if(matches.length>=GranolaSync.IDENTITY_MAX_CONTACTS)break;
    }
    if(!matches.length)continue;
+   // All of an attendee's pairs are judged in one run or none of them are: a half-judged
+   // attendee would store the strongest of an arbitrary subset as if it were the best match.
+   if(pairs.length+matches.length>GranolaSync.IDENTITY_MAX_PAIRS)break;
    const meetings=this.ctx.storage.sql.exec<{title:string}>('SELECT n.title AS title FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 ORDER BY n.meeting_at DESC LIMIT 5',attendee.email).toArray().map(r=>r.title);
-   for(const contact of matches){
-    if(pairs.length>=GranolaSync.IDENTITY_MAX_PAIRS)break;
-    pairs.push({attendeeEmail:attendee.email,attendeeName:attendee.name,contactEmail:contact.email,contactName:contact.name,meetings,recentSubjects:contact.subjects.slice(0,5)});
-   }
+   for(const contact of matches)pairs.push({attendeeEmail:attendee.email,attendeeName:attendee.name,contactEmail:contact.email,contactName:contact.name,meetings,recentSubjects:contact.subjects.slice(0,5)});
   }
   return pairs;
+ }
+
+ /** The owner's own addresses: the Granola account and every connected mail account. */
+ private ownAddresses():string[]{return [...this.ownEmails(),...this.hooks.accounts()].filter(email=>typeof email==='string'&&!!email);}
+
+ /**
+  * Attendees with no row in granola_identity yet: the decided ones are dropped by the join, so
+  * the row limit is spent on people still worth asking about. The owner's own addresses and the
+  * known contacts are excluded in SQL only while they fit the 100-bound-parameter ceiling; past
+  * that the caller filters the already-undecided stream in JS.
+  */
+ private undecidedAttendees(own:string[],known:string[],limit:number):{email:string;name:string}[]{
+  const params:unknown[]=[];
+  let where='';
+  const room=()=>GranolaSync.SQL_IN_CHUNK-1-params.length;
+  for(const list of [own,known]){
+   if(!list.length||list.length>room())continue;
+   where+=` AND a.email NOT IN (${list.map(()=>'?').join(',')})`;
+   params.push(...list);
+  }
+  return this.ctx.storage.sql.exec<{email:string;name:string}>(
+   `SELECT a.email AS email,MAX(a.name) AS name FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id LEFT JOIN granola_identity gi ON gi.attendee_email=a.email WHERE n.hidden=0 AND gi.attendee_email IS NULL${where} GROUP BY a.email ORDER BY a.email ASC LIMIT ?`,
+   ...params,limit).toArray();
  }
 
  /** One Noul per pair. The state holds names, addresses, domains, meeting titles and theme names only. */
@@ -480,9 +518,13 @@ export class GranolaSync {
   return answer.type==='noul'?answer.noul:0;
  }
 
- /** Keeps the strongest judgment for an attendee; a decision the owner already made is never overwritten. */
+ /**
+  * Keeps the strongest judgment for an attendee; a decision the owner already made is never
+  * overwritten — not a confirmation, and not a dismissal made between two pairs of the same
+  * attendee in this very run.
+  */
  private storeIdentity(pair:IdentityPair,probability:number,now:number){
-  this.ctx.storage.sql.exec("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(attendee_email) DO UPDATE SET contact_email=excluded.contact_email,attendee_name=excluded.attendee_name,contact_name=excluded.contact_name,probability=excluded.probability,status=excluded.status,updated_at=excluded.updated_at WHERE granola_identity.status<>'confirmed' AND excluded.probability>granola_identity.probability",
+  this.ctx.storage.sql.exec("INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at,decided_by) VALUES (?,?,?,?,?,?,?,'auto') ON CONFLICT(attendee_email) DO UPDATE SET contact_email=excluded.contact_email,attendee_name=excluded.attendee_name,contact_name=excluded.contact_name,probability=excluded.probability,status=excluded.status,updated_at=excluded.updated_at WHERE granola_identity.decided_by<>'owner' AND granola_identity.status<>'confirmed' AND excluded.probability>granola_identity.probability",
    pair.attendeeEmail,pair.contactEmail,pair.attendeeName.slice(0,200),pair.contactName.slice(0,200),probability,probability>=GranolaSync.IDENTITY_THRESHOLD?'pending':'dismissed',now);
  }
 
@@ -495,8 +537,12 @@ export class GranolaSync {
  /** The owner's decision: confirming moves the attendee's meetings and signals onto the contact. */
  async resolveIdentity(attendeeEmail:string,decision:'confirm'|'dismiss'):Promise<GranolaIdentitySuggestion[]>{
   if(typeof attendeeEmail!=='string'||!attendeeEmail||attendeeEmail.length>320||(decision!=='confirm'&&decision!=='dismiss'))throw Error('invalid_identity');
-  if(!this.ctx.storage.sql.exec<{attendee_email:string}>("SELECT attendee_email FROM granola_identity WHERE attendee_email=? AND status='pending'",attendeeEmail).toArray().length)throw Error('invalid_identity');
-  this.ctx.storage.sql.exec('UPDATE granola_identity SET status=?,updated_at=? WHERE attendee_email=?',decision==='confirm'?'confirmed':'dismissed',Date.now(),attendeeEmail);
+  const row=this.ctx.storage.sql.exec<{contact_email:string}>("SELECT contact_email FROM granola_identity WHERE attendee_email=? AND status='pending'",attendeeEmail).toArray()[0];
+  if(!row)throw Error('invalid_identity');
+  // Folding an attendee into the owner's own address would merge other people's meetings into
+  // the owner's node and hide them from the graph. A dismissal of such a row is still allowed.
+  if(decision==='confirm'&&new Set(this.ownAddresses()).has(row.contact_email))throw Error('invalid_identity');
+  this.ctx.storage.sql.exec("UPDATE granola_identity SET status=?,decided_by='owner',updated_at=? WHERE attendee_email=?",decision==='confirm'?'confirmed':'dismissed',Date.now(),attendeeEmail);
   if(decision==='confirm')await this.reingestAttendee(attendeeEmail);
   await this.hooks.invalidateGraph();
   return this.identitySuggestions();
@@ -512,9 +558,11 @@ export class GranolaSync {
   }
  }
 
- /** Confirmed matches, as attendee address to contact address. */
+ /** Confirmed matches, as attendee address to contact address; never onto the owner's own address. */
  aliases():Map<string,string>{
-  return new Map(this.ctx.storage.sql.exec<{attendee_email:string;contact_email:string}>("SELECT attendee_email,contact_email FROM granola_identity WHERE status='confirmed'").toArray().map(r=>[r.attendee_email,r.contact_email]));
+  const own=new Set(this.ownAddresses());
+  return new Map(this.ctx.storage.sql.exec<{attendee_email:string;contact_email:string}>("SELECT attendee_email,contact_email FROM granola_identity WHERE status='confirmed'").toArray()
+   .filter(r=>!own.has(r.contact_email)).map(r=>[r.attendee_email,r.contact_email]));
  }
 
  protected async finishRun(now:number,started:number){
@@ -584,14 +632,20 @@ export class GranolaSync {
   return [...merged.values()].sort((x,y)=>y.meetings-x.meetings||x.email.localeCompare(y.email));
  }
  edges(){
-  const rows=this.ctx.storage.sql.exec<{a:string;b:string;title:string}>('SELECT e.a AS a,e.b AS b,n.title AS title FROM granola_edges e JOIN granola_notes n ON n.id=e.note_id WHERE n.hidden=0 ORDER BY n.meeting_at DESC, n.title ASC').toArray();
+  const rows=this.ctx.storage.sql.exec<{note_id:string;a:string;b:string;title:string}>('SELECT e.note_id AS note_id,e.a AS a,e.b AS b,n.title AS title FROM granola_edges e JOIN granola_notes n ON n.id=e.note_id WHERE n.hidden=0 ORDER BY n.meeting_at DESC, n.title ASC').toArray();
   const alias=this.aliases();const map=new Map<string,{a:string;b:string;weight:number;titles:string[]}>();
+  const counted=new Set<string>();
   for(const r of rows){
    let a=alias.get(r.a)??r.a,b=alias.get(r.b)??r.b;
    // A confirmed match can put both ends of a meeting edge on the same node.
    if(a===b)continue;
    if(a>b)[a,b]=[b,a];
-   const key=a+'\u0000'+b;const e=map.get(key)??{a,b,weight:0,titles:[]};
+   const key=a+'\u0000'+b;
+   // When a note had both an aliased address and its contact address in the room, two of its
+   // rows now name the same pair: one meeting is one point of weight, not two.
+   const perNote=r.note_id+'\u0000'+key;
+   if(counted.has(perNote))continue;
+   counted.add(perNote);const e=map.get(key)??{a,b,weight:0,titles:[]};
    e.weight++;if(e.titles.length<3&&!e.titles.includes(r.title))e.titles.push(r.title);map.set(key,e);
   }
   return [...map.values()].sort((x,y)=>y.weight-x.weight).slice(0,5000);

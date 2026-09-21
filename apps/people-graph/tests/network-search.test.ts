@@ -72,6 +72,44 @@ test('results keep the ten best, with reasons that share a query term or the two
   'no shared term falls back to the two newest evidence items');
 });
 
+test('a query nobody matches has no results, and a scoreless filler is never one',()=>{
+ const people=[person({personId:'a',name:'Ada Rivera',lastContact:'2026-09-01T00:00:00.000Z'}),
+  person({personId:'b',name:'Bo Chen',lastContact:'2026-09-02T00:00:00.000Z'})];
+ const ranked=keywordRank('kitesurfing',people);
+ assert.equal(ranked.length,2,'both are still candidates for the model to judge');
+ assert.deepEqual(topResults('kitesurfing',ranked,keywordScores(ranked)),[],'nobody matched, so the empty state is reachable');
+ const mixed=keywordRank('fintech',[person({personId:'hit',name:'Fintech Rivera'}),person({personId:'filler',name:'Bo Chen'})]);
+ assert.deepEqual(topResults('fintech',mixed,keywordScores(mixed)).map(r=>r.personId),['hit'],'the recency filler behind the hit is not an answer');
+});
+
+test('a Jev ranking drops a candidate it rated barely above nothing',()=>{
+ const people=[person({personId:'weak'}),person({personId:'ok'}),person({personId:'none'})];
+ const ranked=keywordRank('fintech',people);
+ const jevScore=(level:number,noulValue:number)=>0.7*(level/3)+0.3*noulValue;
+ const scores=[jevScore(0,0.2),jevScore(1,0.5),jevScore(0,0)];
+ assert.ok(scores[0]>0&&scores[0]<0.15,`level 0 with noul 0.2 scores ${scores[0]}`);
+ assert.deepEqual(topResults('fintech',ranked,scores,{checked:true}).map(r=>r.personId),['ok'],
+  'under the Jev floor is "unrelated, and probably no help", not a tenth-best answer');
+ assert.deepEqual(topResults('fintech',ranked,scores,{checked:false}).map(r=>r.personId),['ok','weak'],
+  'a keyword ranking only drops the scoreless');
+});
+
+test('terms match whole words, so "ai" does not hit "email"',()=>{
+ const people=[person({personId:'mail',evidence:[evidence('Sent an email about the deck',2)],contexts:['Emailing the team'],themes:['Email']}),
+  person({personId:'ai',evidence:[evidence('Building AI-native tooling',3)]})];
+ const ranked=keywordRank('ai tooling',people);
+ assert.equal(ranked.find(r=>r.personId==='mail')!.hits,0,'"email" is not a hit for "ai"');
+ assert.equal(ranked.find(r=>r.personId==='ai')!.hits,2);
+ assert.deepEqual(topResults('ai tooling',ranked,keywordScores(ranked)).map(r=>r.personId),['ai']);
+ const substring=keywordRank('ai',[person({personId:'x',name:'Maia Trainer',company:'aimail.example'})]);
+ assert.equal(substring[0].hits,0,'a term inside a longer word is not a match');
+ // Reasons use the same rule: "email" does not make an evidence line a reason for "ai".
+ const named=keywordRank('ai tooling',[person({personId:'n',name:'Ai Rivera',
+  evidence:[evidence('Sent an email about the deck',2),evidence('Older chat',1)]})]);
+ assert.deepEqual(topResults('ai tooling',named,[1])[0].reasons.map(r=>r.summary),['Sent an email about the deck','Older chat'],
+  'nothing shares a term, so the reasons fall back to the two newest');
+});
+
 test('Jev ranks each candidate from its own evidence and combines score and noul as 0.7/0.3',async()=>{
  const people=[person({personId:'ada',name:'Ada Rivera',company:'example.com',evidence:Array.from({length:8},(_,i)=>evidence(`Note ${i}`,i+1))}),
   person({personId:'bo',name:'Bo Chen',company:'other.com',evidence:[evidence('Runs payments',2)]})];

@@ -84,6 +84,30 @@ test('askJev caps the Retry-After wait at 10s and defaults to 2s when not numeri
  assert.deepEqual(waited,[10000,2000]);
 });
 
+test('askJev treats a blank Retry-After as no header at all',async()=>{
+ const {__setJevSleepForTests}=await import('../src/jev');
+ const waited:number[]=[];
+ __setJevSleepForTests(async(ms:number)=>{waited.push(ms);});
+ try{
+  for(const header of ['','   ']){
+   let calls=0;
+   await withFetch((async()=>{calls++;return calls===1?new Response('',{status:429,headers:{'retry-after':header}}):Response.json(okBody());}) as typeof fetch,async()=>{
+    await askJev({TYPESAFE_API_KEY:KEY},{},{q1:noul('x')});
+   });
+  }
+ }finally{__setJevSleepForTests(null);}
+ assert.deepEqual(waited,[2000,2000],'a blank header must not retry immediately into the same rate limit');
+});
+
+test('askJev does not start a request once the caller’s deadline has passed',async()=>{
+ let calls=0;
+ const controller=new AbortController();controller.abort();
+ await withFetch((async()=>{calls++;return Response.json(okBody());}) as typeof fetch,async()=>{
+  await assert.rejects(askJev({TYPESAFE_API_KEY:KEY},{},{q1:noul('x')},controller.signal),(e:any)=>e instanceof JevError&&e.code==='jev_unavailable');
+ });
+ assert.equal(calls,0);
+});
+
 test('askJev maps a second 429 after the retry to jev_rate_limited',async()=>{
  const {__setJevSleepForTests}=await import('../src/jev');
  __setJevSleepForTests(async()=>{});

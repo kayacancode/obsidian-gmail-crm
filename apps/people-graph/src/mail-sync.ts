@@ -27,7 +27,7 @@ export class MailSync extends DurableObject<MailEnv>{
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
- private granola(){return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),contacts:()=>this.gmailContacts()});}
+ private granola(){return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email)});}
  /**
   * Gmail contacts for identity matching: one row per address with its most common display name
   * and up to five canonical subject theme names. Raw subject lines never leave this object.
@@ -424,10 +424,13 @@ export class MailSync extends DurableObject<MailEnv>{
   const ranked=keywordRank(text,candidates);
   let scores=keywordScores(ranked),checked=false;
   if(ranked.length&&jevConfigured(this.env)){
-   try{scores=await jevScores(this.env,text,ranked);checked=true;}
-   catch(e){if(!(e instanceof JevError))throw e;scores=keywordScores(ranked);}
+   // One deadline for the whole rerank, not per request: the batches run one after another,
+   // each with its own 20s fetch timeout and a possible 429 back-off. Past the deadline the
+   // abort surfaces as jev_unavailable and the owner gets the keyword ranking instead.
+   try{scores=await jevScores(this.env,text,ranked,AbortSignal.timeout(searchDeadlineMs));checked=true;}
+   catch(e){if(!(e instanceof JevError))throw e;scores=keywordScores(ranked);checked=false;}
   }
-  return {query:text,results:topResults(text,ranked,scores),checked};
+  return {query:text,results:topResults(text,ranked,scores,{checked}),checked};
  }
  async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();if(!accounts.length&&!this.granola().status().connected)return null;
   const rows=this.graphContacts();
@@ -464,6 +467,10 @@ function noteIdOf(evidenceRef:string){return evidenceRef.slice(GRANOLA_NOTE_REF.
 // (?/&/# start mailto query/fragment syntax, %<>/"' can break out of an href attribute).
 const MAILTO_SAFE=/^[^\s?&#%/<>"']+@[^\s?&#%/<>"']+$/;
 const DRAFT_REWRITE_INSTRUCTION='Only mention items present in the evidence. Do not ask for money or credentials.';
+const SEARCH_DEADLINE_MS=15_000;
+let searchDeadlineMs=SEARCH_DEADLINE_MS;
+/** Test-only hook: shrink the network-search deadline. Pass null to restore the real one. */
+export function __setSearchDeadlineForTests(ms:number|null):void{searchDeadlineMs=ms??SEARCH_DEADLINE_MS;}
 
 function retrievalView(job:RetrievalJob){return {id:job.id,status:job.status,error:job.error,personId:job.personId,themeId:job.themeId,windowDays:job.windowDays,processed:job.processed,decodedBytes:job.decodedBytes,assertions:job.assertions,maxMessages:50,maxBytes:1_000_000};}
 function publicSourceView(source:PublicSourceState){const {owner:_,generation:__,dueAt:___,pendingRefresh:____,...view}=source;return {...view,visibility:'public' as const};}
