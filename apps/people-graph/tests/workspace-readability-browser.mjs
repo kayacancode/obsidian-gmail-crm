@@ -15,6 +15,14 @@ try {
   window.testGraph=mountGraph(document.querySelector('#graph'),{graph:{source:'workspace',workspaceName:'Test network',nodes,edges:nodes.slice(1).map((n,i)=>({source:'p'+i,target:n.id,weight:1}))}});
  });
  assert.equal(await page.locator('.rg-node').count(),171);
+ const outlines=await page.locator('.rg-node .rg-owner-outline rect').evaluateAll(elements=>elements.map(e=>({owner:e.dataset.memberId,color:e.getAttribute('stroke')})));
+ assert.equal(new Set(outlines.map(e=>e.color)).size,2);
+ assert.equal(await page.locator('[data-node-id="p0"] .rg-owner-outline rect').count(),2);
+ assert.equal(await page.locator('[data-node-id="p1"] .rg-owner-outline rect').count(),1);
+ await page.getByRole('button',{name:'alex@example.com',exact:true}).click();
+ assert.ok(await page.locator('.rg-node[data-member-muted="true"]').count()>0);
+ await page.getByRole('button',{name:'alex@example.com',exact:true}).click();
+ assert.equal(await page.locator('.rg-node[data-member-muted="true"]').count(),0);
  const measurements=await page.locator('.rg-node').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect(),label=n.querySelector('.rg-node-label');return {width:r.width,labelVisible:getComputedStyle(label).display!=='none',label:label.textContent};}));
  assert.ok(measurements.every(n=>n.width>=60&&n.labelVisible&&n.label.includes('Via ')));
  const visiblePhoto=page.locator('.rg-photo').first();await visiblePhoto.waitFor({state:'attached'});

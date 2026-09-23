@@ -143,6 +143,7 @@ export function mountGraph(element, options = {}) {
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
   let workspaceCameraReady=false,memberFocus='';
+  let contributorColors=new Map();
   let lens = validLens(graph.source==='workspace'?'firm':options.lens ?? 'my');
   let activeThemeId = null;
   let relevancePersonId = null;
@@ -247,6 +248,9 @@ export function mountGraph(element, options = {}) {
   }
 
   function rebuildIndexes() {
+    const ids=[...new Set(graph.nodes.flatMap(n=>(n.relationships||[]).map(r=>r.memberId)))].sort();
+    const palette=['#2563b8','#a53e70','#25836c','#a66b16','#7254ad','#b24e32','#307d91','#68782e','#8b4b42','#5963a5','#a12840','#287355','#654295','#9c712a','#337091','#7a5b3e','#993b85','#53733a','#365e75','#73603d'];
+    contributorColors=new Map(ids.map((id,i)=>[id,palette[i%palette.length]]));
     byId = new Map(graph.nodes.map((node) => [node.id, node]));
     nodeIndex = new Map(graph.nodes.map((node, index) => [node.id, index]));
     edgesByNode = new Map(graph.nodes.map((node) => [node.id, []]));
@@ -399,6 +403,14 @@ export function mountGraph(element, options = {}) {
       fallback.hidden = true;
       portrait.append(photo, fallback);
     } else portrait.append(fallback);
+    if(graph.source==='workspace'&&node.relationships?.length){
+      const outline=document.createElementNS(SVG_NS,'svg');outline.classList.add('rg-owner-outline');outline.setAttribute('viewBox','0 0 100 100');outline.setAttribute('preserveAspectRatio','none');outline.setAttribute('aria-hidden','true');
+      const owners=[...new Set(node.relationships.map(r=>r.memberId))].sort(),segment=100/owners.length;
+      owners.forEach((id,i)=>{const rect=document.createElementNS(SVG_NS,'rect');
+        for(const [key,value] of Object.entries({x:1,y:1,width:98,height:98,fill:'none',pathLength:100,stroke:contributorColors.get(id), 'stroke-dasharray':`${segment} ${100-segment}`, 'stroke-dashoffset':-i*segment}))rect.setAttribute(key,String(value));
+        rect.dataset.memberId=id;outline.append(rect);
+      });portrait.append(outline);
+    }
     return portrait;
   }
 
@@ -498,8 +510,7 @@ export function mountGraph(element, options = {}) {
         const names=node.relationships.map(r=>r.memberName);
         label.append(make('small','rg-shared-by','Via '+names.map(n=>n.split('@')[0]).join(', ')+(node.sources?.includes('obsidian')?' · Obsidian':'')));
         nodeButton.title+='\nShared by '+names.join(', ');
-        const marks=make('span','rg-member-marks');marks.setAttribute('aria-hidden','true');
-        for(const r of node.relationships){const mark=make('span');mark.style.backgroundColor=`hsl(${hash(r.memberId)%360} 52% 42%)`;marks.append(mark);}nodeButton.append(marks);
+
       }
       nodeButton.append(label);
       nodeLayer.append(nodeButton);
@@ -1198,6 +1209,15 @@ export function mountGraph(element, options = {}) {
     header.append(actions);
     const [pathBar, pathSummary] = renderPathControls();
     root.append(header);
+    if(graph.source==='workspace'&&!pathState){
+      const legend=make('nav','rg-owner-legend');legend.setAttribute('aria-label','Contributor colors');
+      const members=new Map();for(const n of graph.nodes)for(const r of n.relationships||[])members.set(r.memberId,r.memberName);
+      for(const [id,name] of [...members].sort(([a],[b])=>a.localeCompare(b))){
+        const item=button(name,'highlight-owner');item.dataset.memberId=id;item.setAttribute('aria-pressed',String(memberFocus===id));
+        const swatch=make('span','rg-owner-swatch');swatch.style.borderColor=contributorColors.get(id);swatch.setAttribute('aria-hidden','true');item.prepend(swatch);legend.append(item);
+      }
+      root.append(legend);
+    }
     if(!pathState && graph.source!=='workspace') root.append(renderTimeControls());
     if (pathBar) root.append(pathBar);
     const topics = renderTopics();
@@ -1500,6 +1520,7 @@ export function mountGraph(element, options = {}) {
     else if (action === 'next-page') { page += 1; render(); }
     else if (action === 'zoom-in') zoom(1.18, 'zoom-in');
     else if (action === 'zoom-out') zoom(1 / 1.18, 'zoom-out');
+    else if(action==='highlight-owner'){memberFocus=memberFocus===target.dataset.memberId?'':target.dataset.memberId;render();}
     else if (action === 'read-names') { camera={x:0,y:0,zoom:Math.max(1,.85/canvasLayout().fitScale)};render('read-names'); }
     else if (action === 'fit') { camera = { x: 0, y: 0, zoom: 1 }; render('fit'); }
   }
