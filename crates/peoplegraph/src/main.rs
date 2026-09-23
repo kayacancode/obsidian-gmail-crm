@@ -19,9 +19,7 @@ const COMMAND_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser, Debug, Clone)]
 #[command(name = "peoplegraph")]
 #[command(version = COMMAND_VERSION)]
-#[command(
-    about = "Query your People network, with optional local Obsidian commands"
-)]
+#[command(about = "Query your People network, with optional local Obsidian commands")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

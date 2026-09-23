@@ -202,7 +202,11 @@ pub fn query(profile: &WebProfile, cli: &Cli, command: &'static str, start: Inst
             start,
         ),
         Ok((status, value)) => match serde_json::from_value::<Response>(value) {
-            Ok(mut result) if status == 200 => {
+            Ok(mut result)
+                if status == 200
+                    && result.command == command
+                    && result.stats.as_ref().is_none_or(Value::is_object) =>
+            {
                 let stats = result.stats.get_or_insert(json!({}));
                 stats["owner"] = json!(profile.owner);
                 stats["backend"] = json!("people-web");
@@ -228,6 +232,53 @@ mod tests {
         net::TcpListener,
         thread,
     };
+    #[test]
+    fn malformed_stats_are_a_json_error_instead_of_a_panic() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", server.local_addr().unwrap());
+        let task = thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            let body = r#"{"ok":true,"command":"find-person","data":{},"stats":"bad"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let profile = WebProfile {
+            version: 1,
+            backend: "people-web".into(),
+            origin,
+            owner: "owner@test".into(),
+            token: format!("pgd1_{}", "a".repeat(64)),
+            expires_at: unix_seconds() + 600,
+        };
+        let cli = Cli::try_parse_from(["peoplegraph", "find-person", "Ada"]).unwrap();
+        let result = query(&profile, &cli, "find-person", Instant::now());
+        assert_eq!(result.error.unwrap().kind, "web_query_failed");
+        task.join().unwrap();
+    }
+    #[test]
+    fn failed_logout_keeps_profile_for_retry() {
+        let dir = std::env::temp_dir().join(format!("pg-logout-{}", std::process::id()));
+        let path = dir.join("profile.json");
+        let profile = WebProfile {
+            version: 1,
+            backend: "people-web".into(),
+            origin: "http://127.0.0.1:1".into(),
+            owner: "owner@test".into(),
+            token: format!("pgd1_{}", "a".repeat(64)),
+            expires_at: unix_seconds() + 600,
+        };
+        web_profile::save_profile(&path, &profile).unwrap();
+        assert!(!logout(&profile, &path, Instant::now()).ok);
+        assert!(web_profile::load_profile(&path).unwrap().is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn redirects_never_forward_the_device_token() {
         let destination = TcpListener::bind("127.0.0.1:0").unwrap();

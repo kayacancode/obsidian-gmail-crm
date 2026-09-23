@@ -10,7 +10,7 @@
     "db:init": "wrangler d1 execute people-graph --file ./schema.sql",
     "db:init:remote": "wrangler d1 execute people-graph --remote --file ./schema.sql",
     "smoke": "bash scripts/smoke.sh",
-    "test": "node --test tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
+    "test": "node --test tests/cli-approval.test.mjs tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
     "test:relationship-host": "node --test tests/relationship-host.test.mjs",
     "test:relationship-browser": "node tests/relationship-browser.mjs",
     "test:readability-browser": "node tests/relationship-readability-browser.mjs",

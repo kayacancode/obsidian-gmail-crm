@@ -144,8 +144,31 @@ mod tests {
         assert_eq!(origin("https://a.test/").unwrap(), "https://a.test");
         assert!(origin("http://127.0.0.1:8787").is_ok());
     }
+    #[cfg(unix)]
     #[test]
-    fn profile_roundtrip_is_private_and_preserves_old_file_on_failed_write() {
+    fn failed_profile_write_preserves_existing_login() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("pg-write-failure-{}", std::process::id()));
+        let real = dir.join("real");
+        let alias = dir.join("alias");
+        let path = real.join("profile.json");
+        let mut profile = WebProfile {
+            version: 1,
+            backend: "people-web".into(),
+            origin: "https://a.test".into(),
+            owner: "first@test".into(),
+            token: format!("pgd1_{}", "a".repeat(64)),
+            expires_at: 1,
+        };
+        save_profile(&path, &profile).unwrap();
+        symlink(&real, &alias).unwrap();
+        profile.owner = "second@test".into();
+        assert!(save_profile(&alias.join("profile.json"), &profile).is_err());
+        assert_eq!(load_profile(&path).unwrap().unwrap().owner, "first@test");
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn profile_roundtrip_is_private() {
         let dir = std::env::temp_dir().join(format!("pg-profile-{}", std::process::id()));
         let path = dir.join("profile.json");
         let p = WebProfile {

@@ -25,6 +25,12 @@ try{
  const neighbors=await command(['get-neighbors','ada-test']).done;assert.equal(JSON.parse(neighbors.out).data.people[0].id,'bo-test');
  const mutation=await command(['feedback','--email','ada@test','--action','boost']).done;assert.equal(JSON.parse(mutation.out).error.kind,'unsupported_operation');
  const local=await command(['--local','--cache',join(home,'missing.json'),'find-person','Ada']).done;assert.notEqual(JSON.parse(local.out).error.kind,'web_query_failed');
+ const second=(await api('/api/cli/device/start',{deviceName:'Second owner CLI'},'other@test.com')).data;
+ assert.equal((await api('/api/cli/device/approve',{userCode:second.userCode,expectedOwner:'other@test.com'},'other@test.com')).status,200);
+ const secondToken=(await api('/api/cli/device/poll',second,'other@test.com')).data.token;
+ const otherQuery=await fetch(origin+'/api/cli/v1/query',{method:'POST',headers:{authorization:'Bearer '+secondToken,'content-type':'application/json'},body:JSON.stringify({command:'find-person',query:'Ada',owner:'owner@test.com'})});
+ assert.deepEqual((await otherQuery.json()).data,{people:[]});
+ await fetch(origin+'/api/cli/logout',{method:'POST',headers:{authorization:'Bearer '+secondToken,'content-type':'application/json'},body:'{}'});
  const devices=(await api('/api/cli/devices')).data.devices;assert.ok(devices.length);const device=devices[0];
  assert.equal((await api('/api/cli/devices/revoke',{id:device.id},'other@test.com')).status,404);
  assert.equal((await api('/api/cli/devices/revoke',{id:device.id})).status,200);

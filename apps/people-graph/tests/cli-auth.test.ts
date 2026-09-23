@@ -13,3 +13,18 @@ test('approval refuses a browser account change and token never reaches Google v
  assert.equal((await deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:'old@test'}),env,'new@test')).status,409);
  const {requireGoogleUser}=await import('../src/index');const old=globalThis.fetch;let called=false;globalThis.fetch=async()=>{called=true;throw Error('must not call Google');};try{assert.ok('error' in await requireGoogleUser(req('x',{},'pgd1_'+'a'.repeat(64)),env));assert.equal(called,false);}finally{globalThis.fetch=old;}
 });
+
+test('concurrent approval and redemption produce exactly one credential',async()=>{
+ const {env,sql}=fixture();const start=await (await deviceRoute(req('device/start',{deviceName:'Mac'}),env,null)).json() as any;
+ const approvals=await Promise.all(['one@test','two@test'].map(owner=>deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:owner}),env,owner)));assert.deepEqual(approvals.map(r=>r.status).sort(),[200,400]);
+ // Real D1 batches serialize; use a lock to model the same database transaction boundary.
+ const batch=env.DB.batch.bind(env.DB);let tail=Promise.resolve();env.DB.batch=(items:any[])=>{const next=tail.then(()=>batch(items));tail=next.catch(()=>{});return next;};
+ const redeemed=await Promise.all([deviceRoute(req('device/poll',start),env,null),deviceRoute(req('device/poll',start),env,null)]);assert.deepEqual(redeemed.map(r=>r.status).sort(),[200,400]);assert.equal(sql.prepare('SELECT count(*) AS n FROM cli_devices').get()?.n,1);
+});
+test('device credential cannot authorize any website-only API',async()=>{
+ const {env}=fixture();const {default:worker}=await import('../src/index');
+ for(const path of ['/api/token','/api/graph','/api/people/draft','/api/people/search','/api/accounts','/api/granola','/api/cli/devices']){
+  const response=await worker.fetch(new Request('https://people.test'+path,{headers:{authorization:'Bearer pgd1_'+'a'.repeat(64)}}),env);assert.equal(response.status,401,path);
+ }
+ const push=await worker.fetch(new Request('https://people.test/api/push',{method:'POST',headers:{authorization:'Bearer pgd1_'+'a'.repeat(64)},body:'{}'}),env);assert.equal(push.status,401);
+});
