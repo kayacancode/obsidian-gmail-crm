@@ -132,4 +132,4 @@ Implement `load_profile`, `save_profile`, and `remove_profile` in `web_profile.r
 
 ## Execution recommendation
 
-Native execution in this task, with one independent review before release. The auth and client steps depend closely on the same small contract, so a single implementer avoids unnecessary handoffs. Implementation awaits review of this plan and selection of execution method.
+Native execution in this task, with one independent review before release. The auth and client steps depend closely on the same small contract, so a single implementer avoids unnecessary handoffs. Native execution completed. The Worker is deployed and CLI 0.3.11 is installed and released. User-approved production login and a live query/browser record comparison passed. Independent review findings were fixed and rechecked. Windows web credential storage was explicitly deferred because supported release targets are macOS and Linux; it fails closed. PR #8 contains the source changes and is not merged.
