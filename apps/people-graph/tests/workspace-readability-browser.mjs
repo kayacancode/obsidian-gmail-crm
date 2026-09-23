@@ -40,6 +40,15 @@ try {
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  await page.evaluate(()=>window.testGraph.setGraph({source:'workspace',nodes:Array.from({length:4900},(_,i)=>({id:'vault'+i,name:'Vault Person '+i,type:'person',sources:['obsidian'],relationships:[{memberId:'a',memberName:'alex@example.com',score:null}]})),edges:[],coverage:{sources:[{memberId:'a',memberName:'alex@example.com',source:'obsidian',available:4900,included:4900,status:'ready',limited:false,vaultTotal:4900}]}}));
  assert.equal(await page.locator('.rg-node').count(),4900);
+ await page.evaluate(()=>{window.retainedPerson=document.querySelector('.rg-node');window.beforePan=document.querySelector('.rg-scene').style.transform;});
+ const blank=await page.locator('.rg-map-viewport').evaluate(v=>{const r=v.getBoundingClientRect();for(let y=r.top+10;y<Math.min(r.bottom,innerHeight)-10;y+=20)for(let x=r.left+10;x<r.right-10;x+=20){const e=document.elementFromPoint(x,y);if(e?.closest('.rg-canvas')&&!e.closest('button,input,select'))return {x,y};}throw Error('No drag target');});
+ await page.mouse.move(blank.x,blank.y);await page.mouse.down();await page.mouse.move(blank.x+60,blank.y+20,{steps:5});await page.mouse.up();
+ await page.evaluate(()=>new Promise(requestAnimationFrame));
+ assert.ok(await page.evaluate(()=>window.retainedPerson===document.querySelector('.rg-node')),'Dragging must retain person DOM nodes');
+ assert.ok(await page.evaluate(()=>window.beforePan!==document.querySelector('.rg-scene').style.transform),'Dragging must move the scene');
+ await page.getByRole('button',{name:'Zoom in',exact:true}).click();await page.evaluate(()=>new Promise(requestAnimationFrame));
+ assert.ok(await page.evaluate(()=>window.retainedPerson===document.querySelector('.rg-node')),'Zooming must retain person DOM nodes');
+
  await page.getByText('People included by member and source',{exact:true}).click();
  assert.match(await page.locator('.rg-source-coverage').innerText(),/4900 included of 4900/);
  await page.evaluate(()=>{

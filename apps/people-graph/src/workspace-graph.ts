@@ -89,7 +89,10 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
 }
 export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:string){
  const graph=await buildWorkspaceGraph(env,id,me);
- const people=graph.nodes.map(n=>({personId:n.id,name:n.name,company:n.company,lastContact:null,evidence:graph.themeSignals.filter(s=>s.personId===n.id).map(s=>({summary:s.summary,sourceType:s.sourceType,observedAt:s.observedAt,title:s.provenance?.title})),themes:graph.themes.filter(t=>graph.themeSignals.some(s=>s.themeId===t.id&&s.personId===n.id)).map(t=>t.name),contexts:graph.edges.filter(e=>e.source===n.id||e.target===n.id).flatMap(e=>e.contexts)}));
+ const signalsByPerson=new Map<string,typeof graph.themeSignals>(),contextsByPerson=new Map<string,string[]>();
+ for(const signal of graph.themeSignals){if(!signal.personId)continue;const list=signalsByPerson.get(signal.personId)||[];list.push(signal);signalsByPerson.set(signal.personId,list);}
+ for(const edge of graph.edges)for(const id of [edge.source,edge.target]){const list=contextsByPerson.get(id)||[];list.push(...edge.contexts);contextsByPerson.set(id,list);}
+ const people=graph.nodes.map(n=>{const signals=signalsByPerson.get(n.id)||[],themeIds=new Set(signals.map(s=>s.themeId));return {personId:n.id,name:n.name,company:n.company,lastContact:null,evidence:signals.map(s=>({summary:s.summary,sourceType:s.sourceType,observedAt:s.observedAt,title:s.provenance?.title})),themes:graph.themes.filter(t=>themeIds.has(t.id)).map(t=>t.name),contexts:contextsByPerson.get(n.id)||[]};});
  const ranked=keywordRank(query,people);let scores=keywordScores(ranked),checked=false;
  if(env.TYPESAFE_API_KEY&&ranked.length){try{scores=await jevScores(env,query,ranked,AbortSignal.timeout(20000));checked=true;}catch{}}
  await assertWorkspaceRevision(env,id,me,graph.revision);return {query,results:topResults(query,ranked,scores,{checked}),checked,coverage:graph.coverage};

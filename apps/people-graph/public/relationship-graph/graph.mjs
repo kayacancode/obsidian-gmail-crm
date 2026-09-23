@@ -142,6 +142,7 @@ export function mountGraph(element, options = {}) {
   let destroyed = false;
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
+  let cameraFrame=null,cameraScene=null,cameraCanvas=null,cameraLayout=null;
   let workspaceCameraReady=false,memberFocus='',wholeNetworkOverview=false;
   let contributorColors=new Map();
   let lens = validLens(graph.source==='workspace'?'firm':options.lens ?? 'my');
@@ -460,8 +461,10 @@ export function mountGraph(element, options = {}) {
 
   function renderCanvas() {
     const layout = canvasLayout();
+    cameraLayout=layout;cameraScene=null;
     if(graph.source==='workspace'&&(!workspaceCameraReady||(!wholeNetworkOverview&&camera.zoom===1))&&!currentRoute()){camera.zoom=Math.max(1,.85/layout.fitScale);workspaceCameraReady=true;}
     const canvas = make('div', 'rg-canvas');
+    cameraCanvas=canvas;
     canvas.dataset.workspace=String(graph.source==='workspace');
     if (!currentRoute()) canvas.style.height = `${layout.height}px`;
     canvas.dataset.path = String(Boolean(currentRoute()));
@@ -486,6 +489,7 @@ export function mountGraph(element, options = {}) {
       const viewport = make('div', 'rg-map-viewport');
       Object.assign(viewport.style, { left: '24px', top: `${layout.top}px`, width: `${layout.usableWidth}px`, height: `${layout.usableHeight}px` });
       scene = make('div', 'rg-scene');
+      cameraScene=scene;
       Object.assign(scene.style, { width: `${layout.worldWidth}px`, height: `${layout.worldHeight}px`,
         transform: `translate(${(layout.usableWidth - layout.worldWidth * scale) / 2 + camera.x}px, ${(layout.usableHeight - layout.worldHeight * scale) / 2 + camera.y}px) scale(${scale})` });
       viewport.append(scene);canvas.append(viewport);
@@ -1435,11 +1439,25 @@ export function mountGraph(element, options = {}) {
     });
   }
 
+  // Camera movement must not rebuild people, photos, relevance, or layout.
+  function moveCamera(focusAction=null){
+    if(currentRoute()||!cameraScene||!cameraLayout){render(focusAction);return;}
+    if(cameraFrame!==null)return;
+    cameraFrame=view.requestAnimationFrame(()=>{
+      cameraFrame=null;if(destroyed||!cameraScene?.isConnected)return;
+      const layout=cameraLayout,scale=layout.fitScale*camera.zoom;
+      cameraScene.style.transform=`translate(${(layout.usableWidth-layout.worldWidth*scale)/2+camera.x}px, ${(layout.usableHeight-layout.worldHeight*scale)/2+camera.y}px) scale(${scale})`;
+      cameraCanvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
+      cameraCanvas.dataset.detail=String(scale>=.8);
+      const label=root.querySelector('.rg-zoom-value');if(label)label.textContent=`${Math.round(scale*100)}%`;
+      if(focusAction)root.querySelector(`[data-action="${focusAction}"]`)?.focus({preventScroll:true});
+    });
+  }
   function zoom(multiplier, focusAction = null) {
-    const next = Math.max(.6, Math.min(currentRoute() ? 1.65 : 2 / canvasLayout().fitScale, camera.zoom * multiplier));
+    const next = Math.max(.6, Math.min(currentRoute() ? 1.65 : 2 / (cameraLayout||canvasLayout()).fitScale, camera.zoom * multiplier));
     const factor = next / camera.zoom;
     camera = { x: camera.x * factor, y: camera.y * factor, zoom: next };
-    render(focusAction);
+    moveCamera(focusAction);
   }
 
   function onClick(event) {
@@ -1636,7 +1654,7 @@ export function mountGraph(element, options = {}) {
     else if (event.key === 'Home') camera = { x: 0, y: 0, zoom: 1 };
     else return;
     event.preventDefault();
-    render('canvas');
+    moveCamera('canvas');
   }
 
   function onPointerDown(event) {
@@ -1649,7 +1667,7 @@ export function mountGraph(element, options = {}) {
     if (!drag) return;
     camera.x = drag.camera.x + event.clientX - drag.x;
     camera.y = drag.camera.y + event.clientY - drag.y;
-    render();
+    moveCamera();
   }
 
   const onPointerUp = (event) => {
@@ -1801,6 +1819,8 @@ export function mountGraph(element, options = {}) {
       meetingBatch = null;meetingFeedback = Object.create(null);meetingPreview = null;
       invalidateRelevance();
       pathRequest += 1;
+      if(cameraFrame!==null)view.cancelAnimationFrame(cameraFrame);
+      cameraFrame=null;cameraScene=null;cameraLayout=null;
       resizeObserver?.disconnect();
       view?.removeEventListener('resize', onResize);
       root.removeEventListener('click', onClick);
