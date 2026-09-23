@@ -142,6 +142,7 @@ export function mountGraph(element, options = {}) {
   let destroyed = false;
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
+  let workspaceCameraReady=false,memberFocus='';
   let lens = validLens(graph.source==='workspace'?'firm':options.lens ?? 'my');
   let activeThemeId = null;
   let relevancePersonId = null;
@@ -263,14 +264,14 @@ export function mountGraph(element, options = {}) {
     const width = element.clientWidth || 1000;
     const height = Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
-    const usableWidth = Math.max(132, width - (width >= 1100 ? 380 : 48));
+    const usableWidth = Math.max(132, width - (width >= 1100 && (graph.source!=='workspace'||panelMode) ? 380 : 48));
     const top = options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
     const usableHeight = height - top - 86;
-    const baseRelevance=filterRelevance(graph,'my');
+    const baseRelevance=filterRelevance(graph,graph.source==='workspace'?'firm':'my');
     const layoutThemes=conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
     const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|');
     if(!spatialCache || spatialNodes!==graph.nodes || key!==spatialKey) {
-      spatialCache=spatialLayout(graph.nodes,graph.edges,layoutThemes);
+      spatialCache=spatialLayout(graph.nodes,graph.edges,layoutThemes,graph.source==='workspace'?210:165);
       spatialKey=key;spatialNodes=graph.nodes;
     }
     const worldWidth=spatialCache.width,worldHeight=spatialCache.height;
@@ -384,7 +385,7 @@ export function mountGraph(element, options = {}) {
 
   function renderPortrait(node, index) {
     const portrait = make('span', 'rg-portrait');
-    const fallback = make('span', 'rg-initials', initials(node.name));
+    const fallback = make('span', 'rg-initials', node.name==='Name unavailable'?'?':initials(node.name));
     if (demoEnabled() && node.photoPosition) {
       const photo = make('span', 'rg-photo rg-atlas');
       photo.style.backgroundPosition = node.photoPosition;
@@ -393,6 +394,7 @@ export function mountGraph(element, options = {}) {
       const photo = make('img', 'rg-photo');
       photo.src = node.photoUrl;
       photo.alt = '';
+      photo.referrerPolicy = 'no-referrer';
       photo.loading = index < 12 ? 'eager' : 'lazy';
       fallback.hidden = true;
       portrait.append(photo, fallback);
@@ -402,7 +404,9 @@ export function mountGraph(element, options = {}) {
 
   function renderCanvas() {
     const layout = canvasLayout();
+    if(graph.source==='workspace'&&!workspaceCameraReady&&!currentRoute()){camera.zoom=Math.max(1,.85/layout.fitScale);workspaceCameraReady=true;}
     const canvas = make('div', 'rg-canvas');
+    canvas.dataset.workspace=String(graph.source==='workspace');
     if (!currentRoute()) canvas.style.height = `${layout.height}px`;
     canvas.dataset.path = String(Boolean(currentRoute()));
     canvas.dataset.action = 'canvas';
@@ -455,6 +459,7 @@ export function mountGraph(element, options = {}) {
       positions.set(node.id, position);
       const nodeButton = button('', 'select-node', 'rg-node');
       nodeButton.dataset.nodeId = node.id;
+      nodeButton.dataset.memberMuted=String(Boolean(memberFocus&&!node.relationships?.some(r=>r.memberId===memberFocus)));
       nodeButton.dataset.active = String(node.id === selectedId);
       nodeButton.dataset.pathNode = String(data.isPath);
       nodeButton.dataset.related = String(Boolean(data.relatedIds?.has(node.id)));
@@ -489,6 +494,13 @@ export function mountGraph(element, options = {}) {
       const label = make('span', 'rg-node-label', node.name);
       label.append(make('small', '', [node.role, node.company].filter(Boolean).join(' · ') || node.type));
       if (node.via?.length) label.append(make('small', 'rg-node-via', viaLine(node)));
+      if(graph.source==='workspace'&&node.relationships?.length){
+        const names=node.relationships.map(r=>r.memberName);
+        label.append(make('small','rg-shared-by','Via '+names.map(n=>n.split('@')[0]).join(', ')));
+        nodeButton.title+='\nShared by '+names.join(', ');
+        const marks=make('span','rg-member-marks');marks.setAttribute('aria-hidden','true');
+        for(const r of node.relationships){const mark=make('span');mark.style.backgroundColor=`hsl(${hash(r.memberId)%360} 52% 42%)`;marks.append(mark);}nodeButton.append(marks);
+      }
       nodeButton.append(label);
       nodeLayer.append(nodeButton);
       if (lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
@@ -550,7 +562,7 @@ export function mountGraph(element, options = {}) {
     }
     scene.append(svg, nodeLayer, edgeLayer);
     canvas.append(make('p', 'rg-canvas-note', data.isPath ? `${data.nodes.length} people on this path`
-      : `${data.nodes.length} people on map${query ? ` · ${graph.nodes.length} in full network` : ''} · Drag to pan · Zoom for names · Fit for overview`));
+      : `${data.nodes.length} people on map${graph.source==='workspace'?` · ${data.nodes.filter(n=>n.photoUrl).length} photos available`:''}${query ? ` · ${graph.nodes.length} in full network` : ''} · Drag to pan · Select a person for details · Fit for overview`));
     return canvas;
   }
 
@@ -573,10 +585,11 @@ export function mountGraph(element, options = {}) {
     const nav = make('div', 'rg-navigation');
     nav.setAttribute('aria-label', 'Canvas navigation');
     const scale = currentRoute() ? camera.zoom : canvasLayout().fitScale * camera.zoom;
+    if(graph.source==='workspace')nav.append(button('Read names','read-names'));
     nav.append(button('−', 'zoom-out'), make('span', 'rg-zoom-value', `${Math.round(scale * 100)}%`), button('+', 'zoom-in'), button('Fit', 'fit'));
     nav.lastElementChild.title = 'Fit the entire network';
-    nav.children[0].setAttribute('aria-label', 'Zoom out');
-    nav.children[2].setAttribute('aria-label', 'Zoom in');
+    nav.querySelector('[data-action="zoom-out"]').setAttribute('aria-label', 'Zoom out');
+    nav.querySelector('[data-action="zoom-in"]').setAttribute('aria-label', 'Zoom in');
     return nav;
   }
 
@@ -1146,6 +1159,7 @@ export function mountGraph(element, options = {}) {
     refreshRelevance();
     root.dataset.profileOpen = String(Boolean(panelMode && !pathState));
     root.dataset.demo = String(demoEnabled());
+    root.dataset.workspace = String(graph.source==='workspace');
     root.replaceChildren();
     const header = make('header', 'rg-header');
     header.append(button(options.title || 'Relationships', 'overview', 'rg-wordmark'));
@@ -1171,6 +1185,12 @@ export function mountGraph(element, options = {}) {
     }
     lensLabel.append(select);
     if(graph.source!=='workspace')actions.append(lensLabel);
+    if(graph.source==='workspace'){
+      const contributorLabel=make('label','rg-lens','Shared by'),contributors=make('select');contributors.dataset.action='workspace-member';
+      const everyone=make('option','','Everyone');everyone.value='';contributors.append(everyone);
+      const members=new Map();for(const n of graph.nodes)for(const r of n.relationships||[])members.set(r.memberId,r.memberName);
+      for(const [id,name] of members){const o=make('option','',name);o.value=id;o.selected=id===memberFocus;contributors.append(o);}contributorLabel.append(contributors);actions.append(contributorLabel);
+    }
     const pathButton = button('Find a path ↗', 'start-path', 'rg-text-button');
     pathButton.disabled = !graph.nodes.some((node) => node.type === 'person');
     pathButton.setAttribute('aria-pressed', String(Boolean(pathState)));
@@ -1471,6 +1491,7 @@ export function mountGraph(element, options = {}) {
     else if (action === 'next-page') { page += 1; render(); }
     else if (action === 'zoom-in') zoom(1.18, 'zoom-in');
     else if (action === 'zoom-out') zoom(1 / 1.18, 'zoom-out');
+    else if (action === 'read-names') { camera={x:0,y:0,zoom:Math.max(1,.85/canvasLayout().fitScale)};render('read-names'); }
     else if (action === 'fit') { camera = { x: 0, y: 0, zoom: 1 }; render('fit'); }
   }
 
@@ -1493,6 +1514,7 @@ export function mountGraph(element, options = {}) {
 
   function onChange(event) {
     const action = event.target.dataset?.action;
+    if(action==='workspace-member'){memberFocus=event.target.value;render();return;}
     if (action === 'browse-theme') {
       invalidateRelevance();activeThemeId = event.target.value || null;relevancePersonId = null;
       query = '';

@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+try {
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.route('**/workspace-readability',r=>r.fulfill({contentType:'text/html',body:'<link rel="stylesheet" href="/relationship-graph/graph.css"><link rel="stylesheet" href="/relationship-host.css"><link rel="stylesheet" href="/atlas.css"><div id="graph"></div>'}));
+ await page.route('https://lh3.googleusercontent.com/**',r=>r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="76" height="76"><rect width="76" height="76" fill="#d2c8b7"/><circle cx="38" cy="27" r="14" fill="#8e705a"/><path d="M10 76Q10 44 38 44Q66 44 66 76" fill="#394a51"/></svg>'}));
+ await page.goto((process.env.PEOPLE_TEST_ORIGIN||'http://127.0.0.1:4194')+'/workspace-readability');
+ await page.evaluate(async()=>{
+  const {mountGraph}=await import('/relationship-graph/graph.mjs');
+  const names=['Alex Chen','Morgan Lee','Jordan Patel','Sam Rivera','Taylor Brooks','Robin Park','Casey Carter','Jamie Reed','Drew Kim'];
+  const relations=[{memberId:'a',memberName:'alex@example.com',score:80},{memberId:'b',memberName:'morgan@example.com',score:50}];
+  const nodes=Array.from({length:171},(_,i)=>({id:'p'+i,name:names[i%names.length]+' '+i,type:'person',company:['design.studio','research.org','builders.dev'][i%3],photoUrl:i%4?'https://lh3.googleusercontent.com/test'+i:null,relationships:i%3?[relations[i%2]]:relations}));
+  window.testGraph=mountGraph(document.querySelector('#graph'),{graph:{source:'workspace',workspaceName:'Test network',nodes,edges:nodes.slice(1).map((n,i)=>({source:'p'+i,target:n.id,weight:1}))}});
+ });
+ assert.equal(await page.locator('.rg-node').count(),171);
+ const measurements=await page.locator('.rg-node').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect(),label=n.querySelector('.rg-node-label');return {width:r.width,labelVisible:getComputedStyle(label).display!=='none',label:label.textContent};}));
+ assert.ok(measurements.every(n=>n.width>=60&&n.labelVisible&&n.label.includes('Via ')));
+ const visiblePhoto=page.locator('.rg-photo').first();await visiblePhoto.waitFor({state:'attached'});
+ assert.ok(await page.locator('.rg-photo').count()>100);
+ await page.getByLabel('Shared by').selectOption('a');
+ assert.ok(await page.locator('.rg-node[data-member-muted="true"]').count()>0);
+ await page.getByLabel('Shared by').selectOption('');
+ await page.screenshot({path:'/tmp/workspace-readable-dense.png',fullPage:true});
+ await page.getByRole('button',{name:'Fit',exact:true}).click();
+ assert.equal(await page.locator('.rg-node').count(),171);
+ const fitted=await page.locator('.rg-node').evaluateAll(nodes=>nodes.map(n=>{const r=n.getBoundingClientRect();const v=n.closest('.rg-map-viewport').getBoundingClientRect();return r.left>=v.left&&r.right<=v.right&&r.top>=v.top&&r.bottom<=v.bottom;}));
+ assert.ok(fitted.every(Boolean));
+ await page.getByRole('button',{name:'Read names',exact:true}).click();
+ await page.setViewportSize({width:390,height:844});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ assert.deepEqual(errors,[]);console.log('PASS 171 people: readable initial portraits, names, contributors, highlight, fit, mobile');
+}finally{await browser.close();}

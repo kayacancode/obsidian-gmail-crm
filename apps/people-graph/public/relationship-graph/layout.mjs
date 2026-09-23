@@ -1,5 +1,5 @@
 // Deterministic clusters; camera changes never shuffle the people.
-export function spatialLayout(nodes, edges, themes) {
+export function spatialLayout(nodes, edges, themes, spacing=165) {
   const ordered=[...nodes].sort((a,b)=>a.id.localeCompare(b.id));
   const group=new Map(),labels=new Map();
   for(const theme of themes) {
@@ -30,8 +30,8 @@ export function spatialLayout(nodes, edges, themes) {
   for(let pass=0;pass<70;pass++) {
     if(pass<40)for(const e of links){const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1;if(d>210){const f=Math.min(.008,(d-210)/d*.012);a.x+=dx*f;a.y+=dy*f;b.x-=dx*f;b.y-=dy*f;}}
     const buckets=new Map();
-    for(const p of points){const gx=Math.floor(p.x/180),gy=Math.floor(p.y/180);
-      for(let x=gx-1;x<=gx+1;x++)for(let y=gy-1;y<=gy+1;y++)for(const q of buckets.get(`${x},${y}`)||[]){let dx=p.x-q.x,dy=p.y-q.y,d=Math.hypot(dx,dy);if(d<165){if(d<.01){dx=1;dy=1;d=Math.SQRT2;}const f=(165-d)/d*.51;p.x+=dx*f;p.y+=dy*f;q.x-=dx*f;q.y-=dy*f;}}
+    for(const p of points){const gx=Math.floor(p.x/(spacing+15)),gy=Math.floor(p.y/(spacing+15));
+      for(let x=gx-1;x<=gx+1;x++)for(let y=gy-1;y<=gy+1;y++)for(const q of buckets.get(`${x},${y}`)||[]){let dx=p.x-q.x,dy=p.y-q.y,d=Math.hypot(dx,dy);if(d<spacing){if(d<.01){dx=1;dy=1;d=Math.SQRT2;}const f=(spacing-d)/d*.51;p.x+=dx*f;p.y+=dy*f;q.x-=dx*f;q.y-=dy*f;}}
       const key=`${gx},${gy}`;if(!buckets.has(key))buckets.set(key,[]);buckets.get(key).push(p);
     }
   }

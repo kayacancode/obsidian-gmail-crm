@@ -1,3 +1,4 @@
+import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
@@ -512,7 +513,16 @@ export class MailSync extends DurableObject<MailEnv>{
    out[row.email]={base,delta,score:Math.max(0,Math.min(100,base+delta))};
   }return out;
  }
- async exportWorkspaceSlice(scope:ShareScope,level:ShareLevel):Promise<import('./workspace-contract').WorkspaceSlice>{
+ // Viewer-only lookup, or an explicitly consented export. Never reads imported people.
+ async workspaceProfiles(emails:string[]):Promise<Record<string,WorkspaceProfile>>{
+  const wanted=new Set(emails.slice(0,10000)),out:Record<string,WorkspaceProfile>={};
+  const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));
+  for(const row of this.graphContacts())if(wanted.has(row.email)){
+   const name=(row.name.includes('@')?row.email.split('@')[0]:row.name).trim().slice(0,120);
+   out[row.email]={name:name||'Name unavailable',photoUrl:workspacePhoto(photos.get(row.email))};
+  }return out;
+ }
+ async exportWorkspaceSlice(scope:ShareScope,level:ShareLevel,shareProfiles=false):Promise<import('./workspace-contract').WorkspaceSlice>{
   const slice=await this.exportSlice(scope,level);
   const rows=new Map(this.graphContacts().map(row=>[row.email,row]));
   const relationships:import('./workspace-contract').WorkspaceSlice['relationships']={};
@@ -523,7 +533,7 @@ export class MailSync extends DurableObject<MailEnv>{
   // Calendar titles are not part of workspace consent, even when legacy slices contain them.
   slice.signals=slice.signals.filter(signal=>signal.sourceType!=='calendar');
   slice.themes=slice.themes.filter(theme=>slice.signals.some(signal=>signal.themeId===theme.id));
-  return {slice,relationships,truncated:slice.people.length>=SHARE_CAPS.people||slice.edges.length>=SHARE_CAPS.edges||slice.signals.length>=SHARE_CAPS.signals||slice.themes.length>=SHARE_CAPS.themes};
+  return {slice,relationships,...(shareProfiles?{profiles:await this.workspaceProfiles(slice.people.map(p=>p.email))}:{}),truncated:slice.people.length>=SHARE_CAPS.people||slice.edges.length>=SHARE_CAPS.edges||slice.signals.length>=SHARE_CAPS.signals||slice.themes.length>=SHARE_CAPS.themes};
  }
  async exportSlice(scope:ShareScope,level:ShareLevel):Promise<SharedSlice>{
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');

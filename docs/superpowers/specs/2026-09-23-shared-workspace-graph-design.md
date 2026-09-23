@@ -36,7 +36,7 @@ A fully central copy of all members' data would increase privacy and revocation 
 - Missing relationship metrics remain unknown. Do not synthesize scores from combined meeting counts. Comparisons use the same score version and clearly identify incomplete coverage; ties remain ties.
 - Every edge retains contributor provenance and its observed type. Co-attendance, an email exchange, a note mention, and an explicit introduction are not interchangeable. Paths use only the authorized recorded edges and display those distinctions.
 - Workspace themes and evidence respect existing share levels. Raw email bodies, subjects, private note text, calendar titles, and personal activity timelines are not newly exported. Explicit statement-sharing retains the existing bounded consent behavior.
-- Do not re-share imported contacts or inherited evidence through another member's contribution. Photos are excluded from workspace exports initially; shared nodes use initials until a separate permitted photo source exists.
+- Do not re-share imported contacts or inherited evidence through another member's contribution. Members can explicitly opt in to sharing owned contact display names (including handles) and available Google contact photos within the selected people scope. Existing contributions do not opt in automatically. Each viewer also sees their own known names/photos through a private response-only overlay. Human display names take precedence over handles and unavailable placeholders. Shared graph labels stay visible; contributor labels and highlighting explain whose connection each person represents.
 
 ## Browser onboarding
 

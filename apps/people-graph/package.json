@@ -30,7 +30,7 @@
     "test:figures-browser": "node tests/figures-browser.mjs",
     "test:world-browser": "node tests/world-browser.mjs",
     "test:all-people-browser": "node tests/all-people-browser.mjs",
-    "test:workspace-browser": "node tests/workspace-browser.mjs"
+    "test:workspace-browser": "node tests/workspace-browser.mjs && node tests/workspace-readability-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",

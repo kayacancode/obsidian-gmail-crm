@@ -397,3 +397,12 @@ test('workspace personal score overlay resolves owned contacts only',async()=>{
  const overlay=await f.service.workspacePersonalScores([person.email,'stranger@example.test']);
  assert.equal(overlay[person.email].delta,-10);assert.equal(overlay[person.email].base,slice.relationships[person.email].score);assert.equal(overlay['stranger@example.test'],undefined);
 });
+
+test('workspace profiles respect consent and selected people; own identity stays available privately',async()=>{
+ const f=await ownerFixture();
+ f.db.prepare('INSERT INTO contact_photos (account,email,url,generation) VALUES (?,?,?,?)').run('me@example.com','ada@work.test','https://lh3.googleusercontent.com/ada','g');
+ const hidden=await f.service.exportWorkspaceSlice({kind:'all'},'names');assert.equal(hidden.profiles,undefined);
+ const shared=await f.service.exportWorkspaceSlice({kind:'people',emails:['ada@work.test']},'names',true);
+ assert.deepEqual(Object.keys(shared.profiles!),['ada@work.test']);assert.equal(shared.profiles!['ada@work.test'].photoUrl,'https://lh3.googleusercontent.com/ada');
+ const own=await f.service.workspaceProfiles(['ada@work.test','unknown@test.com']);assert.equal(own['ada@work.test'].name,'Ada Lovelace');assert.equal(own['unknown@test.com'],undefined);
+});

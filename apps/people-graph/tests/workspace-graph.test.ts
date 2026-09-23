@@ -55,3 +55,25 @@ test('private feedback overlay is never returned to a teammate',async()=>{
  const teammate=await buildWorkspaceGraph(f.env,f.id,'member@example.com');assert.equal(teammate.nodes[0].viewerScore,undefined);
  assert.equal(teammate.nodes[0].relationships.find(r=>r.memberName==='owner@example.com')?.score,80);
 });
+
+test('workspace identity uses private viewer photos without exposing them to teammates',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName;
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),workspaceProfiles:async()=>owner==='owner@example.com'?{'contact@example.test':{name:'My Known Contact',photoUrl:'https://lh3.googleusercontent.com/own'}}:{}});
+ const own=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(own.nodes[0].photoUrl,'https://lh3.googleusercontent.com/own');assert.equal(own.nodes[0].name,'My Known Contact');
+ const other=await buildWorkspaceGraph(f.env,f.id,'member@example.com');assert.equal(other.nodes[0].photoUrl,null);assert.equal(other.nodes[0].name,'Contact Name');
+});
+test('workspace prefers identified names and allows shared photos only with explicit consent',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName;
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),exportWorkspaceSlice:async()=>{const v=await original(owner).exportWorkspaceSlice();v.slice.people[0].name=owner==='owner@example.com'?'Someone at example.test':'Contact Name';return {...v,profiles:{'contact@example.test':{name:'Contact Profile',photoUrl:'https://lh3.googleusercontent.com/shared'}}};}});
+ const before=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(before.nodes[0].name,'Contact Name');assert.equal(before.nodes[0].photoUrl,null);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',shareProfiles:true},'member@example.com');
+ const after=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(after.nodes[0].name,'Contact Name');assert.equal(after.nodes[0].photoUrl,'https://lh3.googleusercontent.com/shared');
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',shareProfiles:false},'member@example.com');
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].photoUrl,null);
+});
+
+test('workspace retains human display names over viewer email-handle fallbacks',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName;
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),workspaceProfiles:async()=>({'contact@example.test':{name:'contact',photoUrl:null}})});
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].name,'Contact Name');
+});

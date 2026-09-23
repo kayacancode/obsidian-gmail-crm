@@ -3,10 +3,20 @@ import type {ShareEnv} from './share-routes';
 import {normalizeSlice} from './network-share';
 import {opaque} from './mail-model';
 import {readWorkspace,memberOf,deny} from './workspace-store';
-import type {WorkspaceSlice,WorkspaceRelationship} from './workspace-contract';
+import {workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
 import {keywordRank,keywordScores,jevScores,topResults} from './network-search';
-export interface WorkspaceNode {id:string;name:string;company:string;type:'person';photoUrl:null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
+export interface WorkspaceNode {id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
 export interface WorkspaceGraph {source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{unavailable:string[];truncated:boolean;contributors:number}}
+function nameQuality(name:string,email:string){
+ const value=name.trim().toLowerCase();
+ if(!value||value==='name unavailable'||value.startsWith('someone at '))return 0;
+ return value===email.split('@')[0]||value.includes('@')?1:2;
+}
+function preferName(current:string,candidate:string|undefined,email:string,preferTie=false){
+ if(!candidate?.trim())return current;
+ const name=candidate.trim().slice(0,120),quality=nameQuality(name,email),existing=nameQuality(current,email);
+ return quality>existing||(preferTie&&quality===existing)?name:current;
+}
 export async function assertWorkspaceRevision(env:ShareEnv,id:string,me:string,revision:number){const current=await readWorkspace(env.DB,id);memberOf(current,me);if(current.revision!==revision)deny(409,'workspace_changed_retry');}
 export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attempt=0):Promise<WorkspaceGraph>{
  const w=await readWorkspace(env.DB,id);memberOf(w,me);
@@ -14,12 +24,14 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  let cursor=0,finished=false;let timer:ReturnType<typeof setTimeout>|undefined;
  const jobs=Promise.all(Array.from({length:Math.min(4,enabled.length)},async()=>{
   while(cursor<enabled.length&&!finished){const member=enabled[cursor++];try{
-   const stub=env.MAIL.getByName(member.email);await stub.bindOwner(member.email);const value=await stub.exportWorkspaceSlice(member.contribution.scope,member.contribution.level);
+   const stub=env.MAIL.getByName(member.email);await stub.bindOwner(member.email);const value=await stub.exportWorkspaceSlice(member.contribution.scope,member.contribution.level,member.contribution.shareProfiles===true);
    if(!finished)exports.push({member,value});
   }catch{if(!finished)unavailable.push(member.id);}}
  }));
  await Promise.race([jobs,new Promise<void>(resolve=>{timer=setTimeout(resolve,20000);})]);finished=true;if(timer!==undefined)clearTimeout(timer);
  for(const m of enabled)if(!exports.some(e=>e.member.id===m.id)&&!unavailable.includes(m.id))unavailable.push(m.id);
+ exports.sort((a,b)=>a.member.id.localeCompare(b.member.id));
+ const personEmails=new Map<string,string>();
  const nodes=new Map<string,WorkspaceNode>(),edges=new Map<string,WorkspaceGraph['edges'][number]>();
  const graph:WorkspaceGraph={source:'workspace',workspaceId:id,workspaceName:w.name,revision:w.revision,pushedAt:new Date().toISOString(),nodes:[],edges:[],relevance:scoreRelevance([],[],'firm',Date.now()),themes:[],themeSignals:[],activity:[],members:w.members.map(m=>({id:m.id,name:m.email,isMe:m.email===me})),coverage:{unavailable,truncated:false,contributors:exports.length}};
  const personId=(email:string)=>opaque('workspace:'+id,'person:'+email,env.TOKEN_SECRET);
@@ -29,8 +41,11 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
   const ids=new Map<string,string>();
   const ownScores=member.email===me?await env.MAIL.getByName(me).workspacePersonalScores(slice.people.map(p=>p.email)):{};
   for(const person of slice.people){
-   const pid=await personId(person.email);ids.set(person.email,pid);
+   const pid=await personId(person.email);ids.set(person.email,pid);personEmails.set(person.email,pid);
    let node=nodes.get(pid);if(!node){node={id:pid,name:person.name,company:person.email.split('@')[1],type:'person',photoUrl:null,directRelationship:false,combined:null,lastContact:null,relationships:[]};nodes.set(pid,node);}
+   node.name=preferName(node.name,person.name,person.email);
+   const profile=member.contribution.shareProfiles===true?value.profiles?.[person.email]:undefined;
+   if(profile){node.name=preferName(node.name,profile.name,person.email);node.photoUrl ||= workspacePhoto(profile.photoUrl);}
    if(ownScores[person.email])node.viewerScore=ownScores[person.email];
    const r=value.relationships[person.email];const score=r?.score;
    node.relationships.push({memberId:member.id,memberName:member.email,score:typeof score==='number'&&Number.isFinite(score)?Math.max(0,Math.min(100,score)):null,scoreVersion:r?.scoreVersion||'unknown',lastContact:r?.lastContact||null,observedAt:r?.observedAt||new Date(slice.exportedAt).toISOString(),evidenceCategory:r?.evidenceCategory||'unknown'});
@@ -42,6 +57,16 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
    graph.themeSignals.push({id:sid,personId:signal.email?ids.get(signal.email):null,themeId:tid,sourceType:signal.sourceType,visibility:'firm',observedAt:signal.observedAt,ingestedAt:new Date(slice.exportedAt).toISOString(),confidence:signal.confidence,summary:signal.summary,evidenceRef:'workspace:'+member.id+':'+sid,contentHash:sid,extractorVersion:'workspace-v1',modelId:null,...(signal.title?{provenance:{title:signal.title,canonicalUrl:'https://granola.ai/',publisherHost:'granola.ai',observedAt:signal.observedAt,retrievedAt:new Date(slice.exportedAt).toISOString(),timeBasis:'observed'}}:{})});
   }
  }
+ // Apply only this viewer's known identities, even if they are not contributing.
+ // This response is private/no-store; another member never receives this overlay.
+ try {
+  const own=env.MAIL.getByName(me);await own.bindOwner(me);
+  const profiles=await own.workspaceProfiles([...personEmails.keys()]);
+  for(const [email,pid] of personEmails){const profile=profiles[email],node=nodes.get(pid)!;
+   if(profile){node.name=preferName(node.name,profile.name,email,true);node.photoUrl=workspacePhoto(profile.photoUrl)||node.photoUrl;}
+  }
+ }catch{ /* Known shared identities remain available when the private source is offline. */ }
+ for(const node of nodes.values())if(node.name.startsWith('Someone at '))node.name='Name unavailable';
  graph.nodes=[...nodes.values()];graph.edges=[...edges.values()];
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}
