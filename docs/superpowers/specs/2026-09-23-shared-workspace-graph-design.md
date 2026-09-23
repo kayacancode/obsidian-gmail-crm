@@ -1,6 +1,6 @@
 # One shared workspace graph
 
-Status: written design for review; product implementation has not started.
+Status: design approved by the user; onboarding clarified and approved. Product implementation has not started.
 
 ## Agreed experience
 
@@ -37,6 +37,10 @@ A fully central copy of all members' data would increase privacy and revocation 
 - Every edge retains contributor provenance and its observed type. Co-attendance, an email exchange, a note mention, and an explicit introduction are not interchangeable. Paths use only the authorized recorded edges and display those distinctions.
 - Workspace themes and evidence respect existing share levels. Raw email bodies, subjects, private note text, calendar titles, and personal activity timelines are not newly exported. Explicit statement-sharing retains the existing bounded consent behavior.
 - Do not re-share imported contacts or inherited evidence through another member's contribution. Photos are excluded from workspace exports initially; shared nodes use initials until a separate permitted photo source exists.
+
+## Browser onboarding
+
+Use separate actions labelled **Add my inbox** and **Invite teammate**. Multiple inboxes belong to one member; an invitation creates a separate consenting membership. The inviter enters an email and copies the targeted invitation link. The recipient signs in, accepts, and can immediately explore the shared graph without connecting a source. Connecting Gmail, Calendar, or Granola and sharing a contribution are optional subsequent steps. Obsidian installation, a vault, CLI, manually created tokens, and importing personal data are never prerequisites for workspace access. Preserve an invitation through sign-in without accepting it automatically, and offer account switching when the signed-in email differs from the invite target.
 
 ## Interface
 
