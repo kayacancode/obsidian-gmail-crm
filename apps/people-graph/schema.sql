@@ -26,3 +26,6 @@ CREATE TABLE IF NOT EXISTS shares (
   PRIMARY KEY(owner_email, viewer_email)
 );
 CREATE INDEX IF NOT EXISTS shares_viewer ON shares(viewer_email, hidden);
+
+-- Workspace membership, invitations and consent update atomically with revision CAS.
+CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, creator TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL);

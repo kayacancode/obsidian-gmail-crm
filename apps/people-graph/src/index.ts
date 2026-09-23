@@ -6,6 +6,7 @@ import type {PushedGraphPayload} from "./relevance-routes";
 import {boundedJSON} from "./bounded-json";
 import {granolaRoute} from "./granola-routes";
 import {isSharePath,refreshShares,shareRoute} from "./share-routes";
+import {isWorkspacePath,workspaceRoute} from "./workspace-routes";
 export {MailSync} from "./mail-sync";
 /**
  * People graph viewer — Cloudflare Worker.
@@ -80,6 +81,11 @@ export default {
 				if ("error" in user) return json({ error: user.error }, 401);
 				return await searchRoute(request, env, user.email);
 			}
+			if (isWorkspacePath(pathname)) {
+                const user=await requireGoogleUser(request,env);
+                if ("error" in user) return json({error:user.error},401);
+                return workspaceRoute(request,env,user.email);
+            }
 			if (isSharePath(pathname)) {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
