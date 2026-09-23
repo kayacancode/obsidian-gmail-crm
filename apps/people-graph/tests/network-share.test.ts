@@ -378,3 +378,15 @@ test('person feedback persists, applies once, reverses, and rejects unknown peop
   await assert.rejects(service.setPersonFeedback('unknown','boost'),/unknown_person/);
  } finally {db.close();}
 });
+
+test('workspace export keeps measured relationships, excludes imported people and private adjustments',async()=>{
+ const f=await ownerFixture();const first=await f.service.exportWorkspaceSlice({kind:'all'},'names');
+ const person=first.slice.people[0],id=await opaque('owner',person.email,'identity-key');
+ await f.service.setPersonFeedback(id,'suppress');
+ const next=await f.service.exportWorkspaceSlice({kind:'all'},'names');
+ assert.deepEqual(next.relationships[person.email].score,first.relationships[person.email].score);
+ assert.equal(JSON.stringify(next).includes('feedbackDelta'),false);
+ assert.equal(next.slice.signals.length,0);assert.equal(next.slice.themes.length,0);
+ assert.equal(next.slice.edges.some(e=>e.contexts.length),false);
+ assert.equal(next.relationships[person.email].scoreVersion,'email-v1');
+});

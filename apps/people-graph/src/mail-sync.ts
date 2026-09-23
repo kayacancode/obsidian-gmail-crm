@@ -501,6 +501,19 @@ export class MailSync extends DurableObject<MailEnv>{
   * thing. The owner's own addresses are never in it, no note text beyond a signal summary the
   * owner already sees is, and nothing here is ever served to a browser.
   */
+ async exportWorkspaceSlice(scope:ShareScope,level:ShareLevel):Promise<import('./workspace-contract').WorkspaceSlice>{
+  const slice=await this.exportSlice(scope,level);
+  const rows=new Map(this.graphContacts().map(row=>[row.email,row]));
+  const relationships:import('./workspace-contract').WorkspaceSlice['relationships']={};
+  for(const person of slice.people){
+   const row=rows.get(person.email);
+   relationships[person.email]={score:row&&row.sent+row.received>0?emailScore(row.sent,row.received,(Date.now()-row.last)/86400000).combined:null,scoreVersion:'email-v1',lastContact:person.lastContact,observedAt:new Date(slice.exportedAt).toISOString(),evidenceCategory:row?(row.meetings&&row.sent+row.received===2*row.meetings?'meeting':'email'):'unknown'};
+  }
+  // Calendar titles are not part of workspace consent, even when legacy slices contain them.
+  slice.signals=slice.signals.filter(signal=>signal.sourceType!=='calendar');
+  slice.themes=slice.themes.filter(theme=>slice.signals.some(signal=>signal.themeId===theme.id));
+  return {slice,relationships,truncated:slice.people.length>=SHARE_CAPS.people||slice.edges.length>=SHARE_CAPS.edges||slice.signals.length>=SHARE_CAPS.signals||slice.themes.length>=SHARE_CAPS.themes};
+ }
  async exportSlice(scope:ShareScope,level:ShareLevel):Promise<SharedSlice>{
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
   const shareLevel=normalizeShareLevel(level),shareScope=normalizeShareScope(scope);
