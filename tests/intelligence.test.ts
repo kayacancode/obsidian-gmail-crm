@@ -495,3 +495,11 @@ test('web graph photo fields reject arbitrary hosts and embedded credentials', a
  assert.equal(safeGraphPhoto('https://user:pass@lh3.googleusercontent.com/photo'), undefined);
  assert.equal(safeGraphPhoto('https://lh3.googleusercontent.com/photo'), 'https://lh3.googleusercontent.com/photo');
 });
+
+test('shared identity matches normalized email within a workspace without changing private vault IDs',async()=>{
+ const {workspaceIdentity}=await import('../src/graph-push');
+ const a=await workspaceIdentity('workspace-a','  Ada@Example.com ');
+ assert.equal(a,await workspaceIdentity('workspace-a','ada@example.com'));
+ assert.notEqual(a,await workspaceIdentity('workspace-b','ada@example.com'));
+ assert.match(a,/^[a-f0-9]{64}$/);assert.ok(!a.includes('ada'));
+});

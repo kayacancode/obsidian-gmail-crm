@@ -1,3 +1,4 @@
+import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
 import type {MailEnv} from "./mail-sync";
@@ -103,7 +104,12 @@ export default {
 			if (pathname === "/api/token" && request.method === "GET") {
 				return await mintToken(request, env);
 			}
-			if (pathname === "/api/push" && request.method === "POST") {
+			if (pathname === "/api/matching-workspaces" && request.method === "GET") {
+                const email=await verifyPushToken(bearer(request),env);
+                if(!email)return json({error:"unauthorized"},401);
+                return json({workspaces:await matchingWorkspaces(env,email)});
+            }
+            if (pathname === "/api/push" && request.method === "POST") {
 				return await push(request, env);
 			}
 			if (pathname === "/api/graph" && request.method === "GET") {

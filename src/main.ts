@@ -16,6 +16,7 @@ import { HarperSkill } from "./harper-skill";
 import { computeStaleness, setScoringDebug } from "./staleness";
 import { pushScores, type ScoredPage } from "./score-push";
 import {
+	fetchMatchingWorkspaces,
 	buildGraphPayload,
 	generateGraphSalt,
 	pushGraphToWeb,
@@ -1045,7 +1046,8 @@ export default class GmailCrmPlugin extends Plugin {
 				themeCandidates = [];
 			}
 
-			const payload = await buildGraphPayload(contacts, edges, this.settings.graphPushSalt, themeCandidates);
+			const matching = await fetchMatchingWorkspaces({url:this.settings.graphPushUrl,token:this.settings.graphPushToken});
+            const payload = await buildGraphPayload(contacts, edges, this.settings.graphPushSalt, themeCandidates, matching);
 			const pushed = await pushGraphToWeb(
 				{ url: this.settings.graphPushUrl, token: this.settings.graphPushToken },
 				payload

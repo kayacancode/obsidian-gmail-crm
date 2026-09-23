@@ -179,7 +179,8 @@ test("pushPeopleGraph resolves the vault TFile modification time for note candid
 	plugin.contactIndex = null;
 	plugin.loadIntelligenceWorkspace = async () => ({ state: { events: [] } });
 	RelationshipEngine.prototype.loadPeoplePages = async () => ({ Ada: source });
-	(globalThis as any).requestHandler = (options: { body: string }) => {
+	(globalThis as any).requestHandler = (options: { body: string; url:string }) => {
+        if(options.url.endsWith("/api/matching-workspaces"))return {status:200,json:{workspaces:[]}};
 		body = options.body;
 		return { status: 200, text: "" };
 	};
@@ -253,4 +254,16 @@ test('vault push includes 4900 unconnected contacts and reports actual publicati
  assert.equal(payload.nodes.length,4900);assert.equal(payload.nodes[0].photoUrl,'https://lh3.googleusercontent.com/photo');
  assert.deepEqual(payload.coverage,{totalContacts:4900,publishedContacts:4900,excludedContacts:0});
  assert.equal(JSON.stringify(payload).includes('p0@example.com'),false);
+});
+
+test('vault snapshots carry workspace-specific tokens without emails or matching keys',async()=>{
+ const {workspaceIdentity}=await import('../src/graph-push');
+ const {identityToken}=await import('../apps/people-graph/src/workspace-identity');
+ const workspaces=[{id:'workspace-a',key:'private-key-a'},{id:'workspace-b',key:'private-key-b'}];
+ const a=await buildGraphPayload(contacts,[],'salt-a',[],workspaces),b=await buildGraphPayload(contacts,[],'salt-b',[],workspaces);
+ assert.notEqual(a.nodes[0].id,b.nodes[0].id);
+ assert.deepEqual(a.nodes[0].workspaceIdentities,b.nodes[0].workspaceIdentities);
+ assert.equal(a.nodes[0].workspaceIdentities!['workspace-a'],await identityToken('private-key-a',contacts[0].email));
+ assert.equal(await workspaceIdentity('private-key-a',contacts[0].email),await identityToken('private-key-a',contacts[0].email));
+ const serialized=JSON.stringify(a);assert.ok(!serialized.includes(contacts[0].email));assert.ok(!serialized.includes('private-key-a'));
 });

@@ -121,3 +121,72 @@ test('shared Obsidian theme associations honor level and do not expose note text
   if(level!=='names'){assert.equal(g.themes[0].name,'UI design');assert.equal(g.themeSignals[0].personId,g.nodes.find(n=>n.name==='Ada')!.id);}
  }
 });
+
+test('workspace identities join two vaults and Gmail without exposing addresses or matching tokens',async()=>{
+ const {matchingKey,identityToken,matchingWorkspaces}=await import('../src/workspace-identity');
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ const key=await matchingKey(f.env,f.id),shared=await identityToken(key,'CONTACT@example.test');
+ assert.notEqual(shared,await identityToken(await matchingKey(f.env,'other-workspace'),'contact@example.test'));
+ assert.deepEqual(await matchingWorkspaces(f.env,'outsider@example.com'),[]);
+ for(const [i,owner] of ['owner@example.com','member@example.com'].entries()){
+  await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true},owner);
+  const snapshot={nodes:[{id:'salted-'+i,name:'Contact Name',workspaceIdentities:{[f.id]:shared}},{id:'other-'+i,name:'Same display name'}],edges:[{source:'salted-'+i,target:'other-'+i,weight:1}]};
+  f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run(owner,JSON.stringify(snapshot),1700000000);
+ }
+ assert.equal((await matchingWorkspaces(f.env,'owner@example.com')).length,1);
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ assert.equal(g.nodes.length,3); // Mutual person once; same-name strangers remain separate.
+ const mutual=g.nodes.find(n=>n.name==='Contact Name')!;
+ assert.equal(mutual.relationships.length,2);assert.deepEqual(mutual.relationships.map(r=>r.score).sort(),[30,80]);
+ assert.equal(g.edges.filter(e=>e.source===mutual.id||e.target===mutual.id).length,2);
+ assert.ok(g.nodes.every(n=>!('workspaceIdentities' in n)));
+ assert.ok(!JSON.stringify(g).includes(shared));assert.ok(!JSON.stringify(g).includes('contact@example.test'));
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:false,scope:{kind:'all'},level:'names',includeObsidian:true},'member@example.com');
+ const privateAgain=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ assert.equal(privateAgain.nodes.length,2);assert.equal(privateAgain.edges.length,1);
+ assert.deepEqual(await matchingWorkspaces(f.env,'member@example.com'),[]);
+});
+
+test('workspace matching validates tokens and restricts canonical identities to selected people',async()=>{
+ const {normalizePushedGraph}=await import('../src/relevance-routes');
+ assert.equal(normalizePushedGraph({nodes:[{id:'a',workspaceIdentities:{w:'not-a-token'}}],edges:[]}),null);
+ const f=await setup(),{matchingKey,identityToken}=await import('../src/workspace-identity');
+ const token=await identityToken(await matchingKey(f.env,f.id),'contact@example.test');
+ f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify({nodes:[{id:'match',name:'Contact',workspaceIdentities:{[f.id]:token}},{id:'selected',name:'Selected'}],edges:[{source:'match',target:'selected'}]}),1700000000);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'people',personIds:['obsidian:selected']},level:'names',includeObsidian:true},'member@example.com');
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ assert.ok(!g.nodes.find(n=>n.name==='Contact Name')?.sources?.includes('obsidian'));assert.equal(g.edges.length,0);
+});
+
+test('workspace capacity limits only new identities, not matching contributor evidence',async()=>{
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ const {matchingKey,identityToken}=await import('../src/workspace-identity');
+ const {appendWorkspaceObsidian}=await import('../src/workspace-obsidian');
+ const {readWorkspace}=await import('../src/workspace-store');
+ const token=await identityToken(await matchingKey(f.env,f.id),'contact@example.test');
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ for(let i=1;i<10000;i++)g.nodes.push({...g.nodes[0],id:'filler-'+i,relationships:[]});
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify({nodes:[{id:'new',name:'Too many'},{id:'match',name:'Contact',workspaceIdentities:{[f.id]:token}}],edges:[]}),1700000000);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true},'member@example.com');
+ await appendWorkspaceObsidian(f.env,await readWorkspace(f.env.DB,f.id),'owner@example.com',g);
+ assert.equal(g.nodes.length,10000);assert.ok(g.nodes[0].sources!.includes('obsidian'));
+ const c=g.coverage.sources.filter(c=>c.source==='obsidian'&&c.included>0).pop()!;assert.equal(c.included,1);assert.equal(c.limited,true);
+});
+
+test('workspace matching endpoint requires a valid push token and never caches keys',async()=>{
+ const worker=(await import('../src/index')).default;
+ const {makeSession}=await import('../src/session');
+ const f=await setup();
+ const req=()=>new Request('https://people.test/api/matching-workspaces');
+ assert.equal((await worker.fetch(req(),f.env,{} as any)).status,401);
+ const session=await makeSession('owner@example.com',f.env.TOKEN_SECRET);
+ const {sessionCookie}=await import('../src/session');
+ const tokenResponse=await worker.fetch(new Request('https://people.test/api/token',{headers:{cookie:sessionCookie(session).split(';')[0]}}),f.env,{} as any);
+ const token=(await tokenResponse.json() as any).token;assert.ok(token);
+ const get=()=>worker.fetch(new Request('https://people.test/api/matching-workspaces',{headers:{authorization:'Bearer '+token}}),f.env,{} as any);
+ assert.deepEqual(await (await get()).json(),{workspaces:[]});
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true});
+ const response=await get();assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+ assert.equal((await response.json() as any).workspaces.length,1);
+});

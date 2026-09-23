@@ -209,7 +209,9 @@ export function normalizePushedGraph(value:unknown):PushedGraphPayload|null{
  const themes=value.themes??[],signals=value.themeSignals??[];
  if(themes.length>MAX_PUSH_THEMES||signals.length>MAX_PUSH_THEME_SIGNALS)return null;
  const nodeIds=new Set<string>();
- for(const node of value.nodes){if(!record(node)||typeof node.id!=='string'||node.id.includes('@'))return null;nodeIds.add(node.id);}
+ for(const node of value.nodes){if(!record(node)||typeof node.id!=='string'||node.id.includes('@'))return null;if(node.workspaceIdentities!==undefined){
+   if(!record(node.workspaceIdentities)||Object.keys(node.workspaceIdentities).length>8||Object.entries(node.workspaceIdentities).some(([id,token])=>!/^[a-zA-Z0-9-]{1,80}$/.test(id)||typeof token!=='string'||!/^[a-f0-9]{64}$/.test(token)))return null;
+  }nodeIds.add(node.id);}
  const themeIds=new Set<string>();const cleanThemes:PushedGraphTheme[]=[];
  for(const item of themes){
   if(!record(item)||!exact(item,['id','canonicalName','aliases','description','status'],['id','canonicalName','aliases','description','status'])||!validId(item.id)||themeIds.has(item.id)||typeof item.canonicalName!=='string'||!item.canonicalName.trim()||item.canonicalName.length>80||!Array.isArray(item.aliases)||item.aliases.length>20||item.aliases.some(alias=>typeof alias!=='string'||!alias.trim()||alias.length>80)||typeof item.description!=='string'||item.description.length>240||item.status!=='active')return null;

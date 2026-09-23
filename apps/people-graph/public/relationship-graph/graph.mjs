@@ -179,7 +179,7 @@ export function mountGraph(element, options = {}) {
     relevanceGraph = { ...relevanceGraph, relevance: { ...relevanceGraph.relevance,
       themes: conversationThemes(relevanceGraph.relevance.themes.filter(theme => activeIds.has(theme.themeId) && theme.score > 0 && theme.components.length), relevanceGraph.themeSignals),
     } };
-    if (activeThemeId && !rankedThemes().some(theme => theme.themeId === activeThemeId)
+    if (activeThemeId && activeThemeId!=='__connections' && !rankedThemes().some(theme => theme.themeId === activeThemeId)
       && !(lens === 'my' && meetingPreview?.cards.some(card => card.themeId === activeThemeId))) {
       activeThemeId = null;
       relevancePersonId = null;
@@ -269,7 +269,7 @@ export function mountGraph(element, options = {}) {
     const height = Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
     const usableWidth = Math.max(132, width - (width >= 1100 && (graph.source!=='workspace'||panelMode) ? 380 : 48));
-    const top = graph.source==='workspace' ? (width<=700?250:205) : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
+    const top = graph.source==='workspace' ? ((width<=700?250:205)+((graph.sourceCoverage||[]).some(s=>s.identityPending)?44:0)+(activeThemeId==='__connections'?36:0)) : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
     const usableHeight = height - top - 86;
     const baseRelevance=filterRelevance(graph,graph.source==='workspace'?'firm':'my');
     const layoutThemes=conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
@@ -316,10 +316,17 @@ export function mountGraph(element, options = {}) {
     return themes.sort((a,b)=>Number(previewIds.has(b.themeId))-Number(previewIds.has(a.themeId))||b.score-a.score||a.name.localeCompare(b.name));
   }
 
+  function sharedConnectionIds(){
+    const mutual=new Set(graph.nodes.filter(n=>new Set((n.relationships||[]).map(r=>r.memberId)).size>1).map(n=>n.id));
+    const connected=new Set(mutual);
+    for(const edge of graph.edges)if(mutual.has(edge.source)||mutual.has(edge.target)){connected.add(edge.source);connected.add(edge.target);}
+    return {mutual,connected};
+  }
+
   function canvasMatches(){
     const matches=searchGraph(relevanceGraph,query);
     if(graph.source!=='workspace'||!activeThemeId)return matches;
-    const ids=new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
+    const ids=activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
     return matches.filter(n=>ids.has(n.id));
   }
 
@@ -350,8 +357,13 @@ export function mountGraph(element, options = {}) {
       heading.append(make('span','',themes.length?`${themes.length} shared topics`:'No shared themes available yet'));
       bar.append(heading);const chips=make('div','rg-filter-chips');
       const all=button('All people','filter-topic','rg-filter-chip');all.setAttribute('aria-pressed',String(!activeThemeId));chips.append(all);
+      const bridges=sharedConnectionIds();
+      const shared=button(`Shared connections · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId='__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));chips.append(shared);
       for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));chips.append(chip);}
       bar.append(chips);
+      const pending=(graph.sourceCoverage||[]).reduce((n,s)=>n+(s.identityPending||0),0);
+      if(pending)bar.append(make('p','rg-source',`${pending} vault records need a fresh push with plugin 0.9.4 to match across contributors.`));
+      if(activeThemeId==='__connections')bar.append(make('p','rg-source',bridges.mutual.size?'People shared by multiple contributors and their recorded connections.':'No matched mutual people yet. Matching uses the same email, never a name guess.'));
       if(!themes.length)bar.append(make('p','rg-source','Share themes in Accounts → Shared networks, then publish or sync your source.'));
       return bar;
     }
@@ -416,7 +428,7 @@ export function mountGraph(element, options = {}) {
     }
     const matches = canvasMatches();
     const visibleIds = new Set(matches.map(node => node.id));
-    return { nodes: matches, edges: graph.source==='workspace'&&matches.length>250?[]:graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)), total: matches.length, isPath: false };
+    return { nodes: matches, edges: graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)), total: matches.length, isPath: false };
   }
 
   function renderPortrait(node, index) {
@@ -559,6 +571,7 @@ export function mountGraph(element, options = {}) {
         nodeLayer.append(badge);
       }
     });
+    const bridgeIds=graph.source==='workspace'?sharedConnectionIds().mutual:new Set();
     data.edges.forEach((edge, edgeIndex) => {
       const source = positions.get(edge.source);
       const target = positions.get(edge.target);
@@ -569,6 +582,7 @@ export function mountGraph(element, options = {}) {
       line.setAttribute('x2', String(target.x));
       line.setAttribute('y2', String(target.y));
       line.dataset.kind = edge.kind;
+      line.dataset.bridge=String(bridgeIds.has(edge.source)||bridgeIds.has(edge.target));
       line.dataset.selected = String(data.isPath || edge.source === selectedId || edge.target === selectedId);
       lines.append(line);
       // In the overview the network reads as fine threads; labels appear on selection.

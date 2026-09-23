@@ -56,5 +56,12 @@ try {
  await page.setViewportSize({width:1440,height:1000});
  await page.screenshot({path:'/tmp/workspace-theme-filters.png',fullPage:true});
  assert.ok(await page.locator('.rg-node').first().evaluate(n=>n.getBoundingClientRect().width>=60));
+ await page.evaluate(()=>window.testGraph.setGraph({source:'workspace',nodes:[{id:'bridge',name:'Mutual person',type:'person',relationships:[{memberId:'a',memberName:'Alex'},{memberId:'b',memberName:'Morgan'}]},{id:'left',name:'Alex friend',type:'person'},{id:'right',name:'Morgan friend',type:'person'},{id:'isolate',name:'Unrelated',type:'person'}],edges:[{source:'left',target:'bridge',weight:1},{source:'bridge',target:'right',weight:1}],coverage:{sources:[{identityPending:12}]}}));
+ assert.ok((await page.locator('.rg-topic-filters').innerText()).includes('12 vault records need a fresh push'));
+ await page.getByRole('button',{name:'Shared connections · 1',exact:true}).click();
+ assert.equal(await page.locator('.rg-node').count(),3);
+ assert.equal(await page.locator('.rg-canvas line[data-bridge="true"]').count(),2);
+ assert.equal(await page.locator('.rg-directory summary').innerText(),'All results (3)');
+ await page.screenshot({path:'/tmp/shared-connections.png',fullPage:true});
  assert.deepEqual(errors,[]);console.log('PASS 171 people: readable initial portraits, names, contributors, highlight, fit, mobile');
 }finally{await browser.close();}

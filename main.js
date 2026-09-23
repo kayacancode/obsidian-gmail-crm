@@ -3110,7 +3110,7 @@ var MAX_CONTEXT_CHARS = 120;
 var MAX_NODES = 1e4;
 var BYTE_BUDGET = 16e5;
 var MIN_NODES = 200;
-async function buildGraphPayload(contacts, edges, salt, themeInputs = []) {
+async function buildGraphPayload(contacts, edges, salt, themeInputs = [], workspaces = []) {
   var _a, _b, _c;
   const byEmail = /* @__PURE__ */ new Map();
   for (const c of contacts) {
@@ -3163,6 +3163,7 @@ async function buildGraphPayload(contacts, edges, salt, themeInputs = []) {
       const c = byEmail.get(email);
       nodes.push({
         id: await idFor(email),
+        ...workspaces.length ? { workspaceIdentities: Object.fromEntries(await Promise.all(workspaces.map(async (w) => [w.id, await workspaceIdentity(w.key, email)]))) } : {},
         name: c.name,
         role: (_c = c.role) == null ? void 0 : _c.slice(0, 200),
         photoUrl: safeGraphPhoto(c.photoUrl),
@@ -3320,6 +3321,18 @@ function safeGraphPhoto(value) {
   } catch (e) {
     return void 0;
   }
+}
+async function fetchMatchingWorkspaces(config) {
+  const res = await (0, import_obsidian7.requestUrl)({ url: `${config.url.replace(/\/$/, "")}/api/matching-workspaces`, method: "GET", headers: { Authorization: `Bearer ${config.token}` }, throw: false });
+  if (res.status === 404) return [];
+  if (res.status !== 200) throw new Error(`Could not prepare shared identity matching (${res.status}). Retry the push.`);
+  const value = res.json;
+  if (!Array.isArray(value == null ? void 0 : value.workspaces) || value.workspaces.length > 8 || value.workspaces.some((w) => typeof w.id !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(w.id) || typeof w.key !== "string" || !w.key)) throw new Error("Invalid shared matching configuration");
+  return value.workspaces;
+}
+async function workspaceIdentity(key, email) {
+  const enc = new TextEncoder(), k = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return hex(new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(email.trim().toLowerCase()))));
 }
 
 // src/theme-candidates.ts
@@ -5414,7 +5427,8 @@ ${relSection}
       } catch (e) {
         themeCandidates = [];
       }
-      const payload = await buildGraphPayload(contacts, edges, this.settings.graphPushSalt, themeCandidates);
+      const matching = await fetchMatchingWorkspaces({ url: this.settings.graphPushUrl, token: this.settings.graphPushToken });
+      const payload = await buildGraphPayload(contacts, edges, this.settings.graphPushSalt, themeCandidates, matching);
       const pushed = await pushGraphToWeb(
         { url: this.settings.graphPushUrl, token: this.settings.graphPushToken },
         payload

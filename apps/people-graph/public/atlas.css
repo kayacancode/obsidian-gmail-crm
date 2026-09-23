@@ -170,3 +170,5 @@
 .rg-shell .rg-filter-chip {flex-shrink:0;padding:7px 11px;min-height:32px;border:1px solid var(--rg-line);background:var(--rg-background);color:var(--rg-foreground);font-size:12px;cursor:pointer;border-radius:3px;}
 .rg-shell .rg-filter-chip[aria-pressed='true'] {background:var(--rg-foreground);color:var(--rg-background);border-color:var(--rg-foreground);}
 @container (max-width:700px){.rg-shell[data-workspace='true'] .rg-topic-filters {top:154px;}}
+
+.rg-canvas line[data-bridge='true'] { stroke: #7364a3; stroke-width: 1.5; opacity: .8; }

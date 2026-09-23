@@ -1,3 +1,4 @@
+import {matchingKey,identityToken,matchedPersonId} from './workspace-identity';
 import {appendWorkspaceObsidian,type WorkspaceSourceCoverage} from './workspace-obsidian';
 import {scoreRelevance} from './relevance-model';
 import type {ShareEnv} from './share-routes';
@@ -35,7 +36,8 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  const personEmails=new Map<string,string>();
  const nodes=new Map<string,WorkspaceNode>(),edges=new Map<string,WorkspaceGraph['edges'][number]>();
  const graph:WorkspaceGraph={source:'workspace',workspaceId:id,workspaceName:w.name,revision:w.revision,pushedAt:new Date().toISOString(),nodes:[],edges:[],relevance:scoreRelevance([],[],'firm',Date.now()),themes:[],themeSignals:[],activity:[],members:w.members.map(m=>({id:m.id,name:m.email,isMe:m.email===me})),coverage:{sources:[],unavailable,truncated:false,contributors:exports.length}};
- const personId=(email:string)=>opaque('workspace:'+id,'person:'+email,env.TOKEN_SECRET);
+ const key=await matchingKey(env,id);
+ const personId=async(email:string)=>matchedPersonId(env,id,await identityToken(key,email));
  for(const {member,value} of exports){
   const slice=normalizeSlice(value.slice);if(!slice||slice.owner!==member.email){graph.coverage.unavailable.push(member.id);graph.coverage.contributors--;continue;}
   graph.coverage.truncated ||= value.truncated;
@@ -72,6 +74,15 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  graph.nodes=[...nodes.values()];graph.edges=[...edges.values()];
  for(const member of w.members)if(!graph.coverage.sources.some(s=>s.memberId===member.id&&s.source==='web'))graph.coverage.sources.push({memberId:member.id,memberName:member.email,source:'web',available:null,included:0,status:member.contribution.enabled?'unavailable':'not_shared',limited:false});
  await appendWorkspaceObsidian(env,w,me,graph);
+ // A relationship can arrive from both vault and inbox snapshots. Retain its
+ // provenance while drawing one undirected connection between canonical people.
+ const joinedEdges=new Map<string,WorkspaceGraph['edges'][number]>();
+ for(const edge of graph.edges){if(edge.source===edge.target)continue;const key=[edge.source,edge.target].sort().join(':');const prior=joinedEdges.get(key);
+  if(!prior){joinedEdges.set(key,edge);continue;}
+  prior.weight=Math.max(prior.weight,edge.weight);prior.types=[...new Set([...prior.types,...edge.types])];prior.contributors=[...new Set([...prior.contributors,...edge.contributors])];prior.contexts=[...new Set([...prior.contexts,...edge.contexts])].slice(0,3);
+  prior.evidence=[...new Map([...prior.evidence,...edge.evidence].map(e=>[JSON.stringify(e),e])).values()];
+ }
+ graph.edges=[...joinedEdges.values()];
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}
  return graph;
