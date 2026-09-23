@@ -12,3 +12,4 @@ target/
 crates/*/target/
 main.js
 *.js.map
+/.worktrees/

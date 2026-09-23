@@ -1,3 +1,5 @@
+mod web_client;
+mod web_profile;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,9 +19,7 @@ const COMMAND_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser, Debug, Clone)]
 #[command(name = "peoplegraph")]
 #[command(version = COMMAND_VERSION)]
-#[command(
-    about = "Graph queries and merge-review writes over the Obsidian Gmail CRM contact cache"
-)]
+#[command(about = "Query your People network, with optional local Obsidian commands")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -37,6 +37,10 @@ struct Cli {
     #[arg(long, global = true)]
     remote: bool,
 
+    /// Query the local Obsidian cache instead of your People web network.
+    #[arg(long, global = true, conflicts_with_all = ["remote", "host", "token"])]
+    local: bool,
+
     #[arg(long, global = true)]
     token: Option<String>,
 
@@ -52,6 +56,14 @@ enum OutputFormat {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
+    /// Sign in once to query your People web network.
+    Login {
+        /// Print the approval URL without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Revoke this CLI device and remove the local web profile.
+    Logout,
     /// Fuzzy match a person by name, email, or alias.
     FindPerson(FindPersonArgs),
     /// Return score fields for one email.
@@ -539,15 +551,38 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
+    if matches!(cli.command, Commands::Login { .. } | Commands::Logout) {
+        let path = match web_profile::profile_path() {
+            Ok(p) => p,
+            Err(e) => return fail(command, "profile_error", e, start),
+        };
+        if matches!(cli.command, Commands::Login { .. }) {
+            return web_client::login(cli, &path, start);
+        }
+        return match web_profile::load_profile(&path) {
+            Ok(Some(p)) => web_client::logout(&p, &path, start),
+            Ok(None) => ok(command, json!({"loggedOut":true}), json!({})),
+            Err(e) => fail(command, "profile_error", e, start),
+        };
+    }
     if let Commands::Serve(args) = &cli.command {
         return serve_http(cli, args, start);
     }
 
-    if cli.remote || effective_host(cli).is_some() {
+    if !cli.local && (cli.remote || effective_host(cli).is_some()) {
         return remote_run(cli, command, start);
     }
 
+    if !cli.local && !matches!(cli.command, Commands::Describe | Commands::Version) {
+        let profile = web_profile::profile_path().and_then(|p| web_profile::load_profile(&p));
+        match profile {
+            Ok(Some(p)) => return web_client::query(&p, cli, command, start),
+            Ok(None) => {}
+            Err(e) => return fail(command, "profile_error", e, start),
+        }
+    }
     match &cli.command {
+        Commands::Login { .. } | Commands::Logout => unreachable!("login handled earlier"),
         Commands::Describe => ok(
             command,
             describe_payload(),
@@ -742,7 +777,9 @@ fn remote_path(command: &Commands) -> Option<String> {
         )),
         Commands::Describe => Some("/describe".to_string()),
         Commands::Version => Some("/version".to_string()),
-        Commands::ImportCache(_)
+        Commands::Login { .. }
+        | Commands::Logout
+        | Commands::ImportCache(_)
         | Commands::ApplyExternalMerge(_)
         | Commands::DismissExternalMerge(_)
         | Commands::ApplyMerge(_)
@@ -916,6 +953,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
         cache: Some(cache_path.to_path_buf()),
         host: None,
         remote: false,
+        local: true,
         token: None,
         quiet: cli.quiet,
     };
@@ -1239,8 +1277,10 @@ fn find_person(
         .map(|(key, members)| {
             let primary = primary_per_group.get(key).copied().unwrap_or(members[0]);
             let primary_email = matches[primary].2.email.clone();
-            let member_emails: Vec<String> =
-                members.iter().map(|&i| matches[i].2.email.clone()).collect();
+            let member_emails: Vec<String> = members
+                .iter()
+                .map(|&i| matches[i].2.email.clone())
+                .collect();
             let variants = variants_per_group.get(key).cloned().unwrap_or_default();
             json!({
                 "id": key,
@@ -1271,7 +1311,12 @@ fn find_person(
     )
 }
 
-fn score_person(index: &ContactIndex, feedback: &FeedbackStore, email: &str, start: Instant) -> Response {
+fn score_person(
+    index: &ContactIndex,
+    feedback: &FeedbackStore,
+    email: &str,
+    start: Instant,
+) -> Response {
     let email_norm = email.trim().to_ascii_lowercase();
     let Some(row) = find_by_email_or_alias(index, &email_norm) else {
         return fail(
@@ -1312,7 +1357,13 @@ fn score_person(index: &ContactIndex, feedback: &FeedbackStore, email: &str, sta
     )
 }
 
-fn who_knows(index: &ContactIndex, feedback: &FeedbackStore, company: &str, limit: usize, start: Instant) -> Response {
+fn who_knows(
+    index: &ContactIndex,
+    feedback: &FeedbackStore,
+    company: &str,
+    limit: usize,
+    start: Instant,
+) -> Response {
     let company_norm = normalize_company(company);
     let mut people: Vec<(ContactRow, u8)> = rows(index)
         .into_iter()
@@ -1326,7 +1377,11 @@ fn who_knows(index: &ContactIndex, feedback: &FeedbackStore, company: &str, limi
 
     people.sort_by(|a, b| {
         b.1.cmp(&a.1)
-            .then_with(|| b.0.contact.total_exchanges.cmp(&a.0.contact.total_exchanges))
+            .then_with(|| {
+                b.0.contact
+                    .total_exchanges
+                    .cmp(&a.0.contact.total_exchanges)
+            })
             .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
@@ -1430,7 +1485,11 @@ fn reconnect(cli: &Cli, command: &'static str, args: &ReconnectArgs, start: Inst
 
     people.sort_by(|a, b| {
         b.1.cmp(&a.1)
-            .then_with(|| b.0.contact.total_exchanges.cmp(&a.0.contact.total_exchanges))
+            .then_with(|| {
+                b.0.contact
+                    .total_exchanges
+                    .cmp(&a.0.contact.total_exchanges)
+            })
             .then_with(|| a.0.contact.name.cmp(&b.0.contact.name))
     });
 
@@ -1567,17 +1626,28 @@ fn feedback_entry_for<'a>(store: &'a FeedbackStore, row: &ContactRow) -> Option<
 // Record a human swipe decision. WRITE — local source-of-truth machine only.
 fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instant) -> Response {
     let action = args.action.trim().to_ascii_lowercase();
-    if !matches!(action.as_str(), "boost" | "suppress" | "delete" | "shown" | "clear") {
+    if !matches!(
+        action.as_str(),
+        "boost" | "suppress" | "delete" | "shown" | "clear"
+    ) {
         return fail(
             command,
             "invalid_action",
-            format!("unknown action '{}': use boost|suppress|delete|shown|clear", args.action),
+            format!(
+                "unknown action '{}': use boost|suppress|delete|shown|clear",
+                args.action
+            ),
             start,
         );
     }
     let email = args.email.trim().to_ascii_lowercase();
     if email.is_empty() {
-        return fail(command, "invalid_email", "missing --email".to_string(), start);
+        return fail(
+            command,
+            "invalid_email",
+            "missing --email".to_string(),
+            start,
+        );
     }
 
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
@@ -1677,7 +1747,11 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
         Err(message) => return fail(command, "feedback_unreadable", message, start),
     };
     let now = unix_seconds();
-    let delta = if action == "delete" || action == "shown" { 0 } else { args.delta.min(100) };
+    let delta = if action == "delete" || action == "shown" {
+        0
+    } else {
+        args.delta.min(100)
+    };
     store.entries.insert(
         email.clone(),
         FeedbackEntry {
@@ -2059,7 +2133,10 @@ fn local_matches_name(local: &str, tokens: &[String]) -> bool {
             }
         }
     }
-    let initials: String = tokens.iter().filter_map(|token| token.chars().next()).collect();
+    let initials: String = tokens
+        .iter()
+        .filter_map(|token| token.chars().next())
+        .collect();
     if initials.len() >= 2 && local == initials {
         return true;
     }
@@ -2150,8 +2227,10 @@ fn apply_duplicates(
     }
     pairs.sort_by(|a, b| b.0.total_cmp(&a.0));
     pairs.truncate(args.limit.max(1));
-    let pair_emails: Vec<(String, String)> =
-        pairs.iter().map(|(_, a, b)| (a.clone(), b.clone())).collect();
+    let pair_emails: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(_, a, b)| (a.clone(), b.clone()))
+        .collect();
     let groups = group_pairs(&pair_emails);
 
     let groups_json: Vec<Value> = groups
@@ -3154,7 +3233,7 @@ fn read_feedback(path: &Path) -> Result<FeedbackStore, String> {
                 schema_version: 1,
                 updated_at_unix: unix_seconds(),
                 entries: HashMap::new(),
-            })
+            });
         }
         Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
     };
@@ -4457,13 +4536,20 @@ fn compute_momentum_score(contact: &Contact) -> u8 {
         .and_then(|s| date_days(s))
         .map(|open_day| {
             let days_since_open = current_unix_days() - open_day;
-            if days_since_open <= 7 { 5 }
-            else if days_since_open <= 14 { 3 }
-            else if days_since_open <= 30 { 1 }
-            else { 0 }
+            if days_since_open <= 7 {
+                5
+            } else if days_since_open <= 14 {
+                3
+            } else if days_since_open <= 30 {
+                1
+            } else {
+                0
+            }
         })
         .unwrap_or(0);
-    (decay_score + trend_score as f64 + open_momentum as f64).round().clamp(0.0, 100.0) as u8
+    (decay_score + trend_score as f64 + open_momentum as f64)
+        .round()
+        .clamp(0.0, 100.0) as u8
 }
 
 fn compute_quadrant(contact: &Contact) -> String {
@@ -4683,6 +4769,8 @@ fn obsidian_config_path() -> Option<PathBuf> {
 
 fn command_name(command: &Commands) -> &'static str {
     match command {
+        Commands::Login { .. } => "login",
+        Commands::Logout => "logout",
         Commands::FindPerson(_) => "find-person",
         Commands::Score(_) => "score",
         Commands::WhoKnows(_) => "who-knows",
@@ -4711,16 +4799,19 @@ fn describe_payload() -> Value {
     json!({
         "name": "peoplegraph",
         "version": COMMAND_VERSION,
-        "summary": "Graph primitive CLI and explicit merge-review writer over Obsidian Gmail CRM contact-index.json",
+        "summary": "Query the People website after login, or use --local for the Obsidian cache",
         "global_flags": [
             "--format json|jsonl",
             "--cache <path>",
+            "--local",
             "--host <url>",
             "--remote",
             "--token <value>",
             "--quiet"
         ],
         "commands": [
+            {"name":"login","usage":"peoplegraph login [--no-browser]","description":"Approve read-only web access in your browser"},
+            {"name":"logout","usage":"peoplegraph logout","description":"Revoke the current web device credential"},
             {
                 "name": "find-person",
                 "usage": "peoplegraph find-person <query> [--strict-name-order]",
@@ -5530,18 +5621,12 @@ mod tests {
             .and_then(Value::as_array)
             .expect("matches");
 
-        let emails: Vec<String> = matches
-            .iter()
-            .map(|m| value_str(m, "email"))
-            .collect();
+        let emails: Vec<String> = matches.iter().map(|m| value_str(m, "email")).collect();
         assert!(emails.contains(&"bruce@j4.ventures".to_string()));
         assert!(emails.contains(&"bruce@donuts.email".to_string()));
         assert!(!emails.contains(&"hank@heyming.com".to_string()));
 
-        let kinds: Vec<String> = matches
-            .iter()
-            .map(|m| value_str(m, "name_match"))
-            .collect();
+        let kinds: Vec<String> = matches.iter().map(|m| value_str(m, "name_match")).collect();
         assert!(kinds.contains(&"exact".to_string()));
         assert!(kinds.contains(&"reordered".to_string()));
 
@@ -5573,7 +5658,11 @@ mod tests {
 
         let primary_flags: Vec<bool> = matches
             .iter()
-            .map(|m| m.get("is_primary").and_then(Value::as_bool).unwrap_or(false))
+            .map(|m| {
+                m.get("is_primary")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
             .collect();
         assert_eq!(primary_flags.iter().filter(|&&b| b).count(), 1);
     }
@@ -5611,17 +5700,17 @@ mod tests {
             .get("matches")
             .and_then(Value::as_array)
             .expect("matches");
-        let emails: Vec<String> = matches
-            .iter()
-            .map(|m| value_str(m, "email"))
-            .collect();
+        let emails: Vec<String> = matches.iter().map(|m| value_str(m, "email")).collect();
         assert!(emails.contains(&"bruce@j4.ventures".to_string()));
         assert!(!emails.contains(&"bruce@donuts.email".to_string()));
     }
 
     #[test]
     fn sorted_token_key_is_order_independent() {
-        assert_eq!(sorted_token_key("Bruce Jaffe"), sorted_token_key("Jaffe Bruce"));
+        assert_eq!(
+            sorted_token_key("Bruce Jaffe"),
+            sorted_token_key("Jaffe Bruce")
+        );
         assert_eq!(sorted_token_key("Bruce  M. Jaffe"), "bruce jaffe m");
         assert_eq!(sorted_token_key(""), "");
     }
@@ -5659,23 +5748,58 @@ mod tests {
             ..empty_contact()
         };
         let nudge = reconnect_nudge(&contact, Some(120));
-        assert!(!nudge.contains("120"), "nudge must not embed day counts: {nudge}");
-        assert!(!nudge.to_lowercase().contains("month"), "no month counts either: {nudge}");
-        assert!(nudge.contains("previously active"), "stable facts stay: {nudge}");
-        let no_signal = Contact { name: "Quiet Person".to_string(), ..empty_contact() };
-        assert!(!reconnect_nudge(&no_signal, None).is_empty(), "nudge never empty");
+        assert!(
+            !nudge.contains("120"),
+            "nudge must not embed day counts: {nudge}"
+        );
+        assert!(
+            !nudge.to_lowercase().contains("month"),
+            "no month counts either: {nudge}"
+        );
+        assert!(
+            nudge.contains("previously active"),
+            "stable facts stay: {nudge}"
+        );
+        let no_signal = Contact {
+            name: "Quiet Person".to_string(),
+            ..empty_contact()
+        };
+        assert!(
+            !reconnect_nudge(&no_signal, None).is_empty(),
+            "nudge never empty"
+        );
     }
 
     #[test]
     fn apply_feedback_delta_boost_suppress_clamp() {
-        let boost = FeedbackEntry { action: "boost".into(), delta: 10, updated_unix: 0 };
-        let suppress = FeedbackEntry { action: "suppress".into(), delta: 10, updated_unix: 0 };
-        let delete = FeedbackEntry { action: "delete".into(), delta: 0, updated_unix: 0 };
+        let boost = FeedbackEntry {
+            action: "boost".into(),
+            delta: 10,
+            updated_unix: 0,
+        };
+        let suppress = FeedbackEntry {
+            action: "suppress".into(),
+            delta: 10,
+            updated_unix: 0,
+        };
+        let delete = FeedbackEntry {
+            action: "delete".into(),
+            delta: 0,
+            updated_unix: 0,
+        };
         assert_eq!(apply_feedback_delta(50, Some(&boost)), 60);
-        assert_eq!(apply_feedback_delta(95, Some(&boost)), 100, "clamped at 100");
+        assert_eq!(
+            apply_feedback_delta(95, Some(&boost)),
+            100,
+            "clamped at 100"
+        );
         assert_eq!(apply_feedback_delta(50, Some(&suppress)), 40);
         assert_eq!(apply_feedback_delta(5, Some(&suppress)), 0, "clamped at 0");
-        assert_eq!(apply_feedback_delta(50, Some(&delete)), 50, "delete is not a score signal");
+        assert_eq!(
+            apply_feedback_delta(50, Some(&delete)),
+            50,
+            "delete is not a score signal"
+        );
         assert_eq!(apply_feedback_delta(50, None), 50);
     }
 
@@ -5696,13 +5820,25 @@ mod tests {
         let mut entries = HashMap::new();
         entries.insert(
             "steve@primary.vc".to_string(),
-            FeedbackEntry { action: "boost".into(), delta: 10, updated_unix: 1 },
+            FeedbackEntry {
+                action: "boost".into(),
+                delta: 10,
+                updated_unix: 1,
+            },
         );
         entries.insert(
             "seen@only.com".to_string(),
-            FeedbackEntry { action: "shown".into(), delta: 0, updated_unix: 1 },
+            FeedbackEntry {
+                action: "shown".into(),
+                delta: 0,
+                updated_unix: 1,
+            },
         );
-        let feedback = FeedbackStore { schema_version: 1, updated_at_unix: 1, entries };
+        let feedback = FeedbackStore {
+            schema_version: 1,
+            updated_at_unix: 1,
+            entries,
+        };
 
         let row = |name: &str, email: &str| ContactRow {
             email: email.to_string(),
@@ -5713,36 +5849,46 @@ mod tests {
             },
         };
         let all = vec![
-            row("Steve Schlafman", "steve@primary.vc"),   // swiped
-            row("Steve Schlafman", "steve@lerer.com"),    // duplicate row, not swiped
-            row("Seen Person", "seen@only.com"),          // shown-only: not decisive
+            row("Steve Schlafman", "steve@primary.vc"), // swiped
+            row("Steve Schlafman", "steve@lerer.com"),  // duplicate row, not swiped
+            row("Seen Person", "seen@only.com"),        // shown-only: not decisive
             row("Someone Else", "else@x.com"),
         ];
         let names = swiped_name_set(&all, &feedback);
         assert!(names.contains("steve schlafman"));
         assert!(!names.contains("seen person"), "'shown' is not a decision");
         assert!(!names.contains("someone else"));
-        assert_eq!(normalized_person_name("  Steve   SCHLAFMAN "), "steve schlafman");
+        assert_eq!(
+            normalized_person_name("  Steve   SCHLAFMAN "),
+            "steve schlafman"
+        );
     }
 
     #[test]
     fn reconnect_pool_keeps_one_row_per_name() {
         let row = |name: &str, email: &str| ContactRow {
             email: email.to_string(),
-            contact: Contact { name: name.to_string(), email: email.to_string(), ..empty_contact() },
+            contact: Contact {
+                name: name.to_string(),
+                email: email.to_string(),
+                ..empty_contact()
+            },
         };
         // already sorted best-first, as reconnect() guarantees before calling
         let people = vec![
             (row("Lenka GrayDevitt", "lenka@a.com"), 80u8),
             (row("Lenka GrayDevitt", "lenka@b.com"), 60u8),
             (row("Solo Person", "solo@c.com"), 50u8),
-            (row("", "noname@d.com"), 40u8),   // empty names never collapse
+            (row("", "noname@d.com"), 40u8), // empty names never collapse
             (row("", "noname@e.com"), 30u8),
         ];
         let (deduped, dropped) = dedupe_rows_by_name(people);
         assert_eq!(dropped, 1);
         let emails: Vec<&str> = deduped.iter().map(|(r, _)| r.email.as_str()).collect();
-        assert_eq!(emails, vec!["lenka@a.com", "solo@c.com", "noname@d.com", "noname@e.com"]);
+        assert_eq!(
+            emails,
+            vec!["lenka@a.com", "solo@c.com", "noname@d.com", "noname@e.com"]
+        );
     }
 
     #[test]
@@ -5750,20 +5896,60 @@ mod tests {
         // Real cases from the 2026-07-24 dry run: different people sharing an
         // org display name must NOT corroborate...
         let org = |a: &str, b: &str, name: &str| locals_corroborate(a, b, &[name, name]);
-        assert!(!org("tkawaja@lumapartners.com", "dms1@lumapartners.com", "LUMA Partners"));
-        assert!(!org("michael@the-vines.com", "frances@the-vines.com", "The Vines"));
-        assert!(!org("belle.raab@aduroadvisors.com", "compliance@aduroadvisors.com", "Aduro Advisors"));
-        assert!(!org("arjen@capitalonstage.com", "events@capitalonstage.com", "Capital On Stage"));
+        assert!(!org(
+            "tkawaja@lumapartners.com",
+            "dms1@lumapartners.com",
+            "LUMA Partners"
+        ));
+        assert!(!org(
+            "michael@the-vines.com",
+            "frances@the-vines.com",
+            "The Vines"
+        ));
+        assert!(!org(
+            "belle.raab@aduroadvisors.com",
+            "compliance@aduroadvisors.com",
+            "Aduro Advisors"
+        ));
+        assert!(!org(
+            "arjen@capitalonstage.com",
+            "events@capitalonstage.com",
+            "Capital On Stage"
+        ));
         assert!(!org("taxes@angel.co", "venture@angel.co", "AngelList"));
         // ...while genuinely-same-person patterns survive:
-        assert!(org("your-advocate@sequoia.com", "youradvocate@sequoia.com", "Sequoia")); // variant
-        assert!(org("portfoliomanager@b.com", "porfoliomanager@b.com", "Bespoke")); // typo (jaro-winkler)
-        assert!(org("ts@spintacap.com", "todd.schneider@spintacap.com", "Todd Schneider")); // initials + full
-        assert!(org("myanover@caa.com", "michael.yanover@caa.com", "Michael Yanover")); // m+last
-        assert!(org("david@foundercollective.com", "dfrankel@foundercollective.com", "David Frankel"));
+        assert!(org(
+            "your-advocate@sequoia.com",
+            "youradvocate@sequoia.com",
+            "Sequoia"
+        )); // variant
+        assert!(org(
+            "portfoliomanager@b.com",
+            "porfoliomanager@b.com",
+            "Bespoke"
+        )); // typo (jaro-winkler)
+        assert!(org(
+            "ts@spintacap.com",
+            "todd.schneider@spintacap.com",
+            "Todd Schneider"
+        )); // initials + full
+        assert!(org(
+            "myanover@caa.com",
+            "michael.yanover@caa.com",
+            "Michael Yanover"
+        )); // m+last
+        assert!(org(
+            "david@foundercollective.com",
+            "dfrankel@foundercollective.com",
+            "David Frankel"
+        ));
         assert!(org("saar@crv.com", "sgur@crv.com", "Saar Gur"));
         assert!(org("s@wlessin.com", "sam@wlessin.com", "Sam Lessin")); // containment
-        assert!(org("freddie@chameleon.co", "freddie.laker@chameleon.co", "Freddie Laker"));
+        assert!(org(
+            "freddie@chameleon.co",
+            "freddie.laker@chameleon.co",
+            "Freddie Laker"
+        ));
     }
 
     fn tmp_file(name: &str, content: &str) -> std::path::PathBuf {
@@ -5780,7 +5966,10 @@ mod tests {
                 "entries":{"Alice@Example.com":{"action":"boost","delta":10,"updated_unix":1750000000}}}"#,
         );
         let store = read_feedback(&path).expect("legacy file must parse");
-        let entry = store.entries.get("alice@example.com").expect("key must be lowercased");
+        let entry = store
+            .entries
+            .get("alice@example.com")
+            .expect("key must be lowercased");
         assert_eq!(entry.action, "boost");
         assert_eq!(entry.updated_unix, 1750000000);
     }
@@ -5793,7 +5982,10 @@ mod tests {
                 "entries":{"bob@example.com":{"action":"suppress","delta":10,"updatedUnix":1750000000}}}"#,
         );
         let store = read_feedback(&path).expect("camelCase file must parse");
-        assert_eq!(store.entries.get("bob@example.com").unwrap().action, "suppress");
+        assert_eq!(
+            store.entries.get("bob@example.com").unwrap().action,
+            "suppress"
+        );
     }
 
     #[test]
@@ -5806,7 +5998,10 @@ mod tests {
     #[test]
     fn read_feedback_malformed_file_is_a_hard_error() {
         let path = tmp_file("broken.json", "{ not json ");
-        assert!(read_feedback(&path).is_err(), "malformed feedback must not become an empty store");
+        assert!(
+            read_feedback(&path).is_err(),
+            "malformed feedback must not become an empty store"
+        );
     }
 
     fn empty_contact() -> Contact {
@@ -5840,5 +6035,19 @@ mod tests {
             last_open_at: None,
             open_engagement: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod web_command_tests {
+    use super::*;
+    #[test]
+    fn web_login_and_local_flags_are_available() {
+        assert!(Cli::try_parse_from(["peoplegraph", "login"]).is_ok());
+        assert!(Cli::try_parse_from(["peoplegraph", "--local", "find-person", "Ada"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["peoplegraph", "--local", "--remote", "find-person", "Ada"])
+                .is_err()
+        );
     }
 }

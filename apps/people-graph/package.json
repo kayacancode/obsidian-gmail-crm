@@ -10,7 +10,7 @@
     "db:init": "wrangler d1 execute people-graph --file ./schema.sql",
     "db:init:remote": "wrangler d1 execute people-graph --remote --file ./schema.sql",
     "smoke": "bash scripts/smoke.sh",
-    "test": "node --test tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
+    "test": "node --test tests/cli-approval.test.mjs tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
     "test:relationship-host": "node --test tests/relationship-host.test.mjs",
     "test:relationship-browser": "node tests/relationship-browser.mjs",
     "test:readability-browser": "node tests/relationship-readability-browser.mjs",
@@ -28,7 +28,9 @@
     "test:building-browser": "node tests/building-browser.mjs",
     "test:figures-browser": "node tests/figures-browser.mjs",
     "test:world-browser": "node tests/world-browser.mjs",
-    "test:all-people-browser": "node tests/all-people-browser.mjs"
+    "test:all-people-browser": "node tests/all-people-browser.mjs",
+    "test:cli-browser": "node tests/cli-browser.mjs",
+    "test:cli-integration": "node tests/cli-integration.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",

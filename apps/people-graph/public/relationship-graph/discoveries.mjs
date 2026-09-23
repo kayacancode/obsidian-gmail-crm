@@ -36,7 +36,9 @@ function rankSerendipity(input) {
   }
   return results.sort((a, b) => b.score - a.score || a.nodeId.localeCompare(b.nodeId)).slice(0, 5);
 }
-function permitted(visibility, lens) {
+var SHARED_EVIDENCE_REF = "share:";
+function permitted(visibility, lens, evidenceRef) {
+  if (lens === "my" && evidenceRef?.startsWith(SHARED_EVIDENCE_REF)) return false;
   return lens === "my" || visibility === lens;
 }
 function permittedNode(node, lens) {
