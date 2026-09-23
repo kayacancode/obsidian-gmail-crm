@@ -499,6 +499,7 @@ export function normalizeGraph(input, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
   return {
     source:input.source==='workspace'?'workspace':null,
     workspaceName:optionalString(input.workspaceName),
+    introductionSuggestions:Array.isArray(input.introductionSuggestions)?input.introductionSuggestions.filter(p=>Array.isArray(p.personIds)&&p.personIds.length===2&&p.personIds.every(id=>nodeIds.has(id))&&Array.isArray(p.evidence)).slice(0,12):[],
     sourceCoverage:Array.isArray(input.coverage?.sources)?input.coverage.sources:[],
     nodes,
     edges,

@@ -128,6 +128,8 @@ export function mountGraph(element, options = {}) {
   let spatialCache = null;
   let spatialKey = '';
   let spatialNodes = null;
+  let introductionCards=graph.introductionSuggestions||[],introductionState='ready',introductionRun=0;
+  let introductionSkipped=new Set();
   let searchAnswer = null;
   let exploration = null;
   const timeNames = {upcoming:'Upcoming',today:'Today',week:'This week',month:'30 days',all:'All time'};
@@ -180,7 +182,7 @@ export function mountGraph(element, options = {}) {
     relevanceGraph = { ...relevanceGraph, relevance: { ...relevanceGraph.relevance,
       themes: conversationThemes(relevanceGraph.relevance.themes.filter(theme => activeIds.has(theme.themeId) && theme.score > 0 && theme.components.length), relevanceGraph.themeSignals),
     } };
-    if (activeThemeId && activeThemeId!=='__connections' && !rankedThemes().some(theme => theme.themeId === activeThemeId)
+    if (activeThemeId && activeThemeId!=='__connections' && !activeThemeId.startsWith('__intro:') && !rankedThemes().some(theme => theme.themeId === activeThemeId)
       && !(lens === 'my' && meetingPreview?.cards.some(card => card.themeId === activeThemeId))) {
       activeThemeId = null;
       relevancePersonId = null;
@@ -327,7 +329,8 @@ export function mountGraph(element, options = {}) {
   function canvasMatches(){
     const matches=searchGraph(relevanceGraph,query);
     if(graph.source!=='workspace'||!activeThemeId)return matches;
-    const ids=activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
+    const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
+    const ids=introduction?new Set(introduction.personIds):activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
     return matches.filter(n=>ids.has(n.id));
   }
 
@@ -358,6 +361,7 @@ export function mountGraph(element, options = {}) {
       heading.append(make('span','',themes.length?`${themes.length} shared topics`:'No shared themes available yet'));
       bar.append(heading);const chips=make('div','rg-filter-chips');
       const all=button('All people','filter-topic','rg-filter-chip');all.setAttribute('aria-pressed',String(!activeThemeId));chips.append(all);
+      const discover=button(`Discover${introductionCards.length?' · '+introductionCards.length:''}`,'open-introductions','rg-filter-chip');discover.setAttribute('aria-expanded',String(panelMode==='introductions'));chips.append(discover);
       const bridges=sharedConnectionIds();
       const shared=button(`Shared connections · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId='__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));chips.append(shared);
       for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));chips.append(chip);}
@@ -874,6 +878,41 @@ export function mountGraph(element, options = {}) {
     return panel;
   }
 
+  function renderIntroductions(){
+    const panel=make('section','rg-context-panel rg-introductions');panel.setAttribute('aria-label','Suggested introductions');
+    const close=button('×','close-panel','rg-close');close.setAttribute('aria-label','Close suggested introductions');
+    panel.append(close,make('p','rg-eyebrow','Discover'),make('h2','','People worth connecting'));
+    const status=make('p','rg-source',introductionState==='loading'?'Showing shared context now. Jev is checking fit in the background…':introductionState==='checked'?'Ranked by Jev using shared evidence.':introductionState==='fallback'?'Based on shared context · Jev ranking unavailable.':'Based on shared context.');status.setAttribute('role','status');panel.append(status);
+    panel.append(make('p','rg-copy','No connection recorded. Their shared context suggests a conversation could be useful.'));
+    const cards=introductionCards.filter(p=>!introductionSkipped.has(p.id));
+    if(!cards.length)panel.append(make('p','rg-copy',introductionCards.length?'You’ve seen these suggestions. New shared context can uncover more.':introductionState==='checked'?'No strong introduction suggestions from the available evidence.':'Not enough shared context yet. Contributors can share themes in Accounts → Shared networks. Vaults also need a fresh push with plugin 0.9.4 to match identities.'));
+    for(const pair of cards.slice(0,3)){
+      const card=make('article','rg-introduction-card');
+      card.append(make('h3','',pair.personIds.map(id=>byId.get(id)?.name||'Person').join(' + ')),make('p','rg-copy',pair.reason));
+      for(const item of pair.evidence.slice(0,4))card.append(make('p','rg-source',`${byId.get(item.personId)?.name||'Person'} · ${String(item.source).replaceAll('_',' ')} · ${String(item.date).slice(0,10)} — ${item.summary}`));
+      const explore=button('Explore this pair','explore-introduction','rg-text-button');explore.dataset.pairId=pair.id;
+      const skip=button('Skip','skip-introduction','rg-text-button');skip.dataset.pairId=pair.id;card.append(explore,skip);panel.append(card);
+    }
+    if(introductionSkipped.size)panel.append(button('Start again','reset-introductions','rg-text-button'));
+    return panel;
+  }
+  function refreshIntroductionPanel(){
+    const existing=root.querySelector('.rg-introductions');if(existing)existing.replaceWith(renderIntroductions());
+    const tab=root.querySelector('[data-action="open-introductions"]');if(tab)tab.textContent=`Discover${introductionCards.length?' · '+introductionCards.length:''}`;
+  }
+  async function openIntroductions(){
+    const shouldRank=introductionState==='ready'&&introductionCards.length&&options.onRankIntroductions;
+    if(shouldRank)introductionState='loading';
+    panelMode='introductions';render();if(!shouldRank)return;
+    const run=++introductionRun;let refocus=false;
+    try{const result=await options.onRankIntroductions();if(destroyed||run!==introductionRun)return;
+      introductionCards=(result.suggestions||[]).filter(p=>p.personIds?.length===2&&p.personIds.every(id=>byId.has(id)));
+      introductionState=result.checked?'checked':'fallback';
+      if(activeThemeId?.startsWith('__intro:')&&!introductionCards.some(p=>p.id===activeThemeId.slice(8))){activeThemeId=null;refocus=true;}
+    }catch{if(destroyed||run!==introductionRun)return;introductionState='fallback';}
+    if(panelMode==='introductions'){if(refocus)render();else refreshIntroductionPanel();}
+  }
+
   function renderDiscoveries() {
     const permittedNodes = graph.nodes.filter(node => node.type === 'person'
       && node.permission !== 'denied' && node.permission !== 'conflicted' && !node.permissionConflict
@@ -1291,7 +1330,8 @@ export function mountGraph(element, options = {}) {
     if (panelMode === 'why' && lens !== 'off') {
       const panel = renderWhyPanel();
       if (panel) root.append(panel);
-    } else if(panelMode==='digest'&&!pathState) root.append(renderDigest());
+    } else if(panelMode==='introductions'&&!pathState) root.append(renderIntroductions());
+    else if(panelMode==='digest'&&!pathState) root.append(renderDigest());
     else if(panelMode==='wander'&&!pathState) root.append(renderWander());
     else if(panelMode==='timeline'&&!pathState) root.append(renderTimeline());
     else if (panelMode === 'meeting-review' && lens === 'my' && meetingPreview) root.append(renderMeetingReview());
@@ -1465,6 +1505,12 @@ export function mountGraph(element, options = {}) {
     const target = event.target.closest?.('[data-action]');
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
+    if(action==='open-introductions'){void openIntroductions();return;}
+    if(action==='skip-introduction'){introductionSkipped.add(target.dataset.pairId);if(activeThemeId==='__intro:'+target.dataset.pairId){activeThemeId=null;render();}else refreshIntroductionPanel();return;}
+    if(action==='reset-introductions'){introductionSkipped.clear();refreshIntroductionPanel();return;}
+    if(action==='explore-introduction'){
+      activeThemeId='__intro:'+target.dataset.pairId;selectedId=null;query='';pathState=null;wholeNetworkOverview=false;workspaceCameraReady=false;camera={x:0,y:0,zoom:1};render();return;
+    }
     if(action==='filter-topic'){
       activeThemeId=target.dataset.themeId||null;selectedId=null;panelMode=null;pathState=null;query='';wholeNetworkOverview=false;workspaceCameraReady=false;camera={x:0,y:0,zoom:1};render();return;
     }
@@ -1747,6 +1793,7 @@ export function mountGraph(element, options = {}) {
       if (destroyed) return;
       meetingBatch = null;meetingFeedback = Object.create(null);
       graph = normalizeGraph(nextGraph);
+      introductionRun++;introductionCards=graph.introductionSuggestions||[];introductionState='ready';introductionSkipped.clear();
       searchAnswer=null;exploration=null;walkHistory=[];walkIndex=-1;eventPeople=null;
       invalidateRelevance();
       refreshRelevance();
@@ -1821,6 +1868,7 @@ export function mountGraph(element, options = {}) {
       pathRequest += 1;
       if(cameraFrame!==null)view.cancelAnimationFrame(cameraFrame);
       cameraFrame=null;cameraScene=null;cameraLayout=null;
+      introductionRun++;
       resizeObserver?.disconnect();
       view?.removeEventListener('resize', onResize);
       root.removeEventListener('click', onClick);

@@ -338,6 +338,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
 
   return {
+    rankIntroductions:()=>workspacePath()?request(workspacePath()+'/introductions',{body:{}},context()):Promise.resolve({suggestions:[],checked:false}),
     getState: () => ({ ...state }),
     load,
     async refreshWorkspace(){if(!workspacePath()||state.phase!=='ready')return;const ctx=context();try{const data=await request(workspacePath()+'/members',{},ctx);if(data.workspace.revision!==state.graph.revision)await load(state.source);else if(state.workflowMessage)publish({workflowMessage:''});}catch(e){if(e.name==='AbortError')return;if(e.status===403){invalidate();publish({phase:'error',graph:null,message:'You no longer have access to this workspace.'});}else publish({workflowMessage:'Connection unavailable. This workspace view is stale; reconnect to check access.'});}},
@@ -722,6 +723,7 @@ async function startBrowserApp() {
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onRankIntroductions:()=>controller.rankIntroductions(),
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
       onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });
     else if (mountedGraph !== state.graph) graphInstance.setGraph(state.graph);

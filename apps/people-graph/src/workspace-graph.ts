@@ -1,3 +1,4 @@
+import {suggestIntroductions,type Introduction} from './workspace-introductions';
 import {matchingKey,identityToken,matchedPersonId} from './workspace-identity';
 import {appendWorkspaceObsidian,type WorkspaceSourceCoverage} from './workspace-obsidian';
 import {scoreRelevance} from './relevance-model';
@@ -7,8 +8,8 @@ import {opaque} from './mail-model';
 import {readWorkspace,memberOf,deny} from './workspace-store';
 import {workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
 import {keywordRank,keywordScores,jevScores,topResults} from './network-search';
-export interface WorkspaceNode {sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
-export interface WorkspaceGraph {source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
+export interface WorkspaceNode {identityMatchReady?:boolean;sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
+export interface WorkspaceGraph {introductionSuggestions?:Introduction[];source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
 function nameQuality(name:string,email:string){
  const value=name.trim().toLowerCase();
  if(!value||value==='name unavailable'||value.startsWith('someone at '))return 0;
@@ -46,7 +47,7 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
   const ownScores=member.email===me?await env.MAIL.getByName(me).workspacePersonalScores(slice.people.map(p=>p.email)):{};
   for(const person of slice.people){
    const pid=await personId(person.email);ids.set(person.email,pid);personEmails.set(person.email,pid);
-   let node=nodes.get(pid);if(!node){node={id:pid,name:person.name,company:person.email.split('@')[1],type:'person',sources:['web'],photoUrl:null,directRelationship:false,combined:null,lastContact:null,relationships:[]};nodes.set(pid,node);}
+   let node=nodes.get(pid);if(!node){node={identityMatchReady:true,id:pid,name:person.name,company:person.email.split('@')[1],type:'person',sources:['web'],photoUrl:null,directRelationship:false,combined:null,lastContact:null,relationships:[]};nodes.set(pid,node);}
    node.name=preferName(node.name,person.name,person.email);
    const profile=member.contribution.shareProfiles===true?value.profiles?.[person.email]:undefined;
    if(profile){node.name=preferName(node.name,profile.name,person.email);node.photoUrl ||= workspacePhoto(profile.photoUrl);}
@@ -83,6 +84,7 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
   prior.evidence=[...new Map([...prior.evidence,...edge.evidence].map(e=>[JSON.stringify(e),e])).values()];
  }
  graph.edges=[...joinedEdges.values()];
+ graph.introductionSuggestions=suggestIntroductions(graph);
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}
  return graph;

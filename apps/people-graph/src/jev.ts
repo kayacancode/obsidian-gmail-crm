@@ -26,12 +26,12 @@ export function __setJevSleepForTests(fn:((ms:number)=>Promise<void>)|null):void
 
 export function jevConfigured(env:{TYPESAFE_API_KEY?:string}):boolean{return typeof env.TYPESAFE_API_KEY==='string'&&env.TYPESAFE_API_KEY.length>0;}
 
-export async function askJev(env:{TYPESAFE_API_KEY?:string;JEV_MODEL?:string},state:unknown,questions:Record<string,JevQuestion>,signal?:AbortSignal):Promise<JevResult>{
+export async function askJev(env:{TYPESAFE_API_KEY?:string;JEV_MODEL?:string},state:unknown,questions:Record<string,JevQuestion>,signal?:AbortSignal,options:{retry?:boolean}={}):Promise<JevResult>{
  if(!jevConfigured(env))throw new JevError('jev_unconfigured');
  const key=env.TYPESAFE_API_KEY!;
  const body=JSON.stringify({state,model:env.JEV_MODEL??'jev-latest',questions});
  let response=await send(key,body,signal);
- if(response.status===429){
+ if(response.status===429&&options.retry!==false){
   const delayMs=retryDelayMs(response.headers.get('retry-after'));
   await response.body?.cancel().catch(()=>{});
   await sleepImpl(delayMs);

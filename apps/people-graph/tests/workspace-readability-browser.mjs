@@ -72,5 +72,26 @@ try {
  assert.equal(await page.locator('.rg-canvas line[data-bridge="true"]').count(),2);
  assert.equal(await page.locator('.rg-directory summary').innerText(),'All results (3)');
  await page.screenshot({path:'/tmp/shared-connections.png',fullPage:true});
+ await page.evaluate(()=>{
+  const pair={id:'a:b',personIds:['a','b'],topics:['Interface design'],reason:'Both have recorded context about interface design.',evidence:[{personId:'a',source:'obsidian_note',date:'2026-09-23',summary:'Creative tools interfaces'},{personId:'b',source:'granola',date:'2026-09-22',summary:'Interfaces for artists'}]};
+  window.introFixture={source:'workspace',nodes:[{id:'a',name:'Ada',type:'person'},{id:'b',name:'Bo',type:'person'},{id:'c',name:'Other',type:'person'}],edges:[],introductionSuggestions:[pair]};window.testGraph.setGraph(window.introFixture);
+ });
+ await page.getByRole('button',{name:'Discover · 1',exact:true}).click();
+ assert.ok((await page.getByRole('region',{name:'Suggested introductions'}).innerText()).includes('Creative tools interfaces'));
+ await page.getByRole('button',{name:'Explore this pair',exact:true}).click();assert.equal(await page.locator('.rg-node').count(),2);
+ assert.equal(await page.locator('.rg-canvas line').count(),0,'A suggested introduction must not create a recorded edge');
+ await page.screenshot({path:'/tmp/people-introductions.png',fullPage:true});
+ await page.getByRole('button',{name:'Skip',exact:true}).click();assert.equal(await page.locator('.rg-introduction-card').count(),0);
+ await page.getByRole('button',{name:'Start again',exact:true}).click();assert.equal(await page.locator('.rg-introduction-card').count(),1);
+ await page.evaluate(async()=>{
+  window.testGraph.destroy();const {mountGraph}=await import('/relationship-graph/graph.mjs');window.rankCalls=0;
+  window.testGraph=mountGraph(document.querySelector('#graph'),{graph:window.introFixture,onRankIntroductions:()=>{window.rankCalls++;return new Promise(resolve=>{window.finishRanking=resolve;});}});
+ });
+ await page.getByRole('button',{name:'Discover · 1',exact:true}).click();
+ await page.evaluate(()=>{window.beforeRankingNode=document.querySelector('.rg-node');window.finishRanking({suggestions:window.introFixture.introductionSuggestions,checked:true});});
+ await page.getByText('Ranked by Jev using shared evidence.',{exact:true}).waitFor();
+ assert.ok(await page.evaluate(()=>window.beforeRankingNode===document.querySelector('.rg-node')),'Background ranking must not rebuild the map');
+ await page.getByRole('button',{name:'Close suggested introductions',exact:true}).click();
+ await page.getByRole('button',{name:'Discover · 1',exact:true}).click();assert.equal(await page.evaluate(()=>window.rankCalls),1);
  assert.deepEqual(errors,[]);console.log('PASS 171 people: readable initial portraits, names, contributors, highlight, fit, mobile');
 }finally{await browser.close();}

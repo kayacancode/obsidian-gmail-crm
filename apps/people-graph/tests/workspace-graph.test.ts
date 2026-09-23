@@ -190,3 +190,9 @@ test('workspace matching endpoint requires a valid push token and never caches k
  const response=await get();assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
  assert.equal((await response.json() as any).workspaces.length,1);
 });
+
+test('workspace introductions require membership and do not invent suggestions for names-only data',async()=>{
+ const f=await setup();const response=await f.call('/'+f.id+'/introductions','POST',{});
+ assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.deepEqual(await response.json(),{suggestions:[],checked:false});
+ assert.equal((await f.call('/'+f.id+'/introductions','POST',{},'outsider@example.com')).status,403);
+});

@@ -1,4 +1,5 @@
-import {buildWorkspaceGraph,searchWorkspace,draftWorkspace} from './workspace-graph';
+import {rankIntroductions} from './workspace-introductions';
+import {buildWorkspaceGraph,searchWorkspace,draftWorkspace,assertWorkspaceRevision} from './workspace-graph';
 import type {ShareEnv} from './share-routes';
 import {normalizeShareLevel,normalizeShareScope} from './network-share';
 import {WorkspaceError,deny,ensureWorkspaces,readWorkspace,changeWorkspace,memberOf,adminOf,emptyContribution,publicWorkspace,hashToken} from './workspace-store';
@@ -37,9 +38,10 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
     i.used=true;w.members.push({id:crypto.randomUUID(),email:me,role:'member',contribution:emptyContribution()});
    });return json({workspace:publicWorkspace(w,me)});
   }
-  const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft)$/);
+  const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft|introductions)$/);
   if(graphPath){const [,id,action]=graphPath;
    if(action==='graph'&&method==='GET')return json({account:me,graph:await buildWorkspaceGraph(env,id,me)});
+   if(action==='introductions'&&method==='POST'){const graph=await buildWorkspaceGraph(env,id,me);const result=await rankIntroductions(env,graph);await assertWorkspaceRevision(env,id,me,graph.revision);return json(result);}
    if(action==='search'&&method==='POST'){if(typeof body.query!=='string'||!body.query.trim()||body.query.length>200)deny(400,'invalid_query');return json(await searchWorkspace(env,id,me,body.query.trim()));}
    if(action==='draft'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.memberId!=='string')deny(400,'invalid_request');return json(await draftWorkspace(env,id,me,body.personId,body.memberId));}
    return json({error:'method_not_allowed'},405);
