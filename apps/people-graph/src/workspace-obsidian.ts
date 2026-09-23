@@ -32,6 +32,23 @@ export async function appendWorkspaceObsidian(env:ShareEnv,w:Workspace,me:string
     graph.nodes.push({id,name:name?(name.includes('@')?(member.email===me||member.contribution.shareProfiles?name.split('@')[0]:'Name unavailable'):name):'Name unavailable',company:typeof n.company==='string'?n.company.slice(0,120):'',type:'person',photoUrl:member.email===me||member.contribution.shareProfiles?workspacePhoto(n.photoUrl):null,directRelationship:false,combined:null,lastContact:null,sources:['obsidian'],relationships:[{memberId:member.id,memberName:member.email,score:null,scoreVersion:'obsidian-unmeasured',lastContact:typeof n.lastContact==='string'&&Number.isFinite(Date.parse(n.lastContact))?n.lastContact:null,observedAt:coverage.updatedAt,evidenceCategory:'unknown'}]});
    }
    coverage.included=ids.size;
+   if(member.contribution.level!=='names'){
+    const themeIds=new Map<string,string>();
+    const permitted=snapshot.themeSignals.filter(s=>ids.has(s.personId!)&&['obsidian_note','granola'].includes(s.sourceType));
+    for(const theme of snapshot.themes){
+     if(!permitted.some(s=>s.themeId===theme.id))continue;
+     if(graph.themes.length>=200){graph.coverage.truncated=true;break;}
+     const id=await opaque('workspace:'+w.id,'obsidian-theme:'+member.id+':'+theme.id,env.TOKEN_SECRET);themeIds.set(theme.id,id);
+     graph.themes.push({id,name:theme.canonicalName,canonicalName:theme.canonicalName,status:'active',aliases:[]});
+    }
+    for(const signal of permitted){
+     const themeId=themeIds.get(signal.themeId);if(!themeId)continue;
+     if(graph.themeSignals.length>=5000){graph.coverage.truncated=true;break;}
+     const id=await opaque('workspace:'+w.id,'obsidian-signal:'+member.id+':'+signal.id,env.TOKEN_SECRET);
+     const theme=graph.themes.find(t=>t.id===themeId);
+     graph.themeSignals.push({id,personId:ids.get(signal.personId!),themeId,sourceType:signal.sourceType,visibility:'firm',observedAt:signal.observedAt,ingestedAt:signal.ingestedAt,confidence:signal.confidence,summary:member.contribution.level==='statements'?signal.summary:'Recorded topic: '+theme.name,evidenceRef:'workspace:'+member.id+':'+id,contentHash:id,extractorVersion:'workspace-v1',modelId:null});
+    }
+   }
    // Snapshot scores can contain private feedback, and contexts can contain email subjects.
    // Only the explicitly selected people and their recorded ties leave the owner's snapshot.
    for(const e of snapshot.edges as Array<Record<string,any>>){

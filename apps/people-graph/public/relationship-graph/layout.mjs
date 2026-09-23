@@ -35,6 +35,19 @@ export function spatialLayout(nodes, edges, themes, spacing=165) {
       const key=`${gx},${gy}`;if(!buckets.has(key))buckets.set(key,[]);buckets.get(key).push(p);
     }
   }
+  // Large clusters may not converge fully during relaxation. Enforce a readable
+  // minimum distance without running an unbounded force simulation.
+  if(spacing>165){
+    const gap=spacing*.8,buckets=new Map();
+    const fits=(x,y)=>{const gx=Math.floor(x/gap),gy=Math.floor(y/gap);
+      for(let bx=gx-1;bx<=gx+1;bx++)for(let by=gy-1;by<=gy+1;by++)for(const q of buckets.get(`${bx},${by}`)||[])if(Math.hypot(x-q.x,y-q.y)<gap)return false;
+      return true;
+    };
+    for(const p of points){const ox=p.x,oy=p.y;let attempt=0;
+      while(!fits(p.x,p.y)){attempt++;const angle=attempt*2.3999632297,r=gap*.65*Math.sqrt(attempt);p.x=ox+Math.cos(angle)*r;p.y=oy+Math.sin(angle)*r;}
+      const key=`${Math.floor(p.x/gap)},${Math.floor(p.y/gap)}`;if(!buckets.has(key))buckets.set(key,[]);buckets.get(key).push(p);
+    }
+  }
   const minX=Math.min(0,...points.map(p=>p.x))-110,minY=Math.min(0,...points.map(p=>p.y))-110;
   const positions=new Map(points.map(p=>[p.id,{x:p.x-minX,y:p.y-minY,size:76,labelWidth:136}]));
   return {positions,width:Math.max(300,...points.map(p=>p.x-minX+110)),height:Math.max(300,...points.map(p=>p.y-minY+130)),

@@ -108,3 +108,16 @@ test('workspace vault address-shaped names require profile consent except for th
  assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes.find(n=>n.sources?.includes('obsidian'))!.name,'Name unavailable');
  assert.equal((await buildWorkspaceGraph(f.env,f.id,'member@example.com')).nodes.find(n=>n.sources?.includes('obsidian'))!.name,'privatehandle');
 });
+
+test('shared Obsidian theme associations honor level and do not expose note text at themes level',async()=>{
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');const time=new Date().toISOString();
+ const snapshot={nodes:[{id:'vault-a',name:'Ada'}],edges:[],themes:[{id:'ui',canonicalName:'UI design',aliases:[],description:'',status:'active'}],themeSignals:[{id:'sig',personId:'vault-a',themeId:'ui',sourceType:'obsidian_note',visibility:'private',observedAt:time,ingestedAt:time,confidence:.9,summary:'PRIVATE NOTE WORDS',evidenceRef:'obsidian:test',contentHash:'hash',extractorVersion:'local-theme-v1'}]};
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify(snapshot),1700000000);
+ for(const level of ['names','themes','statements']){
+  await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level,includeObsidian:true},'member@example.com');
+  const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+  assert.equal(g.themeSignals.length,level==='names'?0:1);
+  assert.equal(JSON.stringify(g).includes('PRIVATE NOTE WORDS'),level==='statements');
+  if(level!=='names'){assert.equal(g.themes[0].name,'UI design');assert.equal(g.themeSignals[0].personId,g.nodes.find(n=>n.name==='Ada')!.id);}
+ }
+});

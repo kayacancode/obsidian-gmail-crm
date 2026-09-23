@@ -42,5 +42,19 @@ try {
  assert.equal(await page.locator('.rg-node').count(),4900);
  await page.getByText('People included by member and source',{exact:true}).click();
  assert.match(await page.locator('.rg-source-coverage').innerText(),/4900 included of 4900/);
+ await page.evaluate(()=>{
+  const time='2026-09-23T12:00:00.000Z';
+  window.testGraph.setGraph({source:'workspace',nodes:Array.from({length:30},(_,i)=>({id:'p'+i,name:'Person '+i,type:'person'})),edges:[],themes:[{id:'ui',name:'UI design',status:'active'}],themeSignals:[0,1,2].map(i=>({id:'signal'+i,themeId:'ui',personId:'p'+i,sourceType:'obsidian_note',visibility:'firm',observedAt:time,ingestedAt:time,confidence:.9,summary:'Recorded topic: UI design',evidenceRef:'workspace:signal'+i,contentHash:'hash'+i,extractorVersion:'workspace-v1'}))});
+ });
+ await page.getByRole('button',{name:'UI design · 3',exact:true}).click();
+ assert.equal(await page.locator('.rg-node').count(),3);
+ assert.equal(await page.locator('.rg-directory summary').innerText(),'All results (3)');
+ assert.deepEqual(await page.locator('.rg-directory-item').evaluateAll(items=>items.map(i=>i.dataset.nodeId).sort()),['p0','p1','p2']);
+ await page.locator('.rg-node[data-node-id="p0"]').click();assert.equal(await page.locator('.rg-node').count(),3);
+ await page.locator('.rg-filter-chip').filter({hasText:'All people'}).click();
+ assert.equal(await page.locator('.rg-node').count(),30);
+ await page.setViewportSize({width:1440,height:1000});
+ await page.screenshot({path:'/tmp/workspace-theme-filters.png',fullPage:true});
+ assert.ok(await page.locator('.rg-node').first().evaluate(n=>n.getBoundingClientRect().width>=60));
  assert.deepEqual(errors,[]);console.log('PASS 171 people: readable initial portraits, names, contributors, highlight, fit, mobile');
 }finally{await browser.close();}

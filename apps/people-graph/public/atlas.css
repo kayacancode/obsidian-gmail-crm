@@ -162,3 +162,11 @@
 .rg-wander-filter {width:100%;padding:9px;border:1px solid var(--rg-line);background:var(--rg-panel);}
 .rg-walk-evidence {margin-top:16px;}.rg-walk-evidence summary {cursor:pointer;}
 @media(max-width:700px){#network-modes{margin-left:auto;}#viewer-menu{margin-left:0;}}
+
+.rg-shell[data-workspace='true'] .rg-topic-filters {top:104px;left:24px;right:24px;width:auto;max-width:none;padding:0 0 12px;background:var(--rg-background);}
+.rg-filter-heading {display:flex;align-items:baseline;gap:12px;margin-bottom:9px;font-size:12px;}
+.rg-filter-heading span {color:var(--rg-muted);font-size:11px;}
+.rg-filter-chips {display:flex;gap:8px;overflow-x:auto;padding:2px 1px 7px;}
+.rg-shell .rg-filter-chip {flex-shrink:0;padding:7px 11px;min-height:32px;border:1px solid var(--rg-line);background:var(--rg-background);color:var(--rg-foreground);font-size:12px;cursor:pointer;border-radius:3px;}
+.rg-shell .rg-filter-chip[aria-pressed='true'] {background:var(--rg-foreground);color:var(--rg-background);border-color:var(--rg-foreground);}
+@container (max-width:700px){.rg-shell[data-workspace='true'] .rg-topic-filters {top:154px;}}

@@ -142,7 +142,7 @@ export function mountGraph(element, options = {}) {
   let destroyed = false;
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
-  let workspaceCameraReady=false,memberFocus='';
+  let workspaceCameraReady=false,memberFocus='',wholeNetworkOverview=false;
   let contributorColors=new Map();
   let lens = validLens(graph.source==='workspace'?'firm':options.lens ?? 'my');
   let activeThemeId = null;
@@ -179,7 +179,7 @@ export function mountGraph(element, options = {}) {
     relevanceGraph = { ...relevanceGraph, relevance: { ...relevanceGraph.relevance,
       themes: conversationThemes(relevanceGraph.relevance.themes.filter(theme => activeIds.has(theme.themeId) && theme.score > 0 && theme.components.length), relevanceGraph.themeSignals),
     } };
-    if (activeThemeId && !relevanceGraph.relevance.themes.some(theme => theme.themeId === activeThemeId)
+    if (activeThemeId && !rankedThemes().some(theme => theme.themeId === activeThemeId)
       && !(lens === 'my' && meetingPreview?.cards.some(card => card.themeId === activeThemeId))) {
       activeThemeId = null;
       relevancePersonId = null;
@@ -269,13 +269,14 @@ export function mountGraph(element, options = {}) {
     const height = Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
     const usableWidth = Math.max(132, width - (width >= 1100 && (graph.source!=='workspace'||panelMode) ? 380 : 48));
-    const top = options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
+    const top = graph.source==='workspace' ? (width<=700?250:205) : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
     const usableHeight = height - top - 86;
     const baseRelevance=filterRelevance(graph,graph.source==='workspace'?'firm':'my');
     const layoutThemes=conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
-    const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|');
+    const filtered=graph.source==='workspace'&&(activeThemeId||query)?canvasMatches():graph.nodes;
+    const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|')+'|'+(graph.source==='workspace'?activeThemeId+'|'+query:'');
     if(!spatialCache || spatialNodes!==graph.nodes || key!==spatialKey) {
-      spatialCache=spatialLayout(graph.nodes,graph.edges,layoutThemes,graph.source==='workspace'?210:165);
+      spatialCache=spatialLayout(filtered,graph.edges,layoutThemes,graph.source==='workspace'?270:165);
       spatialKey=key;spatialNodes=graph.nodes;
     }
     const worldWidth=spatialCache.width,worldHeight=spatialCache.height;
@@ -298,8 +299,28 @@ export function mountGraph(element, options = {}) {
   }
 
   function rankedThemes() {
+    const themes=relevanceGraph.relevance.themes.slice();
+    if(graph.source==='workspace')for(const theme of relevanceGraph.themes){
+      if(themes.some(t=>t.themeId===theme.id))continue;
+      const signals=relevanceGraph.themeSignals.filter(s=>s.themeId===theme.id&&s.personId&&byId.has(s.personId));
+      if(!signals.length)continue;
+      themes.push({themeId:theme.id,name:theme.name,score:0,nodeIds:[...new Set(signals.map(s=>s.personId))],components:signals.map(s=>({signalId:s.id,sourceType:s.sourceType,observedAt:s.observedAt,contribution:0}))});
+    }
+    if(graph.source==='workspace'){
+      const groups=new Map();for(const theme of themes){const key=theme.name.trim().toLocaleLowerCase();const prior=groups.get(key);
+        if(prior){prior.nodeIds=[...new Set([...prior.nodeIds,...theme.nodeIds])];prior.components=[...prior.components,...theme.components];prior.score=Math.max(prior.score,theme.score);}
+        else groups.set(key,{...theme,nodeIds:[...theme.nodeIds],components:[...theme.components]});
+      }return [...groups.values()].sort((a,b)=>b.nodeIds.length-a.nodeIds.length||a.name.localeCompare(b.name));
+    }
     const previewIds = new Set(lens === 'my' ? meetingPreview?.themes.map(theme => theme.themeId) : []);
-    return relevanceGraph.relevance.themes.slice().sort((a, b) => Number(previewIds.has(b.themeId)) - Number(previewIds.has(a.themeId)) || b.score - a.score || a.name.localeCompare(b.name));
+    return themes.sort((a,b)=>Number(previewIds.has(b.themeId))-Number(previewIds.has(a.themeId))||b.score-a.score||a.name.localeCompare(b.name));
+  }
+
+  function canvasMatches(){
+    const matches=searchGraph(relevanceGraph,query);
+    if(graph.source!=='workspace'||!activeThemeId)return matches;
+    const ids=new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
+    return matches.filter(n=>ids.has(n.id));
   }
 
   function promotedThemes() {
@@ -323,6 +344,17 @@ export function mountGraph(element, options = {}) {
   function renderTopics() {
     if (lens === 'off' || pathState) return null;
     const themes = rankedThemes();
+    if(graph.source==='workspace'){
+      const bar=make('section','rg-topic-bar rg-topic-filters');bar.setAttribute('aria-label','Topics and themes');
+      const heading=make('div','rg-filter-heading');heading.append(make('strong','','Themes'));
+      heading.append(make('span','',themes.length?`${themes.length} shared topics`:'No shared themes available yet'));
+      bar.append(heading);const chips=make('div','rg-filter-chips');
+      const all=button('All people','filter-topic','rg-filter-chip');all.setAttribute('aria-pressed',String(!activeThemeId));chips.append(all);
+      for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));chips.append(chip);}
+      bar.append(chips);
+      if(!themes.length)bar.append(make('p','rg-source','Share themes in Accounts → Shared networks, then publish or sync your source.'));
+      return bar;
+    }
     const section = make('section', 'rg-topic-bar');
     section.setAttribute('aria-label', 'Topics and themes');
     const toggle = button(`What’s coming up in your conversations${themes.length ? ` · ${themes.length}` : ''}`, 'toggle-topics', 'rg-topic-toggle');
@@ -372,7 +404,7 @@ export function mountGraph(element, options = {}) {
     if (selectedId) {
       const allEdges = edgesByNode.get(selectedId) ?? [];
       const relatedIds = new Set([selectedId, ...allEdges.map((edge) => other(edge, selectedId))]);
-      const matches = searchGraph(relevanceGraph, query);
+      const matches = canvasMatches();
       const visibleIds = new Set(matches.map((node) => node.id));
       return {
         nodes: matches,
@@ -382,9 +414,9 @@ export function mountGraph(element, options = {}) {
         relatedIds,
       };
     }
-    const matches = searchGraph(relevanceGraph, query);
+    const matches = canvasMatches();
     const visibleIds = new Set(matches.map(node => node.id));
-    return { nodes: matches, edges: graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)), total: matches.length, isPath: false };
+    return { nodes: matches, edges: graph.source==='workspace'&&matches.length>250?[]:graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)), total: matches.length, isPath: false };
   }
 
   function renderPortrait(node, index) {
@@ -416,7 +448,7 @@ export function mountGraph(element, options = {}) {
 
   function renderCanvas() {
     const layout = canvasLayout();
-    if(graph.source==='workspace'&&!workspaceCameraReady&&!currentRoute()){camera.zoom=Math.max(1,.85/layout.fitScale);workspaceCameraReady=true;}
+    if(graph.source==='workspace'&&(!workspaceCameraReady||(!wholeNetworkOverview&&camera.zoom===1))&&!currentRoute()){camera.zoom=Math.max(1,.85/layout.fitScale);workspaceCameraReady=true;}
     const canvas = make('div', 'rg-canvas');
     canvas.dataset.workspace=String(graph.source==='workspace');
     if (!currentRoute()) canvas.style.height = `${layout.height}px`;
@@ -573,7 +605,7 @@ export function mountGraph(element, options = {}) {
     }
     scene.append(svg, nodeLayer, edgeLayer);
     canvas.append(make('p', 'rg-canvas-note', data.isPath ? `${data.nodes.length} people on this path`
-      : `${data.nodes.length} people on map${graph.source==='workspace'?` · ${data.nodes.filter(n=>n.photoUrl).length} photos available`:''}${query ? ` · ${graph.nodes.length} in full network` : ''} · Drag to pan · Select a person for details · Fit for overview`));
+      : `${data.nodes.length} people on map${activeThemeId&&graph.source==='workspace'?` · filtered from ${graph.nodes.length}`:''}${wholeNetworkOverview&&graph.source==='workspace'?' · Overview — choose Read names to explore':''}${graph.source==='workspace'?` · ${data.nodes.filter(n=>n.photoUrl).length} photos available`:''}${query ? ` · ${graph.nodes.length} in full network` : ''} · Drag to pan · Select a person for details · Fit for overview`));
     return canvas;
   }
 
@@ -960,7 +992,7 @@ export function mountGraph(element, options = {}) {
 
   function renderDirectory() {
     const members = activeThemeId ? relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds : null;
-    const matches = searchGraph(relevanceGraph, query).filter(node => !members || members.includes(node.id));
+    const matches = graph.source === 'workspace' ? canvasMatches() : searchGraph(relevanceGraph, query).filter(node => !members || members.includes(node.id));
     const totalPages = Math.max(1, Math.ceil(matches.length / DIRECTORY_PAGE_SIZE));
     page = Math.min(page, totalPages - 1);
     const details = make('details', 'rg-directory');
@@ -1283,7 +1315,7 @@ export function mountGraph(element, options = {}) {
     if (destroyed || !byId.has(id)) return;
     invalidateRelevance();
     eventPeople = null;
-    activeThemeId = null;
+    if(graph.source!=='workspace')activeThemeId = null;
     relevancePersonId = null;
     if (pathState && !pathState.to && id !== pathState.from && byId.get(id).type === 'person') {
       pathState.to = id;
@@ -1401,6 +1433,9 @@ export function mountGraph(element, options = {}) {
     const target = event.target.closest?.('[data-action]');
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
+    if(action==='filter-topic'){
+      activeThemeId=target.dataset.themeId||null;selectedId=null;panelMode=null;pathState=null;query='';wholeNetworkOverview=false;workspaceCameraReady=false;camera={x:0,y:0,zoom:1};render();return;
+    }
     if(action==='walk-topic'){walkTo({kind:'topic',id:target.dataset.topicId});return;}
     if(action==='walk-person'){walkTo({kind:'person',id:target.dataset.nodeId,reason:target.dataset.reason});return;}
     if(action==='walk-back'){walkIndex--;if(walkIndex>=0)walkTo(walkHistory[walkIndex],false);else{eventPeople=null;camera={x:0,y:0,zoom:1};render();}return;}
@@ -1445,7 +1480,7 @@ export function mountGraph(element, options = {}) {
       relevancePersonId = target.dataset.personId ?? null;
       panelMode = 'why';
       query = '';
-      focusCanvas(relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
+      focusCanvas(rankedThemes().find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
       render();
     } else if (action === 'theme-correct') {
       correctionOpen = true;
@@ -1476,10 +1511,11 @@ export function mountGraph(element, options = {}) {
     else if (action === 'inspect-edge') inspectEdge(target.dataset.edgeId);
     else if (action === 'start-path') startPath();
     else if (action === 'close-path') closePath();
-    else if (action === 'close-panel') { const wasDigest=panelMode==='digest';eventPeople=null; invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(wasDigest?'open-digest':null); }
+    else if (action === 'close-panel') { const wasDigest=panelMode==='digest';eventPeople=null; invalidateRelevance(); if(graph.source!=='workspace')activeThemeId = null; panelMode = null; selectedEdgeId = null; render(wasDigest?'open-digest':null); }
     else if (action === 'save-trail' && trail.nodeIds.length) callbacks.onSaveTrail(cloneTrail(trail));
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
+      wholeNetworkOverview=false;workspaceCameraReady=false;
       invalidateRelevance();
       searchAnswer = null; exploration = null;
       activeThemeId = null;
@@ -1521,8 +1557,8 @@ export function mountGraph(element, options = {}) {
     else if (action === 'zoom-in') zoom(1.18, 'zoom-in');
     else if (action === 'zoom-out') zoom(1 / 1.18, 'zoom-out');
     else if(action==='highlight-owner'){memberFocus=memberFocus===target.dataset.memberId?'':target.dataset.memberId;render();}
-    else if (action === 'read-names') { camera={x:0,y:0,zoom:Math.max(1,.85/canvasLayout().fitScale)};render('read-names'); }
-    else if (action === 'fit') { camera = { x: 0, y: 0, zoom: 1 }; render('fit'); }
+    else if (action === 'read-names') { wholeNetworkOverview=false;camera={x:0,y:0,zoom:Math.max(1,.85/canvasLayout().fitScale)};render('read-names'); }
+    else if (action === 'fit') { wholeNetworkOverview=true;camera = { x: 0, y: 0, zoom: 1 }; render('fit'); }
   }
 
   function onInput(event) {
@@ -1548,7 +1584,7 @@ export function mountGraph(element, options = {}) {
     if (action === 'browse-theme') {
       invalidateRelevance();activeThemeId = event.target.value || null;relevancePersonId = null;
       query = '';
-      if (activeThemeId) focusCanvas(relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
+      if (activeThemeId) focusCanvas(rankedThemes().find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
       else camera = { x: 0, y: 0, zoom: 1 };
       panelMode = activeThemeId ? 'why' : selectedId ? 'node' : null;render('browse-theme');return;
     }
@@ -1644,7 +1680,7 @@ export function mountGraph(element, options = {}) {
     else {
       camera = { x: 0, y: 0, zoom: 1 };
       if (query) focusCanvas(searchGraph(relevanceGraph, query).map(node => node.id));
-      else if (activeThemeId) focusCanvas(relevanceGraph.relevance.themes.find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
+      else if (activeThemeId) focusCanvas(rankedThemes().find(theme => theme.themeId === activeThemeId)?.nodeIds ?? []);
       else if (selectedId) focusCanvas([selectedId]);
     }
     render();

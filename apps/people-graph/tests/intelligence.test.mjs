@@ -132,3 +132,11 @@ test('workspace Wander shows evidence-backed shared topics without inventing att
  const topics=wanderTopics({source:'workspace',nodes:[{id:'a'}],themes:[{id:'t',name:'Interface design'}],themeSignals:[{id:'s',personId:'a',themeId:'t',sourceType:'granola',summary:'Working on interfaces',observedAt:'2026-09-23',evidenceRef:'workspace:x:s'}],relevance:{themes:[]}});
  assert.equal(topics.length,1);assert.deepEqual(topics[0].nodeIds,['a']);
 });
+
+test('large shared clusters maintain readable separation without dropping people',async()=>{
+ const {spatialLayout}=await import('../public/relationship-graph/layout.mjs');
+ const nodes=Array.from({length:5134},(_,i)=>({id:String(i),company:'Company '+(i%45)}));
+ const layout=spatialLayout(nodes,[],[],270),points=[...layout.positions.values()];
+ assert.equal(points.length,5134);
+ for(let i=0;i<points.length;i++)for(let j=i+1;j<points.length;j++)assert.ok(Math.hypot(points[i].x-points[j].x,points[i].y-points[j].y)>=216-1e-6);
+});
