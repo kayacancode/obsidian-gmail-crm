@@ -1,3 +1,4 @@
+import {appendWorkspaceObsidian,type WorkspaceSourceCoverage} from './workspace-obsidian';
 import {scoreRelevance} from './relevance-model';
 import type {ShareEnv} from './share-routes';
 import {normalizeSlice} from './network-share';
@@ -5,8 +6,8 @@ import {opaque} from './mail-model';
 import {readWorkspace,memberOf,deny} from './workspace-store';
 import {workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
 import {keywordRank,keywordScores,jevScores,topResults} from './network-search';
-export interface WorkspaceNode {id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
-export interface WorkspaceGraph {source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{unavailable:string[];truncated:boolean;contributors:number}}
+export interface WorkspaceNode {sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
+export interface WorkspaceGraph {source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
 function nameQuality(name:string,email:string){
  const value=name.trim().toLowerCase();
  if(!value||value==='name unavailable'||value.startsWith('someone at '))return 0;
@@ -33,16 +34,17 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  exports.sort((a,b)=>a.member.id.localeCompare(b.member.id));
  const personEmails=new Map<string,string>();
  const nodes=new Map<string,WorkspaceNode>(),edges=new Map<string,WorkspaceGraph['edges'][number]>();
- const graph:WorkspaceGraph={source:'workspace',workspaceId:id,workspaceName:w.name,revision:w.revision,pushedAt:new Date().toISOString(),nodes:[],edges:[],relevance:scoreRelevance([],[],'firm',Date.now()),themes:[],themeSignals:[],activity:[],members:w.members.map(m=>({id:m.id,name:m.email,isMe:m.email===me})),coverage:{unavailable,truncated:false,contributors:exports.length}};
+ const graph:WorkspaceGraph={source:'workspace',workspaceId:id,workspaceName:w.name,revision:w.revision,pushedAt:new Date().toISOString(),nodes:[],edges:[],relevance:scoreRelevance([],[],'firm',Date.now()),themes:[],themeSignals:[],activity:[],members:w.members.map(m=>({id:m.id,name:m.email,isMe:m.email===me})),coverage:{sources:[],unavailable,truncated:false,contributors:exports.length}};
  const personId=(email:string)=>opaque('workspace:'+id,'person:'+email,env.TOKEN_SECRET);
  for(const {member,value} of exports){
   const slice=normalizeSlice(value.slice);if(!slice||slice.owner!==member.email){graph.coverage.unavailable.push(member.id);graph.coverage.contributors--;continue;}
   graph.coverage.truncated ||= value.truncated;
+  graph.coverage.sources.push({memberId:member.id,memberName:member.email,source:'web',available:value.truncated?null:slice.people.length,included:slice.people.length,status:'ready',limited:value.truncated});
   const ids=new Map<string,string>();
   const ownScores=member.email===me?await env.MAIL.getByName(me).workspacePersonalScores(slice.people.map(p=>p.email)):{};
   for(const person of slice.people){
    const pid=await personId(person.email);ids.set(person.email,pid);personEmails.set(person.email,pid);
-   let node=nodes.get(pid);if(!node){node={id:pid,name:person.name,company:person.email.split('@')[1],type:'person',photoUrl:null,directRelationship:false,combined:null,lastContact:null,relationships:[]};nodes.set(pid,node);}
+   let node=nodes.get(pid);if(!node){node={id:pid,name:person.name,company:person.email.split('@')[1],type:'person',sources:['web'],photoUrl:null,directRelationship:false,combined:null,lastContact:null,relationships:[]};nodes.set(pid,node);}
    node.name=preferName(node.name,person.name,person.email);
    const profile=member.contribution.shareProfiles===true?value.profiles?.[person.email]:undefined;
    if(profile){node.name=preferName(node.name,profile.name,person.email);node.photoUrl ||= workspacePhoto(profile.photoUrl);}
@@ -68,6 +70,8 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  }catch{ /* Known shared identities remain available when the private source is offline. */ }
  for(const node of nodes.values())if(node.name.startsWith('Someone at '))node.name='Name unavailable';
  graph.nodes=[...nodes.values()];graph.edges=[...edges.values()];
+ for(const member of w.members)if(!graph.coverage.sources.some(s=>s.memberId===member.id&&s.source==='web'))graph.coverage.sources.push({memberId:member.id,memberName:member.email,source:'web',available:null,included:0,status:member.contribution.enabled?'unavailable':'not_shared',limited:false});
+ await appendWorkspaceObsidian(env,w,me,graph);
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}
  return graph;

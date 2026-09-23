@@ -181,6 +181,7 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 		await refreshShares(env, auth.email);
 		const graph = await env.MAIL.getByName(auth.email).graph();
 		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
+		if(new URL(request.url).searchParams.get("source")==="web")return json({account:auth.email,graph:null});
 	}
 	const row = await env.DB.prepare("SELECT json, updated_at FROM graphs WHERE email = ?")
 		.bind(auth.email)

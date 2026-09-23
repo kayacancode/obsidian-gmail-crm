@@ -77,3 +77,34 @@ test('workspace retains human display names over viewer email-handle fallbacks',
  f.env.MAIL.getByName=(owner:string)=>({...original(owner),workspaceProfiles:async()=>({'contact@example.test':{name:'contact',photoUrl:null}})});
  assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].name,'Contact Name');
 });
+
+test('workspace Obsidian source requires consent, retains photos, excludes private context and scores',async()=>{
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ const snapshot={coverage:{totalContacts:4900},nodes:[{id:'vault-a',name:'Ada Vault',company:'Design',photoUrl:'https://lh3.googleusercontent.com/ada',combined:99},{id:'vault-b',name:'Bo Vault'}],edges:[{source:'vault-a',target:'vault-b',contexts:['PRIVATE EMAIL SUBJECT'],weight:88}]};
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify(snapshot),1700000000);
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes.length,1);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true,shareProfiles:true},'member@example.com');
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(g.nodes.length,3);
+ const ada=g.nodes.find(n=>n.name==='Ada Vault')!;assert.equal(ada.photoUrl,'https://lh3.googleusercontent.com/ada');assert.equal(ada.relationships[0].score,null);
+ assert.ok(!JSON.stringify(g).includes('PRIVATE EMAIL SUBJECT'));
+ const coverage=g.coverage.sources.find(s=>s.source==='obsidian'&&s.included>0)!;assert.equal(coverage.available,2);assert.equal(coverage.vaultTotal,4900);assert.equal(coverage.limited,true);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'people',personIds:['obsidian:vault-a']},level:'names',includeObsidian:true,shareProfiles:false},'member@example.com');
+ const scoped=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(scoped.nodes.some(n=>n.name==='Bo Vault'),false);assert.equal(scoped.nodes.find(n=>n.name==='Ada Vault')!.photoUrl,null);
+ const own=await buildWorkspaceGraph(f.env,f.id,'member@example.com');assert.equal(own.nodes.find(n=>n.name==='Ada Vault')!.photoUrl,'https://lh3.googleusercontent.com/ada');
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:false},'member@example.com');
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes.some(n=>n.name==='Ada Vault'),false);
+});
+test('workspace includes a 4900-person uploaded vault without the web sharing cap',async()=>{
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify({nodes:Array.from({length:4900},(_,i)=>({id:'vault-'+i,name:'Person '+i})),edges:[]}),1700000000);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true},'member@example.com');
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(g.nodes.length,4901);assert.equal(g.coverage.sources.find(s=>s.source==='obsidian'&&s.included>0)!.included,4900);
+});
+
+test('workspace vault address-shaped names require profile consent except for the owner',async()=>{
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify({nodes:[{id:'vault-a',name:'privatehandle@example.test'}],edges:[]}),1700000000);
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true,shareProfiles:false},'member@example.com');
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes.find(n=>n.sources?.includes('obsidian'))!.name,'Name unavailable');
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'member@example.com')).nodes.find(n=>n.sources?.includes('obsidian'))!.name,'privatehandle');
+});

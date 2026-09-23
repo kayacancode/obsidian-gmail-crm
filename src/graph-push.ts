@@ -50,6 +50,7 @@ export interface GraphEdgeOut {
 }
 
 export interface GraphPayload {
+	coverage?: {totalContacts:number;publishedContacts:number;excludedContacts:number};
 	pushedAt: string;
 	nodes: GraphNodeOut[];
 	edges: GraphEdgeOut[];
@@ -85,21 +86,13 @@ export interface GraphThemeSignalOut {
 
 const MAX_EDGE_CONTEXTS = 5;
 const MAX_CONTEXT_CHARS = 120;
-// The worker rejects pushes near D1's 2MB row cap, and the viewer's force
-// layout has no business rendering 23k nodes anyway. Push the connected graph:
-// everyone with at least one tie, capped by connectivity, shrunk until the
-// serialized payload fits the budget.
-const MAX_NODES = 1500;
+// Keep up to 10k contacts, including isolates. Reduce only when the serialized
+// snapshot exceeds the D1 row budget, and report exact publication coverage.
+const MAX_NODES = 10000;
 const BYTE_BUDGET = 1_600_000;
 const MIN_NODES = 200;
 
-/**
- * Build the push payload. Pure given its inputs; hashing is Web Crypto.
- *
- * Small vaults (fewer contacts than the cap) keep everyone, isolates included.
- * Large vaults keep only the most-connected people, so compare the returned
- * node count to `contacts.length` to report what was pruned.
- */
+/** Build a private, opaque-ID snapshot with explicit coverage counts. */
 export async function buildGraphPayload(
 	contacts: GraphContactInput[],
 	edges: ContactEdge[],
@@ -150,11 +143,8 @@ export async function buildGraphPayload(
 	let ctxPerEdge = MAX_EDGE_CONTEXTS;
 	for (;;) {
 		const boundedThemes = limitThemesByPerson(themeInputs, byEmail, themeCandidatesPerPerson);
-		// Under the cap, everyone fits (isolates included). Over it, only the
-		// connected make the cut — an isolate can't out-rank a connected node.
-		const kept = byEmail.size <= cap
-			? byConnectivity
-			: byConnectivity.slice(0, cap).filter((email) => (wdeg.get(email) ?? 0) > 0);
+		// Preserve isolates as well as connected people within the publication budget.
+		const kept = byConnectivity.slice(0, cap);
 		const keptSet = new Set(kept);
 
 		const nodes: GraphNodeOut[] = [];
@@ -190,6 +180,7 @@ export async function buildGraphPayload(
 		const pushedAt = new Date().toISOString();
 		const { themes, themeSignals } = await graphThemesFor(keptSet, boundedThemes, idFor, salt, pushedAt);
 		const payload: GraphPayload = {
+			coverage:{totalContacts:byEmail.size,publishedContacts:nodes.length,excludedContacts:byEmail.size-nodes.length},
 			pushedAt,
 			nodes,
 			edges: edgesOut,

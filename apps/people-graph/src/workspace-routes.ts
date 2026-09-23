@@ -64,7 +64,7 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
    const self=memberOf(w,me);
    if(method==='PUT'&&action==='contribution'){
     if(typeof body.enabled!=='boolean')deny(400,'invalid_contribution');
-    try{self.contribution={shareProfiles:body.shareProfiles===true,enabled:body.enabled,scope:normalizeShareScope(body.scope),level:normalizeShareLevel(body.level)};}catch{deny(400,'invalid_contribution');}return;
+    try{self.contribution={includeObsidian:body.includeObsidian===true,shareProfiles:body.shareProfiles===true,enabled:body.enabled,scope:normalizeShareScope(body.scope),level:normalizeShareLevel(body.level)};}catch{deny(400,'invalid_contribution');}return;
    }
    if(method==='DELETE'&&action==='invites'&&target){adminOf(w,me);const i=w.invites.find(i=>i.id===target);if(i)i.revoked=true;return;}
    if(method==='POST'&&action==='transfer'){

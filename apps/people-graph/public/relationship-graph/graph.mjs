@@ -496,7 +496,7 @@ export function mountGraph(element, options = {}) {
       if (node.via?.length) label.append(make('small', 'rg-node-via', viaLine(node)));
       if(graph.source==='workspace'&&node.relationships?.length){
         const names=node.relationships.map(r=>r.memberName);
-        label.append(make('small','rg-shared-by','Via '+names.map(n=>n.split('@')[0]).join(', ')));
+        label.append(make('small','rg-shared-by','Via '+names.map(n=>n.split('@')[0]).join(', ')+(node.sources?.includes('obsidian')?' · Obsidian':'')));
         nodeButton.title+='\nShared by '+names.join(', ');
         const marks=make('span','rg-member-marks');marks.setAttribute('aria-hidden','true');
         for(const r of node.relationships){const mark=make('span');mark.style.backgroundColor=`hsl(${hash(r.memberId)%360} 52% 42%)`;marks.append(mark);}nodeButton.append(marks);
@@ -1230,6 +1230,15 @@ export function mountGraph(element, options = {}) {
     if (lens !== 'off' && !pathState) {
       const discoveries = renderDiscoveries();
       if (discoveries) root.append(discoveries);
+    }
+    if(graph.source==='workspace'&&graph.sourceCoverage?.length){
+      const coverage=make('details','rg-source-coverage');coverage.append(make('summary','', 'People included by member and source'));
+      for(const c of graph.sourceCoverage){
+        const status=c.status==='not_shared'?'Not shared — enable in Shared networks':c.status==='not_uploaded'?'No uploaded snapshot — publish from Obsidian':c.status==='scope_excluded'?'Excluded by Granola folder selection':c.status==='unavailable'?'Source unavailable':`${c.included} included${c.available!==null?' of '+c.available+' in this source':''}${c.limited?' · limited':''}${c.vaultTotal?' · '+c.vaultTotal+' contacts in vault':c.source==='obsidian'?' · vault total unknown for this older snapshot':''}`;
+        coverage.append(make('p','rg-source',`${c.memberName} · ${c.source==='obsidian'?'Obsidian':'Gmail / Granola'}: ${status}`));
+      }
+      coverage.append(make('p','rg-source','Obsidian records with legacy private IDs stay separate from web contacts. Matching names alone do not establish the same person.'));
+      root.append(coverage);
     }
     root.append(renderDirectory());
     const meta = make('footer', 'rg-meta');

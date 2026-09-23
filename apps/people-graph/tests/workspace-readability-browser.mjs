@@ -30,5 +30,9 @@ try {
  await page.getByRole('button',{name:'Read names',exact:true}).click();
  await page.setViewportSize({width:390,height:844});
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.evaluate(()=>window.testGraph.setGraph({source:'workspace',nodes:Array.from({length:4900},(_,i)=>({id:'vault'+i,name:'Vault Person '+i,type:'person',sources:['obsidian'],relationships:[{memberId:'a',memberName:'alex@example.com',score:null}]})),edges:[],coverage:{sources:[{memberId:'a',memberName:'alex@example.com',source:'obsidian',available:4900,included:4900,status:'ready',limited:false,vaultTotal:4900}]}}));
+ assert.equal(await page.locator('.rg-node').count(),4900);
+ await page.getByText('People included by member and source',{exact:true}).click();
+ assert.match(await page.locator('.rg-source-coverage').innerText(),/4900 included of 4900/);
  assert.deepEqual(errors,[]);console.log('PASS 171 people: readable initial portraits, names, contributors, highlight, fit, mobile');
 }finally{await browser.close();}

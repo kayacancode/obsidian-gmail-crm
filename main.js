@@ -3107,7 +3107,7 @@ var MAX_PUSH_THEME_SIGNALS = 5e3;
 // src/graph-push.ts
 var MAX_EDGE_CONTEXTS = 5;
 var MAX_CONTEXT_CHARS = 120;
-var MAX_NODES = 1500;
+var MAX_NODES = 1e4;
 var BYTE_BUDGET = 16e5;
 var MIN_NODES = 200;
 async function buildGraphPayload(contacts, edges, salt, themeInputs = []) {
@@ -3156,10 +3156,7 @@ async function buildGraphPayload(contacts, edges, salt, themeInputs = []) {
   let ctxPerEdge = MAX_EDGE_CONTEXTS;
   for (; ; ) {
     const boundedThemes = limitThemesByPerson(themeInputs, byEmail, themeCandidatesPerPerson);
-    const kept = byEmail.size <= cap ? byConnectivity : byConnectivity.slice(0, cap).filter((email) => {
-      var _a2;
-      return ((_a2 = wdeg.get(email)) != null ? _a2 : 0) > 0;
-    });
+    const kept = byConnectivity.slice(0, cap);
     const keptSet = new Set(kept);
     const nodes = [];
     for (const email of kept) {
@@ -3192,6 +3189,7 @@ async function buildGraphPayload(contacts, edges, salt, themeInputs = []) {
     const pushedAt = (/* @__PURE__ */ new Date()).toISOString();
     const { themes, themeSignals } = await graphThemesFor(keptSet, boundedThemes, idFor, salt, pushedAt);
     const payload = {
+      coverage: { totalContacts: byEmail.size, publishedContacts: nodes.length, excludedContacts: byEmail.size - nodes.length },
       pushedAt,
       nodes,
       edges: edgesOut,
@@ -5423,7 +5421,7 @@ ${relSection}
       );
       const pruned = contacts.length - pushed.nodes;
       notice.setMessage(
-        pruned > 0 ? `Pushed your ${pushed.nodes} most-connected people (${pruned} without ties left out), ${pushed.edges} connections, ${payload.themes.length} themes \u2014 open ${this.settings.graphPushUrl} to view` : `Pushed ${pushed.nodes} people, ${pushed.edges} connections, ${payload.themes.length} themes \u2014 open ${this.settings.graphPushUrl} to view`
+        pruned > 0 ? `Pushed your ${pushed.nodes} most-connected people (${pruned} excluded by publication size limits), ${pushed.edges} connections, ${payload.themes.length} themes \u2014 open ${this.settings.graphPushUrl} to view` : `Pushed ${pushed.nodes} people, ${pushed.edges} connections, ${payload.themes.length} themes \u2014 open ${this.settings.graphPushUrl} to view`
       );
       setTimeout(() => notice.hide(), 6e3);
     } catch (e) {

@@ -8,6 +8,7 @@ try{
  await page.route('**/api/**',r=>{const p=new URL(r.request().url()).pathname;
  if(p==='/api/accounts')return r.fulfill({json:{account:'new@example.com',configured:true,accounts:[]}});
  if(p==='/api/workspace-invites/accept'){joined=true;return r.fulfill({json:{workspace}});}
+ if(p==='/api/graph')return r.fulfill({json:{graph:new URL(r.request().url()).searchParams.get('source')==='obsidian'?{nodes:[{id:'vault-person',name:'Vault Person'}]}:null}});
  if(p==='/api/workspaces')return r.fulfill({json:{workspaces:joined?[workspace]:[]}});
  if(p.endsWith('/contribution')){savedContribution=r.request().postDataJSON();return r.fulfill({json:{ok:true}});}
  if(p.endsWith('/members'))return r.fulfill({json:{workspace,members:[{id:'m2',email:'new@example.com',isMe:true,role:'member',sharing:false}],invites:[]}});
@@ -19,6 +20,10 @@ try{
  assert.equal(joined,true);assert.equal(await page.getByText('Nothing shared yet.',{exact:true}).count(),1);
  assert.equal(await page.getByRole('link',{name:'Open shared network',exact:true}).getAttribute('href'),'/?workspace=test-team');
  workspace.contribution={enabled:true,scope:{kind:'folders',ids:['private-folder']},level:'names'};await page.reload();await page.getByText('Members, invitations & what I share',{exact:true}).click();await page.getByLabel('Context to share').selectOption('themes');assert.equal(await page.getByLabel('Share contact display names and photos',{exact:true}).isChecked(),false);await page.getByLabel('Share contact display names and photos',{exact:true}).check();await page.getByRole('button',{name:'Save sharing choices'}).click();await page.getByText('Sharing choices saved.',{exact:true}).waitFor();assert.equal(savedContribution.shareProfiles,true);assert.deepEqual(savedContribution.scope,{kind:'folders',ids:['private-folder']});
+ workspace.contribution={enabled:true,scope:{kind:'all'},level:'names'};await page.reload();await page.getByText('Members, invitations & what I share',{exact:true}).click();
+ await page.getByLabel('Include my uploaded Obsidian people',{exact:true}).check();await page.getByLabel('People to share').selectOption('people');
+ await page.getByLabel('Vault Person · Obsidian',{exact:true}).check();assert.equal(await page.getByLabel('Vault Person',{exact:true}).count(),0);
+ await page.getByRole('button',{name:'Save sharing choices'}).click();await page.getByText('Sharing choices saved.',{exact:true}).waitFor();assert.equal(savedContribution.includeObsidian,true);assert.deepEqual(savedContribution.scope.personIds,['obsidian:vault-person']);
  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  assert.deepEqual(errors,[]);await page.screenshot({path:'/tmp/people-workspace-onboarding.png',fullPage:true});console.log('PASS browser-only acceptance, private default, workspace link, mobile');
 }finally{await browser.close();}

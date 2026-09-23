@@ -942,3 +942,6 @@
 .rg-node-label .rg-shared-by { color: var(--rg-foreground); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .rg-node[data-member-muted='true'] { opacity: .2; }
 .rg-node[data-member-muted='true']:hover,.rg-node[data-member-muted='true']:focus-visible { opacity: 1; }
+
+.rg-source-coverage {padding:16px 24px;border-top:1px solid var(--rg-line);font-size:12px;}
+.rg-source-coverage summary {cursor:pointer;}

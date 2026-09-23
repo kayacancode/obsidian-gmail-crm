@@ -1053,7 +1053,7 @@ export default class GmailCrmPlugin extends Plugin {
 			const pruned = contacts.length - pushed.nodes;
 			notice.setMessage(
 				pruned > 0
-					? `Pushed your ${pushed.nodes} most-connected people (${pruned} without ties left out), ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
+					? `Pushed your ${pushed.nodes} most-connected people (${pruned} excluded by publication size limits), ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
 					: `Pushed ${pushed.nodes} people, ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
 			);
 			setTimeout(() => notice.hide(), 6000);

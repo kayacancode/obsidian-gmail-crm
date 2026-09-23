@@ -646,7 +646,7 @@ async function startBrowserApp() {
   }
 
   function graphSourceLabel(graph) {
-    if(graph?.source==='workspace')return `${graph.workspaceName} · ${graph.coverage?.contributors??0} contributions${graph.coverage?.unavailable?.length?' · Some contributions unavailable':''}${graph.coverage?.truncated?' · Showing a bounded selection':''} · Measured member relationships; personal feedback stays private.`;
+    if(graph?.source==='workspace')return `${graph.workspaceName} · ${graph.nodes?.length??0} people · ${new Set((graph.coverage?.sources||[]).filter(s=>s.included>0).map(s=>s.memberId)).size} members with people${graph.coverage?.unavailable?.length?' · Some contributions unavailable':''}${graph.coverage?.truncated?' · Showing a bounded selection':''} · Measured member relationships; personal feedback stays private.`;
     const sourceName = graph?.source === 'email_accounts' ? 'Email metadata and automatic scores' : 'Recorded graph snapshot';
     const updated = graph?.pushedAt ? new Date(graph.pushedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'date not included';
     return `${sourceName} · ${updated}`;

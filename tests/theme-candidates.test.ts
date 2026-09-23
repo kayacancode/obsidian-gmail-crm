@@ -246,3 +246,11 @@ test("graph payload maps local candidates to opaque node ids without raw emails 
 	assert.ok(!serialized.includes("@"));
 	assert.ok(!serialized.includes("PRIVATE NOTE BODY"));
 });
+
+test('vault push includes 4900 unconnected contacts and reports actual publication coverage',async()=>{
+ const people=Array.from({length:4900},(_,i)=>({...contacts[0],name:'Person '+i,email:`p${i}@example.com`,photoUrl:'https://lh3.googleusercontent.com/photo'}));
+ const payload=await buildGraphPayload(people,[],'local-salt');
+ assert.equal(payload.nodes.length,4900);assert.equal(payload.nodes[0].photoUrl,'https://lh3.googleusercontent.com/photo');
+ assert.deepEqual(payload.coverage,{totalContacts:4900,publishedContacts:4900,excludedContacts:0});
+ assert.equal(JSON.stringify(payload).includes('p0@example.com'),false);
+});
