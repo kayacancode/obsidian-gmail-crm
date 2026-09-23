@@ -1,14 +1,13 @@
+import { wanderTopics, walkBranches } from './wander.mjs';
+import { spatialLayout } from './layout.mjs';
 import { normalizeGraph, searchGraph } from './model.mjs';
 import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
 import { parseMeetingBatch, meetingPreviewState, withMeetingPreview } from './meeting-preview.mjs';
+import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals } from './intelligence.mjs';
 
 const DIRECTORY_PAGE_SIZE = 50;
-// World-space gutters include names and Why now controls. The camera scales the
-// entire scene; viewport size must never determine how many people exist on it.
-const CANVAS_ROW_PITCH = 210;
-const CANVAS_COLUMN_PITCH = 160;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 function initials(name) {
@@ -30,16 +29,7 @@ function hash(value) {
 }
 
 function positionFor(node, index, layout) {
-  const seed = hash(node.id);
-  const columns = layout.columns;
-  const column = index % columns;
-  const row = Math.floor(index / columns);
-  return {
-    x: CANVAS_COLUMN_PITCH * (column + .5) + ((seed & 255) / 255 - .5) * 12,
-    y: 90 + row * CANVAS_ROW_PITCH + (((seed >>> 8) & 255) / 255 - .5) * 10,
-    size: 72 + (seed % 19),
-    labelWidth: 136,
-  };
+  return layout.spatial.positions.get(node.id) || {x:0,y:0,size:76,labelWidth:136};
 }
 
 // Evidence reads as sentences: a plain-language summary, then the source and its date.
@@ -112,6 +102,8 @@ export function mountGraph(element, options = {}) {
     onRetrievePreview: options.onRetrievePreview,
     onOpenPublicSource: options.onOpenPublicSource,
     onDraftNote: options.onDraftNote,
+    onWander:options.onWander,
+    onPersonFeedback:options.onPersonFeedback,
   };
   let graph = normalizeGraph(options.graph ?? { nodes: [], edges: [] });
   const demoEnabled = () => options.demo === true && graph.meta.fictional === true;
@@ -119,6 +111,26 @@ export function mountGraph(element, options = {}) {
   let nodeIndex;
   let edgesByNode;
   let selectedId = null;
+  let timeWindow = 'all';
+  let topicsOpen = false;
+  let walkHistory=[];
+  let walkIndex=-1;
+  let wanderFilter='';
+  let digestView='attention';
+  let attentionFeedback={};
+  let personFeedbackBusy=false;
+  let personFeedbackMessage='';
+  let attentionStorageMessage='Choices are saved for this account in this browser.';
+  const attentionStorageKey=options.previewAccount ? `people-attention:${options.previewAccount}` : null;
+  try {if(attentionStorageKey) attentionFeedback=JSON.parse(localStorage.getItem(attentionStorageKey)||'{}');if(!attentionFeedback||Array.isArray(attentionFeedback)||typeof attentionFeedback!=='object')attentionFeedback={};} catch {attentionFeedback={};}
+  let timelineLimit = 60;
+  let eventPeople = null;
+  let spatialCache = null;
+  let spatialKey = '';
+  let spatialNodes = null;
+  let searchAnswer = null;
+  let exploration = null;
+  const timeNames = {upcoming:'Upcoming',today:'Today',week:'This week',month:'30 days',all:'All time'};
   let selectedEdgeId = null;
   let panelMode = null;
   let trail = { nodeIds: [], edgeIds: [] };
@@ -163,7 +175,7 @@ export function mountGraph(element, options = {}) {
     // A stored score without visible, active evidence must never create a glow.
     const activeIds = new Set(relevanceGraph.themes.filter(theme => theme.status === 'active').map(theme => theme.id));
     relevanceGraph = { ...relevanceGraph, relevance: { ...relevanceGraph.relevance,
-      themes: relevanceGraph.relevance.themes.filter(theme => activeIds.has(theme.themeId) && theme.score > 0 && theme.components.length),
+      themes: conversationThemes(relevanceGraph.relevance.themes.filter(theme => activeIds.has(theme.themeId) && theme.score > 0 && theme.components.length), relevanceGraph.themeSignals),
     } };
     if (activeThemeId && !relevanceGraph.relevance.themes.some(theme => theme.themeId === activeThemeId)
       && !(lens === 'my' && meetingPreview?.cards.some(card => card.themeId === activeThemeId))) {
@@ -214,6 +226,7 @@ export function mountGraph(element, options = {}) {
 
   const root = document.createElement('section');
   root.className = 'rg-shell';
+  root.dataset.compactHeader=String(Boolean(options.compactHeader));
   root.dataset.demo = String(demoEnabled());
   root.setAttribute('aria-label', options.title || 'Relationship graph');
   element.replaceChildren(root);
@@ -251,15 +264,18 @@ export function mountGraph(element, options = {}) {
     const height = Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
     const usableWidth = Math.max(132, width - (width >= 1100 ? 380 : 48));
-    const top = width <= 700 ? 365 : 260;
+    const top = options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
     const usableHeight = height - top - 86;
-    const count = Math.max(1, graph.nodes.length);
-    const columns = Math.min(count, Math.max(1, Math.ceil(Math.sqrt(count * usableWidth / usableHeight * CANVAS_ROW_PITCH / CANVAS_COLUMN_PITCH))));
-    const rows = Math.ceil(count / columns);
-    const worldWidth = columns * CANVAS_COLUMN_PITCH;
-    const worldHeight = rows * CANVAS_ROW_PITCH;
-    const fitScale = Math.min(1, usableWidth / worldWidth, usableHeight / worldHeight);
-    return { width, height, usableWidth, usableHeight, top, columns, worldWidth, worldHeight, fitScale };
+    const baseRelevance=filterRelevance(graph,'my');
+    const layoutThemes=conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
+    const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|');
+    if(!spatialCache || spatialNodes!==graph.nodes || key!==spatialKey) {
+      spatialCache=spatialLayout(graph.nodes,graph.edges,layoutThemes);
+      spatialKey=key;spatialNodes=graph.nodes;
+    }
+    const worldWidth=spatialCache.width,worldHeight=spatialCache.height;
+    const fitScale=Math.min(1,usableWidth/worldWidth,usableHeight/worldHeight);
+    return {width,height,usableWidth,usableHeight,top,worldWidth,worldHeight,fitScale,spatial:spatialCache};
   }
 
   function focusCanvas(ids) {
@@ -282,11 +298,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function promotedThemes() {
-    // Calendar boilerplate stays inspectable in the complete picker, but does not
-    // masquerade as a substantive topic on the map. Never invent replacement names.
-    return rankedThemes().filter(theme => !theme.components.every(c => c.sourceType === 'gmail_subject')
-      || !/^(?:updated invitation|invitation|accepted|declined|canceled|cancelled|reminder|new registration|thank you|hey|can t|you ve|would love|following up|got my|notes kaya|kaya s|today s|see what|how install|how enable|just fyi|time talk|time chat|finding time|nice chatting|great connecting|my apologies|week has|you guys|meet w|30 min|id\b)\b/i.test(theme.name))
-      .slice(0, 5);
+    return rankedThemes().slice(0, 5);
   }
 
   function themeColor(id) {
@@ -308,42 +320,34 @@ export function mountGraph(element, options = {}) {
     const themes = rankedThemes();
     const section = make('section', 'rg-topic-bar');
     section.setAttribute('aria-label', 'Topics and themes');
+    const toggle = button(`What’s coming up in your conversations${themes.length ? ` · ${themes.length}` : ''}`, 'toggle-topics', 'rg-topic-toggle');
+    toggle.setAttribute('aria-expanded', String(topicsOpen));
+    section.append(toggle);
+    if (!topicsOpen) return section;
+    section.classList.add('rg-topic-expanded');
     const heading = make('div', 'rg-topic-heading');
-    heading.append(make('h2', '', 'Topics & themes'));
-    const reset = button('All themes', 'clear-theme', 'rg-topic-reset');
-    reset.setAttribute('aria-pressed', String(!activeThemeId));
+    const reset = button('Show everyone', 'clear-theme', 'rg-topic-reset');
     heading.append(reset);
     if (meetingPreview && lens === 'my') heading.append(button('Review meeting batch', 'review-meetings', 'rg-topic-reset'));
-    const picker = make('select');
-    picker.dataset.action = 'browse-theme';
-    picker.setAttribute('aria-label', 'Browse all themes');
-    const placeholder = make('option', '', `Browse all ${themes.length} themes…`);
-    placeholder.value = '';picker.append(placeholder);
-    for (const theme of themes) {
-      const option = make('option', '', `${theme.name} · ${themeSource(theme)}`);
-      option.value = theme.themeId;option.selected = activeThemeId === theme.themeId;picker.append(option);
-    }
-    heading.append(picker);section.append(heading);
-    const onlySubjects = themes.length && themes.every(theme => theme.components.every(c => c.sourceType === 'gmail_subject'));
-    const explanation = themes.length
-      ? onlySubjects ? 'Based on email subjects. Deeper topics need approved body analysis or synced meeting notes.' : 'Themes from your permitted sources. Choose one to see its people and evidence.'
-      : `No ${lens === 'firm' ? 'firm-shared' : lens === 'public' ? 'public-source' : 'evidence-backed'} themes yet in this view.`;
-    // Firm is the only lens that shows evidence someone else shared with you, so name it here.
-    section.append(make('p', 'rg-topic-explanation', lens === 'firm'
-      ? `${explanation} Firm also shows the evidence shared with you by the people marked “via” on the canvas.`
-      : explanation));
-    section.querySelector('.rg-topic-explanation').append(make('span', 'rg-heat-legend', 'Color = theme · Glow = recent relevance, not closeness'));
+    section.append(heading);
+    section.append(make('p', 'rg-topic-explanation', themes.length
+      ? 'Topics supported by notes or analyzed content. Select one to see the people and source evidence.' + (lens==='firm'?' Firm includes evidence shared with you, marked via its owner.':'')
+      : 'No supported conversation topics yet. Sync meeting notes or enable email content analysis in Accounts. Email subject fragments are excluded.'));
     const chips = make('div', 'rg-topic-chips');
-    const promoted = promotedThemes();
+    const promoted = themes.slice();
     const active = themes.find(theme => theme.themeId === activeThemeId);
     if (active && !promoted.some(theme => theme.themeId === activeThemeId)) promoted.splice(4, 1, active);
     for (const theme of promoted) {
       const chip = button('', 'inspect-theme', 'rg-theme-label');
       chip.dataset.themeId = theme.themeId;
       chip.style.setProperty('--field-color', themeColor(theme.themeId));
-      chip.setAttribute('aria-label', `Why ${theme.name} is hot now`);
+      chip.setAttribute('aria-label', `Explore conversation: ${theme.name}`);
       chip.setAttribute('aria-pressed', String(theme.themeId === activeThemeId));
       chip.append(make('span', '', theme.name), make('small', '', `${themeSource(theme)} · ${theme.nodeIds.length} people`));
+      const names = theme.nodeIds.slice(0,3).map(id=>byId.get(id)?.name).filter(Boolean);
+      chip.append(make('small', '', names.join(', ') + (theme.nodeIds.length > 3 ? ' + more' : '')));
+      if (theme.summary) chip.append(make('p', 'rg-topic-summary', theme.summary));
+      if (theme.latestAt) chip.append(make('small', '', `Last recorded ${theme.latestAt.slice(0,10)}`));
       chips.append(chip);
     }
     section.append(chips);
@@ -374,7 +378,8 @@ export function mountGraph(element, options = {}) {
       };
     }
     const matches = searchGraph(relevanceGraph, query);
-    return { nodes: matches, edges: [], total: matches.length, isPath: false };
+    const visibleIds = new Set(matches.map(node => node.id));
+    return { nodes: matches, edges: graph.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target)), total: matches.length, isPath: false };
   }
 
   function renderPortrait(node, index) {
@@ -414,6 +419,7 @@ export function mountGraph(element, options = {}) {
     edgeLayer.setAttribute('aria-label', 'Visible relationship evidence');
     const data = visibleCanvasData();
     const scale = layout.fitScale * camera.zoom;
+    canvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
     canvas.dataset.detail = String(data.isPath || scale >= .8);
     let scene = canvas;
     if (!data.isPath) {
@@ -423,6 +429,10 @@ export function mountGraph(element, options = {}) {
       Object.assign(scene.style, { width: `${layout.worldWidth}px`, height: `${layout.worldHeight}px`,
         transform: `translate(${(layout.usableWidth - layout.worldWidth * scale) / 2 + camera.x}px, ${(layout.usableHeight - layout.worldHeight * scale) / 2 + camera.y}px) scale(${scale})` });
       viewport.append(scene);canvas.append(viewport);
+    }
+    if(!data.isPath) for(const cluster of layout.spatial.clusters) {
+      const label=make('span','rg-community-label',cluster.name);
+      label.style.left=`${cluster.x}px`;label.style.top=`${cluster.y}px`;scene.append(label);
     }
     const positions = new Map();
     const pulseIds = new Set(data.nodes.filter(node => node.type === 'person')
@@ -504,7 +514,10 @@ export function mountGraph(element, options = {}) {
       line.setAttribute('x2', String(target.x));
       line.setAttribute('y2', String(target.y));
       line.dataset.kind = edge.kind;
+      line.dataset.selected = String(data.isPath || edge.source === selectedId || edge.target === selectedId);
       lines.append(line);
+      // In the overview the network reads as fine threads; labels appear on selection.
+      if (!selectedId && !data.isPath) return;
       const edgeButton = button(edge.label, 'inspect-edge', 'rg-edge-label');
       edgeButton.dataset.edgeId = edge.id;
       edgeButton.dataset.uncertain = String(edge.kind !== 'personal');
@@ -574,7 +587,10 @@ export function mountGraph(element, options = {}) {
     panel.setAttribute('aria-label', 'Selected item and connections');
     panel.append(button('×', 'close-panel', 'rg-close'));
     panel.lastElementChild.setAttribute('aria-label', 'Close details');
-    panel.append(make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
+    const portrait = make('div','rg-profile-portrait');
+    portrait.append(renderPortrait(node,nodeIndex.get(node.id)));
+    panel.append(portrait, make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
+    const walkStart=button('Explore from here','walk-person','rg-text-button');walkStart.dataset.nodeId=node.id;panel.append(walkStart);
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
     const profile = [node.role, node.company].filter(Boolean).join(' · ');
     if (profile) panel.append(make('p', 'rg-source', profile));
@@ -582,6 +598,38 @@ export function mountGraph(element, options = {}) {
       panel.append(make('p', 'rg-source rg-shared-source', `${sharedByLine(node)}. Their evidence appears in the Firm lens only.`));
     }
     if (node.type === 'person') {
+      const summary = connectionSummary(node,graph.nodes);
+      const scores = make('section','rg-profile-section');
+      scores.append(make('h3','','Your connection'));
+      scores.append(make('p','rg-profile-score',summary ? `${Math.round(summary.score)} / 100` : 'Not measured'));
+      if(summary) scores.append(make('p','rg-source',`Stronger recorded activity than ${summary.lower} of ${summary.total} other scored direct contacts. Based on frequency and reciprocity; this is not a measure of personal closeness.`));
+      const contact = directContact(node);
+      scores.append(make('p','rg-source',contact ? `Your last recorded contact: ${contact.slice(0,10)}` : 'No dated direct contact in this data.'));
+      if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`People score: ${Math.round(node.combined)} / 100${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
+      if(graph.personFeedback?.[node.id]){const undo=button('Undo person feedback','person-feedback','rg-text-button');undo.dataset.nodeId=node.id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy||!callbacks.onPersonFeedback;scores.append(undo);}
+      panel.append(scores);
+      const result = searchAnswer?.results.find(p=>p.personId===node.id);
+      if(result) {
+        const match=make('section','rg-profile-section');
+        match.append(make('h3','','Why this person'),make('p','rg-source',`${searchAnswer.checked?'Jev relevance':'Keyword relevance'}: ${Math.round(result.score*100)} / 100 · separate from connection strength`));
+        for(const reason of result.reasons??[]) match.append(make('p','rg-copy',[reason.summary,reason.title,reason.observedAt?.slice(0,10)].filter(Boolean).join(' · ')));
+        panel.append(match);
+      }
+      const intros=introductionCandidates(node.id,graph.nodes,graph.edges);
+      if(intros.length) {
+        const routes=make('section','rg-profile-section'); routes.append(make('h3','','Possible introductions'));
+        for(const {person,edge} of intros) {
+          routes.append(make('p','rg-source',`${person.name} · your connection ${Math.round(person.strength)}/100 · ${edge.label} with ${node.name}. Their relationship strength and willingness are unknown.`));
+          const ask=button(`Request intro from ${person.name}`,'draft-intro','rg-person-action');ask.dataset.connectorId=person.id;routes.append(ask);
+        }
+        panel.append(routes);
+      }
+      const context = ownSignals(relevanceGraph.themeSignals??[]).filter(s=>s.personId===node.id).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,3);
+      if(context.length) {
+        const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent recorded context'));
+        for(const s of context) notes.append(make('p','rg-copy',s.summary),make('p','rg-source',`${s.sourceType} · ${s.observedAt.slice(0,10)} · ${s.provenance?.title??'Recorded source'}`));
+        panel.append(notes);
+      }
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
       if (typeof callbacks.onOpenPublicSource === 'function') panel.append(button('Add public source', 'open-person-public-source', 'rg-theme-action'));
@@ -914,9 +962,180 @@ export function mountGraph(element, options = {}) {
     return details;
   }
 
+  function renderTimeControls() {
+    const bar=make('nav','rg-time-strip');bar.setAttribute('aria-label','Activity time window');
+    for(const [key,label] of Object.entries(timeNames)) {
+      const choice=button(label,'time-window','rg-time-choice');choice.dataset.window=key;
+      choice.setAttribute('aria-pressed',String(timeWindow===key));
+      choice.addEventListener('pointerenter',()=>applyTimePreview(key));
+      choice.addEventListener('pointerleave',()=>applyTimePreview(timeWindow));
+      choice.addEventListener('focus',()=>applyTimePreview(key));
+      choice.addEventListener('blur',()=>applyTimePreview(timeWindow));
+      bar.append(choice);
+    }
+    const summary=make('span','rg-time-summary');summary.setAttribute('role','status');bar.append(summary);
+    return bar;
+  }
+
+  function applyTimePreview(window) {
+    const now=new Date();
+    let count=0;
+    const resultIds=searchAnswer ? new Set(searchAnswer.results.map(p=>p.personId)) : null;
+    const active=new Set();
+    const events=activityTimeline(graph,window,now);
+    const eventIds=new Set(events.flatMap(e=>e.personIds));
+    for(const node of graph.nodes) {
+      if(window==='all' || eventIds.has(node.id) || (!(graph.activity?.length) && inWindow(directContact(node),window,now))) {active.add(node.id);count++;}
+    }
+    for(const el of root.querySelectorAll('.rg-node')) {
+      el.dataset.timeMuted=String(!active.has(el.dataset.nodeId) || Boolean(eventPeople&&!eventPeople.includes(el.dataset.nodeId)));
+      el.dataset.eventActive=String(Boolean(eventPeople?.includes(el.dataset.nodeId)));
+      el.dataset.answerMuted=String(Boolean(resultIds && !resultIds.has(el.dataset.nodeId)));
+      el.dataset.answerMatch=String(Boolean(resultIds?.has(el.dataset.nodeId)));
+    }
+    const label=root.querySelector('.rg-time-summary');
+    if(label) label.textContent=window==='all' ? `${count} ${count===1?'person':'people'} · full network` : `${count} ${count===1?'person':'people'} with recorded activity · ${timeNames[window].toLowerCase()}`;
+  }
+
+  function renderTimeline() {
+    const panel=make('section','rg-context-panel rg-timeline');panel.setAttribute('aria-label','Activity timeline');
+    const close=button('×','close-panel','rg-close');close.setAttribute('aria-label','Close timeline');
+    panel.append(close,make('p','rg-eyebrow','Your activity'),make('h2','',timeNames[timeWindow]));
+    const events=activityTimeline(graph,timeWindow);
+    panel.append(make('p','rg-copy',`${events.length} recorded events · local time`),make('p','rg-source',graph.activityCoverage||'Only activity available in this snapshot is shown.'));
+    if(!events.length)panel.append(make('p','rg-copy','No dated events available for this period. This does not mean you had no conversations.'));
+    let day='';
+    for(const event of events.slice(0,timelineLimit)) {
+      const date=new Date(event.allDay?event.at.slice(0,10)+'T12:00:00':event.at),label=date.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+      if(label!==day){panel.append(make('h3','rg-timeline-day',label));day=label;}
+      const row=make('article','rg-timeline-event');
+      const focus=button(event.title,'timeline-event','rg-timeline-title');focus.dataset.eventId=event.id;
+      row.append(make('p','rg-source',`${event.allDay?'All day':date.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})} · ${event.kind==='mention'?'Note mention':event.kind==='meeting'?'Meeting attendee':event.kind==='calendar'?'Calendar invitation · attendance unverified':'Email message'}`),focus,make('p','rg-source',event.source));
+      const people=make('div','rg-timeline-people');
+      for(const id of event.personIds){const person=button(byId.get(id)?.name||'Person','select-node','rg-timeline-person');person.dataset.nodeId=id;people.append(person);}
+      row.append(people);panel.append(row);
+    }
+    if(events.length>timelineLimit)panel.append(button('Show more events','more-events','rg-text-button'));
+    return panel;
+  }
+
+  function walkTo(step,remember=true) {
+    if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}
+    if(remember){walkHistory=walkHistory.slice(0,walkIndex+1);walkHistory.push(step);walkIndex=walkHistory.length-1;}
+    const topics=wanderTopics(relevanceGraph);
+    const topic=step.kind==='topic'?topics.find(t=>t.id===step.id):null;
+    eventPeople=topic?topic.nodeIds:[step.id];
+    panelMode='wander';pathState=null;topicsOpen=false;selectedId=null;activeThemeId=null;
+    focusCanvas(eventPeople);render();
+  }
+  function renderWander() {
+    const panel=make('section','rg-context-panel rg-wander');panel.setAttribute('aria-label','Guided graph walk');
+    const close=button('×','close-panel','rg-close');close.setAttribute('aria-label','Close graph walk');
+    panel.append(close,make('p','rg-eyebrow','Wander'),make('h2','','Follow a connection'));
+    const topics=wanderTopics(relevanceGraph);
+    const nav=make('div','rg-walk-nav');
+    const back=button('← Back','walk-back','rg-text-button');back.disabled=walkIndex<0;
+    nav.append(back,button('Start again','walk-reset','rg-text-button'));panel.append(nav);
+    const step=walkHistory[walkIndex];
+    const topicButton=topic=>{const b=button('','walk-topic','rg-walk-choice');b.dataset.topicId=topic.id;b.append(make('strong','',topic.name),make('small','',`${topic.kind} · ${topic.nodeIds.length} people`));return b;};
+    const personButton=(id,reason)=>{const b=button('','walk-person','rg-walk-choice');b.dataset.nodeId=id;b.append(make('strong','',byId.get(id)?.name||'Person'),make('small','',reason));return b;};
+    if(!step){
+      panel.append(make('p','rg-copy','Choose a topic or a recorded conversation. Each step shows why people connect; you choose where to go next.'));
+      const filter=make('input','rg-wander-filter');filter.type='search';filter.placeholder='Filter topics and conversations';filter.setAttribute('aria-label','Filter topics and conversations');filter.dataset.action='wander-filter';filter.value=wanderFilter;panel.append(filter);
+      const choices=make('div','rg-wander-catalog');
+      for(const t of topics){const b=topicButton(t);b.hidden=!t.name.toLowerCase().includes(wanderFilter.toLowerCase());b.dataset.filterText=t.name.toLowerCase();choices.append(b);}
+      panel.append(make('p','rg-source',`${topics.length} starting points. Recurring topics are phrases supported by separate notes; conversation titles remain labelled as conversations.`),choices);
+      if(!topics.length)panel.append(make('p','rg-copy','No supported topics yet. You can start with a person and follow recorded connections.'));
+      panel.append(make('h3','','Or start with a person'));
+      for(const n of graph.nodes.filter(n=>n.type==='person').slice(0,8))panel.append(personButton(n.id,'Explore recorded connections'));
+    } else if(step.kind==='topic') {
+      const topic=topics.find(t=>t.id===step.id);
+      if(!topic){panel.append(make('p','rg-copy','This topic is no longer available in this view. Start again.'));return panel;}
+      panel.append(make('p','rg-eyebrow',topic.kind),make('h3','',topic.name),make('p','rg-copy',topic.reason));
+      const evidence=make('details','rg-walk-evidence');evidence.append(make('summary','','Why these people?'));
+      for(const e of topic.evidence.slice(0,12)){evidence.append(make('p','rg-source',`${byId.get(e.personId)?.name||'Topic evidence'} · ${e.sourceType.replaceAll('_',' ')} · ${e.observedAt.slice(0,10)}`),make('p','rg-copy',e.summary));if(e.provenance?.canonicalUrl?.startsWith('https://')){const link=make('a','','Open source ↗');link.href=e.provenance.canonicalUrl;link.target='_blank';link.rel='noopener noreferrer';evidence.append(link);}}
+      panel.append(evidence,make('h3','','Who will you follow?'));
+      for(const id of topic.nodeIds)panel.append(personButton(id,'Appears in the supporting evidence; this alone does not establish a personal relationship.'));
+    } else {
+      const person=byId.get(step.id);panel.append(make('h3','',person?.name||'Person'));
+      if(step.reason)panel.append(make('p','rg-copy',step.reason));
+      const profile=button('Open profile','select-node','rg-text-button');profile.dataset.nodeId=step.id;panel.append(profile);
+      panel.append(make('h3','','Related topics and conversations'));
+      for(const t of topics.filter(t=>t.nodeIds.includes(step.id)))panel.append(topicButton(t));
+      panel.append(make('h3','','People connected in your records'));
+      const branches=walkBranches(step.id,graph,topics);
+      if(!branches.length)panel.append(make('p','rg-copy','No supported next connection is recorded. Choose another topic or go back.'));
+      for(const b of branches){const why=`${b.edge.label||b.edge.kind||'Recorded connection'}${b.topics.length?` · connects to ${b.topics[0].name}`:''}. This is recorded context, not a guarantee of an introduction.`;const choice=personButton(b.person.id,why);choice.dataset.reason=why;panel.append(choice);}
+    }
+    return panel;
+  }
+
+  function renderDigest() {
+    const digest=make('section','rg-context-panel rg-digest');digest.setAttribute('aria-label','Daily people digest');
+    const close=button('×','close-panel','rg-close');close.setAttribute('aria-label','Close your people');digest.append(close);
+    const heading=make('div','rg-digest-heading');
+    heading.append(make('h2','','Your people'));
+    const tabs=make('nav','rg-digest-tabs');tabs.setAttribute('aria-label','People sidebar views');
+    for(const [key,name] of [['attention','Needs attention'],['recent','Recently in touch']]){const tab=button(name,'digest-view','rg-text-button');tab.dataset.view=key;tab.setAttribute('aria-pressed',String(digestView===key));tabs.append(tab);}
+    digest.append(heading,tabs);
+    if(digestView==='attention') {
+      digest.append(make('p','rg-source','Suggestions to review from your private notes, approved email analysis, and recorded contact patterns. Questions and commitments are not verified as still open.'));
+      const items=attentionDigest(graph,attentionFeedback);
+      if(!items.length)digest.append(make('p','rg-copy','Nothing supported by the available evidence needs review right now. Recent contact alone does not create an alert.'));
+      for(const item of items) {
+        const card=make('article','rg-attention-card');
+        const person=button(item.name,'select-node','rg-attention-name');person.dataset.nodeId=item.personId;
+        card.append(make('p','rg-eyebrow',item.title),person,make('p','rg-copy',item.reason));
+        for(const e of item.evidence){
+          const source=e.source||({granola:'Granola note mention',obsidian_note:'Obsidian note mention',gmail_body_derived:'Analyzed email content'}[e.sourceType]||'Recorded evidence');
+          const details=make('details','rg-attention-evidence');details.open=e===item.evidence[0];details.append(make('summary','',`${source} · ${e.observedAt.slice(0,10)}`),make('p','rg-copy',e.summary));
+          if(e.provenance?.title)details.append(make('p','rg-source',e.provenance.title));
+          if(e.provenance?.canonicalUrl?.startsWith('https://')){const link=make('a','','Open source ↗');link.href=e.provenance.canonicalUrl;link.target='_blank';link.rel='noopener noreferrer';details.append(link);}
+          card.append(details);
+        }
+        const actions=make('div','rg-attention-actions');
+        for(const [action,label] of (callbacks.onPersonFeedback?[['boost','We connected · +10'],['suppress','Not interested · −10'],['snooze','Later · 7 days']]:[['done','Mark done'],['snooze','Snooze 7 days'],['dismiss','Dismiss']])){const control=button(label,callbacks.onPersonFeedback?'person-feedback':'attention-feedback','rg-text-button');control.dataset.feedback=action;control.dataset.nodeId=item.personId;control.dataset.suggestionId=item.id;control.disabled=personFeedbackBusy;actions.append(control);}
+        card.append(actions);digest.append(card);
+      }
+      digest.append(make('p','rg-source',callbacks.onPersonFeedback?'Person choices are saved to your web account. Not interested hides future suggestions; Later does not change scores.':attentionStorageMessage));
+      if(personFeedbackMessage)digest.append(make('p','rg-source',personFeedbackMessage));
+      if(callbacks.onPersonFeedback&&Object.keys(graph.personFeedback||{}).length){const reviewed=make('details','rg-attention-evidence');reviewed.append(make('summary','','Reviewed people · Undo'));for(const [id,value] of Object.entries(graph.personFeedback)){const person=byId.get(id);if(!person)continue;const undo=button(`${person.name} · ${value.action==='boost'?'Connected':value.action==='suppress'?'Not interested':'Later'} · Undo`,'person-feedback','rg-text-button');undo.dataset.nodeId=id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy;reviewed.append(undo);}digest.append(reviewed);}
+
+      if(Object.keys(attentionFeedback).length)digest.append(button('Reset reviewed suggestions','attention-reset','rg-text-button'));
+    } else {
+      digest.append(make('p','rg-source','Latest recorded email contact or meeting attendance. Note mentions are excluded.'));
+      const entries=recentlyInTouch(graph);
+      if(!entries.length)digest.append(make('p','rg-copy','No recorded direct contact yet.'));
+      for(const item of entries) {
+        const choice=button('','select-node','rg-digest-person');choice.dataset.nodeId=item.id;
+        const portrait=make('span','rg-digest-photo');portrait.append(renderPortrait(byId.get(item.id),nodeIndex.get(item.id)));
+        const detail=make('span');detail.append(make('strong','',item.name),make('small','',`${item.event ? item.event.kind==='email'?'Email contact':'Meeting attendee' : 'Recorded contact'} · ${new Date(item.latest).toISOString().slice(0,10)}`));
+        if(item.event)detail.append(make('small','',item.event.title));
+        choice.append(portrait,detail);digest.append(choice);
+      }
+    }
+    return digest;
+  }
+
+  function showIntroDraft(connectorId) {
+    const candidate=introductionCandidates(selectedId,graph.nodes,graph.edges).find(c=>c.person.id===connectorId);
+    const person=byId.get(selectedId);
+    if(!candidate || !person)return;
+    const dialog=make('dialog','rg-intro-dialog');dialog.setAttribute('aria-label','Introduction request draft');
+    dialog.append(make('h2','',`Ask ${candidate.person.name} for an introduction`),make('p','rg-source','Editable draft only. Nothing is sent. Confirm they know this person before using it.'));
+    const label=make('label','','Message');const text=make('textarea');
+    text.value=`Hi ${candidate.person.name.split(/\s+/)[0]},\n\nDo you know ${person.name} well enough to make an introduction?${searchAnswer?.query ? ` I’m looking for help with: ${searchAnswer.query}` : ''}\n\nIf it feels appropriate, I’d appreciate an intro. Happy to send a short blurb you can forward. Thank you!`;
+    label.append(text);dialog.append(label);
+    const copy=make('button','','Copy draft');copy.type='button';
+    copy.onclick=async()=>{try{await view.navigator.clipboard.writeText(text.value);copy.textContent='Copied';}catch{text.focus();text.select();copy.textContent='Select and copy the draft';}};
+    const close=make('button','','Close');close.type='button';close.onclick=()=>{dialog.close();dialog.remove();};
+    dialog.addEventListener('close',()=>dialog.remove());dialog.append(copy,close);root.append(dialog);dialog.showModal();text.focus();
+  }
+
   function render(focusAction = null) {
     if (destroyed) return;
     refreshRelevance();
+    root.dataset.profileOpen = String(Boolean(panelMode && !pathState));
     root.dataset.demo = String(demoEnabled());
     root.replaceChildren();
     const header = make('header', 'rg-header');
@@ -929,7 +1148,7 @@ export function mountGraph(element, options = {}) {
     search.value = query;
     search.dataset.action = 'search';
     searchWrap.append(search);
-    header.append(searchWrap);
+    if(!options.externalSearch) header.append(searchWrap);
     const actions = make('nav', 'rg-header-actions');
     actions.setAttribute('aria-label', 'Relationship tools');
     const lensLabel = make('label', 'rg-lens', 'Relevance now');
@@ -950,11 +1169,16 @@ export function mountGraph(element, options = {}) {
     header.append(actions);
     const [pathBar, pathSummary] = renderPathControls();
     root.append(header);
+    if(!pathState) root.append(renderTimeControls());
     if (pathBar) root.append(pathBar);
     const topics = renderTopics();
     if (topics) root.append(topics);
     const canvas = renderCanvas();
     root.append(canvas);
+    if(!pathState && !panelMode) {
+      const tab=button('Your people','open-digest','rg-digest-tab');
+      tab.setAttribute('aria-expanded','false');root.append(tab);
+    }
     if (pathSummary) root.append(pathSummary);
     const bottom = make('div', 'rg-bottom');
     if (!pathState) bottom.append(renderTrail());
@@ -968,7 +1192,10 @@ export function mountGraph(element, options = {}) {
     if (panelMode === 'why' && lens !== 'off') {
       const panel = renderWhyPanel();
       if (panel) root.append(panel);
-    } else if (panelMode === 'meeting-review' && lens === 'my' && meetingPreview) root.append(renderMeetingReview());
+    } else if(panelMode==='digest'&&!pathState) root.append(renderDigest());
+    else if(panelMode==='wander'&&!pathState) root.append(renderWander());
+    else if(panelMode==='timeline'&&!pathState) root.append(renderTimeline());
+    else if (panelMode === 'meeting-review' && lens === 'my' && meetingPreview) root.append(renderMeetingReview());
     else if (panelMode === 'edge') root.append(renderEvidencePanel());
     else if (panelMode === 'node' && !pathState) root.append(renderNodePanel());
     if (lens !== 'off' && !pathState) {
@@ -984,6 +1211,7 @@ export function mountGraph(element, options = {}) {
     meta.lastElementChild.setAttribute('role', 'status');
     meta.lastElementChild.setAttribute('aria-live', 'polite');
     root.append(meta);
+    applyTimePreview(timeWindow);
     if (lens !== 'off') {
       const status = make('p', 'rg-relevance-status', relevanceStatus);
       status.setAttribute('role', 'status');
@@ -996,6 +1224,7 @@ export function mountGraph(element, options = {}) {
   function selectNode(id, { notify = true } = {}) {
     if (destroyed || !byId.has(id)) return;
     invalidateRelevance();
+    eventPeople = null;
     activeThemeId = null;
     relevancePersonId = null;
     if (pathState && !pathState.to && id !== pathState.from && byId.get(id).type === 'person') {
@@ -1036,6 +1265,7 @@ export function mountGraph(element, options = {}) {
     const people = graph.nodes.filter((node) => node.type === 'person');
     if (!people.length) return;
     invalidateRelevance();
+    eventPeople = null;
     activeThemeId = null;
     const from = byId.get(selectedId)?.type === 'person' ? selectedId : people[0].id;
     pathRequest += 1;
@@ -1113,6 +1343,28 @@ export function mountGraph(element, options = {}) {
     const target = event.target.closest?.('[data-action]');
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
+    if(action==='walk-topic'){walkTo({kind:'topic',id:target.dataset.topicId});return;}
+    if(action==='walk-person'){walkTo({kind:'person',id:target.dataset.nodeId,reason:target.dataset.reason});return;}
+    if(action==='walk-back'){walkIndex--;if(walkIndex>=0)walkTo(walkHistory[walkIndex],false);else{eventPeople=null;camera={x:0,y:0,zoom:1};render();}return;}
+    if(action==='walk-reset'){walkHistory=[];walkIndex=-1;eventPeople=null;wanderFilter='';camera={x:0,y:0,zoom:1};render();return;}
+    if(action==='digest-view') {digestView=target.dataset.view;render();return;}
+    if(action==='person-feedback') {
+      if(personFeedbackBusy||!callbacks.onPersonFeedback)return;
+      personFeedbackBusy=true;personFeedbackMessage='Saving…';render();
+      Promise.resolve(callbacks.onPersonFeedback(target.dataset.nodeId,target.dataset.feedback)).then(next=>{if(destroyed)return;if(next){graph=normalizeGraph(next);rebuildIndexes();}personFeedbackMessage='Saved. You can undo this in Reviewed people.';}).catch(error=>{if(!destroyed)personFeedbackMessage=error.serverMessage||'Could not save. Your choice was not applied; try again.';}).finally(()=>{personFeedbackBusy=false;if(!destroyed){panelMode='digest';render();}});return;
+    }
+    if(action==='attention-feedback'||action==='attention-reset') {
+      if(action==='attention-reset')attentionFeedback={};
+      else attentionFeedback[target.dataset.suggestionId]={action:target.dataset.feedback,until:Date.now()+7*86400000};
+      try {if(attentionStorageKey)localStorage.setItem(attentionStorageKey,JSON.stringify(attentionFeedback));else attentionStorageMessage='Choices apply to this session only.';}catch{attentionStorageMessage='Browser storage is unavailable; choices apply to this session only.';}
+      render();return;
+    }
+    if(action==='open-digest') {panelMode='digest';topicsOpen=false;render('close-panel');return;}
+    if(action==='toggle-topics') {topicsOpen=!topicsOpen;render();return;}
+    if(action==='time-window') {timeWindow=target.dataset.window;panelMode='timeline';eventPeople=null;timelineLimit=60;render();return;}
+    if(action==='more-events') {timelineLimit+=60;render();return;}
+    if(action==='timeline-event') {const event=activityTimeline(graph,timeWindow).find(e=>e.id===target.dataset.eventId);if(event){eventPeople=event.personIds;focusCanvas(eventPeople);render();}return;}
+    if(action==='draft-intro') {showIntroDraft(target.dataset.connectorId);return;}
     if (action === 'review-meetings' && meetingPreview && lens === 'my') {
       panelMode = 'meeting-review';render();
     } else if (action === 'remove-meetings') {
@@ -1129,6 +1381,7 @@ export function mountGraph(element, options = {}) {
       camera = { x: 0, y: 0, zoom: 1 };
       panelMode = selectedId ? 'node' : null;render();
     } else if (action === 'inspect-theme') {
+      topicsOpen = false;
       invalidateRelevance();
       activeThemeId = target.dataset.themeId;
       relevancePersonId = target.dataset.personId ?? null;
@@ -1163,11 +1416,12 @@ export function mountGraph(element, options = {}) {
     else if (action === 'inspect-edge') inspectEdge(target.dataset.edgeId);
     else if (action === 'start-path') startPath();
     else if (action === 'close-path') closePath();
-    else if (action === 'close-panel') { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
+    else if (action === 'close-panel') { const wasDigest=panelMode==='digest';eventPeople=null; invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(wasDigest?'open-digest':null); }
     else if (action === 'save-trail' && trail.nodeIds.length) callbacks.onSaveTrail(cloneTrail(trail));
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
       invalidateRelevance();
+      searchAnswer = null; exploration = null;
       activeThemeId = null;
       pathRequest += 1;
       selectedId = null;
@@ -1210,6 +1464,8 @@ export function mountGraph(element, options = {}) {
   }
 
   function onInput(event) {
+    if(event.target.dataset.action==='wander-filter'){wanderFilter=event.target.value;root.querySelectorAll('.rg-wander-catalog [data-filter-text]').forEach(el=>el.hidden=!el.dataset.filterText.includes(wanderFilter.toLowerCase()));return;}
+
     if (event.target.dataset?.action !== 'search') return;
     query = event.target.value;
     page = 0;
@@ -1336,6 +1592,20 @@ export function mountGraph(element, options = {}) {
   render();
 
   return {
+    openWander(){panelMode='wander';topicsOpen=false;render();},
+    setSearchAnswer(answer) {
+      if(destroyed)return;
+      if(answer && !searchAnswer) exploration={camera:{...camera},selectedId,panelMode,query,timeWindow,eventPeople,activeThemeId,pathState,trail:cloneTrail(trail)};
+      if(!answer && searchAnswer && exploration) {
+        camera=exploration.camera;selectedId=exploration.selectedId;panelMode=exploration.panelMode;query=exploration.query;timeWindow=exploration.timeWindow;eventPeople=exploration.eventPeople;activeThemeId=exploration.activeThemeId;pathState=exploration.pathState;trail=exploration.trail;exploration=null;
+      }
+      searchAnswer=answer ? {...answer,results:(answer.results??[]).filter(p=>byId.has(p.personId))} : null;
+      if(searchAnswer) {
+        timeWindow='all';query='';eventPeople=null;activeThemeId=null;pathState=null;panelMode=null;selectedId=null;
+        focusCanvas(searchAnswer.results.map(p=>p.personId));
+      }
+      render();
+    },
     setMeetingPreview(input) {
       if (destroyed) return;
       const batch = parseMeetingBatch(input, options.previewAccount);
@@ -1346,6 +1616,7 @@ export function mountGraph(element, options = {}) {
       if (destroyed) return;
       meetingBatch = null;meetingFeedback = Object.create(null);
       graph = normalizeGraph(nextGraph);
+      searchAnswer=null;exploration=null;walkHistory=[];walkIndex=-1;eventPeople=null;
       invalidateRelevance();
       refreshRelevance();
       pathRequest += 1;

@@ -636,6 +636,10 @@ export class GranolaSync {
   return out;
  }
  private static readonly SHARE_FOLDER_LIMIT=200;
+ timelineMeetings(){
+  const aliases=this.aliases();
+  return this.ctx.storage.sql.exec<{id:string;title:string;at:string;email:string;dateBasis:string}>("SELECT n.id AS id,n.title AS title,n.meeting_at AS at,n.date_basis AS dateBasis,a.email AS email FROM granola_notes n JOIN granola_attendees a ON a.note_id=n.id WHERE n.hidden=0 AND n.id IN (SELECT id FROM granola_notes WHERE hidden=0 ORDER BY meeting_at DESC LIMIT 500) ORDER BY n.meeting_at DESC LIMIT 10000").toArray().map(row=>({...row,email:aliases.get(row.email)??row.email}));
+ }
  contacts(){
   const rows=this.ctx.storage.sql.exec<{email:string;name:string;meetings:number;last:string}>('SELECT a.email AS email,MAX(a.name) AS name,COUNT(*) AS meetings,MAX(n.meeting_at) AS last FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 GROUP BY a.email ORDER BY meetings DESC, a.email ASC LIMIT 5000').toArray().map(r=>({email:r.email,name:r.name,meetings:r.meetings,last:Date.parse(r.last)}));
   const alias=this.aliases();if(!alias.size)return rows;

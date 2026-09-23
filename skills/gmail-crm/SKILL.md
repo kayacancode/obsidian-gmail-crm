@@ -90,7 +90,7 @@ These never write to the cache, so they cannot corrupt state or collide with the
 |---|---|
 | `peoplegraph find-person "Jane Smith"` | Fuzzy match by name, email, or alias. Matches reordered names ("Jaffe Bruce" finds "Bruce Jaffe"); pass `--strict-name-order` to disable. Groups rows belonging to one identity. |
 | `peoplegraph score jane@example.com` | Full score card for one person: quadrant, strength, momentum, combined, plus raw signals. |
-| `peoplegraph who-knows --company "a16z"` | Everyone at a company/domain, ranked by relationship score. The "do we know anyone at X?" query. |
+| `peoplegraph who-knows --company "acme"` | Everyone at a company/domain, ranked by relationship score. The "do we know anyone at X?" query. |
 | `peoplegraph reconnect --limit 20 [--min-score 30]` | Strong-but-dormant contacts worth reaching out to, each with a nudge reason. |
 | `peoplegraph contact-card jane@example.com` | Minimal card — name, email, company, role, scores. |
 | `peoplegraph get-neighbors jane@example.com` | Connected contacts (requires edge data in the cache). |

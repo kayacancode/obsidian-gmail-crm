@@ -1,13 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mailRoute,mailCallback} from '../src/mail-routes';
+import {mailRoute,mailCallback,personFeedbackRoute} from '../src/mail-routes';
 import {makeSession,readSession,sessionCookie} from '../src/session';
 import worker from '../src/index';
 test('OAuth routes bind consent to owner, browser, PKCE and selected history',async()=>{let pending:any,attached:any;const env:any={GOOGLE_CLIENT_ID:'client',GOOGLE_CLIENT_SECRET:'secret',MAIL_TOKEN_KEY:'key',TOKEN_SECRET:'sign',APP_ORIGIN:'https://people.test',MAIL:{getByName(owner:string){assert.equal(owner,'owner@test.com');return {begin:async(n:string,p:any)=>{pending={n,...p};},consume:async(n:string,c:string)=>{if(pending?.n!==n||pending.cookie!==c)return null;const p=pending;pending=null;return p;},attachAccount:async(...args:any[])=>{attached=args;}};}}};
  const req=(origin:string)=>new Request('https://people.test/api/accounts/connect',{method:'POST',headers:{origin},body:JSON.stringify({range:'all'})});
  assert.equal((await mailRoute(req('https://evil.test'),env,'owner@test.com')).status,403);
- const response=await mailRoute(req('https://people.test'),env,'owner@test.com');const consent=new URL((await response.json() as any).url);assert.equal(consent.searchParams.get('code_challenge_method'),'S256');assert.equal(consent.searchParams.get('access_type'),'offline');assert.equal(pending.range,'all');const cookie=response.headers.get('set-cookie')!.split(';')[0];const callback='https://people.test/api/accounts/callback?code=test&state='+encodeURIComponent(consent.searchParams.get('state')!);
- assert.equal((await mailCallback(new Request(callback),env)).status,400);const old=globalThis.fetch;try{globalThis.fetch=async(input:any)=>String(input).includes('/token')?Response.json({access_token:'a',refresh_token:'r',scope:'https://www.googleapis.com/auth/gmail.readonly'}):Response.json({emailAddress:'inbox@test.com'});const result=await mailCallback(new Request(callback,{headers:{cookie}}),env);assert.equal(result.status,303);assert.deepEqual(attached,['inbox@test.com','r','all',false,false]);assert.equal((await mailCallback(new Request(callback,{headers:{cookie}}),env)).status,400);}finally{globalThis.fetch=old;}
+ const response=await mailRoute(req('https://people.test'),env,'owner@test.com');const consent=new URL((await response.json() as any).url);assert.ok(consent.searchParams.get('scope')!.includes('calendar.events.readonly'));assert.equal(consent.searchParams.get('code_challenge_method'),'S256');assert.equal(consent.searchParams.get('access_type'),'offline');assert.equal(pending.range,'all');const cookie=response.headers.get('set-cookie')!.split(';')[0];const callback='https://people.test/api/accounts/callback?code=test&state='+encodeURIComponent(consent.searchParams.get('state')!);
+ assert.equal((await mailCallback(new Request(callback),env)).status,400);const old=globalThis.fetch;try{globalThis.fetch=async(input:any)=>String(input).includes('/token')?Response.json({access_token:'a',refresh_token:'r',scope:'https://www.googleapis.com/auth/gmail.readonly'}):Response.json({emailAddress:'inbox@test.com'});const result=await mailCallback(new Request(callback,{headers:{cookie}}),env);assert.equal(result.status,303);assert.deepEqual(attached,['inbox@test.com','r','all',false,false,false]);assert.equal((await mailCallback(new Request(callback,{headers:{cookie}}),env)).status,400);}finally{globalThis.fetch=old;}
 });
 test('application session rejects tampering and wrong signing keys',async()=>{const value=await makeSession('owner@test.com','secret');const request=new Request('https://people.test',{headers:{cookie:sessionCookie(value).split(';')[0]}});assert.equal(await readSession(request,'secret'),'owner@test.com');assert.equal(await readSession(request,'wrong'),null);assert.equal(await readSession(new Request('https://people.test',{headers:{cookie:'__Host-people-session='+value+'x'}}),'secret'),null);});
 
@@ -100,4 +100,12 @@ test('network search route is session-gated, same-origin, body-checked and never
  const failed=await signedRequest('/api/people/search',env,post('{"query":"fintech"}'));
  assert.equal(failed.status,500);assert.equal((await failed.json() as any).error,'server_error');
  assert.equal((await signedRequest('/api/people/search',env,{method:'GET'})).status,405);
+});
+
+test('person feedback route is origin protected and scoped to the signed-in owner',async()=>{
+ let wrote=false;const env:any={MAIL:{getByName(owner:string){assert.equal(owner,'me@test.com');return {bindOwner:async()=>{},setPersonFeedback:async(id:string,action:string)=>{assert.equal(id,'opaque');assert.equal(action,'suppress');wrote=true;return {ok:true};}};}}};
+ const req=(origin:string,personId='opaque')=>new Request('https://people.test/api/people/feedback',{method:'POST',headers:{origin},body:JSON.stringify({personId,action:'suppress'})});
+ assert.equal((await personFeedbackRoute(req('https://evil.test'),env,'me@test.com')).status,403);assert.equal(wrote,false);
+ assert.equal((await personFeedbackRoute(req('https://people.test','person@email.test'),env,'me@test.com')).status,400);
+ assert.equal((await personFeedbackRoute(req('https://people.test'),env,'me@test.com')).status,200);assert.equal(wrote,true);
 });

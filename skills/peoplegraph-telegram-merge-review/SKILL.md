@@ -76,8 +76,8 @@ For each suggestion, store a queue item in `PEOPLEGRAPH_REVIEW_STATE`:
 {
   "review_id": "m_001",
   "source": "kaya",
-  "primary": "harper@2389.ai",
-  "external": "harper@nata2.org",
+  "primary": "jane@example.com",
+  "external": "jane@example.org",
   "confidence": 0.9,
   "reasons": ["same_name", "very_similar_name"],
   "status": "pending",
@@ -99,15 +99,15 @@ Confidence: 90%
 Why flagged: same_name, very_similar_name
 
 Botwick source of truth:
-Harper Reed
-Email: harper@2389.ai
-Company: 2389
+Jane Doe
+Email: jane@example.com
+Company: Example
 Location: if available
 
 External source: kaya
-Harper Reed
-Email: harper@nata2.org
-Company: Nata2
+Jane Doe
+Email: jane@example.org
+Company: Example Org
 Location: if available
 
 If approved, PeopleGraph will add the external objective identity fields to the Botwick core record.
@@ -183,7 +183,7 @@ Poll shape:
 
 ```json
 {
-  "question": "Merge Harper Reed: harper@2389.ai + harper@nata2.org?",
+  "question": "Merge Jane Doe: jane@example.com + jane@example.org?",
   "options": ["Merge", "Reject"],
   "is_anonymous": false,
   "allows_multiple_answers": false

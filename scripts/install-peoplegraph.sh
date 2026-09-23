@@ -37,7 +37,7 @@ echo "Detecting platform: $OS $ARCH -> $ASSET"
 RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
   | grep '"tag_name"' \
   | cut -d '"' -f 4 \
-  | grep '^peoplegraph-v' \
+  | { grep '^peoplegraph-v' || true; } \
   | sort -t v -k 2 -V \
   | tail -1)"
 

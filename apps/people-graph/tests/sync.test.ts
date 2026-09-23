@@ -735,3 +735,32 @@ test('searchPeople returns at most ten people and never another owner’s graph'
   assert.ok(!value.results.some(r=>r.personId===otherOwner));
  }finally{db.close();}
 });
+
+test('Calendar sync pages, deduplicates shared events, prunes stale rows and survives denial',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ let denied=false;const urls:string[]=[];
+ const event={id:'cal1',iCalUID:'same-event',summary:'Review',start:{dateTime:'2026-09-25T10:00:00Z'},end:{dateTime:'2026-09-25T11:00:00Z'},attendees:[{email:'me@example.com',self:true,responseStatus:'accepted'},{email:'ada@example.com',responseStatus:'accepted'}]};
+ try {await withFetch(async(input:any)=>{
+  const url=String(input);urls.push(url);
+  if(url.includes('/token'))return Response.json({access_token:'access'});
+  if(url.includes('/calendar/v3/')){if(denied)return new Response('',{status:403});return url.includes('pageToken')?Response.json({items:[]}):Response.json({items:[event],nextPageToken:'page-two'});}
+  if(url.includes('/messages?'))return Response.json({messages:[]});
+  throw Error('Unexpected URL');
+ },async()=>{
+  await service.attachAccount('me@example.com','refresh','recent',false,false,true);
+  await service.alarm();assert.equal(service.list()[0].calendarStatus,'syncing');
+  await service.alarm();assert.equal(service.list()[0].calendarStatus,'ready');
+  await service.alarm();assert.equal(service.list()[0].status,'connected');
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','m1','ada@example.com','Ada',Date.now(),'Hello',1,1);
+  const graph=await service.graph();const cal=graph!.activity.filter(e=>e.kind==='calendar');assert.equal(cal.length,1);
+  assert.equal(cal[0].personIds[0],graph!.nodes[0].id);assert.ok(!JSON.stringify(cal).includes('@'));
+  db.prepare('INSERT INTO calendar_events SELECT ?,id,data,generation FROM calendar_events').run('other@example.com');
+  assert.equal((await service.graph())!.activity.filter(e=>e.kind==='calendar').length,1);
+  db.prepare('DELETE FROM calendar_events WHERE account=?').run('other@example.com');
+  denied=true;await service.start('me@example.com');await service.alarm();
+  assert.equal(service.list()[0].calendarStatus,'permission_required');assert.equal(service.list()[0].calendarCount,0);
+  await service.alarm();assert.equal(service.list()[0].status,'connected','Calendar denial never blocks Gmail');
+  assert.ok(urls.some(u=>u.includes('pageToken=page-two')));
+  await service.remove('me@example.com');assert.equal(db.prepare('SELECT COUNT(*) n FROM calendar_events').get()!.n,0);
+ });} finally {db.close();}
+});

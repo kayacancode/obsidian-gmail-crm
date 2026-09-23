@@ -4,6 +4,13 @@ import assert from 'node:assert/strict';
 const browser = await chromium.launch({ executablePath: process.env.CHROME_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  page.setDefaultTimeout(10000);
+  async function openConversation(name) {
+    const toggle=page.getByRole('button',{name:/What’s coming up in your conversations/});
+    if(await toggle.getAttribute('aria-expanded')==='false')await toggle.click();
+    await page.getByRole('button',{name:`Explore conversation: ${name}`,exact:true}).click();
+  }
+  async function openMenu(){if(!await page.locator('#viewer-menu').getAttribute('open')) {if(await page.locator('#viewer-menu').evaluate(el=>!el.open))await page.getByText('Menu',{exact:true}).click();}}
   const errors = [];
   const graphRequests = [];
   const sessionMethods = [];
@@ -58,6 +65,17 @@ try {
   await page.getByRole('button', { name: 'Test sign in' }).click();
   await page.getByRole('region', { name: 'Authenticated relationship graph' }).waitFor({ state: 'visible' });
   assert.match(await page.locator('#graph').innerText(), /Ada Rivera/);
+  assert.equal(await page.locator('input[type="search"]:visible').count(),1,'one primary search');
+  assert.equal(await page.locator('.app-header #network-search').count(),1);
+  await page.getByRole('button',{name:'Answer',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Answer',exact:true}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'Wander',exact:true}).click();
+  assert.equal(await page.getByRole('region',{name:'Guided graph walk'}).isVisible(),true);
+  await page.getByRole('button',{name:'Close graph walk',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Refresh',exact:true}).isVisible(),false);
+  await page.getByText('Menu',{exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Refresh',exact:true}).isVisible(),true);
+  await page.getByText('Menu',{exact:true}).click();
   assert.equal(await page.getByLabel('Graph source').inputValue(), 'best');
   assert.match(await page.locator('#viewer-status').innerText(), /EMAIL METADATA AND AUTOMATIC SCORES/);
   await page.locator('.rg-node').filter({ hasText: 'Ada Rivera' }).click();
@@ -79,12 +97,14 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: '/tmp/people-relationship.png', fullPage: true });
 
+  await openMenu();
   await page.getByLabel('Graph source').selectOption('obsidian');
   await page.locator('.rg-node').filter({ hasText: 'Obsidian Person' }).waitFor();
   assert.equal(graphRequests.at(-1), '/api/graph?source=obsidian');
   assert.match(page.url(), /source=obsidian/);
 
   graphStatus = 401;
+  await openMenu();
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await page.locator('#gate').getByText('Your session expired.', { exact: false }).waitFor();
   assert.equal(await page.getByRole('region', { name: 'Authenticated relationship graph' }).isHidden(), true);
@@ -97,8 +117,10 @@ try {
   assert.equal(await page.getByRole('link', { name: 'Connect email accounts ↗' }).getAttribute('href'), '/accounts.html');
 
   empty = false;
+  await openMenu();
   await page.getByLabel('Graph source').selectOption('best');
   await page.locator('.rg-node').filter({ hasText: 'Ada Rivera' }).waitFor();
+  await openMenu();
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.getByText('Your relationships, in context.', { exact: true }).waitFor();
   assert.equal(await page.getByRole('region', { name: 'Authenticated relationship graph' }).isHidden(), true);
@@ -119,10 +141,13 @@ try {
   await page.getByRole('button', { name: 'Save this path' }).click();
   await page.getByRole('button', { name: 'Restore Ada Rivera → Bo Chen' }).waitFor();
   tokenSwitch = true;
+  await openMenu();
   await page.getByRole('button', { name: 'Connect Obsidian', exact: true }).click();
   await page.getByRole('button', { name: 'Generate private push token' }).click();
   await page.locator('.rg-node').filter({ hasText: 'Bob Private Person' }).waitFor();
+  await openMenu();
   assert.match(await page.locator('#account').innerText(), /BOB@EXAMPLE\.TEST/);
+  await page.getByText('Menu',{exact:true}).click();
   assert.equal(await page.getByRole('region', { name: 'Paths held for this session' }).isHidden(), true);
   assert.equal(await page.getByRole('button', { name: 'Restore Ada Rivera → Bo Chen' }).count(), 0);
   assert.deepEqual(sessionMethods, ['POST', 'POST', 'DELETE']);
@@ -158,11 +183,11 @@ try {
     return route.fulfill({json:endpoint==='preview'?{canonicalUrl:'https://example.com/research',publisherHost:'example.com',visibility:'public',contentType:'text/html'}:{id:'source-one',status:endpoint==='confirm'?'queued':'complete',canonicalUrl:'https://example.com/research',visibility:'public'}});
   });
   await page.goto(origin);
-  await page.getByRole('button',{name:'Why memory is hot now',exact:true}).click();
+  await openConversation('memory');
   const hostWhy=page.getByLabel('Why this is hot now',{exact:true});
   async function checkReloadedProvenance(){
     await page.reload();
-    await page.getByRole('button',{name:'Why memory is hot now',exact:true}).click();
+    await openConversation('memory');
     const link=hostWhy.getByRole('link',{name:'Open source: example.com',exact:true});
     assert.equal(await link.getAttribute('href'),'https://example.com/research');
     assert.match(await link.getAttribute('rel'),/noopener/);
@@ -182,7 +207,7 @@ try {
   await page.waitForFunction(()=>!document.querySelector('[data-action="theme-pin"]').disabled);
   assert.deepEqual(workflowCalls.filter(c=>c.feedback).map(c=>c.feedback),[{action:'pin'},{action:'mute'},{action:'expire'},{action:'correct',replacementThemeId:'health'}]);
   await page.getByLabel('Relevance now').selectOption('public');
-  await page.getByRole('button',{name:'Why memory is hot now',exact:true}).click();
+  await openConversation('memory');
   await hostWhy.getByRole('button',{name:'Add public source',exact:true}).click();
   const publicDialog=page.getByRole('dialog',{name:'Add public source'});
   await publicDialog.getByLabel('Public URL').fill('https://example.com/research');
@@ -195,14 +220,14 @@ try {
   await page.locator('#viewer-status').filter({hasText:'Public source complete'}).waitFor();
   assert.equal(workflowCalls.includes('public:source-one'),true);
   const firstPolls=workflowCalls.filter(call=>call==='public:source-one').length;
-  await page.getByRole('button',{name:'Why memory is hot now',exact:true}).click();
+  await openConversation('memory');
   await hostWhy.getByRole('button',{name:'Add public source',exact:true}).click();
   await publicDialog.getByLabel('Public URL').fill('https://example.com/research');
   await publicDialog.getByRole('button',{name:'Preview source'}).click();
   await publicDialog.getByRole('button',{name:'Confirm public source'}).click();
   await page.locator('#viewer-status').filter({hasText:'Public source complete'}).waitFor();
   assert.equal(workflowCalls.filter(call=>call==='public:source-one').length,firstPolls+1);
-  await page.getByRole('button',{name:'Why memory is hot now',exact:true}).click();
+  await openConversation('memory');
   await hostWhy.getByRole('button',{name:'Add public source',exact:true}).click();
   await page.keyboard.press('Escape');
   await publicDialog.waitFor({state:'hidden'});
@@ -359,7 +384,7 @@ try {
     return route.fulfill(searchResponse);
   });
   const networkQuery=page.getByLabel('Ask your network');
-  assert.equal(await networkQuery.getAttribute('placeholder'),'Ask your network: who can help with\u2026');
+  assert.equal(await networkQuery.getAttribute('placeholder'),'Find a person or ask your network\u2026');
   searchDelay=400;
   await networkQuery.fill('fintech fundraising');
   await networkQuery.press('Enter');
@@ -456,8 +481,9 @@ try {
   const initialPositions = await positions();
   // Only a shared person is marked, and only the Firm lens explains shared evidence.
   assert.equal(await page.locator('.rg-node[data-via="true"]').count(), 1, 'only the shared person is marked as shared');
+  await page.getByRole('button',{name:/What’s coming up in your conversations/}).click();
   assert.doesNotMatch(await page.locator('.rg-topic-explanation').innerText(), /shared with you/i, 'only Firm explains shared evidence');
-  await page.getByRole('button', {name:'Why Agent memory is hot now', exact:true}).click();
+  await openConversation('Agent memory');
   const why = page.getByLabel('Why this is hot now', {exact:true});
   assert.match(await why.innerText(), /PRIVATE EVIDENCE/);
   assert.match(await why.innerText(), /PUBLIC EVIDENCE/);
@@ -492,7 +518,7 @@ try {
   await page.evaluate(() => { const stale=structuredClone(window.heatFixture); stale.relevance.themes=[]; window.staleSelection.resolve(stale); });
   assert.equal(await page.locator('.rg-theme-field').count(), 2, 'selection discards stale mutation response');
   await page.getByRole('button', {name:'Relationships',exact:true}).click();
-  await page.getByRole('button', {name:'Why Agent memory is hot now',exact:true}).click();
+  await openConversation('Agent memory');
   await why.getByRole('button', {name:'Retrieve more context',exact:true}).click();
   assert.equal(await page.evaluate(() => window.heatCalls.at(-1).kind), 'retrieve');
   await page.evaluate(() => window.heatPending.resolve());
@@ -508,11 +534,12 @@ try {
   assert.equal(await page.locator('.rg-theme-field').count(), 1);
   await page.evaluate(() => window.staleHeat.resolve(window.heatFixture));
   assert.equal(await lens.inputValue(), 'firm');
-  assert.equal(await page.getByRole('button', {name:'Why Agent memory is hot now',exact:true}).count(), 0);
-  await page.getByRole('button', {name:'Why Health systems is hot now',exact:true}).click();
+  assert.equal(await page.getByRole('button', {name:'Explore conversation: Agent memory',exact:true}).count(), 0);
+  await openConversation('Health systems');
   assert.match(await why.innerText(), /FIRM EVIDENCE/);
   assert.doesNotMatch(await why.innerText(), /PRIVATE EVIDENCE|PUBLIC EVIDENCE/);
   // The Firm lens is where a sharer's evidence appears, and says so.
+  await page.getByRole('button',{name:/What’s coming up in your conversations/}).click();
   assert.match(await page.locator('.rg-topic-explanation').innerText(), /shared with you/i);
   assert.match(await page.locator('.rg-topic-explanation').innerText(), /via/i);
   await lens.selectOption('off');
@@ -540,7 +567,7 @@ try {
   await page.emulateMedia({reducedMotion:'reduce'});
   assert.equal(await page.locator('.rg-node[data-hot="true"]').first().evaluate(node => getComputedStyle(node.querySelector('.rg-portrait'),'::after').animationName), 'none');
   await page.setViewportSize({width:320,height:844});
-  await page.getByRole('button', {name:'Why Agent memory is hot now',exact:true}).click();
+  await openConversation('Agent memory');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({path:'/tmp/people-heat-mobile.png',fullPage:true});
   await lens.selectOption('off');

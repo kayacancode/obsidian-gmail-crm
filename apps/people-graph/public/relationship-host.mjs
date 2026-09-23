@@ -340,6 +340,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signIn,
     signOut,
     requestPushToken,
+    async personFeedback(personId,action){const ctx=context();await request('/api/people/feedback',{body:{personId,action}},ctx);const data=await request('/api/graph',{},ctx);if(data.graph){publish({graph:data.graph});}return data.graph;},
     loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
@@ -558,7 +559,9 @@ async function startBrowserApp() {
    * (with Jev when it is configured) and every line here is set with textContent. Choosing a
    * result hands the person to the graph's own node selection and closes the list.
    */
-  function clearNetworkSearch({ input = true } = {}) {
+  function showMode(mode){for(const key of ['wander','answer'])$(`#mode-${key}`).setAttribute('aria-pressed',String(key===mode));}
+  function clearNetworkSearch({ input = true, answer = true } = {}) {
+    if(answer){graphInstance?.setSearchAnswer?.(null);showMode('wander');}
     networkRun += 1;
     if (input) networkQuery.value = '';
     networkStatus.textContent = '';
@@ -586,14 +589,16 @@ async function startBrowserApp() {
         return;
       }
       graphInstance.select(person.personId);
-      clearNetworkSearch();
+      clearNetworkSearch({answer:false});
     };
     return choose;
   }
   async function runNetworkSearch() {
     const query = networkQuery.value.trim();
     if (!query) { clearNetworkSearch({ input: false }); return; }
+    showMode('answer');
     const run = ++networkRun;
+    graphInstance?.setSearchAnswer?.(null);
     networkResults.replaceChildren(); networkResults.hidden = true; networkLabel.textContent = '';
     networkStatus.textContent = 'Searching\u2026';
     let value;
@@ -608,6 +613,7 @@ async function startBrowserApp() {
     }
     if (run !== networkRun) return;
     const results = Array.isArray(value.results) ? value.results : [];
+    graphInstance?.setSearchAnswer?.({query,results,checked:value.checked===true});
     networkStatus.textContent = results.length
       ? `${results.length} ${results.length === 1 ? 'person' : 'people'} in your network`
       : 'No one in your network matches yet.';
@@ -624,6 +630,7 @@ async function startBrowserApp() {
 
   function showGate(title, message, action) {
     workspace.hidden = true;
+    networkSearch.hidden = true;$('#network-modes').hidden=true;
     gate.hidden = false;
     gate.replaceChildren();
     const eyebrow = document.createElement('p'); eyebrow.className = 'eyebrow'; eyebrow.textContent = 'PRIVATE RELATIONSHIP INTELLIGENCE';
@@ -696,6 +703,7 @@ async function startBrowserApp() {
   function mountAuthorizedGraph(state) {
     gate.hidden = true;
     workspace.hidden = false;
+    networkSearch.hidden = false;$('#network-modes').hidden=false;
     if (mountedAccount !== state.account) {
       if (trailOwner && trailOwner !== state.account) clearSessionTrails();
       graphInstance?.destroy();
@@ -704,9 +712,11 @@ async function startBrowserApp() {
       mountedAccount = state.account;
       clearNetworkSearch();
     }
-    if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, title: 'People relationships', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
+    if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, externalSearch:true, compactHeader:true, title: 'All people', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
       onLensChange: lens => controller.loadRelevance(lens), onThemeFeedback: input => controller.submitFeedback(input),
       onRetrievePreview: scope => openRetrieval(scope), onOpenPublicSource: scope => openPublicSource(scope),
+      onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
       onDraftNote: personId => openDraftNote(personId) });
     else if (mountedGraph !== state.graph) graphInstance.setGraph(state.graph);
     mountedGraph = state.graph;
@@ -773,9 +783,15 @@ async function startBrowserApp() {
     history.replaceState(null, '', url);
     void controller.load(chosen);
   };
+  $('#mode-wander').onclick=()=>{clearNetworkSearch();graphInstance?.openWander();};
+  $('#mode-answer').onclick=()=>{showMode('answer');networkQuery.focus();};
   networkSearch.addEventListener('submit', event => { event.preventDefault(); void runNetworkSearch(); });
   networkSearch.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); clearNetworkSearch(); networkQuery.focus(); } });
   $('#network-clear').onclick = () => { clearNetworkSearch(); networkQuery.focus(); };
+  const viewerMenu=$('#viewer-menu');
+  viewerMenu.addEventListener('click',event=>{if(event.target.closest('nav button, nav a'))viewerMenu.open=false;});
+  document.addEventListener('pointerdown',event=>{if(!viewerMenu.contains(event.target))viewerMenu.open=false;});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')viewerMenu.open=false;});
   $('#refresh').onclick = () => void controller.load(source.value);
   $('#signout').onclick = async () => { window.google?.accounts?.id?.disableAutoSelect?.(); signInSetup = null; signin.replaceChildren(); await controller.signOut(); };
   $('#setup').onclick = async () => {

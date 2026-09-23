@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>People / Field Notes</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header><a class="brand" href="./"><span class="brandmark">✳</span> people<span class="muted"> / field notes</span></a><div class="source"><span class="dot"></span><span id="source">Fictional sample network</span><label class="import">Open graph JSON<input id="upload" type="file" accept="application/json,.json"></label><button id="reset">Reset sample</button></div></header>
+<main>
+<div class="intro"><div><div class="eyebrow">NETWORK EXPLORATIONS / 001</div><h1>Who makes your world bigger?</h1><p>Three ways to explore the people, context, and connections around you.</p></div><div class="total"><strong id="total">50</strong><span>people in this network</span></div></div>
+<nav aria-label="Visualization"><button data-view="atlas" aria-pressed="true"><span>01</span> Connector Atlas</button><button data-view="pulse" aria-pressed="false"><span>02</span> Relationship Pulse</button><button data-view="context" aria-pressed="false"><span>03</span> Context Orbits</button><a class="spatial-link" href="spatial.html"><span>04</span> Spatial discovery ↗</a></nav>
+<section class="workspace"><div class="canvas-side"><div class="toolbar"><label class="search"><span>⌕</span><input id="search" aria-label="Explore a person, company, or topic" placeholder="Explore a person, company, or topic…"><button id="clear" aria-label="Clear search">×</button></label><button id="labels" aria-pressed="false">Show all names</button></div>
+<div class="topics" aria-label="Example topics"><span>TRY A LENS</span><button data-topic="AI agents">AI agents</button><button data-topic="Climate">Climate</button><button data-topic="Design">Design</button><button data-topic="Fundraising">Fundraising</button></div>
+<div class="chart-heading"><h2 id="view-title"></h2><p id="view-description"></p></div>
+<div id="chart" aria-label="Interactive people visualization"></div><p id="empty" hidden>No matching people or connection context. Try another search.</p>
+<div class="chart-footer"><div id="legend"></div><span id="count" aria-live="polite"></span></div>
+</div><aside id="detail" aria-label="Person and connection evidence"></aside></section>
+<footer><span>EXPERIMENTAL VIEWS · LOCAL PREVIEW</span><span>Open a person to see what supports the signal. Imported files stay in this browser tab.</span></footer><p id="error" role="alert"></p>
+</main><script src="d3.v7.min.js"></script><script type="module" src="app.mjs"></script></body></html>

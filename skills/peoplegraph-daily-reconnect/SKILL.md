@@ -95,7 +95,7 @@ If asked to run a step manually or the bridge isn't available:
 peoplegraph --cache "$PEOPLEGRAPH_CACHE" reconnect --limit 5
 
 # apply a decision the owner tells you in chat ("keep harper", "suppress sri", "delete dr goldberg")
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" feedback --email harper@2389.ai --action boost
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" feedback --email jane@example.com --action boost
 ```
 
 The owner can also act conversationally: "who should I reconnect with?" → run `reconnect`; "keep / suppress / delete <name>" → resolve the name to an email (`peoplegraph find-person`) then `feedback`.

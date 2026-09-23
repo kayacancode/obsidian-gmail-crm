@@ -148,8 +148,8 @@ peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney
 peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
       <p>Then query from a client with the same token:</p>
       <pre><code>peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney
-peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Harper Reed"
-peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" contact-card harper@2389.ai</code></pre>
+peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Jane Doe"
+peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" contact-card jane@example.com</code></pre>
       <p>Remote mode supports read-only commands. Merge commands stay local-only in V1 and should be applied on the source-of-truth machine after review.</p>
     </section>
 
@@ -158,7 +158,7 @@ peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" c
       <p>Import another Gmail CRM plugin user's local cache into <code>external-sources.json</code> without overwriting the source-of-truth graph.</p>
       <pre><code>peoplegraph --cache /botwick/contact-index.json import-cache --source kaya /kaya/contact-index.json
 peoplegraph --cache /botwick/contact-index.json suggest-external-merges --source kaya
-peoplegraph --cache /botwick/contact-index.json contact-card harper@2389.ai</code></pre>
+peoplegraph --cache /botwick/contact-index.json contact-card jane@example.com</code></pre>
       <p><code>apply-external-merge</code> only merges objective identity fields such as aliases/emails and missing company/role fields. Source-specific relationship context remains separate.</p>
     </section>
 

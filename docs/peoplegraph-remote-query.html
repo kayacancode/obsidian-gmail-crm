@@ -462,10 +462,10 @@
               <span class="pill info">Read-only remote mode</span>
               <span class="pill warn">Token required</span>
             </div>
-            <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>http://100.92.219.31:8787</code></pre>
+            <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>http://&lt;tailscale-ip&gt;:8787</code></pre>
             <p>
               Keep the token private. The examples below use
-              <code>93cf5a...9644</code> as a redacted placeholder.
+              <code>&lt;token&gt;</code> as a placeholder for your real token.
             </p>
           </div>
         </header>
@@ -494,7 +494,7 @@ peoplegraph version</code></pre>
                 <h3>Use the prefix <span class="tag">one-off</span></h3>
                 <p>Paste this before any command if you do not want environment variables.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote --host "http://100.92.219.31:8787" --token "93cf5a...9644"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote --host "http://&lt;tailscale-ip&gt;:8787" --token "&lt;token&gt;"</code></pre>
               <div class="meta-line">Replace the redacted token with the real token.</div>
             </div>
 
@@ -503,8 +503,8 @@ peoplegraph version</code></pre>
                 <h3>Set it once <span class="tag">recommended</span></h3>
                 <p>After exporting these, commands can be shorter.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
-export PEOPLEGRAPH_TOKEN="93cf5a...9644"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://&lt;tailscale-ip&gt;:8787"
+export PEOPLEGRAPH_TOKEN="&lt;token&gt;"</code></pre>
               <div class="meta-line">These exports last for the current terminal session.</div>
             </div>
 
@@ -545,7 +545,7 @@ printf "%s\n" "$PEOPLEGRAPH_TOKEN"</code></pre>
                 <h3>Botwick starts the server <span class="tag">source</span></h3>
                 <p>The server and the remote user must use the same token.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --cache "$PEOPLEGRAPH_CACHE" serve --bind 100.92.219.31:8787</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --cache "$PEOPLEGRAPH_CACHE" serve --bind &lt;tailscale-ip&gt;:8787</code></pre>
               <div class="meta-line">Use the Tailscale/private-network IP that remote users can reach.</div>
             </div>
 
@@ -554,7 +554,7 @@ printf "%s\n" "$PEOPLEGRAPH_TOKEN"</code></pre>
                 <h3>Share it privately <span class="tag">security</span></h3>
                 <p>Send the real token out-of-band. Do not commit it, screenshot it, or paste it into shared docs.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>Host:  http://100.92.219.31:8787
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>Host:  http://&lt;tailscale-ip&gt;:8787
 Token: paste-the-real-token-from-Botwick</code></pre>
               <div class="meta-line">Use 1Password, a secure note, or another private channel.</div>
             </div>
@@ -564,7 +564,7 @@ Token: paste-the-real-token-from-Botwick</code></pre>
                 <h3>Remote user sets it <span class="tag">client</span></h3>
                 <p>Run this on Kaya's computer or any other query-only machine.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://&lt;tailscale-ip&gt;:8787"
 export PEOPLEGRAPH_TOKEN="paste-the-real-token-from-Botwick"
 peoplegraph --remote version</code></pre>
               <div class="meta-line">If this works, all lookup commands below will query Botwick, not the local cache.</div>
@@ -590,8 +590,8 @@ peoplegraph --remote version</code></pre>
                 <h3>Find a person <span class="tag">lookup</span></h3>
                 <p>Fuzzy match by name, email, or alias. Returns the top 10 by default.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote find-person "Harper Reed"
-peoplegraph --remote find-person "Harper Reed" --limit 20</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote find-person "Jane Doe"
+peoplegraph --remote find-person "Jane Doe" --limit 20</code></pre>
               <div class="meta-line">Use when you do not know the exact email.</div>
             </div>
 
@@ -600,7 +600,7 @@ peoplegraph --remote find-person "Harper Reed" --limit 20</code></pre>
                 <h3>Score one email <span class="tag">score</span></h3>
                 <p>Relationship score for one email: combined score, depth, recency, and quadrant.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote score harper@2389.ai</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote score jane@example.com</code></pre>
               <div class="meta-line">Quadrants include <code>nurture</code>, <code>developing</code>, and <code>re-engage</code>.</div>
             </div>
 
@@ -609,7 +609,7 @@ peoplegraph --remote find-person "Harper Reed" --limit 20</code></pre>
                 <h3>Contact card <span class="tag">card</span></h3>
                 <p>Minimal source-aware card for one person: name, emails, company, aliases.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote contact-card "Harper Reed"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote contact-card "Jane Doe"</code></pre>
               <div class="meta-line">Useful before deciding whether a merge suggestion is plausible.</div>
             </div>
 
@@ -618,8 +618,8 @@ peoplegraph --remote find-person "Harper Reed" --limit 20</code></pre>
                 <h3>Who knows a company <span class="tag">company</span></h3>
                 <p>Everyone at a company or domain, ranked by relationship score.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company betaworks
-peoplegraph --remote who-knows --company betaworks --limit 10</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company acme
+peoplegraph --remote who-knows --company acme --limit 10</code></pre>
               <div class="meta-line">Works with company names and domains.</div>
             </div>
 
@@ -628,7 +628,7 @@ peoplegraph --remote who-knows --company betaworks --limit 10</code></pre>
                 <h3>Neighbors <span class="tag">graph</span></h3>
                 <p>Shows who is connected to a person once edge data exists.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote get-neighbors harper@2389.ai</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote get-neighbors jane@example.com</code></pre>
               <div class="meta-line">Best after the plugin has written relationship edges.</div>
             </div>
 
@@ -637,7 +637,7 @@ peoplegraph --remote who-knows --company betaworks --limit 10</code></pre>
                 <h3>Specific edge <span class="tag">graph</span></h3>
                 <p>Returns the relationship edge between two specific people.</p>
               </header>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote get-edges --from harper@2389.ai --to john@betaworks.com</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote get-edges --from jane@example.com --to sam@acme.com</code></pre>
               <div class="meta-line">Use when you need the direct connection evidence.</div>
             </div>
           </div>
@@ -719,7 +719,7 @@ peoplegraph --remote contact-card "Nicole Ripka"</code></pre>
             </div>
             <div class="note">
               <strong>Use the prefix without exports</strong>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote --host "http://100.92.219.31:8787" --token "93cf5a...9644" who-knows --company betaworks</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote --host "http://&lt;tailscale-ip&gt;:8787" --token "&lt;token&gt;" who-knows --company acme</code></pre>
             </div>
           </div>
         </section>
@@ -741,14 +741,14 @@ brew install peoplegraph</code></pre>
             <div class="note">
               <strong>Connection refused or timeout</strong>
               <p>The Botwick server may not be running, the Tailscale/private network may be disconnected, or the host URL is wrong.</p>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://100.92.219.31:8787"
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>export PEOPLEGRAPH_HOST="http://&lt;tailscale-ip&gt;:8787"
 peoplegraph --remote version</code></pre>
             </div>
             <div class="note">
               <strong>No results for a company</strong>
               <p>Try the domain, a person lookup, or a higher limit. The source cache may need a fresh sync on Botwick's computer.</p>
-              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company betaworks.com --limit 25
-peoplegraph --remote find-person "Betaworks"</code></pre>
+              <pre><button class="copy" type="button" aria-label="Copy command">cp</button><code>peoplegraph --remote who-knows --company acme.com --limit 25
+peoplegraph --remote find-person "Acme"</code></pre>
             </div>
           </div>
         </section>

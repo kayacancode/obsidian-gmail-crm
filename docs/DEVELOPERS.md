@@ -44,8 +44,12 @@ A privacy-first CRM that pulls Gmail metadata into your Obsidian vault. No email
 3. Fill in the app name (e.g., "Gmail CRM") and your email
 4. Under **Scopes**, click **Add or remove scopes** and add:
    ```
-   https://www.googleapis.com/auth/gmail.metadata
+   https://www.googleapis.com/auth/gmail.readonly
+   https://www.googleapis.com/auth/calendar.events.readonly
+   https://www.googleapis.com/auth/contacts.readonly
+   https://www.googleapis.com/auth/contacts.other.readonly
    ```
+   The two `contacts` scopes are only used when **Fetch contact photos** is on. They read profile photos and job titles from Google Contacts (saved contacts and "other contacts", the people you have emailed). Enable the **People API** under APIs & Services > Library as well, alongside Gmail and Calendar.
 5. Under **Test users**, add your Gmail address
 6. Save
 
@@ -125,10 +129,10 @@ brew install peoplegraph
 Example commands:
 
 ```bash
-peoplegraph who-knows --company betaworks
-peoplegraph find-person "Harper Reed"
-peoplegraph score harper@2389.ai
-peoplegraph contact-card harper@2389.ai
+peoplegraph who-knows --company acme
+peoplegraph find-person "Jane Doe"
+peoplegraph score jane@example.com
+peoplegraph contact-card jane@example.com
 peoplegraph suggest-duplicates --limit 10
 ```
 
@@ -178,7 +182,7 @@ Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. 
    export PEOPLEGRAPH_HOST="http://127.0.0.1:8787"
    export PEOPLEGRAPH_TOKEN="the-token-from-step-3"
 
-   peoplegraph --remote who-knows --company betaworks
+   peoplegraph --remote who-knows --company acme
    ```
 
 Keep `--bind 127.0.0.1:8787` when Botwick runs on the same computer. If other machines need access, put this behind a trusted private network, SSH tunnel, Tailscale, or a reverse proxy with HTTPS. Do not expose the raw HTTP server publicly.
@@ -201,8 +205,8 @@ Use this on another person's computer. They do not need Obsidian or the Gmail CR
    export PEOPLEGRAPH_TOKEN="token-shared-by-botwick-owner"
 
    peoplegraph --remote who-knows --company disney
-   peoplegraph --remote find-person "Harper Reed"
-   peoplegraph --remote score harper@2389.ai
+   peoplegraph --remote find-person "Jane Doe"
+   peoplegraph --remote score jane@example.com
    ```
 
    Use `--remote` when querying from a computer that also has the Obsidian plugin. It forces remote mode and refuses local cache fallback.
@@ -228,14 +232,14 @@ If another person already runs the Gmail CRM plugin, they can share their local 
 ```bash
 peoplegraph --cache "$PEOPLEGRAPH_CACHE" import-cache --source kaya /path/to/kaya/contact-index.json
 peoplegraph --cache "$PEOPLEGRAPH_CACHE" suggest-external-merges --source kaya --limit 25
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" contact-card harper@2389.ai
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" contact-card jane@example.com
 ```
 
 Review suggested matches with the generated commands:
 
 ```bash
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" apply-external-merge --source kaya --primary harper@2389.ai --external harper@nata2.org
-peoplegraph --cache "$PEOPLEGRAPH_CACHE" dismiss-external-merge --source kaya --primary harper@2389.ai --external harper@nata2.org --reason not_same_person
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" apply-external-merge --source kaya --primary jane@example.com --external jane@example.org
+peoplegraph --cache "$PEOPLEGRAPH_CACHE" dismiss-external-merge --source kaya --primary jane@example.com --external jane@example.org --reason not_same_person
 ```
 
 `apply-external-merge` only adds objective identity fields, currently aliases/emails and missing company/role fields. Private relationship context remains source-specific evidence in `external-sources.json`; it is not merged into the shared core card.

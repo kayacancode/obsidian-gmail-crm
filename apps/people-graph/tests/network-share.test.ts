@@ -152,11 +152,15 @@ test('importing a slice merges shared people into the graph and keeps the eviden
   assert.equal(stranger.name,'Stranger Vc');
   assert.equal(stranger.company,'vc.test');
   assert.equal(stranger.lastContact,'2026-09-12T00:00:00.000Z');
+  assert.equal(stranger.directRelationship,false);
+  assert.equal(stranger.directLastContact,null);
   assert.equal(typeof stranger.combined,'number');
   assert.equal(graph.nodes.filter((n:any)=>n.id===ids['known@work.test']).length,1,'a person the viewer already knows stays one node');
   const known=graph.nodes.find((n:any)=>n.id===ids['known@work.test']) as any;
   assert.deepEqual(known.via,['owner@share.test']);
   assert.equal(known.lastContact,'2026-09-14T00:00:00.000Z','the later last contact wins');
+  assert.equal(known.directRelationship,true);
+  assert.equal(known.directLastContact,'2026-08-01T00:00:00.000Z','shared recency never overwrites the direct conversation date');
   assert.ok(!graph.nodes.some((n:any)=>n.id===ids['me@example.com']),'the viewer is never a node in their own graph');
   const edge=graph.edges.find((e:any)=>[e.source,e.target].sort().join()===[ids['known@work.test'],ids['stranger@vc.test']].sort().join()) as any;
   assert.ok(edge&&edge.types.includes('shared_via'));
@@ -342,4 +346,35 @@ test('a shared person cached under a bare local-part name before the placeholder
   assert.equal(node.name,'Someone at vc.test');
   assert.ok(!node.name.includes('stranger'),'the local part never reaches the browser');
  }finally{db.close();}
+});
+
+test('own graph timeline includes dated email and visible meetings without private addresses',async()=>{
+ const f=await ownerFixture();
+ const graph=await f.service.graph();
+ const events=(graph as any).activity;
+ assert.ok(events.some((e:any)=>e.kind==='email'&&e.title==='Pilot rollout plan'));
+ assert.ok(events.some((e:any)=>e.kind==='meeting'&&e.title==='Pilot sync'));
+ assert.ok(events.every((e:any)=>e.personIds.every((id:string)=>graph!.nodes.some(n=>n.id===id))));
+ assert.ok(!JSON.stringify(events).includes('ada@work.test'));
+ f.db.prepare('UPDATE granola_notes SET hidden=1').run();
+ assert.ok(!(await f.service.graph() as any).activity.some((e:any)=>e.kind==='meeting'));
+});
+
+test('person feedback persists, applies once, reverses, and rejects unknown people',async()=>{
+ const {service,db,ids}=await ownerFixture();
+ try {
+  const id=ids['ada@work.test'];
+  const before=(await service.graph())!.nodes.find(n=>n.id===id)!.combined;
+  await service.setPersonFeedback(id,'suppress');
+  await service.setPersonFeedback(id,'suppress');
+  let graph=await service.graph();
+  assert.equal(graph!.nodes.find(n=>n.id===id)!.combined,Math.max(0,before-10));
+  assert.equal(graph!.personFeedback[id].action,'suppress');
+  await service.setPersonFeedback(id,'clear');
+  assert.equal((await service.graph())!.nodes.find(n=>n.id===id)!.combined,before);
+  await service.setPersonFeedback(id,'boost');
+  await service.setPersonFeedback(id,'snooze');
+  assert.equal((await service.graph())!.nodes.find(n=>n.id===id)!.combined,Math.min(100,before+10),'snooze keeps the existing score adjustment');
+  await assert.rejects(service.setPersonFeedback('unknown','boost'),/unknown_person/);
+ } finally {db.close();}
 });

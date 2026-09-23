@@ -1,5 +1,5 @@
 import {makeSession,readSession,sessionCookie} from "./session";
-import {mailRoute,mailCallback,draftRoute,searchRoute} from "./mail-routes";
+import {mailRoute,mailCallback,draftRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
 import type {MailEnv} from "./mail-sync";
 import {isRelevancePath,normalizePushedGraph,relevanceRoute} from "./relevance-routes";
 import type {PushedGraphPayload} from "./relevance-routes";
@@ -65,6 +65,11 @@ export default {
 				if ("error" in user) return json({ error: user.error }, 401);
 				return await mailRoute(request, env, user.email);
 			}
+            if (pathname === "/api/people/feedback") {
+                const user=await requireGoogleUser(request,env);
+                if("error" in user)return json({error:user.error},401);
+                return await personFeedbackRoute(request,env,user.email);
+            }
 			if (pathname === "/api/people/draft") {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
