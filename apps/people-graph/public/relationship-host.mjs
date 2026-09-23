@@ -53,6 +53,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     publish({ phase: 'signed-out', account: null, graph: null, message });
   };
 
+  const workspacePath = () => state.source.startsWith('workspace:') ? '/api/workspaces/'+encodeURIComponent(state.source.slice(10)) : null;
   const sourceSuffix = () => state.source === 'obsidian' || state.graph?.source !== 'email_accounts' ? 'source=obsidian' : '';
   const withSource = (path, query = '') => `${path}${query || sourceSuffix() ? '?' : ''}${[query,sourceSuffix()].filter(Boolean).join('&')}`;
   const clean = input => Object.fromEntries(Object.entries(input).filter(([,value]) => value !== null && value !== undefined));
@@ -65,6 +66,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
   async function request(path, { body, key, signal } = {}, ctx = context()) {
     current(ctx);
+    if(workspacePath() && !path.startsWith(workspacePath()+'/')) throw Error('Switch to My network to use private context.');
     const response = await fetchImpl(path, { cache: 'no-store', signal: signal ?? ctx.signal,
       ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin, ...(key ? { 'Idempotency-Key': key } : {}) } }) });
     current(ctx);
@@ -87,6 +89,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
       connectors: definitions?.connectors ?? snapshot?.connectors ?? [] };
   }
   async function loadRelevance(lens = state.lens) {
+    if(workspacePath())return null;
     const ctx = context(); const run = ++relevanceGeneration;
     relevanceController?.abort(); relevanceController = new AbortController();
     const signal = AbortSignal.any([ctx.signal, relevanceController.signal]);
@@ -102,6 +105,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     }
   }
   async function loadEvidence(themeId) {
+    if(workspacePath())return {signals:state.graph?.themeSignals?.filter(s=>s.themeId===themeId)??[]};
     // Local meeting drafts must never be sent through persisted-theme APIs.
     if (typeof themeId === 'string' && themeId.startsWith('meeting-preview:')) return;
     const ctx = context(), run = relevanceGeneration;
@@ -137,14 +141,14 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     if(!accounts.length)throw Error('No connected Gmail account is available.');
     return accounts;
   }
-  async function draftNote(personId) {
+  async function draftNote(personId,memberId) {
     const ctx = context();
-    return request('/api/people/draft', {body:{personId}}, ctx);
+    return request(workspacePath()?workspacePath()+'/draft':'/api/people/draft', {body:workspacePath()?{personId,memberId}:{personId}}, ctx);
   }
   /** "Who can help with…" over the owner's own graph; the server decides the ranking. */
   async function searchNetwork(query) {
     const ctx = context();
-    return request('/api/people/search', {body:{query}}, ctx);
+    return request(workspacePath()?workspacePath()+'/search':'/api/people/search', {body:{query}}, ctx);
   }
   async function previewPublicSource(input) {
     const ctx = context();
@@ -213,7 +217,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     const run = generation;
     controller = new AbortController();
     publish({ phase: 'loading', account: authenticatedAccount, graph: null, source, message: '' });
-    const path = source === 'obsidian' ? '/api/graph?source=obsidian' : '/api/graph';
+    const path = workspacePath()?workspacePath()+'/graph':source === 'obsidian' ? '/api/graph?source=obsidian' : '/api/graph';
     try {
       const response = await fetchImpl(path, { cache: 'no-store', signal: controller.signal });
       if (run !== generation) return;
@@ -224,7 +228,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
       const graphAccount = accountFrom(data);
       if (!graphAccount) throw new Error('The server did not identify the graph owner.');
       if (graphAccount !== authenticatedAccount) throw new Error('The server returned a graph for a different account. The data was hidden.');
-      if (!data.graph?.nodes?.length) publish({ phase: 'empty', account: authenticatedAccount, graph: null, source, message: '' });
+      if (!data.graph?.nodes?.length && !workspacePath()) publish({ phase: 'empty', account: authenticatedAccount, graph: null, source, message: '' });
       else publish({ phase: 'ready', account: authenticatedAccount, graph: data.graph, source, message: '' });
     } catch (error) {
       if (run !== generation || error?.name === 'AbortError') return;
@@ -236,7 +240,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     invalidate();
     const run = generation;
     controller = new AbortController();
-    publish({ phase: 'connecting', account: null, graph: null, message: '' });
+    publish({ phase: 'connecting', account: null, graph: null, source, message: '' });
     try {
       const response = await fetchImpl('/api/accounts', { cache: 'no-store', signal: controller.signal });
       if (run !== generation) return;
@@ -336,6 +340,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   return {
     getState: () => ({ ...state }),
     load,
+    async refreshWorkspace(){if(!workspacePath()||state.phase!=='ready')return;const ctx=context();try{const data=await request(workspacePath()+'/members',{},ctx);if(data.workspace.revision!==state.graph.revision)await load(state.source);else if(state.workflowMessage)publish({workflowMessage:''});}catch(e){if(e.name==='AbortError')return;if(e.status===403){invalidate();publish({phase:'error',graph:null,message:'You no longer have access to this workspace.'});}else publish({workflowMessage:'Connection unavailable. This workspace view is stale; reconnect to check access.'});}},
     resume,
     signIn,
     signOut,
@@ -493,14 +498,14 @@ async function startBrowserApp() {
   }
 
   /** The draft is model-written, labelled, editable, and never sent by this app. */
-  async function openDraftNote(personId) {
+  async function openDraftNote(personId,memberId) {
     const view=dialog('Draft a note');
     const person=mountedGraph?.nodes.find(node=>node.id===personId);
-    const intro=paragraph(view.content,`Draft for ${person?.name ?? 'this person'} \u00b7 written from your own evidence \u00b7 review and edit it before sending`);
+    const intro=paragraph(view.content,`Draft for ${person?.name ?? 'this person'} \u00b7 based on the available shared or private context \u00b7 review and edit it before sending`);
     paragraph(view.content,'Nothing is sent until you send it from your mail client.');
     view.message.textContent='Writing a draft\u2026';
     let draft;
-    try{draft=await controller.draftNote(personId);}
+    try{draft=await controller.draftNote(personId,memberId);}
     catch(error){
       if(!view.element.isConnected)return;
       // request() throws a generic "Context request failed (503)." for every non-OK
@@ -641,6 +646,7 @@ async function startBrowserApp() {
   }
 
   function graphSourceLabel(graph) {
+    if(graph?.source==='workspace')return `${graph.workspaceName} · ${graph.coverage?.contributors??0} contributions${graph.coverage?.unavailable?.length?' · Some contributions unavailable':''}${graph.coverage?.truncated?' · Showing a bounded selection':''} · Measured member relationships; personal feedback stays private.`;
     const sourceName = graph?.source === 'email_accounts' ? 'Email metadata and automatic scores' : 'Recorded graph snapshot';
     const updated = graph?.pushedAt ? new Date(graph.pushedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'date not included';
     return `${sourceName} · ${updated}`;
@@ -713,11 +719,11 @@ async function startBrowserApp() {
       clearNetworkSearch();
     }
     if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, externalSearch:true, compactHeader:true, title: 'All people', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
-      onLensChange: lens => controller.loadRelevance(lens), onThemeFeedback: input => controller.submitFeedback(input),
-      onRetrievePreview: scope => openRetrieval(scope), onOpenPublicSource: scope => openPublicSource(scope),
+      onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
+      onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
-      onDraftNote: personId => openDraftNote(personId) });
+      onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });
     else if (mountedGraph !== state.graph) graphInstance.setGraph(state.graph);
     mountedGraph = state.graph;
     if(state.relevanceEnvelope && renderedEnvelope !== state.relevanceEnvelope){renderedEnvelope=state.relevanceEnvelope;graphInstance.setRelevance(renderedEnvelope,state.lens);}
@@ -728,10 +734,14 @@ async function startBrowserApp() {
   function render(state) {
     if(state.phase!=='ready'){closeDialog();clearNetworkSearch();renderedEnvelope=null;}
     source.value = state.source;
+    if(state.account)void loadNetworkOptions(state.account);
+    $('#network-selector').hidden=!state.account;
+    $('#network-selector').value=state.source.startsWith('workspace:')?state.source:'best';
     if (state.phase === 'ready') {
       accountLabel.textContent = state.account;
       setAuthenticatedControls(true);
       mountAuthorizedGraph(state);
+      if(state.graph.source==='workspace'){source.parentElement.hidden=true;$('#setup').hidden=true;}
       return;
     }
     if (state.phase === 'empty') {
@@ -769,8 +779,14 @@ async function startBrowserApp() {
     }
   }
 
-  const initialSource = new URLSearchParams(location.search).get('source') === 'obsidian' ? 'obsidian' : 'best';
+  const requestedWorkspace=new URLSearchParams(location.search).get('workspace');
+  const initialSource = requestedWorkspace?'workspace:'+requestedWorkspace:new URLSearchParams(location.search).get('source') === 'obsidian' ? 'obsidian' : 'best';
+  let optionsAccount=null;
+  async function loadNetworkOptions(account){if(optionsAccount===account)return;optionsAccount=account;try{const response=await fetch('/api/workspaces',{cache:'no-store'});if(!response.ok)return;const data=await response.json();if(controller.getState().account!==account)return;const select=$('#network-selector');select.replaceChildren();for(const w of [{id:'',name:'My network'},...(data.workspaces||[])]){const option=document.createElement('option');option.value=w.id?'workspace:'+w.id:'best';option.textContent=w.name;select.append(option);}select.value=controller.getState().source.startsWith('workspace:')?controller.getState().source:'best';}catch{optionsAccount=null;}}
   const controller = createRelationshipController({ onState: render });
+  $('#network-selector').onchange=()=>{clearSessionTrails();const chosen=$('#network-selector').value;const url=new URL(location.href);url.searchParams.delete('source');if(chosen.startsWith('workspace:'))url.searchParams.set('workspace',chosen.slice(10));else url.searchParams.delete('workspace');history.replaceState(null,'',url);void controller.load(chosen);};
+  const checkWorkspace=()=>{if(!document.hidden)void controller.refreshWorkspace();};
+  let workspaceTimer=setInterval(checkWorkspace,30000);window.addEventListener('focus',checkWorkspace);window.addEventListener('pagehide',()=>{clearInterval(workspaceTimer);window.removeEventListener('focus',checkWorkspace);controller.invalidate();});window.addEventListener('pageshow',event=>{if(event.persisted){clearInterval(workspaceTimer);workspaceTimer=setInterval(checkWorkspace,30000);window.addEventListener('focus',checkWorkspace);void controller.resume(controller.getState().source);}});
   $('#graph').addEventListener('click',event=>{
     const target=event.target.closest('[data-action="inspect-theme"]');
     if(target)void controller.loadEvidence(target.dataset.themeId).catch(errorMessage);
@@ -792,7 +808,7 @@ async function startBrowserApp() {
   viewerMenu.addEventListener('click',event=>{if(event.target.closest('nav button, nav a'))viewerMenu.open=false;});
   document.addEventListener('pointerdown',event=>{if(!viewerMenu.contains(event.target))viewerMenu.open=false;});
   document.addEventListener('keydown',event=>{if(event.key==='Escape')viewerMenu.open=false;});
-  $('#refresh').onclick = () => void controller.load(source.value);
+  $('#refresh').onclick = () => void controller.load(controller.getState().source);
   $('#signout').onclick = async () => { window.google?.accounts?.id?.disableAutoSelect?.(); signInSetup = null; signin.replaceChildren(); await controller.signOut(); };
   $('#setup').onclick = async () => {
     showGate('Connect the Obsidian Gmail CRM.', 'Generate a private push token here, then paste this site URL and token into the plugin’s Graph push settings.');

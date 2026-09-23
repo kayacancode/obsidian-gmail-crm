@@ -352,3 +352,28 @@ test('push token request failures return a safe error without exposing or replac
   assert.equal(controller.getState().phase, 'ready');
   assert.deepEqual(controller.getState().graph, graph);
 });
+
+test('workspace loads without own inbox or nodes and never calls personal evidence/search APIs',async()=>{
+ const calls=[];const controller=createRelationshipController({origin:'https://people.test',fetchImpl:async(path)=>{calls.push(path);if(path==='/api/accounts')return json({account:'new@example.com',accounts:[]});if(path.endsWith('/graph'))return json({account:'new@example.com',graph:{source:'workspace',workspaceId:'team',workspaceName:'Team',nodes:[],edges:[],themes:[],themeSignals:[]}});if(path.endsWith('/search'))return json({results:[]});return json({});}});
+ await controller.resume('workspace:team');assert.equal(controller.getState().phase,'ready');
+ await controller.searchNetwork('designer');await controller.loadRelevance('my');await controller.loadEvidence('theme');
+ assert.ok(calls.includes('/api/workspaces/team/search'));assert.ok(!calls.some(p=>p.startsWith('/api/people/')||p.startsWith('/api/relevance')||p.startsWith('/api/themes')));
+});
+
+test('workspace switch discards pending personal search and removal clears graph',async()=>{
+ let release,removed=false;const stale=new Promise(resolve=>release=resolve);
+ const controller=createRelationshipController({origin:'https://people.test',fetchImpl:async(path)=>{
+ if(path==='/api/accounts')return json({account:'new@example.com',accounts:[]});
+ if(path==='/api/people/search')return stale;
+ if(path.endsWith('/members'))return new Response(JSON.stringify({error:'workspace_unavailable'}),{status:removed?403:200});
+ return json({account:'new@example.com',graph:{source:path.includes('/workspaces/')?'workspace':'email_accounts',nodes:[{id:'a',name:'Ada'}],edges:[],revision:1}});
+ }});
+ await controller.resume();const pending=controller.searchNetwork('private');
+ await controller.load('workspace:team');release(json({results:[{personId:'private'}]}));await assert.rejects(pending,/context changed/i);
+ removed=true;await controller.refreshWorkspace();assert.equal(controller.getState().graph,null);assert.equal(controller.getState().phase,'error');
+});
+
+test('signed-out workspace deep link survives Google sign-in',async()=>{
+ const calls=[];const controller=createRelationshipController({origin:'https://people.test',fetchImpl:async(path)=>{calls.push(path);if(path==='/api/accounts')return new Response('{}',{status:401});if(path==='/api/session')return json({account:'new@example.com'});return json({account:'new@example.com',graph:{source:'workspace',nodes:[],edges:[]}});}});
+ await controller.resume('workspace:team');await controller.signIn('google-token');assert.ok(calls.includes('/api/workspaces/team/graph'));assert.ok(!calls.includes('/api/graph'));
+});

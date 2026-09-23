@@ -5,6 +5,11 @@ export function wanderTopics(graph) {
  const signals=(graph.themeSignals||[]).filter(s=>s.sourceType!=='gmail_subject');
  const allowed=new Set(graph.nodes.map(n=>n.id));
  const entries=conversationThemes(graph.relevance?.themes||[],signals).map(t=>({...t,id:`theme:${t.themeId}`,kind:'Supported theme',evidence:signals.filter(s=>t.components.some(c=>c.signalId===s.id)),reason:'People connected to this topic by recorded evidence.'}));
+ if(graph.source==='workspace')for(const theme of graph.themes||[]){
+  if(entries.some(t=>t.themeId===theme.id))continue;
+  const evidence=signals.filter(s=>s.themeId===theme.id&&allowed.has(s.personId));if(!evidence.length)continue;
+  entries.push({id:`theme:${theme.id}`,themeId:theme.id,name:theme.name,kind:'Supported theme',nodeIds:[...new Set(evidence.map(s=>s.personId))],evidence,components:evidence.map(s=>({signalId:s.id,sourceType:s.sourceType})),reason:'People linked by shared recorded evidence.'});
+ }
  const notes=new Map();
  for(const s of signals){if(!['granola','obsidian_note'].includes(s.sourceType)||!s.provenance?.title||!allowed.has(s.personId))continue;
   const ref=s.evidenceRef.split('#')[0];if(!notes.has(ref))notes.set(ref,{id:`note:${ref}`,name:s.provenance.title,kind:'Conversation',nodeIds:[],evidence:[],reason:'A recorded conversation title—not an inferred community.'});

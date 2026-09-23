@@ -126,3 +126,9 @@ test('calendar prepares upcoming accepted meetings without counting invitations 
  graph.activity[0].status='invited';graph.activity[0].acceptedPersonIds=[];
  assert.equal(attentionDigest(graph,{},now).length,0);
 });
+
+test('workspace Wander shows evidence-backed shared topics without inventing attendees',async()=>{
+ const {wanderTopics}=await import('../public/relationship-graph/wander.mjs');
+ const topics=wanderTopics({source:'workspace',nodes:[{id:'a'}],themes:[{id:'t',name:'Interface design'}],themeSignals:[{id:'s',personId:'a',themeId:'t',sourceType:'granola',summary:'Working on interfaces',observedAt:'2026-09-23',evidenceRef:'workspace:x:s'}],relevance:{themes:[]}});
+ assert.equal(topics.length,1);assert.deepEqual(topics[0].nodeIds,['a']);
+});

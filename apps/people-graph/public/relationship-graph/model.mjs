@@ -172,6 +172,8 @@ function normalizeNode(raw, index) {
     companySource: optionalString(raw.companySource),
     photoUrl: photoUrl(raw.photoUrl ?? raw.photo),
     photoPosition: optionalString(raw.photoPosition),
+    viewerScore:raw.viewerScore&&Number.isFinite(raw.viewerScore.score)&&Number.isFinite(raw.viewerScore.base)&&[-10,0,10].includes(raw.viewerScore.delta)?{score:raw.viewerScore.score,base:raw.viewerScore.base,delta:raw.viewerScore.delta}:null,
+    relationships: Array.isArray(raw.relationships)?raw.relationships.slice(0,20).map(r=>({memberId:String(r.memberId||''),memberName:String(r.memberName||''),score:Number.isFinite(r.score)?r.score:null,scoreVersion:String(r.scoreVersion||'unknown'),lastContact:optionalString(r.lastContact),evidenceCategory:optionalString(r.evidenceCategory)})):[],
     combined: optionalScore(raw.combined, `Node ${index} combined`),
     baseCombined: optionalScore(raw.baseCombined, `Node ${index} baseCombined`),
     feedbackDelta: Number.isFinite(raw.feedbackDelta)?raw.feedbackDelta:0,
@@ -494,6 +496,8 @@ export function normalizeGraph(input, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
 
   const suppliedMeta = input.meta === undefined ? {} : requireRecord(input.meta, 'Graph meta');
   return {
+    source:input.source==='workspace'?'workspace':null,
+    workspaceName:optionalString(input.workspaceName),
     nodes,
     edges,
     activity: (Array.isArray(input.activity) ? input.activity : []).filter(e=>e && ['email','meeting','calendar'].includes(e.kind) && Number.isFinite(Date.parse(e.at)) && Array.isArray(e.personIds)).map(e=>({id:String(e.id),kind:e.kind,at:e.at,end:optionalString(e.end),allDay:e.allDay===true,status:e.status==='accepted'?'accepted':'invited',url:typeof e.url==='string'&&e.url.startsWith('https://calendar.google.com/')?e.url:null,acceptedPersonIds:Array.isArray(e.acceptedPersonIds)?e.acceptedPersonIds.filter(id=>nodeIds.has(id)):[],title:String(e.title||''),source:String(e.source||''),personIds:e.personIds.filter(id=>nodes.some(n=>n.id===id))})),

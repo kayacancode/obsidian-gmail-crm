@@ -142,7 +142,7 @@ export function mountGraph(element, options = {}) {
   let destroyed = false;
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
-  let lens = validLens(options.lens ?? 'my');
+  let lens = validLens(graph.source==='workspace'?'firm':options.lens ?? 'my');
   let activeThemeId = null;
   let relevancePersonId = null;
   let relevanceRequest = 0;
@@ -607,7 +607,16 @@ export function mountGraph(element, options = {}) {
       scores.append(make('p','rg-source',contact ? `Your last recorded contact: ${contact.slice(0,10)}` : 'No dated direct contact in this data.'));
       if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`People score: ${Math.round(node.combined)} / 100${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
       if(graph.personFeedback?.[node.id]){const undo=button('Undo person feedback','person-feedback','rg-text-button');undo.dataset.nodeId=node.id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy||!callbacks.onPersonFeedback;scores.append(undo);}
-      panel.append(scores);
+      if(graph.source!=='workspace')panel.append(scores);
+      if(graph.source==='workspace'){
+        const section=make('section','rg-profile-section');section.append(make('h3','','Team relationships'));
+        const rows=[...(node.relationships||[])].sort((a,b)=>(b.score??-1)-(a.score??-1));
+        const comparable=rows.filter(r=>r.score!==null);const sameVersion=new Set(comparable.map(r=>r.scoreVersion)).size===1;
+        section.append(make('p','rg-source','Measured contact activity, not personal closeness or willingness to introduce. Scores exclude private feedback.'));
+        for(const r of rows){section.append(make('p','rg-copy',`${r.memberName} · ${r.score===null?'Not measured':Math.round(r.score)+' / 100'}${sameVersion&&r.score!==null&&r.score===comparable[0]?.score?' · strongest recorded connection':''}`),make('p','rg-source',`${r.lastContact?'Last recorded contact '+r.lastContact.slice(0,10):'Contact date unavailable'} · ${r.evidenceCategory||'unknown'} evidence`));const ask=button(`Request intro from ${r.memberName}`,'workspace-intro','rg-person-action');ask.dataset.memberId=r.memberId;section.append(ask);}
+        if(node.viewerScore)section.append(make('p','rg-source',`Your private People score: ${node.viewerScore.score}/100 · measured ${node.viewerScore.base}${node.viewerScore.delta?' · feedback '+node.viewerScore.delta:''}. Only visible to you.`));
+        panel.append(section);
+      }
       const result = searchAnswer?.results.find(p=>p.personId===node.id);
       if(result) {
         const match=make('section','rg-profile-section');
@@ -624,7 +633,7 @@ export function mountGraph(element, options = {}) {
         }
         panel.append(routes);
       }
-      const context = ownSignals(relevanceGraph.themeSignals??[]).filter(s=>s.personId===node.id).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,3);
+      const context = (graph.source==='workspace'?(relevanceGraph.themeSignals??[]):ownSignals(relevanceGraph.themeSignals??[])).filter(s=>s.personId===node.id).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,3);
       if(context.length) {
         const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent recorded context'));
         for(const s of context) notes.append(make('p','rg-copy',s.summary),make('p','rg-source',`${s.sourceType} · ${s.observedAt.slice(0,10)} · ${s.provenance?.title??'Recorded source'}`));
@@ -633,7 +642,7 @@ export function mountGraph(element, options = {}) {
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
       if (typeof callbacks.onOpenPublicSource === 'function') panel.append(button('Add public source', 'open-person-public-source', 'rg-theme-action'));
-      if (typeof callbacks.onDraftNote === 'function') panel.append(button('Draft a note', 'draft-person-note', 'rg-theme-action'));
+      if (graph.source!=='workspace' && typeof callbacks.onDraftNote === 'function') panel.append(button('Draft a note', 'draft-person-note', 'rg-theme-action'));
     }
     if (lens !== 'off') {
       const connector = relevanceGraph.connectors.find(item => item.nodeId === node.id);
@@ -1161,7 +1170,7 @@ export function mountGraph(element, options = {}) {
       select.append(option);
     }
     lensLabel.append(select);
-    actions.append(lensLabel);
+    if(graph.source!=='workspace')actions.append(lensLabel);
     const pathButton = button('Find a path ↗', 'start-path', 'rg-text-button');
     pathButton.disabled = !graph.nodes.some((node) => node.type === 'person');
     pathButton.setAttribute('aria-pressed', String(Boolean(pathState)));
@@ -1169,14 +1178,14 @@ export function mountGraph(element, options = {}) {
     header.append(actions);
     const [pathBar, pathSummary] = renderPathControls();
     root.append(header);
-    if(!pathState) root.append(renderTimeControls());
+    if(!pathState && graph.source!=='workspace') root.append(renderTimeControls());
     if (pathBar) root.append(pathBar);
     const topics = renderTopics();
     if (topics) root.append(topics);
     const canvas = renderCanvas();
     root.append(canvas);
     if(!pathState && !panelMode) {
-      const tab=button('Your people','open-digest','rg-digest-tab');
+      const tab=button('Your people','open-digest','rg-digest-tab');if(graph.source==='workspace')tab.hidden=true;
       tab.setAttribute('aria-expanded','false');root.append(tab);
     }
     if (pathSummary) root.append(pathSummary);
@@ -1402,6 +1411,8 @@ export function mountGraph(element, options = {}) {
       if (relevancePending || !selectedId) return;
       requestRelevance(action === 'retrieve-person-context' ? callbacks.onRetrievePreview : callbacks.onOpenPublicSource,
         { personId: selectedId }, 'Context request completed.');
+    } else if (action === 'workspace-intro') {
+      if(selectedId)callbacks.onDraftNote?.(selectedId,target.dataset.memberId);
     } else if (action === 'draft-person-note') {
       // onDraftNote opens its own dialog and handles its own errors (openDraftNote in
       // relationship-host.mjs catches everything and returns normally), so this never goes
