@@ -1,0 +1,42 @@
+{
+  "name": "people-graph",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-user people graph viewer \u2014 force-directed contacts with scores and connection strengths, backed by Cloudflare Workers + D1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute people-graph --file ./schema.sql",
+    "db:init:remote": "wrangler d1 execute people-graph --remote --file ./schema.sql",
+    "smoke": "bash scripts/smoke.sh",
+    "test": "node --test tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
+    "test:relationship-host": "node --test tests/relationship-host.test.mjs",
+    "test:relationship-browser": "node tests/relationship-browser.mjs",
+    "test:readability-browser": "node tests/relationship-readability-browser.mjs",
+    "test:meeting-preview-browser": "node tests/meeting-preview-browser.mjs",
+    "test:browser": "node tests/browser.mjs",
+    "test:accounts-browser": "node tests/accounts-browser.mjs && node tests/accounts-simple-browser.mjs",
+    "test:granola-browser": "node tests/granola-browser.mjs",
+    "test:share-browser": "node tests/share-browser.mjs",
+    "test:lab-browser": "node tests/lab-browser.mjs",
+    "test:studio-browser": "node tests/studio-browser.mjs",
+    "build:district": "node scripts/build-district.mjs",
+    "build:relevance": "node scripts/build-relevance.mjs",
+    "test:district-browser": "node tests/district-browser.mjs",
+    "predeploy": "npm run build:district && npm run build:relevance",
+    "test:building-browser": "node tests/building-browser.mjs",
+    "test:figures-browser": "node tests/figures-browser.mjs",
+    "test:world-browser": "node tests/world-browser.mjs",
+    "test:all-people-browser": "node tests/all-people-browser.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260602.1",
+    "esbuild": "0.27.3",
+    "typescript": "~5.9.3",
+    "wrangler": "4.96.0"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  }
+}

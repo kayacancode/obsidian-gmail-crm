@@ -67,10 +67,20 @@ export function logoUrlForDomain(domain: string): string {
  * them in place. Throws on auth errors (401/403) so the caller can prompt a
  * reconnect; swallows nothing else silently.
  */
+export interface PhotoSyncOptions {
+	/** Pause between rate-limited retries; injectable so tests do not wait. */
+	sleep?: (ms: number) => Promise<void>;
+}
+
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_PAUSE_MS = 15_000;
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export async function syncContactPhotos(
 	settings: GmailCrmSettings,
 	contacts: Record<string, Contact>,
-	onProgress?: (msg: string) => void
+	onProgress?: (msg: string) => void,
+	options: PhotoSyncOptions = {}
 ): Promise<PhotoSyncResult> {
 	if (!settings.accessToken) {
 		throw new Error("Not connected to Google");
@@ -84,7 +94,8 @@ export async function syncContactPhotos(
 		`${PEOPLE_API_BASE}/people/me/connections?personFields=emailAddresses,photos,organizations&pageSize=${PAGE_SIZE}&${SOURCES}`,
 		headers,
 		(resp) => resp.connections ?? [],
-		byEmail
+		byEmail,
+		options.sleep ?? defaultSleep
 	);
 
 	// Other contacts: emailed-but-never-saved. No organizations on this endpoint.
@@ -93,7 +104,8 @@ export async function syncContactPhotos(
 		`${PEOPLE_API_BASE}/otherContacts?readMask=emailAddresses,photos&pageSize=${PAGE_SIZE}&${SOURCES}`,
 		headers,
 		(resp) => resp.otherContacts ?? [],
-		byEmail
+		byEmail,
+		options.sleep ?? defaultSleep
 	);
 
 	const checkedAt = new Date().toISOString();
@@ -119,28 +131,34 @@ async function listPages(
 	baseUrl: string,
 	headers: Record<string, string>,
 	pick: (resp: PeopleListResponse) => Person[],
-	into: Map<string, PhotoRecord>
+	into: Map<string, PhotoRecord>,
+	sleep: (ms: number) => Promise<void>
 ): Promise<void> {
 	let pageToken: string | undefined;
 	let pages = 0;
-	do {
+	let retries = 0;
+	while (pages < 200) {
 		const url = pageToken ? `${baseUrl}&pageToken=${encodeURIComponent(pageToken)}` : baseUrl;
 		const resp = await requestUrl({ url, headers, throw: false });
 		if (resp.status === 401 || resp.status === 403) {
 			throw new Error(`HTTP ${resp.status}: People API access denied. Reconnect your account to grant contacts access.`);
 		}
-		if (resp.status === 429 && pages > 0) {
-			await new Promise((r) => setTimeout(r, 15_000));
+		// Rate limited: pause and retry the same page a bounded number of times.
+		if (resp.status === 429 && retries < RATE_LIMIT_RETRIES) {
+			retries++;
+			await sleep(RATE_LIMIT_PAUSE_MS);
 			continue;
 		}
 		if (resp.status < 200 || resp.status >= 300) {
 			throw new Error(`HTTP ${resp.status}: ${(resp.text ?? "").slice(0, 200)}`);
 		}
+		retries = 0;
 		const body = resp.json as PeopleListResponse;
 		for (const person of pick(body)) absorb(person, into);
-		pageToken = body.nextPageToken;
 		pages++;
-	} while (pageToken && pages < 200);
+		pageToken = body.nextPageToken;
+		if (!pageToken) return;
+	}
 }
 
 function absorb(person: Person, into: Map<string, PhotoRecord>): void {

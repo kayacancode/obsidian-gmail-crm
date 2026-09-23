@@ -41,9 +41,38 @@ export function diffPool(lastPush, pool) {
 	return { upserts, removeIds, next };
 }
 
+// Opaque pair id for merge-review cards: order-insensitive over the two emails.
+export function pairId(saltHex, emailA, emailB) {
+	const [a, b] = [emailA, emailB].map((e) => e.trim().toLowerCase()).sort();
+	return createHmac("sha256", Buffer.from(saltHex, "hex"))
+		.update(`${a}|${b}`)
+		.digest("hex")
+		.slice(0, 32);
+}
+
+// Generic stable content hash for diffing arbitrary card fields.
+export function hashValues(values) {
+	return createHash("sha256").update(JSON.stringify(values)).digest("hex").slice(0, 16);
+}
+
 // State schema v2. Legacy v1 state (random uuids, batch_date) is discarded:
 // its map is only meaningful against decisions that the migration wipes.
 export function migrateState(raw) {
-	if (raw && raw.version === 2 && typeof raw.salt === "string") return raw;
-	return { version: 2, salt: randomBytes(32).toString("hex"), map: {}, lastPush: {} };
+	if (raw && raw.version === 2 && typeof raw.salt === "string") {
+		return {
+			...raw,
+			mergeMap: raw.mergeMap ?? {},
+			lastMergePush: raw.lastMergePush ?? {},
+			lastMergeScanUnix: raw.lastMergeScanUnix ?? 0,
+		};
+	}
+	return {
+		version: 2,
+		salt: randomBytes(32).toString("hex"),
+		map: {},
+		lastPush: {},
+		mergeMap: {},
+		lastMergePush: {},
+		lastMergeScanUnix: 0,
+	};
 }

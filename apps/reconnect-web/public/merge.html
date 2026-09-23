@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+	<title>Merge review</title>
+	<script src="https://accounts.google.com/gsi/client" async defer></script>
+	<style>
+		:root { --bg:#0f1115; --card:#1a1d24; --muted:#8a90a0; --text:#eef0f5; --accent:#6ca2dc; --good:#4ec98b; --bad:#e0656f; }
+		* { box-sizing: border-box; }
+		body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; align-items:center; }
+		header { width:100%; max-width:480px; display:flex; align-items:center; justify-content:space-between; padding:16px; }
+		header h1 { font-size:1.1rem; margin:0; letter-spacing:.02em; }
+		header h1 a { font-size:.75rem; color:var(--muted); text-decoration:none; }
+		#count { color:var(--muted); font-size:.85rem; }
+		main { flex:1; width:100%; max-width:480px; padding:0 16px; display:flex; flex-direction:column; justify-content:center; }
+		.card { position:relative; background:var(--card); border:1px solid #262a33; border-radius:18px; padding:24px 20px; min-height:320px; display:flex; flex-direction:column; gap:12px; touch-action:none; user-select:none; transition:transform .15s ease, opacity .15s ease; }
+		.question { text-align:center; color:var(--muted); font-size:.85rem; }
+		.pill { font-size:.72rem; padding:2px 8px; border-radius:10px; background:#262a33; color:var(--muted); }
+		.pair { display:flex; gap:12px; }
+		.person { flex:1; background:rgba(108,162,220,.07); border-radius:12px; padding:14px 12px; display:flex; flex-direction:column; gap:6px; }
+		.person .name { font-size:1.05rem; font-weight:700; line-height:1.15; }
+		.person .meta { color:var(--muted); font-size:.8rem; }
+		.stamp { position:absolute; top:20px; font-size:1.2rem; font-weight:800; letter-spacing:.08em; padding:4px 10px; border-radius:8px; border:3px solid; opacity:0; z-index:2; }
+		.stamp.merge { right:20px; color:var(--good); border-color:var(--good); transform:rotate(12deg); }
+		.stamp.keep { left:20px; color:var(--bad); border-color:var(--bad); transform:rotate(-12deg); }
+		.actions { display:flex; align-items:center; justify-content:center; gap:18px; padding:22px 0 32px; }
+		.btn { width:60px; height:60px; border-radius:50%; border:1px solid #2c313c; background:var(--card); color:var(--text); font-size:1.4rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:transform .1s; }
+		.btn:active { transform:scale(.92); }
+		.btn.good { color:var(--good); border-color:var(--good); }
+		.btn.bad { color:var(--bad); border-color:var(--bad); }
+		.hint { color:var(--muted); font-size:.75rem; text-align:center; padding-bottom:16px; }
+		.empty { text-align:center; color:var(--muted); padding:60px 20px; }
+		#signin { display:flex; justify-content:flex-end; }
+		.gate { text-align:center; padding:50px 20px; color:var(--muted); }
+	</style>
+</head>
+<body>
+	<header>
+		<h1>🧬 Merge review <a href="/">☀️ reconnect</a></h1>
+		<span id="count"></span>
+	</header>
+	<main>
+		<div id="signin"></div>
+		<div id="stage"></div>
+		<div class="actions" id="actions" hidden>
+			<button class="btn bad" id="b-keep" title="Different people — keep separate (left)">⇹</button>
+			<button class="btn good" id="b-merge" title="Same person — merge (right)">⧉</button>
+		</div>
+		<div class="hint">swipe right = same person (merge) · left = different people · ← / → keys work too</div>
+	</main>
+
+	<script>
+		const stage = document.getElementById("stage");
+		const actionsEl = document.getElementById("actions");
+		const countEl = document.getElementById("count");
+		let idToken = null;
+		let queue = [];
+		let total = 0;
+		let seen = new Set();
+
+		function waitForGoogle(timeoutMs = 10000) {
+			return new Promise((resolve) => {
+				if (window.google?.accounts?.id) return resolve(true);
+				const start = Date.now();
+				const t = setInterval(() => {
+					if (window.google?.accounts?.id) { clearInterval(t); resolve(true); }
+					else if (Date.now() - start > timeoutMs) { clearInterval(t); resolve(false); }
+				}, 100);
+			});
+		}
+
+		async function boot() {
+			stage.innerHTML = `<div class="gate">Loading…</div>`;
+			const cfg = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
+			if (!cfg.googleClientId) {
+				stage.innerHTML = `<div class="gate">Sign-in unavailable — missing Google config.</div>`;
+				return;
+			}
+			const ready = await waitForGoogle();
+			if (!ready) {
+				stage.innerHTML = `<div class="gate">Couldn't load Google sign-in. <button id="retry">Retry</button></div>`;
+				document.getElementById("retry").onclick = boot;
+				return;
+			}
+			google.accounts.id.initialize({
+				client_id: cfg.googleClientId,
+				callback: (resp) => { idToken = resp.credential; load(); },
+			});
+			google.accounts.id.renderButton(document.getElementById("signin"), { theme: "outline", size: "large" });
+			google.accounts.id.prompt();
+			renderGate();
+		}
+
+		function renderGate() {
+			actionsEl.hidden = true;
+			countEl.textContent = "";
+			stage.innerHTML = `<div class="gate">Sign in with Google to review possible duplicates.</div>`;
+		}
+
+		async function load() {
+			if (!idToken) { renderGate(); return; }
+			const resp = await fetch("/api/merge/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
+			if (!resp || resp.status === 401) {
+				idToken = null;
+				renderGate();
+				if (window.google?.accounts?.id) google.accounts.id.prompt();
+				return;
+			}
+			const data = await resp.json().catch(() => ({ total: 0, candidates: [] }));
+			queue = (data.candidates || []).filter(c => !seen.has(c.id));
+			queue.forEach(c => seen.add(c.id));
+			total = data.total ?? queue.length;
+			render();
+		}
+
+		async function refill() {
+			if (!idToken || queue.length >= 20 || seen.size >= total) return;
+			const resp = await fetch("/api/merge/candidates", { headers: { authorization: "Bearer " + idToken } }).catch(() => null);
+			if (!resp || !resp.ok) return;
+			const data = await resp.json().catch(() => null);
+			if (!data) return;
+			total = data.total ?? total;
+			for (const c of data.candidates || []) {
+				if (!seen.has(c.id)) { seen.add(c.id); queue.push(c); }
+			}
+		}
+
+		function personHtml(name, company, domain, lastContact, exchanges) {
+			const ts = lastContact ? Date.parse(lastContact.includes("T") ? lastContact : lastContact + "T00:00:00") : NaN;
+			const days = Number.isFinite(ts) ? Math.max(0, Math.floor((Date.now() - ts) / 86400000)) : null;
+			const bits = [];
+			if (company) bits.push(company);
+			if (domain) bits.push(domain);
+			if (days != null) bits.push(`last contact ${days}d ago`);
+			if (exchanges != null) bits.push(`${exchanges} emails`);
+			const wrap = document.createElement("div");
+			wrap.className = "person";
+			const n = document.createElement("div"); n.className = "name"; n.textContent = name;
+			wrap.appendChild(n);
+			for (const b of bits) {
+				const m = document.createElement("div"); m.className = "meta"; m.textContent = b;
+				wrap.appendChild(m);
+			}
+			return wrap;
+		}
+
+		function render() {
+			countEl.textContent = total ? `${Math.min(seen.size - queue.length + 1, total)} / ${total}` : "";
+			if (queue.length === 0) {
+				actionsEl.hidden = true;
+				stage.innerHTML = `<div class="empty">No duplicate pairs to review. 🎉</div>`;
+				countEl.textContent = "";
+				return;
+			}
+			const c = queue[0];
+			actionsEl.hidden = false;
+			const card = document.createElement("div");
+			card.className = "card";
+			card.innerHTML = `
+				<div class="stamp merge">MERGE</div>
+				<div class="stamp keep">KEEP APART</div>
+				<div class="question">Same person?</div>
+				<div class="pair"></div>
+				<div class="question"><span class="pill"></span></div>
+			`;
+			const pair = card.querySelector(".pair");
+			pair.appendChild(personHtml(c.name_a, c.company_a, c.domain_a, c.last_contact_a, c.exchanges_a));
+			pair.appendChild(personHtml(c.name_b, c.company_b, c.domain_b, c.last_contact_b, c.exchanges_b));
+			const pill = card.querySelector(".pill");
+			pill.textContent = `${c.confidence != null ? Math.round(c.confidence * 100) + "% match" : ""}${c.reasons ? " · " + c.reasons.replaceAll(",", ", ").replaceAll("_", " ") : ""}`;
+			stage.innerHTML = "";
+			stage.appendChild(card);
+			wireDrag(card);
+		}
+
+		function showNotice(msg) {
+			const el = document.createElement("div");
+			el.className = "gate";
+			el.style.cssText = "position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid #2c313c;border-radius:10px;padding:10px 16px;font-size:.85rem;z-index:10;";
+			el.textContent = msg;
+			document.body.appendChild(el);
+			setTimeout(() => el.remove(), 2500);
+		}
+
+		async function decide(action) {
+			const c = queue[0];
+			if (!c) return;
+			if (!idToken) { renderGate(); return; }
+			queue.shift();
+			render();
+			refill();
+			try {
+				const r = await fetch("/api/merge/swipe", {
+					method: "POST",
+					headers: { "content-type": "application/json", "authorization": "Bearer " + idToken },
+					body: JSON.stringify({ id: c.id, action }),
+				});
+				if (r.status === 401) {
+					queue.unshift(c);
+					idToken = null;
+					renderGate();
+					if (window.google?.accounts?.id) google.accounts.id.prompt();
+					return;
+				}
+				if (r.status === 404) {
+					showNotice("Pair already resolved — skipped");
+					return;
+				}
+				if (!r.ok) {
+					queue.unshift(c); render();
+					showNotice("Not saved — try again");
+				}
+			} catch (e) {
+				queue.unshift(c); render();
+				showNotice("Offline? Not saved — try again");
+			}
+		}
+
+		document.getElementById("b-merge").onclick = () => decide("merge");
+		document.getElementById("b-keep").onclick = () => decide("keep");
+		document.addEventListener("keydown", (e) => {
+			if (e.key === "ArrowRight") decide("merge");
+			else if (e.key === "ArrowLeft") decide("keep");
+		});
+
+		function wireDrag(card) {
+			let startX = 0, dx = 0, dragging = false;
+			const mergeStamp = card.querySelector(".stamp.merge");
+			const keepStamp = card.querySelector(".stamp.keep");
+			const down = (x) => { dragging = true; startX = x; };
+			const move = (x) => {
+				if (!dragging) return;
+				dx = x - startX;
+				card.style.transform = `translateX(${dx}px) rotate(${dx / 25}deg)`;
+				mergeStamp.style.opacity = dx > 0 ? Math.min(1, dx / 120) : 0;
+				keepStamp.style.opacity = dx < 0 ? Math.min(1, -dx / 120) : 0;
+			};
+			const up = () => {
+				if (!dragging) return;
+				dragging = false;
+				if (dx > 120) decide("merge");
+				else if (dx < -120) decide("keep");
+				else { card.style.transform = ""; mergeStamp.style.opacity = 0; keepStamp.style.opacity = 0; }
+				dx = 0;
+			};
+			card.addEventListener("pointerdown", (e) => { card.setPointerCapture(e.pointerId); down(e.clientX); });
+			card.addEventListener("pointermove", (e) => move(e.clientX));
+			card.addEventListener("pointerup", up);
+			card.addEventListener("pointercancel", up);
+		}
+
+		boot();
+	</script>
+</body>
+</html>

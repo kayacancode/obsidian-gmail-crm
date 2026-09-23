@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stableId, contentHash, diffPool, migrateState } from "./reconnect-sync.mjs";
+import { stableId, contentHash, diffPool, migrateState, pairId, hashValues } from "./reconnect-sync.mjs";
 
 const SALT = "ab".repeat(32);
 
@@ -49,5 +49,29 @@ test("migrateState: fresh, legacy v1, and passthrough", () => {
 	assert.equal(legacy.version, 2, "legacy v1 state is discarded into a fresh v2");
 	assert.deepEqual(legacy.map, {}, "old uuid map is useless once decisions are wiped");
 	const v2 = { version: 2, salt: SALT, map: { x: "a@b.com" }, lastPush: { x: { h: "h", s: 1 } } };
-	assert.deepEqual(migrateState(v2), v2, "v2 passes through untouched");
+	assert.deepEqual(migrateState(v2), { ...v2, mergeMap: {}, lastMergePush: {}, lastMergeScanUnix: 0 });
+});
+
+test("pairId is order-insensitive and distinct per pair", () => {
+	const a = pairId(SALT, "A@x.com", "b@y.com");
+	const b = pairId(SALT, "b@y.com", "a@x.com ");
+	assert.equal(a, b);
+	assert.match(a, /^[0-9a-f]{32}$/);
+	assert.notEqual(a, pairId(SALT, "a@x.com", "c@z.com"));
+});
+
+test("hashValues is stable and ignores nothing it's given", () => {
+	assert.equal(hashValues(["x", 1, null]), hashValues(["x", 1, null]));
+	assert.notEqual(hashValues(["x", 1, null]), hashValues(["x", 2, null]));
+	assert.match(hashValues(["x"]), /^[0-9a-f]{16}$/);
+});
+
+test("migrateState adds merge fields to existing v2 state without clobbering", () => {
+	const v2 = { version: 2, salt: SALT, map: { x: "a@b.com" }, lastPush: { x: { h: "h", s: 1 } } };
+	const out = migrateState(v2);
+	assert.equal(out.salt, SALT);
+	assert.deepEqual(out.map, { x: "a@b.com" });
+	assert.deepEqual(out.mergeMap, {});
+	assert.deepEqual(out.lastMergePush, {});
+	assert.equal(out.lastMergeScanUnix, 0);
 });

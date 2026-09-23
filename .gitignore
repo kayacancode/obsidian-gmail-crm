@@ -5,6 +5,9 @@ contact-index.json
 data.json
 *.zip
 node_modules/
+.wrangler/
+.dev.vars
+apps/people-graph/demo/work/
 target/
 crates/*/target/
 main.js

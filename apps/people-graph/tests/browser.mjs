@@ -1,0 +1,56 @@
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+import assert from 'node:assert/strict';
+const browser=await chromium.launch({executablePath:process.env.CHROME_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+try{
+const page=await browser.newPage({viewport:{width:1440,height:1060}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+let status=200,account='one@example.test',empty=false;
+const graph={pushedAt:'2026-09-09T12:00:00Z',nodes:Array.from({length:35},(_,i)=>({id:'id'+i,name:i===0?'Ada Chen':'Person '+i,photoUrl:i===0?'https://lh3.googleusercontent.com/test-photo':null,company:i<10?'Frontier':'Studio',role:i===0?'Researcher':'Designer',strength:60,lastContact:'2026-09-01'})),edges:[{source:'id0',target:'id1',types:['introduced'],contexts:['Context engineering roundtable'],weight:2}]};
+await page.route('https://accounts.google.com/gsi/client',route=>route.fulfill({contentType:'text/javascript',body:`window.google={accounts:{id:{initialize(o){window.testSignIn=o.callback},renderButton(el){let b=document.createElement('button');b.textContent='Test sign in';b.onclick=()=>window.testSignIn({credential:'test'});el.append(b)},disableAutoSelect(){}}}};`}));
+await page.route('https://lh3.googleusercontent.com/test-photo',r=>r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="green"/></svg>'}));await page.route('**/api/accounts',r=>r.fulfill({status:401,json:{error:'missing_token'}}));
+await page.route('**/api/session',r=>r.fulfill({json:{ok:true}}));
+await page.route('**/api/config',r=>r.fulfill({json:{googleClientId:'test'}}));
+await page.route('**/api/graph',r=>{assert.equal(r.request().headers().authorization,undefined);return r.fulfill({status,json:status===200?{account,graph:empty?null:graph}:{error:'test'}});} );
+await page.route('**/api/token',r=>r.fulfill({json:{token:'private-test-token'}}));
+await page.goto((process.env.PEOPLE_TEST_ORIGIN || 'http://127.0.0.1:4183')+'/spatial.html');await page.getByRole('button',{name:'Test sign in'}).click();await page.locator('#workspace').waitFor({state:'visible'});
+graph.nodes[0].name='Ada Updated';await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await page.getByText('Ada Updated',{exact:false}).first().waitFor();assert.equal(await page.locator('.orb:not(.company)').count(),35);assert.equal(await page.locator('.orb img').count(),1);await page.waitForFunction(()=>document.querySelector('#photo-status').textContent.includes('1 of 1 available photos displayed'));assert.equal(await page.locator('#card .candidate').count(),12);await page.getByRole('button',{name:'Next →'}).click();assert.equal(await page.locator('#card .candidate').count(),12);
+await page.getByRole('textbox',{name:'Search your network'}).fill('context engineering');await page.getByRole('button',{name:'Explore question'}).click();assert.match(await page.locator('#card').innerText(),/2 people/);
+await page.locator('#card .candidate').first().click();assert.match(await page.locator('#card').innerText(),/Context engineering roundtable/);await page.getByRole('button',{name:'Add to shortlist +'}).click();await page.getByRole('button',{name:'Draft a note'}).click();await page.getByRole('textbox',{name:'Message draft'}).fill('Persist this draft');await page.getByRole('button',{name:'Back to person',exact:true}).click();await page.getByRole('button',{name:'Explore Frontier context'}).click();assert.match(await page.locator('#card').innerText(),/Context engineering roundtable/);
+await page.reload();await page.getByRole('button',{name:'Test sign in'}).click();await page.getByRole('button',{name:'Shortlist',exact:true}).click();assert.equal(await page.locator('#card .candidate').count(),1);await page.locator('#card .candidate').click();await page.getByRole('button',{name:'Draft a note'}).click();assert.equal(await page.getByRole('textbox',{name:'Message draft'}).inputValue(),'Persist this draft');
+await page.getByRole('button',{name:'Sign out',exact:true}).click();await page.locator('#workspace').waitFor({state:'hidden'});account='two@example.test';await page.getByRole('button',{name:'Test sign in'}).click();await page.getByRole('button',{name:'Shortlist',exact:true}).click();assert.equal(await page.locator('#card .candidate').count(),0);
+await page.getByRole('button',{name:'All people',exact:true}).click();await page.screenshot({path:'/tmp/people-production.png',fullPage:true});
+await page.getByRole('textbox',{name:'Search your network'}).fill('zzzzz');await page.getByRole('button',{name:'Explore question'}).click();assert.match(await page.locator('#card').innerText(),/No matching evidence/);assert.equal(await page.locator('.orb').count(),0);
+await page.getByRole('button',{name:'All people',exact:true}).click();await page.setViewportSize({width:390,height:844});await page.waitForTimeout(200);assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/people-production-mobile.png',fullPage:true});
+await page.getByRole('textbox',{name:'Search your network'}).fill('researcher');await page.getByRole('button',{name:'Explore question'}).click();await page.locator('#card .candidate').first().click();await page.locator('#card .fact .candidate').first().click();await page.getByRole('button',{name:'← Back to results',exact:true}).click();assert.match(await page.locator('#scene-count').innerText(),/Showing 1 of 1 people/);
+await page.evaluate(()=>{Storage.prototype.setItem=function(){throw Error('quota');};});await page.locator('#card .candidate').first().click();await page.getByRole('button',{name:'Draft a note'}).click();await page.getByRole('textbox',{name:'Message draft'}).fill('Session draft survives refresh');await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.locator('#workspace').waitFor({state:'visible'});await page.locator('#card .candidate').first().click();await page.getByRole('button',{name:'Draft a note'}).click();assert.equal(await page.getByRole('textbox',{name:'Message draft'}).inputValue(),'Session draft survives refresh');
+status=500;await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.getByRole('button',{name:'Retry',exact:true}).waitFor();assert.match(await page.locator('#gate').innerText(),/500/);assert.ok(await page.locator('#workspace').isHidden());
+status=401;await page.getByRole('button',{name:'Retry',exact:true}).click();await page.getByText('Your session expired.',{exact:false}).waitFor();assert.match(await page.locator('#gate').innerText(),/session expired/);assert.equal(await page.locator('.orb').count(),0);
+status=200;empty=true;await page.getByRole('button',{name:'Test sign in'}).click();await page.locator('#gate').getByRole('button',{name:'Connect Obsidian',exact:true}).click();await page.getByRole('button',{name:'Get my push token'}).click();assert.equal(await page.getByRole('textbox',{name:'Private graph push token'}).inputValue(),'private-test-token');await page.getByRole('button',{name:'Sign out',exact:true}).click();await page.locator('#signin').waitFor({state:'visible'});assert.ok(!(await page.locator('body').innerText()).includes('private-test-token'));
+let searchStatus=200;
+await page.route('**/api/people/search',route=>{
+ if(searchStatus!==200)return route.fulfill({status:searchStatus,json:{error:'unavailable'}});
+ return route.fulfill({json:{query:route.request().postDataJSON().query,checked:true,results:[
+  {personId:'id0',name:'Ada Chen',company:'Frontier',lastContact:'2026-09-01',score:0.9,reasons:[{summary:'Met at the context engineering roundtable',observedAt:'2026-09-01'}]},
+  {personId:'id2',name:'Person 2',company:'Frontier',lastContact:'2026-09-01',score:0.8,reasons:[{summary:'Exchanged budget planning notes',observedAt:'2026-08-15'}]}
+ ]}});
+});
+empty=false;await page.getByRole('button',{name:'Test sign in'}).click();await page.locator('#workspace').waitFor({state:'visible'});
+await page.getByRole('textbox',{name:'Search your network'}).fill('context engineering');await page.getByRole('button',{name:'Explore question'}).click();
+await page.getByText('Ranked by Jev',{exact:false}).waitFor();
+const jevCard=await page.locator('#card').innerText();
+assert.match(jevCard,/Ranked by Jev/i);
+assert.match(jevCard,/Met at the context engineering roundtable/);
+assert.match(jevCard,/Exchanged budget planning notes/);
+assert.ok(jevCard.indexOf('Ada Updated')<jevCard.indexOf('Person 2'),'Jev-ranked people are listed in ranked order');
+await page.locator('#card .candidate').first().click();
+assert.match(await page.locator('#card').innerText(),/Ada Updated/);
+await page.getByRole('button',{name:'Clear search',exact:true}).click();
+assert.doesNotMatch(await page.locator('#card').innerText(),/Ranked by Jev/i);
+searchStatus=503;
+await page.getByRole('textbox',{name:'Search your network'}).fill('context engineering');await page.getByRole('button',{name:'Explore question'}).click();
+await page.waitForFunction(()=>!document.querySelector('#card').innerText.includes('Searching your network'));
+const fallbackCard=await page.locator('#card').innerText();
+assert.doesNotMatch(fallbackCard,/Ranked by Jev/i);
+assert.doesNotMatch(fallbackCard,/Keyword match only/i);
+assert.match(fallbackCard,/2 people/);
+assert.deepEqual(errors,[]);console.log('PASS: authenticated loading, complete scene, pagination, grounded search, person/company cards, drafts and shortlist persistence, tenant isolation, empty search, mobile layout, server errors, expiry, token setup, and Jev-ranked network search with graceful fallback.');
+}finally{await browser.close();}

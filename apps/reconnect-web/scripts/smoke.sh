@@ -29,4 +29,14 @@ curl -s "${auth[@]}" -d '{"id":"aaaa","action":"boost"}' localhost:8787/api/swip
 echo "--- decisions empty, remove bbbb"
 curl -sf "${auth[@]}" "localhost:8787/api/decisions?applied=0" | grep -q '"decisions":\[\]'
 curl -sf "${auth[@]}" -d '{"remove_ids":["bbbb"]}' localhost:8787/api/sync | grep '"removed":1'
+
+echo "--- merge: sync 2 pairs, auth gates, decisions, remove"
+curl -sf "${auth[@]}" -d '{"reset":true,"upserts":[
+  {"id":"p1","confidence":0.9,"reasons":"same_name","name_a":"A One","domain_a":"x.com","name_b":"A Won","domain_b":"y.com"},
+  {"id":"p2","confidence":0.88,"name_a":"B Two","name_b":"B Too"}]}' localhost:8787/api/merge/sync | grep '"upserted":2'
+code=$(curl -s -o /dev/null -w "%{http_code}" localhost:8787/api/merge/candidates)
+[ "$code" = "401" ] || { echo "expected 401, got $code"; exit 1; }
+curl -s "${auth[@]}" -d '{"id":"p1","action":"merge"}' localhost:8787/api/merge/swipe | grep -q error
+curl -sf "${auth[@]}" "localhost:8787/api/merge/decisions?applied=0" | grep -q '"decisions":\[\]'
+curl -sf "${auth[@]}" -d '{"remove_ids":["p2"]}' localhost:8787/api/merge/sync | grep '"removed":1'
 echo "SMOKE OK"

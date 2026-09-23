@@ -36,11 +36,23 @@ The bridge script `scripts/peoplegraph-reconnect-web.mjs` does the whole loop. N
 
 ```bash
 source ~/.peoplegraph/reconnect-web.env
-node scripts/peoplegraph-reconnect-web.mjs run     # = pull (apply yesterday's swipes) then push (post today's)
+node scripts/peoplegraph-reconnect-web.mjs run     # = pull, merge-pull, push, merge-push
 ```
 
-- `push` — runs `peoplegraph reconnect` for the full unswiped pool, derives **stable opaque ids** (HMAC of email; salt kept in `RECONNECT_STATE`, never leaves the machine), and POSTs only the **diff** (upserts/removes) to `/api/sync`, plus a single click-through line to the daily note. Stable ids mean a swipe on any day excludes that contact from the deck forever.
+- `push` — runs `peoplegraph reconnect` for the full unswiped pool, derives **stable opaque ids** (HMAC of email; salt kept in `RECONNECT_STATE`, never leaves the machine), and POSTs only the **diff** (upserts/removes) to `/api/sync`, plus a single click-through line to the daily note. Stable ids mean a swipe on any day excludes that contact from the deck forever. The deck is name-deduped (one card per person, `deduped_rows` in the stats) so a contact with several email addresses no longer shows up twice.
 - `pull` — GETs `/api/decisions`, maps each stable id back to its email locally, applies boost/suppress to the feedback overlay directly and routes `delete` through `peoplegraph feedback` (cache removal + blocklist), then acks.
+- `merge-push` / `merge-pull` — the duplicate-review half of `run`; see "Duplicate review" below.
+
+## Duplicate review
+
+Separate from reconnect swipes, the bridge also runs a **contact-dedup** loop so the same human doesn't linger under two contact records:
+
+- `run` now does **pull → merge-pull → push → merge-push**, in that order (merge steps are wrapped so a merge-endpoint hiccup never blocks the ordinary reconnect sync).
+- `merge-push` auto-merges pairs at confidence >= 0.94 locally via `peoplegraph apply-duplicates`, honoring an existing canonical id from either member of the group. It then syncs the uncertain band (confidence 0.88-0.93) to the `/merge` review deck as pair cards (names/company/domain/last-contact only — no emails). This scan is **weekly**, not every run — pass `--force` to make the bridge re-scan immediately (`node scripts/peoplegraph-reconnect-web.mjs merge-push --force`).
+- The owner reviews pairs at `/merge`: swipe right to merge, swipe left to keep them apart forever.
+- `merge-pull` fetches those verdicts and applies them via `peoplegraph apply-merge` / the dismiss path, then acks.
+- **Preview before a bulk merge push**: `peoplegraph --cache "$PEOPLEGRAPH_CACHE" apply-duplicates --dry-run` shows exactly which pairs/groups would auto-merge without writing anything — always eyeball this before a forced `merge-push` (see the rollout runbook for the full command).
+- **Don't confuse this with `feedback --action clear`** — that command only undoes a reconnect boost/suppress/delete swipe. It has no effect on merges; there is currently no "undo" for a `/merge` decision, so get the dry-run preview right before merging.
 
 Cron it once a day on the machine with the cache:
 

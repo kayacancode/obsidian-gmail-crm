@@ -1,0 +1,11 @@
+# Unified email accounts
+
+Approved product direction: the website is the main entry point. People sign-in identifies the owner, independently of connected Gmail inboxes. Connect inbox, choose recent (90 days) or all mail, sync. Background import updates scores and the web graph automatically; no user-managed push token or scoring step. Obsidian push remains a legacy source.
+
+Implementation: a SQLite Durable Object per verified People owner stores encrypted OAuth refresh credentials, incremental sync jobs, and metadata contributions. Alarms import bounded batches with retry/backoff and checkpoints. OAuth uses a web client, state bound to owner and browser cookie, PKCE, offline access, and a single-use callback. Read only From/To/Cc/Date/Subject/Message-ID metadata, never bodies. OAuth grants Gmail read-only because time-filtered message listing is required. Each mailbox requires Google consent; no old vault credentials are silently uploaded.
+
+Identity: exact email addresses merge contacts across connected inboxes; RFC Message-ID deduplicates duplicate messages. Exclude the connected addresses themselves. Do not infer identity from names. Browser IDs are owner-scoped HMAC hashes. Scores explicitly use email frequency, reciprocity and recency, not the old Obsidian note-based score. A generated graph replaces the default view after a successful inbox import; the prior Obsidian snapshot remains separately viewable. Do not merge incompatible vault hash identities by name.
+
+Account UI: history selection, account address, status, processed-message count, last completed sync, retry/reconnect, manual Sync now, disconnect with local-data removal. Hourly incremental imports after the initial job. Disconnect invalidates in-flight generation before removal. Deleted Gmail mail is not reconciled by incremental import; explain that retained metadata can be removed by disconnecting.
+
+Deployment requires web OAuth client secret and callback allowlist. Keep the feature unavailable if missing. Do not reuse the plugin's desktop OAuth secret. Encrypt refresh credentials using a dedicated generated Workers secret. Existing graph behavior must remain available when new configuration is absent.

@@ -165,12 +165,25 @@ const memoryAdapter = () => {
     write: async (p: string, v: string) => {
       files.set(p, v);
     },
+    // Obsidian's FileSystemAdapter refuses to rename over an existing file.
     rename: async (a: string, b: string) => {
+      if (files.has(b)) throw new Error("Destination file already exists!");
       files.set(b, files.get(a)!);
       files.delete(a);
     },
   };
 };
+test("store keeps saving after the first write when rename cannot overwrite", async () => {
+  const adapter = memoryAdapter();
+  const store = new IntelligenceStore(adapter, "state");
+  await store.record([event("1")]);
+  await store.record([event("2")]);
+  await store.replaceCalendar([]);
+  const reload = new IntelligenceStore(adapter, "state");
+  await reload.load();
+  assert.equal(reload.state.events.length, 2);
+  assert.equal(adapter.files.has("state.tmp"), false);
+});
 test("store persists goals, feedback and events across reloads with serialized saves", async () => {
   const adapter = memoryAdapter();
   const store = new IntelligenceStore(adapter, "state");
@@ -401,4 +414,84 @@ test("one merged person never double-counts the same event through two aliases",
     [event("1"), { ...event("1"), email: "old@example.com" }],
   )[0];
   assert.equal(p.events.length, 1);
+});
+
+import GmailCrmPlugin from '../src/main';
+import { TFile, TFolder } from 'obsidian';
+test('incremental scoring carries photos and rewrites when only the photo changed',()=>{
+ const plugin=Object.create(GmailCrmPlugin.prototype) as any;
+ const c=person('a@example.com',{photoUrl:'https://example.com/photo.jpg',photoUpdatedAt:200});
+ assert.equal(plugin.synthesizePage(c).gmailStats.photoUrl,c.photoUrl);
+ const previous={label:'warm',quadrant:'nurture',staleness:50,combined:50,strength:50,momentum:50};
+ const current={label:'warm',quadrant:'nurture',score:50,combinedScore:50,strengthScore:50,momentumScore:50};
+ assert.equal(plugin.needsPageRewrite(previous,current,{stat:{mtime:0}},100,c.photoUpdatedAt),true);
+ assert.equal(plugin.needsPageRewrite(previous,current,{stat:{mtime:0}},300,c.photoUpdatedAt),false);
+});
+test('automatic intelligence refresh reuses notes while manual refresh rereads them',async()=>{
+ const file=Object.assign(new TFile(),{extension:'md',basename:'p- Person',path:'People/Person.md'});
+ const folder=Object.assign(new TFolder(),{children:[file]});let reads=0;
+ const plugin=Object.create(GmailCrmPlugin.prototype) as any;
+ plugin.settings={...DEFAULT_SETTINGS,peopleFolder:'People'};plugin.intelligenceReady=true;plugin.intelligence={state:{version:1,events:[],goals:[],feedback:{}}};
+ plugin.app={vault:{configDir:'.obsidian',getAbstractFileByPath:()=>folder,read:async()=>{reads++;return '---\nemail: a@example.com\n---\nFounder';},adapter:{exists:async()=>false}}};
+ await plugin.loadIntelligenceWorkspace();assert.equal(reads,1);
+ await plugin.loadIntelligenceWorkspace(false);assert.equal(reads,1);
+ await plugin.loadIntelligenceWorkspace(true);assert.equal(reads,2);
+});
+
+import { syncContactPhotos } from "../src/people-photos";
+const rateLimitedPeople = (failures: number) => {
+  let calls = 0;
+  (globalThis as any).requestHandler = () => {
+    calls++;
+    if (calls <= failures) return { status: 429, text: "quota", json: {} };
+    return { status: 200, text: "", json: { connections: [], otherContacts: [] } };
+  };
+  return () => calls;
+};
+test("photo sync retries a rate-limited first page and then succeeds", async () => {
+  const calls = rateLimitedPeople(2);
+  const waits: number[] = [];
+  try {
+    const result = await syncContactPhotos(
+      { ...DEFAULT_SETTINGS, accessToken: "token" },
+      { "a@example.com": person("a@example.com") },
+      undefined,
+      { sleep: async (ms) => { waits.push(ms); } },
+    );
+    assert.equal(result.checked, 1);
+    assert.equal(waits.length, 2);
+    assert.equal(calls(), 4); // two 429s, then connections, then other contacts
+  } finally {
+    delete (globalThis as any).requestHandler;
+  }
+});
+test("photo sync gives up on a persistent rate limit instead of looping", { timeout: 2000 }, async () => {
+  // First page succeeds and points at a second page that is rate limited forever.
+  let calls = 0;
+  (globalThis as any).requestHandler = () => {
+    calls++;
+    if (calls === 1) return { status: 200, text: "", json: { connections: [], nextPageToken: "p2" } };
+    return { status: 429, text: "quota", json: {} };
+  };
+  try {
+    await assert.rejects(
+      syncContactPhotos(
+        { ...DEFAULT_SETTINGS, accessToken: "token" },
+        {},
+        undefined,
+        { sleep: async () => {} },
+      ),
+      /429/,
+    );
+    assert.ok(calls <= 6, `expected bounded retries, got ${calls} requests`);
+  } finally {
+    delete (globalThis as any).requestHandler;
+  }
+});
+
+test('web graph photo fields reject arbitrary hosts and embedded credentials', async () => {
+ const { safeGraphPhoto } = await import('../src/graph-push');
+ assert.equal(safeGraphPhoto('https://evil.example/photo'), undefined);
+ assert.equal(safeGraphPhoto('https://user:pass@lh3.googleusercontent.com/photo'), undefined);
+ assert.equal(safeGraphPhoto('https://lh3.googleusercontent.com/photo'), 'https://lh3.googleusercontent.com/photo');
 });

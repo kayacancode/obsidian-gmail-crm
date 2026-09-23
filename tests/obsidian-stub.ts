@@ -3,3 +3,14 @@ export async function requestUrl(options: unknown):Promise<unknown> {
  if(!handler)throw new Error('Unexpected Obsidian request');
  return handler(options);
 }
+export class Plugin {}
+export class ItemView {}
+export class PluginSettingTab {}
+export class Setting {}
+export class Notice {
+ setMessage(_message: string) {}
+ hide() {}
+}
+export class TFile {}
+export class TFolder {}
+export const normalizePath = (path:string)=>path;

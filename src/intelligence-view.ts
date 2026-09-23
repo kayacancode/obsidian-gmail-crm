@@ -10,7 +10,7 @@ export class PeopleIntelligenceView extends ItemView {
   private generation = 0;
   constructor(
     leaf: WorkspaceLeaf,
-    private loadData: () => Promise<WorkspaceData>,
+    private loadData: (refreshNotes?: boolean) => Promise<WorkspaceData>,
     private actions: Omit<WorkspaceActions, "refresh">,
   ) {
     super(leaf);
@@ -27,11 +27,11 @@ export class PeopleIntelligenceView extends ItemView {
   async onOpen() {
     await this.refresh();
   }
-  async refresh() {
+  async refresh(refreshNotes = true) {
     const generation = ++this.generation;
     const root = this.contentEl;
     try {
-      const data = await this.loadData();
+      const data = await this.loadData(refreshNotes);
       if (generation !== this.generation) return;
       if (this.workspace) this.workspace.update(data);
       else

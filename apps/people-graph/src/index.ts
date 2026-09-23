@@ -1,0 +1,269 @@
+import {makeSession,readSession,sessionCookie} from "./session";
+import {mailRoute,mailCallback,draftRoute,searchRoute} from "./mail-routes";
+import type {MailEnv} from "./mail-sync";
+import {isRelevancePath,normalizePushedGraph,relevanceRoute} from "./relevance-routes";
+import type {PushedGraphPayload} from "./relevance-routes";
+import {boundedJSON} from "./bounded-json";
+import {granolaRoute} from "./granola-routes";
+import {isSharePath,refreshShares,shareRoute} from "./share-routes";
+export {MailSync} from "./mail-sync";
+/**
+ * People graph viewer — Cloudflare Worker.
+ *
+ * Multi-tenant: the tenant key is a Google-verified email. Each user pushes
+ * their own graph from the Obsidian plugin and can only ever read their own
+ * row. There is no allowlist and no sharing — signing in with any Google
+ * account shows that account's graph (usually empty until they push).
+ *
+ * Privacy model: like reconnect-web, this Worker never sees email addresses
+ * of contacts. Node ids are salted hashes computed in the vault (salt stays
+ * local); the blob holds names, scores, and edge contexts only. The only email
+ * stored is the tenant's own sign-in address, used as the row key.
+ *
+ * Auth:
+ *  - GET /api/graph and GET /api/token require a Google ID token.
+ *  - POST /api/push requires a push token minted by /api/token — a stateless
+ *    HMAC binding the email to TOKEN_SECRET, so the plugin can push headlessly
+ *    without a Google session.
+ */
+
+interface Env extends MailEnv {
+	DB: D1Database;
+	ASSETS: Fetcher;
+	GOOGLE_CLIENT_ID: string;
+	TOKEN_SECRET: string;
+}
+
+// D1 caps a row at 2MB, so that's the real ceiling; leave headroom under it.
+// The plugin (0.8.1+) prunes to the connected graph and stays well below this.
+const MAX_PAYLOAD_BYTES = 1_900_000;
+
+export default {
+	async fetch(request: Request, env: Env): Promise<Response> {
+		const url = new URL(request.url);
+		const { pathname } = url;
+
+		try {
+			if (pathname === "/api/granola" || pathname.startsWith("/api/granola/")) {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({error:user.error,message:"Sign in to use Granola."},401);
+				return await granolaRoute(request, env, user.email);
+			}
+			if (pathname === "/api/session" && request.method === "POST") {
+				if (request.headers.get("origin") !== url.origin) return json({error:"invalid_origin"},403);
+				const user = await requireGoogleUser(request,env);
+				if ("error" in user) return json({error:user.error},401);
+				return Response.json({account:user.email},{headers:{"cache-control":"no-store","set-cookie":sessionCookie(await makeSession(user.email,env.TOKEN_SECRET))}});
+			}
+			if (pathname === "/api/session" && request.method === "DELETE") {
+				if (request.headers.get("origin") !== url.origin) return json({error:"invalid_origin"},403);
+				return Response.json({ok:true},{headers:{"cache-control":"no-store","set-cookie":sessionCookie("")}});
+			}
+			if (pathname === "/api/accounts/callback") return await mailCallback(request, env);
+			if (pathname.startsWith("/api/accounts")) {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await mailRoute(request, env, user.email);
+			}
+			if (pathname === "/api/people/draft") {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await draftRoute(request, env, user.email);
+			}
+			if (pathname === "/api/people/search") {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await searchRoute(request, env, user.email);
+			}
+			if (isSharePath(pathname)) {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await shareRoute(request, env, user.email);
+			}
+			if (isRelevancePath(pathname)) {
+				const user=await requireGoogleUser(request,env);
+				if ("error" in user) return json({error:user.error},401);
+				return await relevanceRoute(request,env,user.email);
+			}
+			if (pathname === "/api/config" && request.method === "GET") {
+				// Public, non-secret config the UI needs to start Google sign-in.
+				return json({ googleClientId: env.GOOGLE_CLIENT_ID });
+			}
+			if (pathname === "/api/token" && request.method === "GET") {
+				return await mintToken(request, env);
+			}
+			if (pathname === "/api/push" && request.method === "POST") {
+				return await push(request, env);
+			}
+			if (pathname === "/api/graph" && request.method === "GET") {
+				return await getGraph(request, env);
+			}
+			if (pathname.startsWith("/api/")) {
+				return json({ error: "not_found" }, 404);
+			}
+		} catch {
+			return json({ error: "server_error" }, 500);
+		}
+
+		// Everything else → the static graph UI.
+		return env.ASSETS.fetch(request);
+	},
+} satisfies ExportedHandler<Env>;
+
+// GET /api/token — mint the push token for the signed-in user. Stateless:
+// pg1.<b64url(email)>.<hex(HMAC-SHA256(email, TOKEN_SECRET))>. Re-minting
+// returns the same token; rotation = rotate TOKEN_SECRET.
+async function mintToken(request: Request, env: Env): Promise<Response> {
+	const auth = await requireGoogleUser(request, env);
+	if ("error" in auth) return json({ error: auth.error }, 401);
+	if (!env.TOKEN_SECRET) return json({ error: "not_configured" }, 500);
+
+	const sig = await hmacHex(env.TOKEN_SECRET, auth.email);
+	return json({ email: auth.email, token: `pg1.${b64url(auth.email)}.${sig}` });
+}
+
+// POST /api/push — upsert the caller's graph blob. Push-token gated.
+async function push(request: Request, env: Env): Promise<Response> {
+	const email = await verifyPushToken(bearer(request), env);
+	if (!email) return json({ error: "unauthorized" }, 401);
+
+	const raw = await request.text();
+	if (raw.length > MAX_PAYLOAD_BYTES) {
+		return json({ error: "too_large", message: `payload over ${MAX_PAYLOAD_BYTES} bytes — update the plugin to 0.8.1+, which pushes only the connected graph` }, 413);
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return json({ error: "bad_request", message: "invalid JSON" }, 400);
+	}
+	const body=normalizePushedGraph(parsed);
+	if (!body) {
+		return json({ error: "bad_request", message: "need nodes[] and edges[]" }, 400);
+	}
+	// Guard the privacy invariant: node ids must be opaque hashes, not emails.
+	for (const n of body.nodes as { id?: unknown }[]) {
+		if (typeof n?.id !== "string" || n.id.includes("@")) {
+			return json({ error: "bad_request", message: "node ids must be opaque (no emails)" }, 400);
+		}
+	}
+
+	await env.DB.prepare(
+		`INSERT INTO graphs (email, json, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(email) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`
+	)
+			.bind(email, JSON.stringify(body), nowSeconds())
+		.run();
+
+	return json({ ok: true, nodes: body.nodes.length, edges: body.edges.length });
+}
+
+// GET /api/graph — the signed-in user's own graph, or null if never pushed.
+async function getGraph(request: Request, env: Env): Promise<Response> {
+	const auth = await requireGoogleUser(request, env);
+	if ("error" in auth) return json({ error: auth.error }, 401);
+
+	if (new URL(request.url).searchParams.get("source") !== "obsidian") {
+		// Shared people come from other owners' objects, so the viewer's cached copy is brought
+		// up to date here, before the graph is read. It never throws and never blocks for long.
+		await refreshShares(env, auth.email);
+		const graph = await env.MAIL.getByName(auth.email).graph();
+		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
+	}
+	const row = await env.DB.prepare("SELECT json, updated_at FROM graphs WHERE email = ?")
+		.bind(auth.email)
+		.first<{ json: string; updated_at: number }>();
+
+	if (!row) return json({ graph: null, account: auth.email });
+	let graph:PushedGraphPayload|null;try{graph=normalizePushedGraph(JSON.parse(row.json));}catch{return json({error:"invalid_graph"},500);}
+	if(!graph)return json({error:"invalid_graph"},500);
+	const stub=env.MAIL.getByName(auth.email);await stub.bindOwner(auth.email);
+	return json({account:auth.email,updatedAt:row.updated_at,graph:await stub.augmentPushedGraph(graph,'my')});
+}
+
+async function verifyPushToken(token: string | null, env: Env): Promise<string | null> {
+	if (!token || !env.TOKEN_SECRET) return null;
+	const parts = token.split(".");
+	if (parts.length !== 3 || parts[0] !== "pg1") return null;
+	let email: string;
+	try {
+		email = fromB64url(parts[1]).toLowerCase();
+	} catch {
+		return null;
+	}
+	if (!email.includes("@")) return null;
+	const expected = await hmacHex(env.TOKEN_SECRET, email);
+	return timingSafeEqual(parts[2], expected) ? email : null;
+}
+
+// Verify a Google ID token (same flow as reconnect-web, minus the allowlist).
+export async function requireGoogleUser(
+	request: Request,
+	env: Env
+): Promise<{ email: string } | { error: string }> {
+	const token = bearer(request);
+	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
+
+	let resp:Response,info:{aud?:string;email?:string;email_verified?:string|boolean};
+	try{
+		resp=await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`,{signal:AbortSignal.timeout(20_000)});
+		if(!resp.ok){await resp.body?.cancel();return {error:"invalid_token"};}
+		info=await boundedJSON(resp,16_384) as {
+		aud?: string;
+		email?: string;
+		email_verified?: string | boolean;
+		};
+	}catch{return {error:"invalid_token"};}
+
+	if (info.aud !== env.GOOGLE_CLIENT_ID) return { error: "wrong_audience" };
+	const verified = info.email_verified === true || info.email_verified === "true";
+	if (!info.email || !verified) return { error: "unverified_email" };
+
+	return { email: info.email.toLowerCase() };
+}
+
+async function hmacHex(secret: string, message: string): Promise<string> {
+	const key = await crypto.subtle.importKey(
+		"raw",
+		new TextEncoder().encode(secret),
+		{ name: "HMAC", hash: "SHA-256" },
+		false,
+		["sign"]
+	);
+	const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+	return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let diff = 0;
+	for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	return diff === 0;
+}
+
+function b64url(s: string): string {
+	return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromB64url(s: string): string {
+	const padded = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4);
+	return atob(padded);
+}
+
+function bearer(request: Request): string | null {
+	const header = request.headers.get("Authorization") ?? "";
+	const match = header.match(/^Bearer\s+(.+)$/i);
+	return match ? match[1].trim() : null;
+}
+
+function nowSeconds(): number {
+	return Math.floor(Date.now() / 1000);
+}
+
+function json(data: unknown, status = 200): Response {
+	return new Response(JSON.stringify(data), {
+		status,
+		headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+	});
+}

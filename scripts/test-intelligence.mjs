@@ -6,7 +6,10 @@ import { spawnSync } from "node:child_process";
 const dir = await mkdtemp(join(tmpdir(), "people-intelligence-"));
 try {
   await build({
-    entryPoints: ["tests/intelligence.test.ts"],
+    stdin: {
+      contents: "import './tests/intelligence.test.ts'; import './tests/theme-candidates.test.ts';",
+      resolveDir: process.cwd(),
+    },
     outfile: join(dir, "test.cjs"),
     alias: { obsidian: "./tests/obsidian-stub.ts" },
     bundle: true,

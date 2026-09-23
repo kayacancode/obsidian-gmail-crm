@@ -1,5 +1,18 @@
 import type { PersonPage, Relationship } from "./types";
 
+// Per-contact scoring logs are useful on a small vault and ruinous on a large
+// one — 23k retained log objects per pass sit in renderer memory. Off unless
+// the "Debug scoring" setting is on.
+let scoringDebugEnabled = false;
+
+export function setScoringDebug(enabled: boolean) {
+	scoringDebugEnabled = enabled;
+}
+
+function logScoring(name: string, details: Record<string, unknown>) {
+	console.log(`[Gmail CRM] Scoring: ${name}`, details);
+}
+
 export interface StalenessScore {
 	score: number; // 0-100, 100 = very fresh, 0 = completely stale
 	label: "active" | "warm" | "cooling" | "stale" | "dormant";
@@ -96,7 +109,7 @@ export function computeStaleness(
 	// Single sortable score combining both axes.
 	const combinedScore = Math.round((strengthScore + momentumScore) / 2);
 
-	console.log(`[Gmail CRM] Scoring: ${page.name}`, {
+	if (scoringDebugEnabled) logScoring(page.name, {
 		// Raw inputs
 		totalExchanges,
 		sent: gmail?.sentCount ?? 0,
