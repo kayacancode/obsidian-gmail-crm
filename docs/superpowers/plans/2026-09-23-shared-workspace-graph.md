@@ -135,3 +135,15 @@ assert.equal(JSON.stringify(controller.getState()).includes(privateAnswer.text),
 - [ ] Review API responses for two simulated members and a nonmember: separate scores, no private source leakage, no transitive grants, no send action and correct permission invalidation. Inspect a browser screenshot of onboarding and the shared sidebar.
 - [ ] Document Add my inbox vs Invite teammate, no-Obsidian onboarding, contribution controls, caps, score semantics and current limitations in README. Record exact verification results and commit only feature files.
 - [ ] Present the local working flow and changed-file summary. Do not invite real colleagues or change their sharing policies for verification. Do not claim production availability unless an authorized deployment is completed and checked.
+
+## Implementation and verification record — 2026-09-23
+
+Implemented in commits `01eb965`, `7e92d76`, `97344ce`, and `2df47ca` on `betaworks-score-push`.
+
+Implementation rulings: workspace membership/invites/policies use one bounded revisioned D1 JSON row with compare-and-swap updates rather than multiple tables; concurrent capacity acceptance is verified against actual SQLite. The existing relationship controller handles workspace requests with its abort/generation protections instead of introducing a second controller. Workspace relevance is computed only from allowed shared signals. Per-contributor edge observations survive graph normalization. A private viewer score overlay is resolved only inside the signed-in owner's object; teammates receive the measured score alone.
+
+Verification: full npm test passed (379 backend tests plus frontend suites), TypeScript passed, existing Accounts/Sharing/Relationship/Intelligence browser regressions passed, workspace browser tests passed (no-inbox acceptance, default sharing off, folder-policy preservation, mobile, shared canvas, member score, editable intro, no private API requests). Fresh review found deep-link sign-in state, populated theme and edge provenance issues; each is covered by a regression and corrected. Build scripts and Wrangler dry run passed. `git diff --check` passed.
+
+Deployed Worker version: `172824da-7729-4606-9c63-e41eff3d6078` at `https://people-graph.kayarjones901.workers.dev`. Live authenticated Shared networks UI verified for the existing account; anonymous workspace API returns 401. No real teammate invited and no live contribution consent changed during verification.
+
+Usage: Accounts → Shared networks → Create workspace → Members, invitations & what I share → Invite teammate → enter Google sign-in email → Create invitation link → Copy invitation. Recipient signs in with that email and accepts. Each member then chooses What I share and saves. Open shared network, or select it from Atlas's Network selector. Obsidian is optional.
