@@ -390,3 +390,10 @@ test('workspace export keeps measured relationships, excludes imported people an
  assert.equal(next.slice.edges.some(e=>e.contexts.length),false);
  assert.equal(next.relationships[person.email].scoreVersion,'email-v1');
 });
+
+test('workspace personal score overlay resolves owned contacts only',async()=>{
+ const f=await ownerFixture(),slice=await f.service.exportWorkspaceSlice({kind:'all'},'names');const person=slice.slice.people[0];
+ await f.service.setPersonFeedback(await opaque('owner',person.email,'identity-key'),'suppress');
+ const overlay=await f.service.workspacePersonalScores([person.email,'stranger@example.test']);
+ assert.equal(overlay[person.email].delta,-10);assert.equal(overlay[person.email].base,slice.relationships[person.email].score);assert.equal(overlay['stranger@example.test'],undefined);
+});

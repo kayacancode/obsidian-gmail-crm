@@ -501,6 +501,17 @@ export class MailSync extends DurableObject<MailEnv>{
   * thing. The owner's own addresses are never in it, no note text beyond a signal summary the
   * owner already sees is, and nothing here is ever served to a browser.
   */
+ async workspacePersonalScores(emails:string[]):Promise<Record<string,{base:number;delta:number;score:number}>>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {};
+  const wanted=new Set(emails.slice(0,500)),out:Record<string,{base:number;delta:number;score:number}>={};
+  for(const row of this.graphContacts())if(wanted.has(row.email)){
+   const id=await opaque(owner,row.email,this.env.TOKEN_SECRET);
+   const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',id).toArray()[0];
+   const delta=feedback?(JSON.parse(feedback.data) as PersonFeedback).delta:0;
+   const base=emailScore(row.sent,row.received,(Date.now()-row.last)/86400000).combined;
+   out[row.email]={base,delta,score:Math.max(0,Math.min(100,base+delta))};
+  }return out;
+ }
  async exportWorkspaceSlice(scope:ShareScope,level:ShareLevel):Promise<import('./workspace-contract').WorkspaceSlice>{
   const slice=await this.exportSlice(scope,level);
   const rows=new Map(this.graphContacts().map(row=>[row.email,row]));
