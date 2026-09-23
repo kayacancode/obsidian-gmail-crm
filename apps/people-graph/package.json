@@ -28,7 +28,9 @@
     "test:building-browser": "node tests/building-browser.mjs",
     "test:figures-browser": "node tests/figures-browser.mjs",
     "test:world-browser": "node tests/world-browser.mjs",
-    "test:all-people-browser": "node tests/all-people-browser.mjs"
+    "test:all-people-browser": "node tests/all-people-browser.mjs",
+    "test:cli-browser": "node tests/cli-browser.mjs",
+    "test:cli-integration": "node tests/cli-integration.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",

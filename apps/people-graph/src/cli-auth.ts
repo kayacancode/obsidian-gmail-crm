@@ -1,3 +1,4 @@
+import {boundedJSON} from './bounded-json';
 /** Read-only, origin-bound device authorization. Raw credentials are never persisted. */
 export interface DeviceEnv {DB:D1Database;TOKEN_SECRET:string}
 const seconds=()=>Math.floor(Date.now()/1000);
@@ -6,7 +7,7 @@ const bad=(kind:string,status=400)=>response({error:kind},status);
 const random=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),n=>n.toString(16).padStart(2,'0')).join('');
 async function hash(value:string){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))),n=>n.toString(16).padStart(2,'0')).join('');}
 export async function allowDeviceRequest(env:DeviceEnv,key:string,max:number,period=60){
- const now=seconds(),window=Math.floor(now/period);
+ const now=seconds(),window=Math.floor(now/period)*period;
  const row=await env.DB.prepare('INSERT INTO cli_rate_limits(key,window,count) VALUES(?,?,1) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN window=excluded.window THEN count+1 ELSE 1 END,window=excluded.window RETURNING count').bind(key,window).first<{count:number}>();
  return !!row&&row.count<=max;
 }
@@ -25,7 +26,7 @@ export async function deviceRoute(request:Request,env:DeviceEnv,owner:string|nul
   return response({devices:rows.results});
  }
  if(request.method!=='POST')return bad('method_not_allowed',405);
- let body:Record<string,unknown>;try{const raw=await request.text();if(raw.length>4096)return bad('invalid_request');body=JSON.parse(raw);if(!body||typeof body!=='object'||Array.isArray(body))return bad('invalid_request');}catch{return bad('invalid_request');}
+ let body:Record<string,unknown>;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),4096) as Record<string,unknown>;if(!body||typeof body!=='object'||Array.isArray(body))return bad('invalid_request');}catch{return bad('invalid_request');}
  if(['device/approve','device/preview','devices/revoke'].includes(path)){
   if(!owner)return bad('unauthorized',401);
   if(request.headers.get('origin')!==new URL(request.url).origin)return bad('invalid_origin',403);
@@ -37,12 +38,14 @@ export async function deviceRoute(request:Request,env:DeviceEnv,owner:string|nul
   if(!await allowDeviceRequest(env,'start:'+key,10,600))return bad('rate_limited',429);
   // Bounded cleanup keeps expired pending credentials from accumulating.
   await env.DB.prepare('DELETE FROM cli_challenges WHERE id IN (SELECT id FROM cli_challenges WHERE expires_at<? LIMIT 100)').bind(now).run();
+  await env.DB.prepare('DELETE FROM cli_rate_limits WHERE key IN (SELECT key FROM cli_rate_limits WHERE window<? LIMIT 100)').bind(now-1200).run();
   const id=random(),secret=random(),userCode=random().slice(0,12).toUpperCase();
   await env.DB.prepare('INSERT INTO cli_challenges(id,poll_hash,user_code,name,created_at,expires_at) VALUES(?,?,?,?,?,?)').bind(id,await hash(secret),userCode,body.deviceName.trim(),now,now+600).run();
   return response({challengeId:id,pollSecret:secret,userCode,verificationUri:new URL('/cli',request.url).href,expiresAt:now+600,interval:5});
  }
  if(path==='device/preview'||path==='device/approve'){
   if(typeof body.userCode!=='string'||!/^[A-Fa-f0-9]{12}$/.test(body.userCode))return bad('invalid_code');
+  if(path==='device/approve'&&body.expectedOwner!==owner)return bad('account_changed',409);
   const code=body.userCode.toUpperCase();
   if(path==='device/preview'){
    const row=await env.DB.prepare("SELECT name,expires_at FROM cli_challenges WHERE user_code=? AND status='pending' AND expires_at>?").bind(code,now).first<{name:string;expires_at:number}>();
