@@ -1,3 +1,4 @@
+import {introductionRoute} from './introduction-routes';
 import {rankIntroductions} from './workspace-introductions';
 import {buildWorkspaceGraph,searchWorkspace,draftWorkspace,assertWorkspaceRevision} from './workspace-graph';
 import type {ShareEnv} from './share-routes';
@@ -38,6 +39,8 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
     i.used=true;w.members.push({id:crypto.randomUUID(),email:me,role:'member',contribution:emptyContribution()});
    });return json({workspace:publicWorkspace(w,me)});
   }
+  const introPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/intro-requests(?:\/([^/]+)(\/reply)?)?$/);
+  if(introPath)return json(await introductionRoute(env,me,introPath[1],introPath[2],Boolean(introPath[3]),method,body,url.searchParams.get('cursor')||undefined));
   const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft|introductions)$/);
   if(graphPath){const [,id,action]=graphPath;
    if(action==='graph'&&method==='GET')return json({account:me,graph:await buildWorkspaceGraph(env,id,me)});

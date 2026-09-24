@@ -29,3 +29,13 @@ CREATE INDEX IF NOT EXISTS shares_viewer ON shares(viewer_email, hidden);
 
 -- Workspace membership, invitations and consent update atomically with revision CAS.
 CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, creator TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL);
+
+-- Participant-only introduction requests. Shared evidence is stored by reference only.
+CREATE TABLE IF NOT EXISTS introduction_requests (
+ id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, requester_id TEXT NOT NULL,
+ recipient_id TEXT NOT NULL, client_request_id TEXT NOT NULL, created_at TEXT NOT NULL,
+ revision INTEGER NOT NULL, data TEXT NOT NULL,
+ UNIQUE(workspace_id, requester_id, client_request_id)
+);
+CREATE INDEX IF NOT EXISTS intro_requester ON introduction_requests(workspace_id,requester_id,created_at,id);
+CREATE INDEX IF NOT EXISTS intro_recipient ON introduction_requests(workspace_id,recipient_id,created_at,id);
