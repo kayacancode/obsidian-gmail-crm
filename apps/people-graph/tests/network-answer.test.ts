@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {buildAnswerCards} from '../src/network-answer';
+const graph:any={workspaceId:'w',revision:1,members:[{id:'me',name:'Me',isMe:true},{id:'j',name:'John'}],nodes:[{id:'p',name:'Person',relationships:[{memberId:'j',score:40}],identityMatchReady:true}],themeSignals:[{id:'e',personId:'p',sourceType:'granola_mention',observedAt:'2026-09-18',summary:'Agent memory'}],edges:[]};
+const result:any={personId:'p',reasons:[{summary:'Agent memory',observedAt:'2026-09-18'}]};
+test('answer: another contributor gives a member route with dated evidence',()=>{const c=buildAnswerCards(graph,[result])[0];assert.equal(c.novelty,'no_recorded_direct_contact');assert.equal(c.routes[0].memberId,'j');assert.equal(c.evidence[0].sourceType,'granola_mention');assert.equal(c.evidence[0].date,'2026-09-18');});
+test('answer: no relationships means no fabricated route',()=>{assert.deepEqual(buildAnswerCards({...graph,nodes:[{...graph.nodes[0],relationships:[]}]},[result])[0].routes,[]);});
+test('answer: viewer relationships are not introduction routes',()=>{const c=buildAnswerCards({...graph,nodes:[{...graph.nodes[0],relationships:[{memberId:'me'}]}]},[result])[0];assert.equal(c.novelty,'recorded_contact');assert.deepEqual(c.routes,[]);});
+test('answer: unmatched vault identities cannot establish an introduction route',()=>{assert.deepEqual(buildAnswerCards({...graph,nodes:[{...graph.nodes[0],sources:['obsidian'],identityMatchReady:false}]},[result])[0].routes,[]);});
+test('answer: absent people and unrelated evidence are not attributed',()=>{assert.deepEqual(buildAnswerCards(graph,[{personId:'absent'}] as any),[]);assert.deepEqual(buildAnswerCards({...graph,themeSignals:[]},[result])[0].evidence,[]);});

@@ -1,3 +1,4 @@
+import {buildAnswerCards} from './network-answer';
 import {suggestIntroductions,type Introduction} from './workspace-introductions';
 import {matchingKey,identityToken,matchedPersonId} from './workspace-identity';
 import {appendWorkspaceObsidian,type WorkspaceSourceCoverage} from './workspace-obsidian';
@@ -97,7 +98,7 @@ export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:str
  const people=graph.nodes.map(n=>{const signals=signalsByPerson.get(n.id)||[],themeIds=new Set(signals.map(s=>s.themeId));return {personId:n.id,name:n.name,company:n.company,lastContact:null,evidence:signals.map(s=>({summary:s.summary,sourceType:s.sourceType,observedAt:s.observedAt,title:s.provenance?.title})),themes:graph.themes.filter(t=>themeIds.has(t.id)).map(t=>t.name),contexts:contextsByPerson.get(n.id)||[]};});
  const ranked=keywordRank(query,people);let scores=keywordScores(ranked),checked=false;
  if(env.TYPESAFE_API_KEY&&ranked.length){try{scores=await jevScores(env,query,ranked,AbortSignal.timeout(20000));checked=true;}catch{}}
- await assertWorkspaceRevision(env,id,me,graph.revision);return {query,results:topResults(query,ranked,scores,{checked}),checked,coverage:graph.coverage};
+ await assertWorkspaceRevision(env,id,me,graph.revision);const results=topResults(query,ranked,scores,{checked});return {query,results,cards:buildAnswerCards(graph,results),workspaceId:id,revision:graph.revision,checked,coverage:graph.coverage};
 }
 export async function draftWorkspace(env:ShareEnv,id:string,me:string,personId:string,memberId:string){
  const graph=await buildWorkspaceGraph(env,id,me),person=graph.nodes.find(n=>n.id===personId),member=graph.members.find(m=>m.id===memberId);
