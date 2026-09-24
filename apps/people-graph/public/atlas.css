@@ -176,3 +176,21 @@
 .rg-introduction-card { border-top: 1px solid var(--rg-line); padding: 16px 0; }
 .rg-introduction-card h3 { font-size: 17px; margin: 0 0 10px; }
 .rg-introduction-card button { margin-right: 16px; }
+
+/* Discovery must open in view, including a narrow Codex browser sidebar. */
+@container (max-width: 1099px) {
+  .rg-shell .rg-context-panel.rg-introductions {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 80;
+    width: min(400px, 100vw);
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    padding: 24px 22px 48px;
+    overflow-y: auto;
+    border-top: 0;
+    border-left: 1px solid var(--rg-line);
+    box-shadow: -8px 0 30px #0001;
+  }
+}

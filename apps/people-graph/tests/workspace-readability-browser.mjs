@@ -93,5 +93,14 @@ try {
  assert.ok(await page.evaluate(()=>window.beforeRankingNode===document.querySelector('.rg-node')),'Background ranking must not rebuild the map');
  await page.getByRole('button',{name:'Close suggested introductions',exact:true}).click();
  await page.getByRole('button',{name:'Discover · 1',exact:true}).click();assert.equal(await page.evaluate(()=>window.rankCalls),1);
+ for(const width of [589,390,900]){
+  await page.getByRole('button',{name:'Close suggested introductions',exact:true}).click();
+  await page.setViewportSize({width,height:837});
+  await page.getByRole('button',{name:'Discover · 1',exact:true}).click();
+  const panel=page.getByRole('region',{name:'Suggested introductions'});
+  assert.ok(await panel.evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.top<100&&r.bottom<=innerHeight+1&&r.left>=0&&r.right<=innerWidth+1;}),'Discover must open inside the visible viewport');
+  assert.ok(await page.getByRole('button',{name:'Close suggested introductions',exact:true}).evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;}));
+ }
+ await page.screenshot({path:'/tmp/discover-drawer-visible.png'});
  assert.deepEqual(errors,[]);console.log('PASS 171 people: readable initial portraits, names, contributors, highlight, fit, mobile');
 }finally{await browser.close();}

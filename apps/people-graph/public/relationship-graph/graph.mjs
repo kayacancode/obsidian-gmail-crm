@@ -903,7 +903,7 @@ export function mountGraph(element, options = {}) {
   async function openIntroductions(){
     const shouldRank=introductionState==='ready'&&introductionCards.length&&options.onRankIntroductions;
     if(shouldRank)introductionState='loading';
-    panelMode='introductions';render();if(!shouldRank)return;
+    panelMode='introductions';render('close-panel');if(!shouldRank)return;
     const run=++introductionRun;let refocus=false;
     try{const result=await options.onRankIntroductions();if(destroyed||run!==introductionRun)return;
       introductionCards=(result.suggestions||[]).filter(p=>p.personIds?.length===2&&p.personIds.every(id=>byId.has(id)));
@@ -1589,7 +1589,7 @@ export function mountGraph(element, options = {}) {
     else if (action === 'inspect-edge') inspectEdge(target.dataset.edgeId);
     else if (action === 'start-path') startPath();
     else if (action === 'close-path') closePath();
-    else if (action === 'close-panel') { const wasDigest=panelMode==='digest';eventPeople=null; invalidateRelevance(); if(graph.source!=='workspace')activeThemeId = null; panelMode = null; selectedEdgeId = null; render(wasDigest?'open-digest':null); }
+    else if (action === 'close-panel') { const wasDigest=panelMode==='digest',wasIntroductions=panelMode==='introductions';eventPeople=null; invalidateRelevance(); if(graph.source!=='workspace')activeThemeId = null; panelMode = null; selectedEdgeId = null; render(wasDigest?'open-digest':wasIntroductions?'open-introductions':null); }
     else if (action === 'save-trail' && trail.nodeIds.length) callbacks.onSaveTrail(cloneTrail(trail));
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
