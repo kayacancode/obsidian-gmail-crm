@@ -13,3 +13,6 @@ crates/*/target/
 main.js
 *.js.map
 /.worktrees/
+
+/apps/people-graph/node_modules
+/node_modules
