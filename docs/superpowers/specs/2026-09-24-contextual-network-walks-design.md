@@ -74,3 +74,13 @@ Initial rollout uses an explicit query and the existing authorized shared graph.
 ## Delivery boundaries
 
 Build the Answer sidebar and inspectable walk first; then reuse it for context-seeded Wander and diversity-aware recommendations. Preserve the current visual language and contributor colors. No additional graph modes, automatic outreach, new global people-score formula, or fabricated demo data in live results.
+
+## Approved visual direction and human handoff
+
+The user selected the iOS-style prototype: a quiet map, large contact photos, rounded contact sheet, system typography, evidence disclosure, and Messages-style introduction composer. On mobile the sheet opens from the bottom; on desktop it sits beside the selected person. Preserve graph location, honor reduced motion, use available authorized photos with honest fallback, and never ship the prototype's stock portraits or fabricated evidence.
+
+An introduction request is an in-app exchange between its requester and a selected workspace member, not an email sent by an agent. Both must be current members. Before submission show the exact message, destination, person card, and optional shared evidence. No private source material is automatically attached. The recipient can agree to introduce, check interest, suggest another currently shared person, or decline. An alternative requires recipient-authored context and remains attributed to them. Agreement, checking interest, and introduction completed are separate states; completion requires an explicit human report. Neither viewing, declining, nor suggesting someone changes measured relationship scores.
+
+Requests appear in each participant's real signed-in account. Never ship a control that impersonates John. Other members and workspace administrators do not gain access to request messages merely by role. Shared profile/evidence references are revalidated on read; revoked shared attachments disappear, while deliberately sent request messages remain visible only to current authorized participants. Removed members cannot retrieve or mutate requests. No email, push notification, calendar invitation, or automatic outbound introduction is included in the first release.
+
+The first delivery implements the shared-graph answer sheet, visible routes, request/reply loop, and the existing shared-context discovery entry point. Personal-context ingestion and automated daily suggestions remain the subsequent Wander increment described above.
