@@ -194,3 +194,6 @@
     box-shadow: -8px 0 30px #0001;
   }
 }
+/* The graph creates an isolated stacking context; lift it above the app header
+   while its discovery drawer is open so the title and close button stay usable. */
+.rg-shell:has(.rg-introductions) { z-index: 70; }
