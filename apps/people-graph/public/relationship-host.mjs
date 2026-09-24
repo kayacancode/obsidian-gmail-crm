@@ -338,6 +338,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
 
   return {
+    introductionRequest:(path,body,signal)=>request(path,{body,signal},context()),
     rankIntroductions:()=>workspacePath()?request(workspacePath()+'/introductions',{body:{}},context()):Promise.resolve({suggestions:[],checked:false}),
     getState: () => ({ ...state }),
     load,
@@ -723,6 +724,7 @@ async function startBrowserApp() {
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onIntroductionRequest:(path,body,signal)=>controller.introductionRequest(path,body,signal),
       onRankIntroductions:()=>controller.rankIntroductions(),
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
       onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });

@@ -1,3 +1,4 @@
+@import url('./relationship-graph/contact-sheet.css');
 /* Editorial atlas: a fixed paper palette, photograph-led network, and reading rail. */
 :root { color-scheme: light; --paper: #fff; --ink: #20201e; --muted: #696963; --line: #e4e4df; --orange: #e9542c; }
 .rg-shell {

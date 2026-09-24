@@ -171,6 +171,7 @@ function normalizeNode(raw, index) {
     company: optionalString(raw.company),
     companySource: optionalString(raw.companySource),
     photoUrl: photoUrl(raw.photoUrl ?? raw.photo),
+    identityMatchReady:raw.identityMatchReady===true,
     sources:Array.isArray(raw.sources)?raw.sources.filter(s=>['web','obsidian'].includes(s)):[],
     photoPosition: optionalString(raw.photoPosition),
     viewerScore:raw.viewerScore&&Number.isFinite(raw.viewerScore.score)&&Number.isFinite(raw.viewerScore.base)&&[-10,0,10].includes(raw.viewerScore.delta)?{score:raw.viewerScore.score,base:raw.viewerScore.base,delta:raw.viewerScore.delta}:null,
@@ -499,6 +500,8 @@ export function normalizeGraph(input, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
   return {
     source:input.source==='workspace'?'workspace':null,
     workspaceName:optionalString(input.workspaceName),
+    workspaceId:optionalString(input.workspaceId),revision:Number.isSafeInteger(input.revision)?input.revision:0,
+    members:Array.isArray(input.members)?input.members.map(m=>({id:String(m.id),name:String(m.name),isMe:m.isMe===true})):[],
     introductionSuggestions:Array.isArray(input.introductionSuggestions)?input.introductionSuggestions.filter(p=>Array.isArray(p.personIds)&&p.personIds.length===2&&p.personIds.every(id=>nodeIds.has(id))&&Array.isArray(p.evidence)).slice(0,12):[],
     sourceCoverage:Array.isArray(input.coverage?.sources)?input.coverage.sources:[],
     nodes,

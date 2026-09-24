@@ -1,3 +1,6 @@
+import {contactCard,mountContactSheet} from './contact-sheet.mjs';
+import {mountIntroductionThread} from './introduction-thread.mjs';
+import {createIntroductionClient} from '../introduction-client.mjs';
 import { wanderTopics, walkBranches } from './wander.mjs';
 import { spatialLayout } from './layout.mjs';
 import { normalizeGraph, searchGraph } from './model.mjs';
@@ -235,6 +238,17 @@ export function mountGraph(element, options = {}) {
   root.dataset.demo = String(demoEnabled());
   root.setAttribute('aria-label', options.title || 'Relationship graph');
   element.replaceChildren(root);
+  let contactOverlay=null,contactLayer=null,routeStrip=null;
+  function clearContact(){contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
+  function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
+  function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
+  function showContact(id){const card=contactCard(graph,id,searchAnswer);if(!card)return;clearContact();highlightContact(id);const container=contactContainer();
+    routeStrip=make('div','nc-route-strip');routeStrip.setAttribute('aria-label','Possible introduction route');
+    if(card.routes.length){for(const [i,name]of ['You · workspace member',card.routes[0].memberName,card.person.name].entries()){if(i)routeStrip.append(make('span','nc-route-line'));routeStrip.append(make('span','nc-route-stop',name));}element.append(routeStrip);}
+    contactOverlay=mountContactSheet(container,{onClose:clearContact,onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);
+  }
+  function showIntroduction(input={}){clearContact();if(!options.onIntroductionRequest)return;const client=createIntroductionClient({workspaceId:graph.workspaceId,fetcher:options.onIntroductionRequest});contactOverlay=mountIntroductionThread(contactContainer(),{...input,client,graph,onClose:clearContact,onPerson:id=>showContact(id)});}
+
 
   function make(tag, className, text) {
     const node = document.createElement(tag);
@@ -589,6 +603,7 @@ export function mountGraph(element, options = {}) {
       line.setAttribute('y1', String(source.y));
       line.setAttribute('x2', String(target.x));
       line.setAttribute('y2', String(target.y));
+      line.classList.add('rg-edge');line.dataset.edgeId=edge.id;
       line.dataset.kind = edge.kind;
       line.dataset.bridge=String(bridgeIds.has(edge.source)||bridgeIds.has(edge.target));
       line.dataset.selected = String(data.isPath || edge.source === selectedId || edge.target === selectedId);
@@ -890,6 +905,7 @@ export function mountGraph(element, options = {}) {
       const card=make('article','rg-introduction-card');
       card.append(make('h3','',pair.personIds.map(id=>byId.get(id)?.name||'Person').join(' + ')),make('p','rg-copy',pair.reason));
       for(const item of pair.evidence.slice(0,4))card.append(make('p','rg-source',`${byId.get(item.personId)?.name||'Person'} · ${String(item.source).replaceAll('_',' ')} · ${String(item.date).slice(0,10)} — ${item.summary}`));
+      if(graph.members.length)for(const personId of pair.personIds){const person=byId.get(personId);if(person){const meet=button('Meet '+person.name,'select-node','rg-text-button');meet.dataset.nodeId=personId;card.append(meet);}}
       const explore=button('Explore this pair','explore-introduction','rg-text-button');explore.dataset.pairId=pair.id;
       const skip=button('Skip','skip-introduction','rg-text-button');skip.dataset.pairId=pair.id;card.append(explore,skip);panel.append(card);
     }
@@ -1274,6 +1290,7 @@ export function mountGraph(element, options = {}) {
     if(!options.externalSearch) header.append(searchWrap);
     const actions = make('nav', 'rg-header-actions');
     actions.setAttribute('aria-label', 'Relationship tools');
+    if(graph.source==='workspace'&&options.onIntroductionRequest)actions.append(button('Requests','open-intro-requests'));
     const lensLabel = make('label', 'rg-lens', 'Relevance now');
     const select = make('select');
     select.dataset.action = 'relevance-lens';
@@ -1371,6 +1388,7 @@ export function mountGraph(element, options = {}) {
 
   function selectNode(id, { notify = true } = {}) {
     if (destroyed || !byId.has(id)) return;
+    if(graph.source==='workspace'&&graph.members.length&&!pathState){showContact(id);return;}
     invalidateRelevance();
     eventPeople = null;
     if(graph.source!=='workspace')activeThemeId = null;
@@ -1506,6 +1524,7 @@ export function mountGraph(element, options = {}) {
     if (!target || !root.contains(target)) return;
     const action = target.dataset.action;
     if(action==='open-introductions'){void openIntroductions();return;}
+    if(action==='open-intro-requests'){showIntroduction();return;}
     if(action==='skip-introduction'){introductionSkipped.add(target.dataset.pairId);if(activeThemeId==='__intro:'+target.dataset.pairId){activeThemeId=null;render();}else refreshIntroductionPanel();return;}
     if(action==='reset-introductions'){introductionSkipped.clear();refreshIntroductionPanel();return;}
     if(action==='explore-introduction'){
@@ -1772,6 +1791,7 @@ export function mountGraph(element, options = {}) {
     openWander(){panelMode='wander';topicsOpen=false;render();},
     setSearchAnswer(answer) {
       if(destroyed)return;
+      clearContact();
       if(answer && !searchAnswer) exploration={camera:{...camera},selectedId,panelMode,query,timeWindow,eventPeople,activeThemeId,pathState,trail:cloneTrail(trail)};
       if(!answer && searchAnswer && exploration) {
         camera=exploration.camera;selectedId=exploration.selectedId;panelMode=exploration.panelMode;query=exploration.query;timeWindow=exploration.timeWindow;eventPeople=exploration.eventPeople;activeThemeId=exploration.activeThemeId;pathState=exploration.pathState;trail=exploration.trail;exploration=null;
@@ -1782,6 +1802,7 @@ export function mountGraph(element, options = {}) {
         focusCanvas(searchAnswer.results.map(p=>p.personId));
       }
       render();
+      if(searchAnswer?.results.length&&graph.source==='workspace'&&graph.members.length)showContact(searchAnswer.results[0].personId);
     },
     setMeetingPreview(input) {
       if (destroyed) return;
@@ -1791,6 +1812,7 @@ export function mountGraph(element, options = {}) {
     },
     setGraph(nextGraph) {
       if (destroyed) return;
+      clearContact();
       meetingBatch = null;meetingFeedback = Object.create(null);
       graph = normalizeGraph(nextGraph);
       introductionRun++;introductionCards=graph.introductionSuggestions||[];introductionState='ready';introductionSkipped.clear();
@@ -1861,6 +1883,7 @@ export function mountGraph(element, options = {}) {
       callbacks.onSelect({ node: byId.get(selectedId), trail: cloneTrail(trail) });
     },
     destroy() {
+      clearContact();
       if (destroyed) return;
       destroyed = true;
       meetingBatch = null;meetingFeedback = Object.create(null);meetingPreview = null;
