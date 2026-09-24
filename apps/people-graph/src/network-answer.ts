@@ -10,7 +10,7 @@ export function buildAnswerCards(graph:WorkspaceGraph,results:Pick<SearchResult,
  const self=graph.members.find(m=>m.isMe)?.id;
  return results.flatMap(result=>{const p=people.get(result.personId);if(!p)return [];
   const ready=!p.sources?.includes('obsidian')||p.identityMatchReady===true;
-  return [{personId:p.id,novelty:p.relationships.some(r=>r.memberId===self)?'recorded_contact' as const:'no_recorded_direct_contact' as const,
-   evidence:personEvidence(graph,p.id),routes:ready?p.relationships.filter(r=>r.memberId!==self&&members.has(r.memberId)).map(r=>({memberId:r.memberId,memberName:members.get(r.memberId)!.name,basis:'recorded_contact' as const,score:Number.isFinite(r.score)?r.score:null})):[]}];
+  return [{personId:p.id,novelty:p.relationships.some(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact' as const:'no_recorded_direct_contact' as const,
+   evidence:personEvidence(graph,p.id),routes:ready?p.relationships.filter(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId!==self&&members.has(r.memberId)).map(r=>({memberId:r.memberId,memberName:members.get(r.memberId)!.name,basis:'recorded_contact' as const,score:Number.isFinite(r.score)?r.score:null})):[]}];
  });
 }
