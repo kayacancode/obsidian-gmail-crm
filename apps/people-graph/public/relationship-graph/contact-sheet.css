@@ -5,3 +5,13 @@
 @keyframes nc-rise{from{transform:translateY(18px);opacity:.3}to{transform:translateY(0);opacity:1}}
 @media(max-width:700px){.nc-layer{top:auto;right:8px;left:8px;bottom:8px;width:auto;max-width:none}.nc-sheet{border-radius:25px;padding:15px 20px 20px;max-height:58dvh}.nc-route-strip{left:12px;top:min(34vh,280px);width:calc(100vw - 24px);gap:8px;font-size:12px}.nc-route-stop{padding:10px}.nc-identity{margin:16px 0}.nc-hero{width:60px;height:70px}.nc-identity h2{font-size:23px}}
 @media(prefers-reduced-motion:reduce){.nc-layer *,.nc-route-strip *,.rg-shell[data-contact-focus] .rg-node{animation:none!important;transition:none!important}}
+/* Readable, evidence-backed paths share the contact-sheet typography. */
+.rg-path-bar input{box-sizing:border-box;max-width:100%;width:240px;border:1px solid #dedee4;border-radius:10px;padding:10px;background:#fff;color:#202126;font:14px -apple-system,BlinkMacSystemFont,sans-serif}
+.rg-path-walk{display:flex;gap:16px;list-style:none;padding:12px 0;overflow-x:auto;max-width:100%;align-items:stretch}
+.rg-path-step{flex:0 0 220px;padding:18px;border:1px solid #e3e3e9;border-radius:18px;background:#fff;color:#222;font:14px -apple-system,BlinkMacSystemFont,sans-serif}
+.rg-path-step .rg-portrait{display:block;position:relative;width:64px;height:64px;overflow:hidden;border-radius:14px;margin-bottom:12px}
+.rg-path-step h3{font-size:17px;margin:8px 0}.rg-path-step p{line-height:1.5}.rg-path-step button{border:0;border-radius:10px;padding:10px;color:#007aff;background:#f2f4f8;cursor:pointer}
+@media(max-width:700px){.rg-path-walk{display:grid;overflow:visible}.rg-path-step{min-width:0}.rg-path-bar input{width:100%}}
+.rg-shell .rg-path-summary{position:relative;top:auto;left:auto;width:auto;max-width:none;padding:24px 32px;border-top:1px solid #e5e5eb}
+.rg-shell .rg-path-walk{width:100%;box-sizing:border-box}.rg-shell .rg-path-step{box-sizing:border-box}
+@media(max-width:700px){.rg-shell .rg-path-summary{padding:18px}.rg-path-bar label{min-width:0}}

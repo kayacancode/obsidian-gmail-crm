@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {sharedPathGraph} from '../public/relationship-graph/shared-paths.mjs';
+import {findPaths} from '../public/relationship-graph/paths.mjs';
+const rel=memberId=>({memberId,evidenceCategory:'email',lastContact:'2026-09-20'});
+const g={source:'workspace',members:[{id:'j',name:'John'},{id:'k',name:'Kaya'}],nodes:[{id:'a',type:'person',name:'A',relationships:[rel('j')]},{id:'m',type:'person',name:'Mutual',relationships:[rel('j'),rel('k')]},{id:'b',type:'person',name:'B',relationships:[rel('k')]}],edges:[]};
+test('shared routes cross contributors through an actual mutual contact',()=>{const p=sharedPathGraph(g);const result=findPaths(p,'a','b',{maxHops:6});assert.equal(result.paths.length,1);assert.equal(result.paths[0].nodeIds.length,5);assert.equal(result.paths[0].requiresVerification,false);assert.equal(g.nodes.length,3);assert.equal(p.edges[0].evidence[0].date,'2026-09-20');});
+test('unknown and unresolved relationships do not create mutual paths',()=>{for(const change of [{relationships:[{memberId:'j',evidenceCategory:'unknown'}]},{sources:['obsidian'],identityMatchReady:false}]){const altered={...g,nodes:g.nodes.map(n=>n.id==='a'?{...n,...change}:n)};assert.equal(findPaths(sharedPathGraph(altered),'a','b',{maxHops:6}).paths.length,0);}});
+test('removed contributor and unshared records cannot bridge networks',()=>{assert.equal(findPaths(sharedPathGraph({...g,members:g.members.slice(0,1)}),'a','b',{maxHops:6}).paths.length,0);});
+test('personal graphs pass through unchanged',()=>{const local={nodes:[],edges:[]};assert.equal(sharedPathGraph(local),local);});

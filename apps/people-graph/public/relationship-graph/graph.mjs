@@ -4,6 +4,7 @@ import {createIntroductionClient} from '../introduction-client.mjs';
 import { wanderTopics, walkBranches } from './wander.mjs';
 import { spatialLayout } from './layout.mjs';
 import { normalizeGraph, searchGraph } from './model.mjs';
+import {sharedPathGraph} from './shared-paths.mjs';
 import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
@@ -110,6 +111,7 @@ export function mountGraph(element, options = {}) {
   };
   let graph = normalizeGraph(options.graph ?? { nodes: [], edges: [] });
   const demoEnabled = () => options.demo === true && graph.meta.fictional === true;
+  let pathGraph;
   let byId;
   let nodeIndex;
   let edgesByNode;
@@ -268,7 +270,8 @@ export function mountGraph(element, options = {}) {
     const ids=[...new Set(graph.nodes.flatMap(n=>(n.relationships||[]).map(r=>r.memberId)))].sort();
     const palette=['#2563b8','#a53e70','#25836c','#a66b16','#7254ad','#b24e32','#307d91','#68782e','#8b4b42','#5963a5','#a12840','#287355','#654295','#9c712a','#337091','#7a5b3e','#993b85','#53733a','#365e75','#73603d'];
     contributorColors=new Map(ids.map((id,i)=>[id,palette[i%palette.length]]));
-    byId = new Map(graph.nodes.map((node) => [node.id, node]));
+    pathGraph=sharedPathGraph(graph);
+    byId = new Map(pathGraph.nodes.map((node) => [node.id, node]));
     nodeIndex = new Map(graph.nodes.map((node, index) => [node.id, index]));
     edgesByNode = new Map(graph.nodes.map((node) => [node.id, []]));
     for (const edge of graph.edges) {
@@ -427,7 +430,7 @@ export function mountGraph(element, options = {}) {
       const route = currentRoute();
       return {
         nodes: route.nodeIds.map((id) => byId.get(id)).filter(Boolean),
-        edges: route.edgeIds.map((id) => graph.edges.find((edge) => edge.id === id)).filter(Boolean),
+        edges: route.edgeIds.map((id) => pathGraph.edges.find((edge) => edge.id === id)).filter(Boolean),
         total: route.nodeIds.length,
         isPath: true,
       };
@@ -485,6 +488,7 @@ export function mountGraph(element, options = {}) {
     cameraCanvas=canvas;
     canvas.dataset.workspace=String(graph.source==='workspace');
     if (!currentRoute()) canvas.style.height = `${layout.height}px`;
+    else canvas.style.height = `${layout.width<=700?360+currentRoute().nodeIds.length*160:600}px`;
     canvas.dataset.path = String(Boolean(currentRoute()));
     canvas.dataset.action = 'canvas';
     canvas.tabIndex = 0;
@@ -560,7 +564,7 @@ export function mountGraph(element, options = {}) {
       nodeButton.style.width = `${position.size}px`;
       nodeButton.style.height = `${position.size}px`;
       nodeButton.style.setProperty('--route-index', String(index));
-      nodeButton.style.setProperty('--route-y', `${195 + index * 160}px`);
+      nodeButton.style.setProperty('--route-y', `${290 + index * 160}px`);
       nodeButton.style.setProperty('--label-width', `${base.labelWidth || 136}px`);
       nodeButton.setAttribute('aria-label', `Explore ${node.name}`);
       nodeButton.setAttribute('aria-pressed', String(node.id === selectedId));
@@ -615,7 +619,7 @@ export function mountGraph(element, options = {}) {
       edgeButton.dataset.uncertain = String(edge.kind !== 'personal');
       edgeButton.style.left = data.isPath ? `${((source.x + target.x) / 2) / 10}%` : `${(source.x + target.x) / 2}px`;
       edgeButton.style.top = data.isPath ? `${((source.y + target.y) / 2) / 7.8}%` : `${(source.y + target.y) / 2}px`;
-      edgeButton.style.setProperty('--route-edge-y', `${275 + edgeIndex * 160}px`);
+      edgeButton.style.setProperty('--route-edge-y', `${370 + edgeIndex * 160}px`);
       edgeButton.setAttribute('aria-label', `${edge.label}: ${byId.get(edge.source).name} and ${byId.get(edge.target).name} — inspect source`);
       edgeButton.setAttribute('aria-pressed', String(edge.id === selectedEdgeId));
       edgeLayer.append(edgeButton);
@@ -963,7 +967,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function renderEvidencePanel() {
-    const edge = graph.edges.find((item) => item.id === selectedEdgeId);
+    const edge = pathGraph.edges.find((item) => item.id === selectedEdgeId);
     if (!edge) return null;
     const panel = make('section', 'rg-context-panel rg-evidence-panel');
     panel.setAttribute('aria-label', 'Relationship evidence');
@@ -1009,6 +1013,7 @@ export function mountGraph(element, options = {}) {
     bar.setAttribute('aria-label', 'Choose people for a path');
     for (const [key, labelText] of [['from', 'From'], ['to', 'To']]) {
       const label = make('label', '', labelText);
+      const search=make('input');search.type='search';search.placeholder='Search name or company';search.setAttribute('aria-label',labelText+' person search');
       const select = make('select');
       select.dataset.action = key === 'from' ? 'path-from' : 'path-to';
       select.setAttribute('aria-label', key === 'from' ? 'Path starting person' : 'Path destination person');
@@ -1024,7 +1029,8 @@ export function mountGraph(element, options = {}) {
         if (node.id === pathState[key]) option.setAttribute('selected', '');
         select.append(option);
       });
-      label.append(select);
+      search.addEventListener('input',()=>{const q=search.value.toLowerCase();for(const o of select.options){const n=byId.get(o.value);o.hidden=Boolean(n&&!((n.name+' '+n.company).toLowerCase().includes(q)));}});
+      label.append(search,select);
       bar.append(label);
     }
     bar.append(button('← Canvas', 'close-path'));
@@ -1058,7 +1064,17 @@ export function mountGraph(element, options = {}) {
       summary.append(make('p', 'rg-source', pathState.result.truncated
         ? 'More paths may exist; the bounded search omitted additional alternatives.'
         : 'No path confirms willingness or consent.'));
-      summary.append(button('Save this path', 'save-route', 'rg-save-route'));
+      const walk=make('ol','rg-path-walk');walk.setAttribute('aria-label','Connection path step by step');
+      route.nodeIds.forEach((id,i)=>{const person=byId.get(id),item=make('li','rg-path-step');
+        item.append(renderPortrait(person,i),make('h3','',person.name));
+        if(person.memberId)item.append(make('small','','Network contributor'));
+        else if(graph.source==='workspace'){const open=button('View person','path-person');open.dataset.nodeId=id;item.append(open);}
+        if(i<route.edgeIds.length){const edge=pathGraph.edges.find(e=>e.id===route.edgeIds[i]);item.append(make('p','',edge.label||'Recorded connection'));
+          for(const e of edge.evidence||[])item.append(make('p','rg-source',[e.title,e.owner,e.date,e.text].filter(Boolean).join(' · ')));
+          if(edge.kind==='cooccurrence')item.append(make('strong','rg-source','Needs verification: appearing together does not prove a personal relationship.'));
+        }walk.append(item);
+      });summary.append(walk);
+      if(!route.nodeIds.some(id=>byId.get(id)?.memberId))summary.append(button('Save this path', 'save-route', 'rg-save-route'));
     }
     return [bar, summary];
   }
@@ -1126,7 +1142,7 @@ export function mountGraph(element, options = {}) {
       if(window==='all' || eventIds.has(node.id) || (!(graph.activity?.length) && inWindow(directContact(node),window,now))) {active.add(node.id);count++;}
     }
     for(const el of root.querySelectorAll('.rg-node')) {
-      el.dataset.timeMuted=String(!active.has(el.dataset.nodeId) || Boolean(eventPeople&&!eventPeople.includes(el.dataset.nodeId)));
+      el.dataset.timeMuted=String(!pathState && (!active.has(el.dataset.nodeId) || Boolean(eventPeople&&!eventPeople.includes(el.dataset.nodeId))));
       el.dataset.eventActive=String(Boolean(eventPeople?.includes(el.dataset.nodeId)));
       el.dataset.answerMuted=String(Boolean(resultIds && !resultIds.has(el.dataset.nodeId)));
       el.dataset.answerMatch=String(Boolean(resultIds?.has(el.dataset.nodeId)));
@@ -1312,6 +1328,7 @@ export function mountGraph(element, options = {}) {
     pathButton.disabled = !graph.nodes.some((node) => node.type === 'person');
     pathButton.setAttribute('aria-pressed', String(Boolean(pathState)));
     actions.append(pathButton);
+    if(graph.source==='workspace'){const invite=make('a','rg-text-button','Invite to network ↗');invite.href='/accounts?tab=workspace&workspace='+encodeURIComponent(graph.workspaceId);actions.append(invite);}
     header.append(actions);
     const [pathBar, pathSummary] = renderPathControls();
     root.append(header);
@@ -1387,6 +1404,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function selectNode(id, { notify = true } = {}) {
+    if(byId.get(id)?.memberId)return;
     if (destroyed || !byId.has(id)) return;
     if(graph.source==='workspace'&&graph.members.length&&!pathState){showContact(id);return;}
     invalidateRelevance();
@@ -1418,7 +1436,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function inspectEdge(id) {
-    const edge = graph.edges.find((item) => item.id === id);
+    const edge = pathGraph.edges.find((item) => item.id === id);
     if (!edge) return;
     invalidateRelevance();
     selectedEdgeId = id;
@@ -1430,6 +1448,7 @@ export function mountGraph(element, options = {}) {
   function startPath() {
     const people = graph.nodes.filter((node) => node.type === 'person');
     if (!people.length) return;
+    clearContact();
     invalidateRelevance();
     eventPeople = null;
     activeThemeId = null;
@@ -1479,7 +1498,7 @@ export function mountGraph(element, options = {}) {
     try {
       requested = callbacks.requestPaths
         ? callbacks.requestPaths(from, to, { maxHops: 3, maxPaths: 12, maxVisits: 20_000 })
-        : findPaths(graph, from, to);
+        : findPaths(pathGraph, from, to, {maxHops:graph.source==='workspace'?6:3});
     } catch {
       requested = Promise.reject(new Error('Path request failed'));
     }
@@ -1610,6 +1629,7 @@ export function mountGraph(element, options = {}) {
     else if (action === 'close-path') closePath();
     else if (action === 'close-panel') { const wasDigest=panelMode==='digest',wasIntroductions=panelMode==='introductions';eventPeople=null; invalidateRelevance(); if(graph.source!=='workspace')activeThemeId = null; panelMode = null; selectedEdgeId = null; render(wasDigest?'open-digest':wasIntroductions?'open-introductions':null); }
     else if (action === 'save-trail' && trail.nodeIds.length) callbacks.onSaveTrail(cloneTrail(trail));
+    else if(action==='path-person'){showContact(target.dataset.nodeId);}
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
       wholeNetworkOverview=false;workspaceCameraReady=false;

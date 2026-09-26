@@ -28,6 +28,7 @@ export function createWorkspacePanel(root,{request,onUnauthorized}={}){
    card.append(el('p',w.contribution.enabled?'Your selected contribution is shared.':'Nothing shared yet.'));
    const manage=el('details');manage.append(el('summary','Members, invitations & what I share'));card.append(manage);let expanded=false;
    manage.addEventListener('toggle',()=>{if(manage.open&&!expanded){void run(async()=>{expanded=true;try{await details(manage,w);}catch(e){expanded=false;throw e;}});}});root.append(card);
+   if(new URLSearchParams(location.search).get('workspace')===w.id)manage.open=true;
   }
  }
  async function details(root,w){
