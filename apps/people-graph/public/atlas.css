@@ -198,3 +198,17 @@
 /* The graph creates an isolated stacking context; lift it above the app header
    while its discovery drawer is open so the title and close button stay usable. */
 .rg-shell:has(.rg-introductions) { z-index: 70; }
+/* Shared handoff: the prototype's question-led entry, using authenticated data. */
+.shared-handoff{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#fff}
+.shared-handoff .app-header{gap:18px;flex-wrap:wrap;border-bottom:0;padding:18px 24px;background:#fff}
+.shared-handoff .wordmark{font-weight:650;letter-spacing:-1px;font-size:27px}.shared-handoff .wordmark small{font-size:14px;font-weight:400;letter-spacing:0}
+.shared-handoff .network-search{order:5;flex-basis:100%;border:1px solid #e2e4eb;border-radius:16px;padding:10px 14px;background:#f5f6f9}
+.shared-handoff #network-query{font-size:16px;border:0;background:transparent;padding:8px;min-width:0}
+.shared-handoff .network-search button[type=submit]{background:#007aff;color:#fff;border:0;border-radius:10px;padding:11px 20px;font-size:14px}
+#shared-welcome{padding:10px 24px 24px;border-bottom:1px solid #e7e8ee}#shared-welcome[hidden]{display:none}
+#shared-welcome h1{font-size:30px;line-height:1.15;letter-spacing:-.8px;margin:6px 0 10px;font-weight:650}
+#shared-welcome p{font-size:15px;color:#686d78;margin:8px 0}.shared-eyebrow{font-size:11px!important;letter-spacing:1.4px}
+.shared-prompts{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 12px}.shared-prompts button{font:500 14px -apple-system,BlinkMacSystemFont,sans-serif;border:0;border-radius:12px;padding:13px 18px;background:#f0f3f8;color:#1c5cad;cursor:pointer}.shared-prompts button:first-child{background:#007aff;color:#fff}.shared-prompts button:hover{filter:brightness(.96)}
+#shared-welcome .shared-live-note{font-size:12px}.shared-handoff #network-selector{border:1px solid #e1e3e9;border-radius:10px;padding:8px;max-width:250px}.shared-handoff .nc-layer{top:110px}.shared-handoff .nc-route-strip{top:48vh}
+@media(max-width:700px){.shared-handoff .app-header{padding:14px 16px}.shared-handoff #network-selector{max-width:180px}#shared-welcome{padding:8px 16px 18px}.shared-prompts button{width:100%;text-align:left}.shared-handoff .nc-layer{top:auto}.shared-handoff .nc-route-strip{top:30vh}.shared-handoff .network-search{flex-wrap:wrap}}
+@media(min-width:901px){.shared-handoff .app-header{flex-wrap:nowrap}.shared-handoff .network-search{order:0;flex-basis:auto;position:relative}.shared-handoff #network-search-results{position:absolute;top:100%;left:0;right:0;max-height:240px;overflow:auto;z-index:80;border-radius:14px;box-shadow:0 12px 30px #0001}.shared-handoff #network-search-label,.shared-handoff #network-search-status{font-size:11px;margin:0}.shared-handoff #shared-welcome{display:grid;grid-template-columns:1fr auto;gap:4px 24px;align-items:center}.shared-handoff #shared-welcome[hidden]{display:none}.shared-handoff .shared-prompts{margin:0}.shared-handoff .shared-live-note{grid-column:1/-1}}

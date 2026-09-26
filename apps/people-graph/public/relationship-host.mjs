@@ -636,6 +636,7 @@ async function startBrowserApp() {
   }
 
   function showGate(title, message, action) {
+    $('#shared-welcome').hidden=true;document.body.classList.remove('shared-handoff');
     workspace.hidden = true;
     networkSearch.hidden = true;$('#network-modes').hidden=true;
     gate.hidden = false;
@@ -709,6 +710,10 @@ async function startBrowserApp() {
   }
 
   function mountAuthorizedGraph(state) {
+    const shared=state.graph.source==='workspace';
+    document.body.classList.toggle('shared-handoff',shared);
+    $('#shared-welcome').hidden=!shared;
+    $('#shared-network-name').textContent=shared?(state.graph.workspaceName||'Shared network'):'';
     gate.hidden = true;
     workspace.hidden = false;
     networkSearch.hidden = false;$('#network-modes').hidden=false;
@@ -805,6 +810,7 @@ async function startBrowserApp() {
   };
   $('#mode-wander').onclick=()=>{clearNetworkSearch();graphInstance?.openWander();};
   $('#mode-answer').onclick=()=>{showMode('answer');networkQuery.focus();};
+  for(const prompt of document.querySelectorAll('[data-network-prompt]'))prompt.onclick=()=>{networkQuery.value=prompt.dataset.networkPrompt;void runNetworkSearch();};
   networkSearch.addEventListener('submit', event => { event.preventDefault(); void runNetworkSearch(); });
   networkSearch.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); clearNetworkSearch(); networkQuery.focus(); } });
   $('#network-clear').onclick = () => { clearNetworkSearch(); networkQuery.focus(); };
