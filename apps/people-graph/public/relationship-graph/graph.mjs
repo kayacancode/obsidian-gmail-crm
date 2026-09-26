@@ -253,9 +253,16 @@ export function mountGraph(element, options = {}) {
     const head=make('div','nc-walk-head');head.append(make('h2','','Your path to '+card.person.name));const back=make('button','','Back to network');back.type='button';back.onclick=clearContact;head.append(back);routeStrip.append(head);
     routeStrip.append(make('p','nc-muted',walk.message));
     const chain=make('div','nc-walk-chain'),detail=make('section','nc-walk-evidence');detail.setAttribute('aria-live','polite');
-    let current=walk.nodes.length-1;
+    let current=0;
     function inspect(index){current=index;const node=walk.nodes[index];for(const [i,b]of [...chain.querySelectorAll('.nc-walk-person')].entries())b.setAttribute('aria-pressed',String(i===index));
+      const stops=[...chain.querySelectorAll('.nc-walk-person')],selected=stops[index];
+      if(selected)chain.scrollTo({left:Math.max(0,selected.offsetLeft-chain.offsetLeft-(chain.clientWidth-selected.offsetWidth)/2),behavior:'instant'});
+      nav.querySelectorAll('button')[0].disabled=index===0;nav.querySelectorAll('button')[1].disabled=index===walk.nodes.length-1;
+      progress.textContent='Step '+(index+1)+' of '+walk.nodes.length;
       detail.replaceChildren(make('h3','',node.name));
+      const incoming=walk.edges[index-1];if(incoming){detail.append(make('p','',incoming.kind==='personal'?'Recorded contact from '+walk.nodes[index-1].name:'Co-occurrence with '+walk.nodes[index-1].name+' — relationship needs verification'));for(const e of incoming.evidence||[])detail.append(make('p','nc-muted',[e.title,e.owner,e.date,e.text].filter(Boolean).join(' · ')));}
+      container.hidden=Boolean(node.memberId);
+
       if(node.memberId)detail.append(make('p','','Network contributor. The adjoining lines show their recorded contact evidence.'));
       else {highlightContact(node.id);const next=contactCard(graph,node.id,searchAnswer);if(next)contactOverlay.setCard(next,{focus:false});}
       const adjacent=pathGraph.edges.filter(e=>e.source===node.id||e.target===node.id).filter(e=>['personal','cooccurrence'].includes(e.kind));
@@ -268,7 +275,7 @@ export function mountGraph(element, options = {}) {
     }
     routeStrip.append(chain);
     if(!walk.edges.length){const known=make('div','nc-known');known.append(make('h3','','What is known'));for(const member of walk.contributors)known.append(make('p','','Shared by '+member.name+' · contribution, not a verified introduction route'));if(!walk.contributors.length)known.append(make('p','','No contributor information available.'));routeStrip.append(known);}
-    const nav=make('div','nc-walk-nav');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail);element.append(routeStrip);
+    const nav=make('div','nc-walk-nav'),progress=make('span','nc-walk-progress');progress.setAttribute('aria-live','polite');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}nav.append(progress);if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail);element.append(routeStrip);
     contactOverlay=mountContactSheet(container,{companion:routeStrip,onClose:clearContact,onSelectStep:step=>{if(step==='route')routeStrip?.scrollIntoView({block:'nearest',behavior:'smooth'});},onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);inspect(current);
   }
   function showIntroduction(input={}){clearContact();if(!options.onIntroductionRequest)return;const client=createIntroductionClient({workspaceId:graph.workspaceId,fetcher:options.onIntroductionRequest});contactOverlay=mountIntroductionThread(contactContainer(),{...input,client,graph,onClose:clearContact,onPerson:id=>showContact(id)});}
