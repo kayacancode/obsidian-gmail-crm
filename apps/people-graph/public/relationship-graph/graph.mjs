@@ -1,5 +1,5 @@
 import {personWalk} from './person-walk.mjs';
-import {contactCard,mountContactSheet,portrait} from './contact-sheet.mjs';
+import {contactCard,mountContactSheet,portrait,personContext,contextBlock} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
 import {createIntroductionClient} from '../introduction-client.mjs';
 import { wanderTopics, walkBranches } from './wander.mjs';
@@ -764,12 +764,8 @@ export function mountGraph(element, options = {}) {
         }
         panel.append(routes);
       }
-      const context = (graph.source==='workspace'?(relevanceGraph.themeSignals??[]):ownSignals(relevanceGraph.themeSignals??[])).filter(s=>s.personId===node.id).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).slice(0,3);
-      if(context.length) {
-        const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent recorded context'));
-        for(const s of context) notes.append(make('p','rg-copy',s.summary),make('p','rg-source',`${s.sourceType} · ${s.observedAt.slice(0,10)} · ${s.provenance?.title??'Recorded source'}`));
-        panel.append(notes);
-      }
+      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[])},node.id);
+      if(context.length){const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent context'));for(const e of context.slice(0,3))notes.append(contextBlock(document,e));notes.append(make('p','rg-source','Note context is separate from contact activity; a mention does not confirm attendance.'));panel.insertBefore(notes,scores.parentNode===panel?scores:null);}
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
       if (typeof callbacks.onOpenPublicSource === 'function') panel.append(button('Add public source', 'open-person-public-source', 'rg-theme-action'));

@@ -9,3 +9,8 @@ test('self and unmeasured contributor relationships remain visible independent o
  const c=contactCard({...graph,nodes:[{id:'p',relationships:[{memberId:'me',evidenceCategory:'email',score:82},{memberId:'j',evidenceCategory:'unknown',score:null}]}]},'p');
  assert.equal(c.relationships.length,2);assert.equal(c.relationships[0].isMe,true);assert.equal(c.relationships[0].score,82);assert.equal(c.relationships[1].score,null);assert.equal(c.routes.length,0);
 });
+test('recent context retains source, date and contributor without inferring attendance',async()=>{
+ const {personContext}=await import('../public/relationship-graph/contact-sheet.mjs');
+ const context=personContext({...graph,source:'workspace',themeSignals:[{id:'old',personId:'p',summary:'Earlier context',observedAt:'2026-01-01',sourceType:'obsidian_note',evidenceRef:'workspace:me:old'},{id:'new',personId:'p',summary:'Discussed interface design',observedAt:'2026-09-20',sourceType:'granola',evidenceRef:'workspace:j:new',provenance:{title:'Design conversation',canonicalUrl:'https://granola.ai/'}},{id:'other',personId:'other',summary:'Private other person',observedAt:'2026-09-21'}]},'p');
+ assert.equal(context.length,2);assert.equal(context[0].contributor,'John');assert.equal(context[0].sourceLabel,'Granola note context');assert.equal(context[0].url,null);assert.equal(context[1].contributor,'You');
+});

@@ -1,9 +1,27 @@
-const sourceNames={granola:'Meeting context',granola_mention:'Mention in meeting notes',obsidian_note:'Note mention',gmail_body_derived:'Email context',gmail_subject:'Email subject',calendar:'Calendar event'};
+const sourceNames={granola:'Granola note context',granola_mention:'Mention in meeting notes',obsidian_note:'Note mention',gmail_body_derived:'Email context',gmail_subject:'Email subject',calendar:'Calendar event'};
+export function personContext(graph,personId) {
+ const seen=new Set();
+ return (graph.themeSignals||[]).filter(s=>s.personId===personId&&s.id&&s.summary&&Number.isFinite(Date.parse(s.observedAt)))
+ .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).flatMap(s=>{
+  const member=(graph.members||[]).find(m=>String(s.evidenceRef||'').startsWith('workspace:'+m.id+':'));
+  const key=[member?.id||'',s.sourceType,s.observedAt,s.summary].join('|');if(seen.has(key))return [];seen.add(key);
+  let url=null;try{const u=new URL(s.provenance?.canonicalUrl);if(u.protocol==='https:'&&!u.username&&!u.password&&(u.hostname==='granola.ai'||u.hostname.endsWith('.granola.ai'))&&u.pathname!=='/')url=u.href;}catch{}
+  return [{ref:s.id,summary:s.summary,date:s.observedAt,sourceType:s.sourceType,sourceLabel:sourceNames[s.sourceType]||s.sourceType,title:s.provenance?.title||'',contributor:member?(member.isMe?'You':member.name):graph.source==='workspace'?'Shared source':'You',url}];
+ }).slice(0,20);
+}
+export function contextBlock(doc,e) {
+ const item=element(doc,'article','nc-memory');
+ item.append(element(doc,'small','nc-muted',`${e.sourceLabel} · ${e.date.slice(0,10)} · ${e.contributor==='You'?'You':e.contributor==='Shared source'?'Shared source':'Shared by '+e.contributor}`));
+ if(e.title)item.append(element(doc,'strong','',e.title));
+ item.append(element(doc,'p','',e.summary));
+ if(e.url){const link=element(doc,'a','nc-text','Open in Granola ↗');link.href=e.url;link.target='_blank';link.rel='noopener noreferrer';item.append(link);}
+ return item;
+}
 export function contactCard(graph,personId,answer){
  const person=graph.nodes.find(n=>n.id===personId);if(!person)return null;
  const self=graph.members?.find(m=>m.isMe)?.id;
  const ready=!person.sources?.includes('obsidian')||person.identityMatchReady===true;
- const evidence=(graph.themeSignals||[]).filter(s=>s.personId===personId&&s.id&&s.summary&&Number.isFinite(Date.parse(s.observedAt))).slice(0,20).map(s=>({ref:s.id,summary:s.summary,date:s.observedAt,sourceType:s.sourceType,title:s.provenance?.title||''}));
+ const evidence=personContext(graph,personId);
  const relationships=(person.relationships||[]).map(r=>({...r,isMe:r.memberId===self,memberName:graph.members?.find(m=>m.id===r.memberId)?.name||r.memberName||'Contributor'})).sort((a,b)=>Number(b.isMe)-Number(a.isMe)||(b.score??-1)-(a.score??-1));
  return {person,relationships,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
 }
@@ -19,14 +37,20 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
  if(step==='person'){
   panel.append(element(doc,'p','nc-status',card.novelty==='recorded_contact'?'You have recorded contact':card.relationshipUnverified?'Relationship not yet verified':'No direct contact found in shared data'));
   if(card.query)panel.append(element(doc,'p','nc-query','For: '+card.query));
-  const reasons=card.reasons.length?card.reasons:card.evidence.slice(0,1);
+  const reasons=card.reasons;
   if(reasons[0])panel.append(element(doc,'p','nc-reason',reasons[0].summary));
   if(reasons[0])panel.append(element(doc,'p','nc-muted','Recorded context · '+(reasons[0].date||reasons[0].observedAt||'').slice(0,10)));
+ }
+ if(step==='person'&&card.evidence.length){
+  const context=element(doc,'section','nc-profile-context');context.append(element(doc,'h3','','Recent context'));
+  for(const e of card.evidence.slice(0,2))context.append(contextBlock(doc,e));
+  if(card.evidence.some(e=>['granola','granola_mention','obsidian_note'].includes(e.sourceType)))context.append(element(doc,'small','nc-muted','Note context is separate from contact activity; a mention does not confirm attendance.'));
+  panel.append(context);
  }
  if(step==='evidence'){
   panel.append(element(doc,'h3','','Supporting memory'));
   if(!card.evidence.length)panel.append(element(doc,'p','nc-muted','No shared meeting or note context is available for this person.'));
-  for(const e of card.evidence){const item=element(doc,'article','nc-memory');item.append(element(doc,'small','nc-muted',`${sourceNames[e.sourceType]||e.sourceType} · ${e.date.slice(0,10)}`),element(doc,'p','',e.summary));if(e.title)item.append(element(doc,'small','nc-muted',e.title));panel.append(item);}
+  for(const e of card.evidence)panel.append(contextBlock(doc,e));
  }
  if(step==='route'||step==='person'){
   panel.append(element(doc,'h3','',own?'Your connection':'Connections in this network'));
