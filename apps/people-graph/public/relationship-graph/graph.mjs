@@ -1,4 +1,5 @@
-import {contactCard,mountContactSheet} from './contact-sheet.mjs';
+import {personWalk} from './person-walk.mjs';
+import {contactCard,mountContactSheet,portrait} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
 import {createIntroductionClient} from '../introduction-client.mjs';
 import { wanderTopics, walkBranches } from './wander.mjs';
@@ -244,10 +245,30 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id){const card=contactCard(graph,id,searchAnswer);if(!card)return;clearContact();highlightContact(id);const container=contactContainer();
-    routeStrip=make('div','nc-route-strip');routeStrip.setAttribute('aria-label','Possible introduction route');
-    if(card.routes.length){for(const [i,name]of ['You · workspace member',card.routes[0].memberName,card.person.name].entries()){if(i)routeStrip.append(make('span','nc-route-line'));routeStrip.append(make('span','nc-route-stop',name));}element.append(routeStrip);}
-    contactOverlay=mountContactSheet(container,{onClose:clearContact,onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);
+  function showContact(id){const card=contactCard(graph,id,searchAnswer);if(!card)return;clearContact();highlightContact(id);
+    options.onPersonFocus?.(id);
+    const walk=personWalk(graph,id,pathGraph),container=contactContainer();
+    routeStrip=make('section','nc-walk-stage');routeStrip.setAttribute('aria-label','Focused connection walk');routeStrip.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();clearContact();}});
+    const head=make('div','nc-walk-head');head.append(make('h2','','Your path to '+card.person.name));const back=make('button','','Back to network');back.type='button';back.onclick=clearContact;head.append(back);routeStrip.append(head);
+    routeStrip.append(make('p','nc-muted',walk.message));
+    const chain=make('div','nc-walk-chain'),detail=make('section','nc-walk-evidence');detail.setAttribute('aria-live','polite');
+    let current=walk.nodes.length-1;
+    function inspect(index){current=index;const node=walk.nodes[index];for(const [i,b]of [...chain.querySelectorAll('.nc-walk-person')].entries())b.setAttribute('aria-pressed',String(i===index));
+      detail.replaceChildren(make('h3','',node.name));
+      if(node.memberId)detail.append(make('p','','Network contributor. The adjoining lines show their recorded contact evidence.'));
+      else {highlightContact(node.id);const next=contactCard(graph,node.id,searchAnswer);if(next)contactOverlay.setCard(next,{focus:false});}
+      const adjacent=pathGraph.edges.filter(e=>e.source===node.id||e.target===node.id).filter(e=>['personal','cooccurrence'].includes(e.kind));
+      const branchIds=[...new Set(adjacent.map(e=>e.source===node.id?e.target:e.source))].filter(id=>!walk.nodes.some(n=>n.id===id)&&!byId.get(id)?.memberId);
+      if(branchIds.length){detail.append(make('h4','','Other branches to explore'));for(const id of branchIds.slice(0,6)){const branch=make('button','',byId.get(id)?.name||'Person');branch.type='button';branch.onclick=()=>showContact(id);detail.append(branch);}if(branchIds.length>6)detail.append(make('p','nc-muted','Showing 6 of '+branchIds.length+' neighboring people.'));}
+    }
+    for(const [i,node]of walk.nodes.entries()){
+      const stop=make('button','nc-walk-person');stop.type='button';stop.setAttribute('aria-label','Walk to '+node.name);stop.append(portrait(document,node),make('strong','',node.name),make('small','nc-muted',node.memberId?'Contributor':node.company||'Person'));stop.onclick=()=>inspect(i);chain.append(stop);
+      const edge=walk.edges[i];if(edge){const link=make('button','nc-walk-link',edge.kind==='personal'?'→ Recorded contact':'⇢ Needs verification');link.type='button';link.onclick=()=>{detail.replaceChildren(make('h3','',node.name+' → '+walk.nodes[i+1].name));for(const e of edge.evidence||[])detail.append(make('p','',[e.title,e.owner,e.date,e.text].filter(Boolean).join(' · ')));if(!edge.evidence?.length)detail.append(make('p','','No further shared source detail.'));};chain.append(link);}
+    }
+    routeStrip.append(chain);
+    if(!walk.edges.length){const known=make('div','nc-known');known.append(make('h3','','What is known'));for(const member of walk.contributors)known.append(make('p','','Shared by '+member.name+' · contribution, not a verified introduction route'));if(!walk.contributors.length)known.append(make('p','','No contributor information available.'));routeStrip.append(known);}
+    const nav=make('div','nc-walk-nav');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail);element.append(routeStrip);
+    contactOverlay=mountContactSheet(container,{companion:routeStrip,onClose:clearContact,onSelectStep:step=>{if(step==='route')routeStrip?.scrollIntoView({block:'nearest',behavior:'smooth'});},onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);inspect(current);
   }
   function showIntroduction(input={}){clearContact();if(!options.onIntroductionRequest)return;const client=createIntroductionClient({workspaceId:graph.workspaceId,fetcher:options.onIntroductionRequest});contactOverlay=mountIntroductionThread(contactContainer(),{...input,client,graph,onClose:clearContact,onPerson:id=>showContact(id)});}
 

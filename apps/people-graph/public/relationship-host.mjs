@@ -627,7 +627,7 @@ async function startBrowserApp() {
     networkLabel.textContent = value.checked ? 'Ranked by Jev' : 'Keyword match only';
     if (!results.length) return;
     for (const person of results) { const item = document.createElement('li'); item.append(networkResultButton(person)); networkResults.append(item); }
-    networkResults.hidden = false;
+    networkResults.hidden = mountedGraph?.source==='workspace';
   }
 
   function setAuthenticatedControls(visible) {
@@ -729,6 +729,7 @@ async function startBrowserApp() {
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onPersonFocus:()=>{networkResults.hidden=true;},
       onIntroductionRequest:(path,body,signal)=>controller.introductionRequest(path,body,signal),
       onRankIntroductions:()=>controller.rankIntroductions(),
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
@@ -811,6 +812,7 @@ async function startBrowserApp() {
   $('#mode-wander').onclick=()=>{clearNetworkSearch();graphInstance?.openWander();};
   $('#mode-answer').onclick=()=>{showMode('answer');networkQuery.focus();};
   for(const prompt of document.querySelectorAll('[data-network-prompt]'))prompt.onclick=()=>{networkQuery.value=prompt.dataset.networkPrompt;void runNetworkSearch();};
+  networkQuery.addEventListener('focus',()=>{if(networkResults.children.length)networkResults.hidden=false;});
   networkSearch.addEventListener('submit', event => { event.preventDefault(); void runNetworkSearch(); });
   networkSearch.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); clearNetworkSearch(); networkQuery.focus(); } });
   $('#network-clear').onclick = () => { clearNetworkSearch(); networkQuery.focus(); };
