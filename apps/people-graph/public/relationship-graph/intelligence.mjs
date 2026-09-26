@@ -55,6 +55,7 @@ export function introductionCandidates(targetId,nodes,edges) {
 export function conversationThemes(themes, signals) {
   const substantive = new Map(signals.filter(s => s.sourceType !== 'gmail_subject').map(s => [s.id,s]));
   return themes.flatMap(theme => {
+    if(!isTopicLabel(theme.name))return [];
     const components = theme.components.filter(c => c.sourceType !== 'gmail_subject' && substantive.has(c.signalId));
     if (!components.length) return [];
     const evidence = components.map(c => substantive.get(c.signalId)).sort((a,b)=>(Date.parse(b.observedAt)||0)-(Date.parse(a.observedAt)||0));
@@ -127,4 +128,14 @@ export function recentlyInTouch(graph) {
     const events=(graph.activity||[]).filter(e=>e.personIds.includes(n.id)&&['email','meeting'].includes(e.kind)).sort((a,b)=>Date.parse(b.at)-Date.parse(a.at));
     return {...n,event:events[0],latest:Date.parse(directContact(n))};
   }).filter(n=>Number.isFinite(n.latest)&&n.latest<=Date.now()).sort((a,b)=>b.latest-a.latest).slice(0,12);
+}
+
+// Display gate only: rejected labels remain available as person evidence/search context.
+export function isTopicLabel(value) {
+ const name=String(value||'').trim();
+ if(!name||name.length>64||name.split(/\s+/).length>8)return false;
+ if(/^(?:[-*]\s*)?\[[ xX]?\]/.test(name)||/^(?:action items?|to[- ]?do|next steps?|follow[- ]?ups?)$/i.test(name))return false;
+ if(/^(?:send|coordinate|schedule|reply|introduce|remind|prepare|book|reach out|follow[- ]?up|check in|set up|ask|review|share)\b/i.test(name))return false;
+ if(/^email\s+(?:a|an|the|detailed|proposal|to|with|about)\b/i.test(name))return false;
+ return true;
 }

@@ -140,3 +140,9 @@ test('large shared clusters maintain readable separation without dropping people
  assert.equal(points.length,5134);
  for(let i=0;i<points.length;i++)for(let j=i+1;j<points.length;j++)assert.ok(Math.hypot(points[i].x-points[j].x,points[i].y-points[j].y)>=216-1e-6);
 });
+
+test('topic labels reject raw tasks and preserve concise subject areas',async()=>{
+ const {isTopicLabel}=await import('../public/relationship-graph/intelligence.mjs');
+ for(const name of ['[ ] Email Detailed Proposal With Pricing And Timeline','Coordinate With P- Dfuller On Investor Deck/product Roadmap Sharing','Send follow-up to John','Follow up with Maya','Action items','Schedule a meeting'])assert.equal(isTopicLabel(name),false,name);
+ for(const name of ['Agent interfaces','UI design','Fundraising','Email infrastructure','Maps, Memory, and Meaning'])assert.equal(isTopicLabel(name),true,name);
+});

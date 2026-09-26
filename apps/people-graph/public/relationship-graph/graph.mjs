@@ -10,7 +10,7 @@ import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
 import { parseMeetingBatch, meetingPreviewState, withMeetingPreview } from './meeting-preview.mjs';
-import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals } from './intelligence.mjs';
+import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, isTopicLabel, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals } from './intelligence.mjs';
 
 const DIRECTORY_PAGE_SIZE = 50;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -323,7 +323,7 @@ export function mountGraph(element, options = {}) {
     const height = Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
     const usableWidth = Math.max(132, width - (width >= 1100 && (graph.source!=='workspace'||panelMode) ? 380 : 48));
-    const top = graph.source==='workspace' ? ((width<=700?250:205)+((graph.sourceCoverage||[]).some(s=>s.identityPending)?44:0)+(activeThemeId==='__connections'?36:0)) : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
+    const top = graph.source==='workspace' ? ((width<=700?315:270)+((graph.sourceCoverage||[]).some(s=>s.identityPending)?44:0)+(activeThemeId==='__connections'?36:0)) : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
     const usableHeight = height - top - 86;
     const baseRelevance=filterRelevance(graph,graph.source==='workspace'?'firm':'my');
     const layoutThemes=conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
@@ -361,7 +361,7 @@ export function mountGraph(element, options = {}) {
       themes.push({themeId:theme.id,name:theme.name,score:0,nodeIds:[...new Set(signals.map(s=>s.personId))],components:signals.map(s=>({signalId:s.id,sourceType:s.sourceType,observedAt:s.observedAt,contribution:0}))});
     }
     if(graph.source==='workspace'){
-      const groups=new Map();for(const theme of themes){const key=theme.name.trim().toLocaleLowerCase();const prior=groups.get(key);
+      const groups=new Map();for(const theme of themes.filter(t=>isTopicLabel(t.name))){const key=theme.name.trim().toLocaleLowerCase();const prior=groups.get(key);
         if(prior){prior.nodeIds=[...new Set([...prior.nodeIds,...theme.nodeIds])];prior.components=[...prior.components,...theme.components];prior.score=Math.max(prior.score,theme.score);}
         else groups.set(key,{...theme,nodeIds:[...theme.nodeIds],components:[...theme.components]});
       }return [...groups.values()].sort((a,b)=>b.nodeIds.length-a.nodeIds.length||a.name.localeCompare(b.name));
@@ -408,19 +408,19 @@ export function mountGraph(element, options = {}) {
     const themes = rankedThemes();
     if(graph.source==='workspace'){
       const bar=make('section','rg-topic-bar rg-topic-filters');bar.setAttribute('aria-label','Topics and themes');
-      const heading=make('div','rg-filter-heading');heading.append(make('strong','','Themes'));
-      heading.append(make('span','',themes.length?`${themes.length} shared topics`:'No shared themes available yet'));
-      bar.append(heading);const chips=make('div','rg-filter-chips');
-      const all=button('All people','filter-topic','rg-filter-chip');all.setAttribute('aria-pressed',String(!activeThemeId));chips.append(all);
-      const discover=button(`Discover${introductionCards.length?' · '+introductionCards.length:''}`,'open-introductions','rg-filter-chip');discover.setAttribute('aria-expanded',String(panelMode==='introductions'));chips.append(discover);
-      const bridges=sharedConnectionIds();
-      const shared=button(`Shared connections · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId='__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));chips.append(shared);
-      for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));chips.append(chip);}
-      bar.append(chips);
+      const navigation=make('nav','rg-network-navigation');navigation.setAttribute('aria-label','Network views');
+      const all=button('People','filter-topic','rg-filter-chip');all.setAttribute('aria-pressed',String(panelMode!=='introductions'));navigation.append(all);
+      const discover=button('Discover','open-introductions','rg-filter-chip');discover.setAttribute('aria-pressed',String(panelMode==='introductions'));navigation.append(discover);bar.append(navigation);
+      const bridges=sharedConnectionIds(),filters=make('div','rg-network-filters');filters.setAttribute('aria-label','People filters');
+      const shared=button(`In multiple networks · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId=activeThemeId==='__connections'?'':'__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));shared.title='People matched across contributors, not a measure of relationship strength';filters.append(shared);
+      if(activeThemeId){const clear=button('Clear filter','filter-topic','rg-filter-chip');filters.append(clear);}bar.append(filters);
+      if(themes.length){const topics=make('div','rg-filter-chips');topics.setAttribute('aria-label','Topic filters');topics.append(make('span','rg-topic-caption','Topics'));
+       for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));topics.append(chip);}bar.append(topics);
+      }else bar.append(make('p','rg-source','No clear shared topics yet. Meeting and note details are still available in person profiles.'));
       const pending=(graph.sourceCoverage||[]).reduce((n,s)=>n+(s.identityPending||0),0);
       if(pending)bar.append(make('p','rg-source',`${pending} vault records need a fresh push with plugin 0.9.4 to match across contributors.`));
       if(activeThemeId==='__connections')bar.append(make('p','rg-source',bridges.mutual.size?'People shared by multiple contributors and their recorded connections.':'No matched mutual people yet. Matching uses the same email, never a name guess.'));
-      if(!themes.length)bar.append(make('p','rg-source','Share themes in Accounts → Shared networks, then publish or sync your source.'));
+
       return bar;
     }
     const section = make('section', 'rg-topic-bar');
