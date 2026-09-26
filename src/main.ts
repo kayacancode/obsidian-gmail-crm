@@ -1026,6 +1026,7 @@ export default class GmailCrmPlugin extends Plugin {
 					role: this.getContactByEmail(email)?.role ?? this.getContactByEmail(email)?.orgTitle,
 					photoUrl: this.getContactByEmail(email)?.photoUrl,
 					lastContact: page.gmailStats?.lastContact ?? null,
+                    measuredContact: page.gmailStats ? {version:1,sent:page.gmailStats.sentCount,received:page.gmailStats.receivedCount,lastEmail:page.gmailStats.lastContact||null,meetings:0,lastMeeting:null}:null,
 					staleness: computeStaleness(page, graph[name] ?? []),
 				});
 			}

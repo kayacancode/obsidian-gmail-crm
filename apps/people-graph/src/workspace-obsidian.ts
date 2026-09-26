@@ -1,5 +1,6 @@
 import {matchedPersonId} from './workspace-identity';
-import {opaque} from './mail-model';
+import {opaque,emailScore} from './mail-model';
+import {measuredContact} from '../../../shared/measured-contact';
 import {normalizePushedGraph} from './relevance-routes';
 import {workspacePhoto} from './workspace-contract';
 import type {ShareEnv} from './share-routes';
@@ -34,13 +35,19 @@ export async function appendWorkspaceObsidian(env:ShareEnv,w:Workspace,me:string
     ids.set(n.id,id);
     if(token)coverage.identityMatched=(coverage.identityMatched||0)+1;else coverage.identityPending=(coverage.identityPending||0)+1;
     const name=typeof n.name==='string'?n.name.trim().slice(0,120):'';
-    const candidate:WorkspaceGraph['nodes'][number]={identityMatchReady:Boolean(token),id,name:name?(name.includes('@')?(member.email===me||member.contribution.shareProfiles?name.split('@')[0]:'Name unavailable'):name):'Name unavailable',company:typeof n.company==='string'?n.company.slice(0,120):'',type:'person',photoUrl:member.email===me||member.contribution.shareProfiles?workspacePhoto(n.photoUrl):null,directRelationship:false,combined:null,lastContact:null,sources:['obsidian'],relationships:[{memberId:member.id,memberName:member.email,score:null,scoreVersion:'obsidian-unmeasured',lastContact:typeof n.lastContact==='string'&&Number.isFinite(Date.parse(n.lastContact))?n.lastContact:null,observedAt:coverage.updatedAt,evidenceCategory:'unknown'}]};
+    const activity=measuredContact(n.measuredContact);
+    const last=activity?[activity.lastEmail,activity.lastMeeting].filter(Boolean).sort().at(-1)!:null;
+    const measured=activity?{score:emailScore(activity.sent+activity.meetings,activity.received+activity.meetings,(Date.now()-Date.parse(last!))/86400000).combined,scoreVersion:'email-v1',lastContact:last,evidenceCategory:activity.sent+activity.received?'email' as const:'meeting' as const,activity}:null;
+    const candidate:WorkspaceGraph['nodes'][number]={identityMatchReady:Boolean(token),id,name:name?(name.includes('@')?(member.email===me||member.contribution.shareProfiles?name.split('@')[0]:'Name unavailable'):name):'Name unavailable',company:typeof n.company==='string'?n.company.slice(0,120):'',type:'person',photoUrl:member.email===me||member.contribution.shareProfiles?workspacePhoto(n.photoUrl):null,directRelationship:false,combined:null,lastContact:null,sources:['obsidian'],relationships:[{memberId:member.id,memberName:member.email,score:null,scoreVersion:'obsidian-unmeasured',lastContact:typeof n.lastContact==='string'&&Number.isFinite(Date.parse(n.lastContact))?n.lastContact:null,observedAt:coverage.updatedAt,evidenceCategory:'unknown',...measured}]};
     const existing=nodeIndex.get(id);
     if(existing){
      existing.sources=[...new Set([...(existing.sources||[]),'obsidian'])];
      existing.photoUrl ||= candidate.photoUrl;
      if(existing.name==='Name unavailable'&&candidate.name!=='Name unavailable')existing.name=candidate.name;
-     if(!existing.relationships.some(r=>r.memberId===member.id))existing.relationships.push(candidate.relationships[0]);
+     const prior=existing.relationships.find(r=>r.memberId===member.id);
+     if(!prior)existing.relationships.push(candidate.relationships[0]);
+     // Do not add overlapping inbox totals: select the evidence with the latest contact.
+     else if(measured&&(prior.evidenceCategory==='unknown'||Date.parse(measured.lastContact!)>Date.parse(prior.lastContact||'1970-01-01')))Object.assign(prior,candidate.relationships[0]);
     }else{graph.nodes.push(candidate);nodeIndex.set(id,candidate);}
    }
    coverage.included=ids.size;

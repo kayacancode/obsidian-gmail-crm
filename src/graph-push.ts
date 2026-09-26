@@ -1,3 +1,4 @@
+import { measuredContact, type MeasuredContact } from "../shared/measured-contact";
 import { requestUrl } from "obsidian";
 import type { ContactEdge } from "./types";
 import type { StalenessScore } from "./staleness";
@@ -18,6 +19,7 @@ export interface GraphPushConfig {
 
 /** One contact, resolved by the caller (email + display fields + scores). */
 export interface GraphContactInput {
+ measuredContact?: MeasuredContact | null;
 	role?: string;
 	photoUrl?: string;
 	email: string;
@@ -28,6 +30,7 @@ export interface GraphContactInput {
 }
 
 export interface GraphNodeOut {
+ measuredContact?: MeasuredContact;
 	workspaceIdentities?: Record<string,string>;
 	role?: string;
 	photoUrl?: string;
@@ -154,6 +157,7 @@ export async function buildGraphPayload(
 			const c = byEmail.get(email)!;
 			nodes.push({
 				id: await idFor(email),
+                ...(measuredContact(c.measuredContact)?{measuredContact:measuredContact(c.measuredContact)!}:{}),
                 ...(workspaces.length ? {workspaceIdentities:Object.fromEntries(await Promise.all(workspaces.map(async w=>[w.id,await workspaceIdentity(w.key,email)])))} : {}),
 				name: c.name,
 				role: c.role?.slice(0, 200),

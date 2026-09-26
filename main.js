@@ -3097,6 +3097,19 @@ async function pushScores(config, scored) {
   return contacts.length;
 }
 
+// shared/measured-contact.ts
+function measuredContact(value, now = Date.now()) {
+  if (!value || typeof value !== "object") return null;
+  const v = value;
+  if (v.version !== 1) return null;
+  const count = (n) => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= 1e7;
+  if (!count(v.sent) || !count(v.received) || !count(v.meetings)) return null;
+  const date = (d) => typeof d === "string" && Number.isFinite(Date.parse(d)) && Date.parse(d) > 0 && Date.parse(d) <= now;
+  if (v.sent + v.received > 0 && !date(v.lastEmail) || v.meetings > 0 && !date(v.lastMeeting)) return null;
+  if (!v.sent && !v.received && !v.meetings) return null;
+  return { version: 1, sent: v.sent, received: v.received, lastEmail: v.sent + v.received ? new Date(v.lastEmail).toISOString() : null, meetings: v.meetings, lastMeeting: v.meetings ? new Date(v.lastMeeting).toISOString() : null };
+}
+
 // src/graph-push.ts
 var import_obsidian7 = require("obsidian");
 
@@ -3163,6 +3176,7 @@ async function buildGraphPayload(contacts, edges, salt, themeInputs = [], worksp
       const c = byEmail.get(email);
       nodes.push({
         id: await idFor(email),
+        ...measuredContact(c.measuredContact) ? { measuredContact: measuredContact(c.measuredContact) } : {},
         ...workspaces.length ? { workspaceIdentities: Object.fromEntries(await Promise.all(workspaces.map(async (w) => [w.id, await workspaceIdentity(w.key, email)]))) } : {},
         name: c.name,
         role: (_c = c.role) == null ? void 0 : _c.slice(0, 200),
@@ -5410,6 +5424,7 @@ ${relSection}
           role: (_g = (_e = this.getContactByEmail(email)) == null ? void 0 : _e.role) != null ? _g : (_f = this.getContactByEmail(email)) == null ? void 0 : _f.orgTitle,
           photoUrl: (_h = this.getContactByEmail(email)) == null ? void 0 : _h.photoUrl,
           lastContact: (_j = (_i = page.gmailStats) == null ? void 0 : _i.lastContact) != null ? _j : null,
+          measuredContact: page.gmailStats ? { version: 1, sent: page.gmailStats.sentCount, received: page.gmailStats.receivedCount, lastEmail: page.gmailStats.lastContact || null, meetings: 0, lastMeeting: null } : null,
           staleness: computeStaleness(page, (_k = graph[name]) != null ? _k : [])
         });
       }

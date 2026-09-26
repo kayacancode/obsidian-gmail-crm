@@ -5,3 +5,7 @@ test('contact sheet requires resolved vault identity and preserves absent eviden
 
 test('unknown matched relationships do not offer intro',()=>{assert.deepEqual(contactCard({...graph,nodes:[{...graph.nodes[0],identityMatchReady:true,relationships:[{memberId:'j',evidenceCategory:'unknown'}]}]},'p').routes,[]);});
 test('unmatched vault records describe provenance and missing evidence',()=>{const c=contactCard({...graph,nodes:[{id:'p',name:'Alex',sources:['obsidian'],identityMatchReady:false,relationships:[{memberId:'j',evidenceCategory:'unknown'}]}]},'p');assert.equal(c.identityPending,true);assert.deepEqual(c.contributors.map(m=>m.name),['John']);assert.equal(c.relationshipUnverified,true);});
+test('self and unmeasured contributor relationships remain visible independent of intro routes',()=>{
+ const c=contactCard({...graph,nodes:[{id:'p',relationships:[{memberId:'me',evidenceCategory:'email',score:82},{memberId:'j',evidenceCategory:'unknown',score:null}]}]},'p');
+ assert.equal(c.relationships.length,2);assert.equal(c.relationships[0].isMe,true);assert.equal(c.relationships[0].score,82);assert.equal(c.relationships[1].score,null);assert.equal(c.routes.length,0);
+});

@@ -4,7 +4,8 @@ export function contactCard(graph,personId,answer){
  const self=graph.members?.find(m=>m.isMe)?.id;
  const ready=!person.sources?.includes('obsidian')||person.identityMatchReady===true;
  const evidence=(graph.themeSignals||[]).filter(s=>s.personId===personId&&s.id&&s.summary&&Number.isFinite(Date.parse(s.observedAt))).slice(0,20).map(s=>({ref:s.id,summary:s.summary,date:s.observedAt,sourceType:s.sourceType,title:s.provenance?.title||''}));
- return {person,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})):[]};
+ const relationships=(person.relationships||[]).map(r=>({...r,isMe:r.memberId===self,memberName:graph.members?.find(m=>m.id===r.memberId)?.name||r.memberName||'Contributor'})).sort((a,b)=>Number(b.isMe)-Number(a.isMe)||(b.score??-1)-(a.score??-1));
+ return {person,relationships,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
 }
 export function element(doc,tag,className='',text){const el=doc.createElement(tag);el.className=className;if(text!==undefined)el.textContent=text;return el;}
 export function action(doc,label,fn,className=''){const el=element(doc,'button',className,label);el.type='button';el.addEventListener('click',fn);return el;}
@@ -28,7 +29,18 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
   for(const e of card.evidence){const item=element(doc,'article','nc-memory');item.append(element(doc,'small','nc-muted',`${sourceNames[e.sourceType]||e.sourceType} · ${e.date.slice(0,10)}`),element(doc,'p','',e.summary));if(e.title)item.append(element(doc,'small','nc-muted',e.title));panel.append(item);}
  }
  if(step==='route'||step==='person'){
-  if(step==='route')panel.append(element(doc,'h3','','Team relationships'));
+  panel.append(element(doc,'h3','','Relationship strength by contributor'));
+  for(const r of card.relationships||[]){
+   const row=element(doc,'article','nc-relationship');row.append(element(doc,'strong','',r.isMe?'You':r.memberName));
+   const measured=['email','meeting'].includes(r.evidenceCategory)&&Number.isFinite(r.score);
+   row.append(element(doc,'p','',measured?Math.round(r.score)+' / 100 · measured activity':'Not measured in shared data'));
+   if(measured){const meter=element(doc,'meter');meter.min=0;meter.max=100;meter.value=r.score;meter.setAttribute('aria-label',(r.isMe?'Your':r.memberName+'’s')+' relationship activity');row.append(meter);}
+   row.append(element(doc,'small','nc-muted',(r.evidenceCategory==='email'?'Email contact':r.evidenceCategory==='meeting'?'Meeting activity':'Vault record · contact evidence unavailable')+(r.lastContact?' · Last contact '+r.lastContact.slice(0,10):'')));
+   if(r.activity)row.append(element(doc,'small','nc-muted',r.activity.sent+' sent · '+r.activity.received+' received · '+r.activity.meetings+' accepted calendar events'));
+   if(r.observedAt)row.append(element(doc,'small','nc-muted','Updated '+r.observedAt.slice(0,10)));
+   panel.append(row);
+  }
+
   for(const route of card.routes){const row=element(doc,'div','nc-via');row.append(element(doc,'strong','','Through '+route.memberName),element(doc,'small','nc-muted',`${Number.isFinite(route.score)?Math.round(route.score)+' / 100 measured activity':'Activity not measured'}${route.lastContact?' · '+route.lastContact.slice(0,10):''}`));const ask=action(doc,'Ask '+route.memberName+' for an intro',()=>onRequestIntro?.(card,route.memberId),step==='person'?'nc-primary':'');ask.disabled=!onRequestIntro;row.append(ask);panel.append(row);if(step==='person')break;}
   if(!card.routes.length){const known=element(doc,'section','nc-memory');known.append(element(doc,'h3','','Connection details'));
    if(card.contributors?.length)known.append(element(doc,'p','','Shared by '+card.contributors.map(m=>m.name).join(', ')));

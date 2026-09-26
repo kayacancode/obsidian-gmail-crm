@@ -196,3 +196,24 @@ test('workspace introductions require membership and do not invent suggestions f
  assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.deepEqual(await response.json(),{suggestions:[],checked:false});
  assert.equal((await f.call('/'+f.id+'/introductions','POST',{},'outsider@example.com')).status,403);
 });
+
+test('vault measured contact enables independent member scores without using private snapshot scores',async()=>{
+ const f=await setup();f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true},'owner@example.com');
+ const raw={version:1,sent:12,received:8,lastEmail:'2026-01-01T00:00:00Z',meetings:0,lastMeeting:null};
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('owner@example.com',JSON.stringify({nodes:[{id:'measured',name:'Measured',combined:99,measuredContact:raw},{id:'note',name:'Note only',combined:99},{id:'invalid',name:'Invalid',measuredContact:{...raw,sent:-1}}],edges:[]}),1700000000);
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ const r=g.nodes.find(n=>n.name==='Measured')!.relationships[0];assert.equal(r.evidenceCategory,'email');assert.equal(r.scoreVersion,'email-v1');assert.ok(r.score!==null&&r.score<99);assert.equal(r.activity?.sent,12);
+ for(const name of ['Note only','Invalid']){const r=g.nodes.find(n=>n.name===name)!.relationships[0];assert.equal(r.score,null);assert.equal(r.evidenceCategory,'unknown');}
+});
+
+test('matched vault contact replaces older web evidence without summing overlapping counts',async()=>{
+ const f=await setup(),{matchingKey,identityToken}=await import('../src/workspace-identity');
+ const token=await identityToken(await matchingKey(f.env,f.id),'contact@example.test');
+ f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true},'owner@example.com');
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('owner@example.com',JSON.stringify({nodes:[{id:'a',name:'Contact Name',workspaceIdentities:{[f.id]:token},measuredContact:{version:1,sent:12,received:8,lastEmail:'2026-01-01',meetings:0,lastMeeting:null}}],edges:[]}),1700000000);
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(g.nodes.length,1);assert.equal(g.nodes[0].relationships.length,2);
+ assert.equal(g.nodes[0].relationships.find(r=>r.memberName==='owner@example.com')!.activity?.sent,12);
+ assert.equal(g.nodes[0].relationships.find(r=>r.memberName==='member@example.com')!.score,30);
+});

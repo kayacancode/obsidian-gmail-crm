@@ -267,3 +267,15 @@ test('vault snapshots carry workspace-specific tokens without emails or matching
  assert.equal(await workspaceIdentity('private-key-a',contacts[0].email),await identityToken('private-key-a',contacts[0].email));
  const serialized=JSON.stringify(a);assert.ok(!serialized.includes(contacts[0].email));assert.ok(!serialized.includes('private-key-a'));
 });
+
+test('graph exports measured contact separately from private adjusted scores',async()=>{
+ const {measuredContact}=await import('../shared/measured-contact');
+ const raw={version:1 as const,sent:12,received:8,lastEmail:'2026-01-01T00:00:00Z',meetings:0,lastMeeting:null};
+ assert.equal(measuredContact({...raw,sent:-1}),null);
+ assert.equal(measuredContact({...raw,lastEmail:'2099-01-01'}),null);
+ assert.equal(measuredContact({combined:99,lastContact:'2026-01-01'}),null);
+ const payload=await buildGraphPayload([{...contacts[0],measuredContact:raw}],[],'test');
+ assert.equal(payload.nodes[0].measuredContact?.sent,12);
+ assert.equal(payload.nodes[0].measuredContact?.received,8);
+ assert.ok(!('score' in payload.nodes[0].measuredContact!));
+});
