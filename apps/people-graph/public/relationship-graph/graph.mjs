@@ -248,6 +248,7 @@ export function mountGraph(element, options = {}) {
   function showContact(id){const card=contactCard(graph,id,searchAnswer);if(!card)return;clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=personWalk(graph,id,pathGraph),container=contactContainer();
+    if(!walk.edges.length){root.dataset.contactFocus='false';contactOverlay=mountContactSheet(container,{onClose:clearContact,onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);return;}
     routeStrip=make('section','nc-walk-stage');routeStrip.setAttribute('aria-label','Focused connection walk');routeStrip.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();clearContact();}});
     const head=make('div','nc-walk-head');head.append(make('h2','','Your path to '+card.person.name));const back=make('button','','Back to network');back.type='button';back.onclick=clearContact;head.append(back);routeStrip.append(head);
     routeStrip.append(make('p','nc-muted',walk.message));

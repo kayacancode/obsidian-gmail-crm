@@ -4,3 +4,4 @@ test('contact sheet derives real routes and never offers self intros',()=>{asser
 test('contact sheet requires resolved vault identity and preserves absent evidence',()=>{const c=contactCard({...graph,nodes:[{...graph.nodes[0],sources:['obsidian'],identityMatchReady:false}]},'p');assert.deepEqual(c.routes,[]);assert.deepEqual(c.evidence,[]);});
 
 test('unknown matched relationships do not offer intro',()=>{assert.deepEqual(contactCard({...graph,nodes:[{...graph.nodes[0],identityMatchReady:true,relationships:[{memberId:'j',evidenceCategory:'unknown'}]}]},'p').routes,[]);});
+test('unmatched vault records describe provenance and missing evidence',()=>{const c=contactCard({...graph,nodes:[{id:'p',name:'Alex',sources:['obsidian'],identityMatchReady:false,relationships:[{memberId:'j',evidenceCategory:'unknown'}]}]},'p');assert.equal(c.identityPending,true);assert.deepEqual(c.contributors.map(m=>m.name),['John']);assert.equal(c.relationshipUnverified,true);});
