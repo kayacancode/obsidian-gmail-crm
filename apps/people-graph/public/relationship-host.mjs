@@ -64,11 +64,11 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   function current(ctx) {
     if (ctx.run !== generation || ctx.account !== authenticatedAccount || ctx.signal.aborted) throw new DOMException('Account context changed', 'AbortError');
   }
-  async function request(path, { body, key, signal } = {}, ctx = context()) {
+  async function request(path, { body, key, signal, method = 'POST' } = {}, ctx = context()) {
     current(ctx);
     if(workspacePath() && !path.startsWith(workspacePath()+'/')) throw Error('Switch to My network to use private context.');
     const response = await fetchImpl(path, { cache: 'no-store', signal: signal ?? ctx.signal,
-      ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin, ...(key ? { 'Idempotency-Key': key } : {}) } }) });
+      ...(body === undefined ? {} : { method, body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin, ...(key ? { 'Idempotency-Key': key } : {}) } }) });
     current(ctx);
     if (response.status === 401) { signedOut('Your session expired. Sign in again to continue.'); throw Error('Your session expired.'); }
     if (!response.ok) {
@@ -339,6 +339,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
 
   return {
     introductionRequest:(path,body,signal)=>request(path,{body,signal},context()),
+    async excludeContribution(personId,restore=false,expectedSource=state.source,expectedAccount=state.account){if(expectedSource!==state.source||expectedAccount!==state.account)throw Error('Return to the original network to undo');const path=workspacePath();if(!path)throw Error('Select a shared network first');await request(path+'/excluded-people',{body:{personId},method:restore?'DELETE':'POST'},context());await load(state.source);},
     rankIntroductions:()=>workspacePath()?request(workspacePath()+'/introductions',{body:{}},context()):Promise.resolve({suggestions:[],checked:false}),
     getState: () => ({ ...state }),
     load,
@@ -729,6 +730,7 @@ async function startBrowserApp() {
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onExcludeContribution:async personId=>{const source=controller.getState().source,account=controller.getState().account;await controller.excludeContribution(personId);document.querySelector('#contribution-undo')?.remove();const toast=document.createElement('div');toast.id='contribution-undo';toast.setAttribute('role','status');Object.assign(toast.style,{position:'fixed',bottom:'24px',left:'24px',zIndex:200,background:'#fff',padding:'16px',border:'1px solid #ddd',borderRadius:'12px',boxShadow:'0 4px 20px #0002'});toast.append('Removed from your shared contribution. ');const undo=document.createElement('button');undo.textContent='Undo';undo.onclick=async()=>{undo.disabled=true;try{await controller.excludeContribution(personId,true,source,account);toast.remove();}catch{undo.disabled=false;undo.textContent='Retry undo';}};toast.append(undo);document.body.append(toast);},
       onPersonFocus:()=>{networkResults.hidden=true;},
       onIntroductionRequest:(path,body,signal)=>controller.introductionRequest(path,body,signal),
       onRankIntroductions:()=>controller.rankIntroductions(),

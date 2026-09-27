@@ -1,6 +1,6 @@
 import type {ShareLevel,ShareScope} from './network-share';
 export interface Contribution {includeObsidian?:boolean;shareProfiles?:boolean;enabled:boolean;scope:ShareScope;level:ShareLevel}
-export interface Member {id:string;email:string;role:'admin'|'member';contribution:Contribution}
+export interface Member {excludedPersonIds?:string[];id:string;email:string;role:'admin'|'member';contribution:Contribution}
 export interface Invite {id:string;email:string;hash:string;expiresAt:number;used:boolean;revoked:boolean}
 export interface Workspace {id:string;name:string;revision:number;members:Member[];invites:Invite[]}
 export class WorkspaceError extends Error {constructor(public status:number,message:string){super(message);}}

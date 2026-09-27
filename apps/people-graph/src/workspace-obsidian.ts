@@ -32,6 +32,7 @@ export async function appendWorkspaceObsidian(env:ShareEnv,w:Workspace,me:string
     if(ids.has(n.id))continue;
     const token=n.workspaceIdentities?.[w.id];
     const id=typeof token==='string'&&/^[a-f0-9]{64}$/.test(token)?await matchedPersonId(env,w.id,token):await opaque('workspace:'+w.id,'obsidian:'+member.id+':'+n.id,env.TOKEN_SECRET);if(!nodeIndex.has(id)&&graph.nodes.length>=10000){coverage.limited=true;graph.coverage.truncated=true;continue;}
+    if(member.excludedPersonIds?.includes(id))continue;
     ids.set(n.id,id);
     if(token)coverage.identityMatched=(coverage.identityMatched||0)+1;else coverage.identityPending=(coverage.identityPending||0)+1;
     const name=typeof n.name==='string'?n.name.trim().slice(0,120):'';

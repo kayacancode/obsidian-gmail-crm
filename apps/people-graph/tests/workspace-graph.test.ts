@@ -217,3 +217,12 @@ test('matched vault contact replaces older web evidence without summing overlapp
  assert.equal(g.nodes[0].relationships.find(r=>r.memberName==='owner@example.com')!.activity?.sent,12);
  assert.equal(g.nodes[0].relationships.find(r=>r.memberName==='member@example.com')!.score,30);
 });
+
+test('exclude only own contribution, preserve others, and undo; exclusions survive sharing settings',async()=>{
+ const f=await setup(),before=await buildWorkspaceGraph(f.env,f.id,'owner@example.com'),personId=before.nodes[0].id;
+ assert.equal((await f.call('/'+f.id+'/excluded-people','POST',{personId},'outsider@example.com')).status,403);
+ assert.equal((await f.call('/'+f.id+'/excluded-people','POST',{personId},'owner@example.com')).status,200);
+ let graph=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(graph.nodes.length,1);assert.equal(graph.nodes[0].relationships.length,1);assert.equal(graph.nodes[0].relationships[0].memberName,'member@example.com');
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'themes'},'owner@example.com');graph=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(graph.nodes[0].relationships.length,1);
+ assert.equal((await f.call('/'+f.id+'/excluded-people','DELETE',{personId},'owner@example.com')).status,200);assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].relationships.length,2);
+});

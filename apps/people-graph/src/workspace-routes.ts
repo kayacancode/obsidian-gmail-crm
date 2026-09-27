@@ -49,6 +49,14 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
    if(action==='draft'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.memberId!=='string')deny(400,'invalid_request');return json(await draftWorkspace(env,id,me,body.personId,body.memberId));}
    return json({error:'method_not_allowed'},405);
   }
+  const exclusion=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/excluded-people$/);
+  if(exclusion&&['POST','DELETE'].includes(method)){
+   const id=exclusion[1],personId=body.personId;
+   if(typeof personId!=='string'||!personId||personId.length>200)deny(400,'invalid_person');
+   const snapshot=await readWorkspace(env.DB,id),member=memberOf(snapshot,me);
+   if(method==='POST'){const graph=await buildWorkspaceGraph(env,id,me);if(!graph.nodes.some(n=>n.id===personId&&n.relationships.some(r=>r.memberId===member.id)))deny(404,'own_contribution_not_found');}
+   const updated=await changeWorkspace(env.DB,id,w=>{const self=memberOf(w,me);if(w.revision!==snapshot.revision)deny(409,'workspace_changed_retry');const ids=new Set(self.excludedPersonIds||[]);if(method==='POST')ids.add(personId);else ids.delete(personId);if(ids.size>10000)deny(400,'exclusion_limit');self.excludedPersonIds=[...ids];});return json({ok:true,revision:updated.revision});
+  }
   const match=url.pathname.match(/^\/api\/workspaces\/([^/]+)(?:\/(members|invites|contribution|transfer)(?:\/([^/]+))?)?$/);
   if(!match)return json({error:'not_found'},404);const [,id,action,target]=match;
   if(method==='GET'&&action==='members'){

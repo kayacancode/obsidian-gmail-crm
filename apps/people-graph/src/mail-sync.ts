@@ -525,10 +525,12 @@ export class MailSync extends DurableObject<MailEnv>{
  async exportWorkspaceSlice(scope:ShareScope,level:ShareLevel,shareProfiles=false):Promise<import('./workspace-contract').WorkspaceSlice>{
   const slice=await this.exportSlice(scope,level);
   const rows=new Map(this.graphContacts().map(row=>[row.email,row]));
+  const sources=new Map(this.ctx.storage.sql.exec<{email:string;last:number;accounts:string}>('SELECT email,MAX(date) AS last,GROUP_CONCAT(DISTINCT account) AS accounts FROM contributions GROUP BY email').toArray().map(r=>[r.email,r]));
   const relationships:import('./workspace-contract').WorkspaceSlice['relationships']={};
   for(const person of slice.people){
-   const row=rows.get(person.email);
-   relationships[person.email]={score:row&&row.sent+row.received>0?emailScore(row.sent,row.received,(Date.now()-row.last)/86400000).combined:null,scoreVersion:'email-v1',lastContact:person.lastContact,observedAt:new Date(slice.exportedAt).toISOString(),evidenceCategory:row?(row.meetings&&row.sent+row.received===2*row.meetings?'meeting':'email'):'unknown'};
+   const row=rows.get(person.email),source=sources.get(person.email);
+   const activity=row?{version:1 as const,sent:Math.max(0,row.sent-row.meetings),received:Math.max(0,row.received-row.meetings),lastEmail:source?new Date(source.last).toISOString():null,meetings:row.meetings,lastMeeting:row.lastMeeting?new Date(row.lastMeeting).toISOString():null}:undefined;
+   relationships[person.email]={activity,inboxes:source?.accounts.split(',')||[],score:row&&row.sent+row.received>0?emailScore(row.sent,row.received,(Date.now()-row.last)/86400000).combined:null,scoreVersion:'email-v1',lastContact:person.lastContact,observedAt:new Date(slice.exportedAt).toISOString(),evidenceCategory:row?(row.meetings&&row.sent+row.received===2*row.meetings?'meeting':'email'):'unknown'};
   }
   // Calendar titles are not part of workspace consent, even when legacy slices contain them.
   slice.signals=slice.signals.filter(signal=>signal.sourceType!=='calendar');

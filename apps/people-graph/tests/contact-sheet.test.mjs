@@ -14,3 +14,11 @@ test('recent context retains source, date and contributor without inferring atte
  const context=personContext({...graph,source:'workspace',themeSignals:[{id:'old',personId:'p',summary:'Earlier context',observedAt:'2026-01-01',sourceType:'obsidian_note',evidenceRef:'workspace:me:old'},{id:'new',personId:'p',summary:'Discussed interface design',observedAt:'2026-09-20',sourceType:'granola',evidenceRef:'workspace:j:new',provenance:{title:'Design conversation',canonicalUrl:'https://granola.ai/'}},{id:'other',personId:'other',summary:'Private other person',observedAt:'2026-09-21'}]},'p');
  assert.equal(context.length,2);assert.equal(context[0].contributor,'John');assert.equal(context[0].sourceLabel,'Granola note context');assert.equal(context[0].url,null);assert.equal(context[1].contributor,'You');
 });
+test('one-way email is not an introduction route but keeps its activity evidence',()=>{
+ const c=contactCard({...graph,nodes:[{id:'p',relationships:[{memberId:'j',evidenceCategory:'email',activity:{sent:0,received:1,meetings:0}}]}]},'p');assert.equal(c.routes.length,0);assert.equal(c.relationships[0].activity.received,1);
+});
+test('graph normalization preserves activity direction and viewer inbox provenance',async()=>{
+ const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+ const g=normalizeGraph({source:'workspace',nodes:[{id:'p',name:'P',relationships:[{memberId:'me',evidenceCategory:'email',activity:{sent:0,received:1,meetings:0},inboxes:['own@example.com']}]}],edges:[]});
+ assert.equal(g.nodes[0].relationships[0].activity.sent,0);assert.deepEqual(g.nodes[0].relationships[0].inboxes,['own@example.com']);
+});

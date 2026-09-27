@@ -47,19 +47,19 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
   const ids=new Map<string,string>();
   const ownScores=member.email===me?await env.MAIL.getByName(me).workspacePersonalScores(slice.people.map(p=>p.email)):{};
   for(const person of slice.people){
-   const pid=await personId(person.email);ids.set(person.email,pid);personEmails.set(person.email,pid);
+   const pid=await personId(person.email);if(member.excludedPersonIds?.includes(pid))continue;ids.set(person.email,pid);personEmails.set(person.email,pid);
    let node=nodes.get(pid);if(!node){node={identityMatchReady:true,id:pid,name:person.name,company:person.email.split('@')[1],type:'person',sources:['web'],photoUrl:null,directRelationship:false,combined:null,lastContact:null,relationships:[]};nodes.set(pid,node);}
    node.name=preferName(node.name,person.name,person.email);
    const profile=member.contribution.shareProfiles===true?value.profiles?.[person.email]:undefined;
    if(profile){node.name=preferName(node.name,profile.name,person.email);node.photoUrl ||= workspacePhoto(profile.photoUrl);}
    if(ownScores[person.email])node.viewerScore=ownScores[person.email];
    const r=value.relationships[person.email];const score=r?.score;
-   node.relationships.push({memberId:member.id,memberName:member.email,score:typeof score==='number'&&Number.isFinite(score)?Math.max(0,Math.min(100,score)):null,scoreVersion:r?.scoreVersion||'unknown',lastContact:r?.lastContact||null,observedAt:r?.observedAt||new Date(slice.exportedAt).toISOString(),evidenceCategory:r?.evidenceCategory||'unknown'});
+   node.relationships.push({memberId:member.id,memberName:member.email,...(r?.activity?{activity:r.activity}:{}),...(member.email===me&&r?.inboxes?{inboxes:r.inboxes}:{}),score:typeof score==='number'&&Number.isFinite(score)?Math.max(0,Math.min(100,score)):null,scoreVersion:r?.scoreVersion||'unknown',lastContact:r?.lastContact||null,observedAt:r?.observedAt||new Date(slice.exportedAt).toISOString(),evidenceCategory:r?.evidenceCategory||'unknown'});
   }
   for(const edge of slice.edges){const a=ids.get(edge.a),b=ids.get(edge.b);if(!a||!b)continue;const key=[a,b].sort().join(':');let existing=edges.get(key);if(!existing){existing={source:a,target:b,weight:0,types:[],contexts:[],contributors:[],evidence:[]};edges.set(key,existing);}existing.weight+=edge.weight;existing.types=[...new Set([...existing.types,...edge.types])];existing.contexts=[...new Set([...existing.contexts,...edge.contexts])].slice(0,3);existing.contributors.push(member.id);existing.evidence.push({owner:member.email,title:edge.types.map(t=>t.replaceAll('_',' ')).join(' · ')||'Recorded connection',text:edge.contexts.join(' · ')||'Co-occurrence recorded; personal relationship unverified.'});}
   const themeIds=new Map<string,string>();
   for(const theme of slice.themes){if(graph.themes.length>=200){graph.coverage.truncated=true;break;}const tid=await opaque('workspace:'+id,'theme:'+member.id+':'+theme.id,env.TOKEN_SECRET);themeIds.set(theme.id,tid);graph.themes.push({id:tid,name:theme.name.slice(0,80),canonicalName:theme.name.slice(0,80),status:'active',aliases:[]});}
-  for(const signal of slice.signals){if(graph.themeSignals.length>=5000){graph.coverage.truncated=true;break;}const tid=themeIds.get(signal.themeId);if(!tid)continue;const sid=await opaque('workspace:'+id,member.id+':signal:'+JSON.stringify([signal.email,signal.themeId,signal.sourceType,signal.observedAt,signal.summary,signal.title||'']),env.TOKEN_SECRET);
+  for(const signal of slice.signals){if(signal.email&&!ids.has(signal.email))continue;if(graph.themeSignals.length>=5000){graph.coverage.truncated=true;break;}const tid=themeIds.get(signal.themeId);if(!tid)continue;const sid=await opaque('workspace:'+id,member.id+':signal:'+JSON.stringify([signal.email,signal.themeId,signal.sourceType,signal.observedAt,signal.summary,signal.title||'']),env.TOKEN_SECRET);
    graph.themeSignals.push({id:sid,personId:signal.email?ids.get(signal.email):null,themeId:tid,sourceType:signal.sourceType,visibility:'firm',observedAt:signal.observedAt,ingestedAt:new Date(slice.exportedAt).toISOString(),confidence:signal.confidence,summary:signal.summary,evidenceRef:'workspace:'+member.id+':'+sid,contentHash:sid,extractorVersion:'workspace-v1',modelId:null,...(signal.title?{provenance:{title:signal.title,canonicalUrl:'https://granola.ai/',publisherHost:'granola.ai',observedAt:signal.observedAt,retrievedAt:new Date(slice.exportedAt).toISOString(),timeBasis:'observed'}}:{})});
   }
  }
@@ -102,7 +102,7 @@ export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:str
 }
 export async function draftWorkspace(env:ShareEnv,id:string,me:string,personId:string,memberId:string){
  const graph=await buildWorkspaceGraph(env,id,me),person=graph.nodes.find(n=>n.id===personId),member=graph.members.find(m=>m.id===memberId);
- if(!person||!member||!person.relationships.some(r=>r.memberId===memberId))return deny(404,'introduction_unavailable');
+ if(!person||!member||!person.relationships.some(r=>r.memberId===memberId&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))return deny(404,'introduction_unavailable');
  await assertWorkspaceRevision(env,id,me,graph.revision);
  return {to:member.name,subject:'Introduction to '+person.name,body:`Hi ${member.name.split('@')[0]},\n\nI saw your shared connection to ${person.name} in ${graph.workspaceName}. Would you feel comfortable introducing us? I'd be happy to share a short note about why I'd like to connect.\n\nThank you!`,introVia:member.name,basedOn:[]};
 }
