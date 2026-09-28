@@ -28,3 +28,11 @@ test('browse preserves contacts beyond the recommendation cap',()=>{
  const result=sharedDiscoveries({...graph,nodes,themeSignals:[]},[],Date.parse('2026-09-28'));
  assert.equal(result.length,25);assert.ok(result.every(d=>!d.relevant));
 });
+test('an explicit goal matches shared context without requiring an existing contact on that topic',()=>{
+ const g={...graph,themeSignals:graph.themeSignals.filter(s=>s.personId==='new')};
+ const items=sharedDiscoveries(g,[],Date.parse('2026-09-28'),'Who can help with agent memory?');
+ assert.equal(items[0].relevant,true);assert.equal(items[0].evidence.length,1);assert.match(items[0].reason,/agent memory/i);
+});
+test('an unrelated goal never promotes a high relationship score',()=>{
+ const items=sharedDiscoveries(graph,[],Date.parse('2026-09-28'),'ocean conservation');assert.equal(items[0].relevant,false);
+});

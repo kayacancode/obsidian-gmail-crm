@@ -138,6 +138,7 @@ export function mountGraph(element, options = {}) {
   let spatialCache = null;
   let spatialKey = '';
   let spatialNodes = null;
+  let discoveryIntent='';
   let introductionCards=graph.introductionSuggestions||[],introductionState='ready',introductionRun=0;
   let introductionSkipped=new Set();
   let searchAnswer = null;
@@ -949,7 +950,12 @@ export function mountGraph(element, options = {}) {
     panel.append(close,make('p','rg-eyebrow','Discover'),make('h2','','Who could you meet?'));
     const status=make('p','rg-source',introductionState==='loading'?'Matching shared context. Checking additional pair suggestions…':introductionState==='checked'?'Based on shared context. Additional pair suggestions checked by Jev.':introductionState==='fallback'?'Based on shared context · Jev ranking unavailable.':'Based on shared context.');status.setAttribute('role','status');panel.append(status);
     panel.append(make('p','rg-copy','Meet someone new through the people sharing this network. Explore the evidence, follow the path, and ask the contributor for an introduction.'));
-    panel.append(discoveryCards(document,graph,introductionCards,{onWalk:id=>showContact(id),onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+    const goalForm=make('form','rg-discovery-goal'),goalLabel=make('label','','What are you working on or curious about?'),goalInput=make('input');goalInput.type='search';goalInput.placeholder='e.g. Who can help with agent memory?';goalInput.value=discoveryIntent;goalInput.maxLength=500;goalLabel.append(goalInput);
+    const goalSubmit=make('button','rg-discovery-intro','Find people for this goal');goalSubmit.type='submit';goalForm.append(goalLabel,goalSubmit);panel.append(goalForm);
+    const goalResults=make('div');goalResults.setAttribute('aria-live','polite');
+    const renderGoal=()=>{goalResults.replaceChildren(discoveryCards(document,graph,introductionCards,{intent:discoveryIntent,onWalk:id=>showContact(id),onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));};
+    goalInput.addEventListener('input',e=>{e.stopPropagation();discoveryIntent=goalInput.value;});goalForm.addEventListener('submit',e=>{e.preventDefault();e.stopPropagation();discoveryIntent=goalInput.value.trim();renderGoal();});goalForm.addEventListener('click',e=>e.stopPropagation());
+    const topicChoices=make('div','rg-discovery-topics');for(const theme of graph.themes.slice(0,8)){const choice=make('button','rg-filter-chip',theme.name);choice.type='button';choice.onclick=e=>{e.stopPropagation();goalInput.value=discoveryIntent=theme.name;renderGoal();};topicChoices.append(choice);}panel.append(topicChoices,goalResults);renderGoal();
     const pairSection=make('details','rg-discovery-pairs');pairSection.append(make('summary','','Connect two people in the network'));
     const cards=introductionCards.filter(p=>!introductionSkipped.has(p.id));
     if(!cards.length)pairSection.append(make('p','rg-copy',introductionCards.length?'You’ve seen these suggestions. New shared context can uncover more.':introductionState==='checked'?'No strong introduction suggestions from the available evidence.':'Not enough shared context yet. Contributors can share themes in Accounts → Shared networks. Vaults also need a fresh push with plugin 0.9.4 to match identities.'));

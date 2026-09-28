@@ -4,7 +4,11 @@ import {personWalk} from './person-walk.mjs';
 import {sharedPathGraph} from './shared-paths.mjs';
 const contact=supportsIntroduction;
 const sources=new Set(['granola','granola_mention','obsidian_note','gmail_body_derived']);
-export function sharedDiscoveries(graph,pairs=[],now=Date.now()){
+export function sharedDiscoveries(graph,pairs=[],now=Date.now(),intent=''){
+ const stop=new Set('who can could should help with the and for from about what doing working organizing event want need someone people talk meet find based your our this that'.split(' '));
+ const tokens=t=>[...new Set((t.toLowerCase().match(/[\p{L}\p{N}]+/gu)||[]).filter(w=>!stop.has(w)&&w.length>1))];
+ const queryWords=tokens(intent);
+ const goalMatch=s=>{const words=new Set(tokens(s.topicName+' '+s.summary));return queryWords.filter(w=>words.has(w)).length>=Math.min(2,queryWords.length)&&queryWords.length>0;};
  const self=graph.members?.find(m=>m.isMe);if(!self)return [];
  const known=new Set(graph.nodes.filter(p=>p.relationships?.some(r=>r.memberId===self.id&&contact(r))).map(p=>p.id));
  const themes=new Map((graph.themes||[]).map(t=>[t.id,t.name])),signals=new Map(),ownTopics=new Map();
@@ -16,31 +20,31 @@ export function sharedDiscoveries(graph,pairs=[],now=Date.now()){
  for(const person of graph.nodes){if(person.type!=='person'||known.has(person.id))continue;
   // contactCard applies the same identity and relationship rules used by intro requests.
   const card=contactCard(graph,person.id);if(!card?.routes.length)continue;
-  const relevantSignals=(signals.get(person.id)||[]).filter(s=>ownTopics.has(s.topicKey)).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt));
+  const relevantSignals=(signals.get(person.id)||[]).filter(s=>intent.trim()?goalMatch(s):ownTopics.has(s.topicKey)).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt));
   const topics=[...new Set(relevantSignals.map(s=>s.topicName))];
-  const pair=pairs.find(p=>p.personIds?.includes(person.id)&&p.personIds.some(id=>known.has(id))&&p.evidence?.some(e=>e.personId===person.id&&e.summary&&sources.has(e.source)&&Date.parse(e.date)<=now));
-  const relevant=Boolean(topics.length||pair),evidence=relevantSignals.slice(0,2).flatMap(s=>[ownTopics.get(s.topicKey),s]);
-  results.push({person,card,routes:card.routes,topics,relevant,evidence,reason:topics.length?`Shared context in ${topics.join(', ')} connects this person to conversations with people you know.`:pair?pair.reason:'A contributor has recorded relationship evidence with this person. There is not enough shared context yet to explain a personal match.',pair,rank:topics.length*100+(pair?50:0)+(card.routes[0].score||0)*.5});
+  const pair=!intent.trim()&&pairs.find(p=>p.personIds?.includes(person.id)&&p.personIds.some(id=>known.has(id))&&p.evidence?.some(e=>e.personId===person.id&&e.summary&&sources.has(e.source)&&Date.parse(e.date)<=now));
+  const relevant=Boolean(topics.length||pair),evidence=relevantSignals.slice(0,2).flatMap(s=>intent.trim()?[s]:[ownTopics.get(s.topicKey),s]);
+  results.push({person,card,routes:card.routes,topics,relevant,evidence,reason:intent.trim()&&topics.length?`Shared evidence matches your goal: ${intent.trim()}`:topics.length?`Shared context in ${topics.join(', ')} connects this person to conversations with people you know.`:pair?pair.reason:'A contributor has recorded relationship evidence with this person. There is not enough shared context yet to explain a personal match.',pair,rank:topics.length*100+(pair?50:0)+(card.routes[0].score||0)*.5});
  }
  return results.sort((a,b)=>b.rank-a.rank||a.person.name.localeCompare(b.person.name)).map(d=>({...d,get walk(){return personWalk(graph,d.person.id,paths??=sharedPathGraph(graph));}}));
 }
-export function discoveryCards(doc,graph,pairs,{onWalk,onIntro}={}){
- const root=element(doc,'div','rg-discovery-people'),items=sharedDiscoveries(graph,pairs);
+export function discoveryCards(doc,graph,pairs,{onWalk,onIntro,intent=''}={}){
+ const root=element(doc,'div','rg-discovery-people'),items=sharedDiscoveries(graph,pairs,Date.now(),intent);
  const relevant=items.filter(d=>d.relevant),available=items.filter(d=>!d.relevant);
  const evidenceLine=s=>`${graph.nodes.find(n=>n.id===s.personId)?.name||'Person'} · ${String(s.sourceType||s.source).replaceAll('_',' ')} · ${String(s.observedAt||s.date).slice(0,10)} — ${s.summary}`;
  const appendActions=(card,d)=>{
   if(onIntro)for(const r of d.routes)card.append(action(doc,'Ask '+r.memberName.split('@')[0]+' for an intro',()=>onIntro(d.card,r.memberId),'rg-discovery-intro'));
   card.append(action(doc,'Walk the path →',()=>onWalk?.(d.person.id),'rg-text-button'));
  };
- if(relevant.length)root.append(element(doc,'h3','','Relevant to your shared context'));
- else root.append(element(doc,'p','rg-copy','No context-backed matches yet. Shared relationship scores can help you find an introducer, but don’t explain why you should meet. Browse the connections below, or share meeting topics and context to find relevant matches.'));
+ if(relevant.length)root.append(element(doc,'h3','',intent.trim()?'People for your goal':'Relevant to your shared context'));
+ else root.append(element(doc,'p','rg-copy',(intent.trim()?'No supported matches for “'+intent.trim()+'” in the shared context. Try a more specific topic. ':'No context-backed matches yet. ')+'Shared relationship scores can help you find an introducer, but don’t explain why you should meet. Browse the connections below, or share meeting topics and context to find relevant matches.'));
  for(const d of relevant.slice(0,6)){
-  const card=element(doc,'article','rg-discovery-person'),head=element(doc,'div','rg-discovery-person-head');head.append(portrait(doc,d.person),element(doc,'h3','',d.person.name));card.append(head);
-  card.append(element(doc,'h4','','A conversation to explore'),element(doc,'p','rg-copy',d.topics.length?`Compare perspectives on ${d.topics.join(' and ')} — a topic present in both your shared context and theirs.`:d.pair.reason));
+  const card=element(doc,'article','rg-discovery-person'),head=element(doc,'div','rg-discovery-person-head');head.append(portrait(doc,d.person),element(doc,'h3','',d.person.name));card.append(head);if(d.person.company)card.append(element(doc,'p','rg-source',d.person.company));
+  card.append(element(doc,'h4','','A conversation to explore'),element(doc,'p','rg-copy',intent.trim()?`Ask about ${d.topics.join(' and ')} in relation to your goal: ${intent.trim()}`:d.topics.length?`Compare perspectives on ${d.topics.join(' and ')} — a topic present in both your shared context and theirs.`:d.pair.reason));
   card.append(element(doc,'h4','','Why this person?'));
   const evidence=d.evidence.length?d.evidence:d.pair.evidence;
   for(const s of [...new Map(evidence.map(s=>[s.id||s.personId+':'+s.date+':'+s.summary,s])).values()].slice(0,4))card.append(element(doc,'p','rg-source',evidenceLine(s)));
-  card.append(element(doc,'p','rg-source','Suggested conversation based on shared records; current interest is not confirmed.'));
+  card.append(element(doc,'p','rg-source',intent.trim()?'Topic keyword match in shared records. Suggested conversation; current interest is not confirmed.':'Suggested conversation based on shared records; current interest is not confirmed.'));
   appendActions(card,d);
   const details=element(doc,'details');details.append(element(doc,'summary','','Why this introducer?'));
   for(const r of d.routes)details.append(element(doc,'p','rg-source',`${r.memberName} · ${r.confirmedAt?'Confirmed relationship':scoreBacked(r)?'Published people score':'Recorded contact'}${Number.isFinite(r.score)?' · '+Math.round(r.score)+'/100':''}${r.lastContact?' · last contact '+r.lastContact.slice(0,10):''}`));

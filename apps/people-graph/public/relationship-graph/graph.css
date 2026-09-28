@@ -1001,3 +1001,6 @@
 .rg-discovery-browse input {box-sizing:border-box;width:100%;min-width:0;padding:12px;border:1px solid var(--rg-line);border-radius:12px;background:var(--rg-soft);color:inherit;}
 .rg-discovery-connection {padding:16px 0;border-bottom:1px solid var(--rg-line);}
 .rg-discovery-person h4 {margin:18px 0 8px;}
+.rg-discovery-goal label {display:grid;gap:10px;font-weight:600;}
+.rg-discovery-goal input {box-sizing:border-box;width:100%;min-width:0;padding:14px;border:1px solid var(--rg-line);border-radius:12px;background:var(--rg-soft);color:inherit;font:inherit;font-weight:400;}
+.rg-discovery-topics {display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 20px;}
