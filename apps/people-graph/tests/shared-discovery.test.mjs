@@ -19,3 +19,12 @@ test('equally relevant candidates prefer the stronger published contributor scor
  const ranked=sharedDiscoveries({...graph,themeSignals:[],nodes:[person('A weak',35),person('Z strong',80)]},[],Date.parse('2026-09-28'));
  assert.equal(ranked[0].person.id,'Z strong');
 });
+test('a generic pair reason without source evidence cannot make a recommendation',()=>{
+ const result=sharedDiscoveries({...graph,themeSignals:[]},[{personIds:['known','new'],reason:'Worth meeting',evidence:[]}],Date.parse('2026-09-28'));
+ assert.equal(result[0].relevant,false);
+});
+test('browse preserves contacts beyond the recommendation cap',()=>{
+ const nodes=Array.from({length:25},(_,i)=>({id:'person'+i,name:'Person '+i,type:'person',relationships:[r('j')]}));
+ const result=sharedDiscoveries({...graph,nodes,themeSignals:[]},[],Date.parse('2026-09-28'));
+ assert.equal(result.length,25);assert.ok(result.every(d=>!d.relevant));
+});

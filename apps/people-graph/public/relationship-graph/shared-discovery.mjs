@@ -12,37 +12,50 @@ export function sharedDiscoveries(graph,pairs=[],now=Date.now()){
   const key=themes.get(s.themeId).trim().toLowerCase();if(!signals.has(s.personId))signals.set(s.personId,[]);signals.get(s.personId).push({...s,topicKey:key,topicName:themes.get(s.themeId)});
   if(known.has(s.personId)&&String(s.evidenceRef).startsWith('workspace:'+self.id+':')){const prior=ownTopics.get(key);if(!prior||Date.parse(s.observedAt)>Date.parse(prior.observedAt))ownTopics.set(key,s);}
  }
- const paths=sharedPathGraph(graph),results=[];
+ let paths;const results=[];
  for(const person of graph.nodes){if(person.type!=='person'||known.has(person.id))continue;
   // contactCard applies the same identity and relationship rules used by intro requests.
   const card=contactCard(graph,person.id);if(!card?.routes.length)continue;
   const relevantSignals=(signals.get(person.id)||[]).filter(s=>ownTopics.has(s.topicKey)).sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt));
   const topics=[...new Set(relevantSignals.map(s=>s.topicName))];
-  const pair=pairs.find(p=>p.personIds?.includes(person.id)&&p.personIds.some(id=>known.has(id)));
+  const pair=pairs.find(p=>p.personIds?.includes(person.id)&&p.personIds.some(id=>known.has(id))&&p.evidence?.some(e=>e.personId===person.id&&e.summary&&sources.has(e.source)&&Date.parse(e.date)<=now));
   const relevant=Boolean(topics.length||pair),evidence=relevantSignals.slice(0,2).flatMap(s=>[ownTopics.get(s.topicKey),s]);
   results.push({person,card,routes:card.routes,topics,relevant,evidence,reason:topics.length?`Shared context in ${topics.join(', ')} connects this person to conversations with people you know.`:pair?pair.reason:'A contributor has recorded relationship evidence with this person. There is not enough shared context yet to explain a personal match.',pair,rank:topics.length*100+(pair?50:0)+(card.routes[0].score||0)*.5});
  }
- return results.sort((a,b)=>b.rank-a.rank||a.person.name.localeCompare(b.person.name)).slice(0,12).map(d=>({...d,walk:personWalk(graph,d.person.id,paths)}));
+ return results.sort((a,b)=>b.rank-a.rank||a.person.name.localeCompare(b.person.name)).map(d=>({...d,get walk(){return personWalk(graph,d.person.id,paths??=sharedPathGraph(graph));}}));
 }
 export function discoveryCards(doc,graph,pairs,{onWalk,onIntro}={}){
  const root=element(doc,'div','rg-discovery-people'),items=sharedDiscoveries(graph,pairs);
- if(!items.length){root.append(element(doc,'p','rg-copy','No supported introductions to new people yet. Contributors need to share a published relationship score, confirmation, two-way contact, or meeting evidence before we can offer an introduction.'));return root;}
  const relevant=items.filter(d=>d.relevant),available=items.filter(d=>!d.relevant);
- for(const [label,group]of [['Relevant to your shared context',relevant],['Other people you could ask to meet',available]]){
-  if(!group.length)continue;root.append(element(doc,'h3','',label));
-  for(const d of group.slice(0,4)){
-   const card=element(doc,'article','rg-discovery-person'),head=element(doc,'div','rg-discovery-person-head');head.append(portrait(doc,d.person),element(doc,'h3','',d.person.name));card.append(head,element(doc,'p','rg-copy',d.reason));
-   const route=d.routes[0],name=route.memberName.split('@')[0],hasWalk=d.walk.edges.length>0;
-   const chain=element(doc,'div','rg-discovery-route');chain.setAttribute('aria-label',hasWalk?'Recorded path':'Introduction request route');
-   if(hasWalk){d.walk.nodes.forEach((n,i)=>{if(i)chain.append(element(doc,'span','rg-discovery-hop',d.walk.edges[i-1].kind==='personal'?'→':'⇢'));chain.append(element(doc,'span','',n.memberId===graph.members.find(m=>m.isMe)?.id?'You':n.name));});}
-   else{chain.append(element(doc,'span','','You'),element(doc,'span','rg-discovery-hop','ask →'),element(doc,'span','',name),element(doc,'span','rg-discovery-hop','→'),element(doc,'span','',d.person.name));}
-   card.append(chain,element(doc,'p','rg-source',hasWalk?d.walk.message:'The first step is an intro request to your workspace teammate, not a claimed personal relationship.'));
-   for(const r of d.routes)card.append(element(doc,'p','rg-source',`${r.memberName} · ${r.confirmedAt?'Confirmed relationship':scoreBacked(r)?'Published people score · '+r.observedAt?.slice(0,10):r.evidenceCategory==='meeting'?'Recorded meeting':r.activity?.sent&&r.activity?.received?'Two-way contact':'Recorded email contact'}${Number.isFinite(r.score)?(scoreBacked(r)?' · score ':' · activity ')+Math.round(r.score)+'/100':''}${r.lastContact?' · last contact '+r.lastContact.slice(0,10):''}`));
-   if(d.evidence.length){const details=element(doc,'details');details.append(element(doc,'summary','','Why this match?'));const seen=new Set();for(const s of d.evidence){if(seen.has(s.id))continue;seen.add(s.id);const m=graph.members.find(m=>String(s.evidenceRef).startsWith('workspace:'+m.id+':'));details.append(element(doc,'p','rg-source',`${graph.nodes.find(n=>n.id===s.personId)?.name||'Person'} · ${m?.isMe?'Your context':m?.name||'Shared context'} · ${s.sourceType.replaceAll('_',' ')} · ${s.observedAt.slice(0,10)} — ${s.summary}`));}card.append(details);}
-   card.append(action(doc,hasWalk?'Walk the path →':'Explore connection →',()=>onWalk(d.person.id),'rg-text-button'));
-   if(onIntro)for(const r of d.routes)card.append(action(doc,'Ask '+r.memberName.split('@')[0]+' for an intro',()=>onIntro(d.card,r.memberId),'rg-discovery-intro'));
-   root.append(card);
-  }
+ const evidenceLine=s=>`${graph.nodes.find(n=>n.id===s.personId)?.name||'Person'} · ${String(s.sourceType||s.source).replaceAll('_',' ')} · ${String(s.observedAt||s.date).slice(0,10)} — ${s.summary}`;
+ const appendActions=(card,d)=>{
+  if(onIntro)for(const r of d.routes)card.append(action(doc,'Ask '+r.memberName.split('@')[0]+' for an intro',()=>onIntro(d.card,r.memberId),'rg-discovery-intro'));
+  card.append(action(doc,'Walk the path →',()=>onWalk?.(d.person.id),'rg-text-button'));
+ };
+ if(relevant.length)root.append(element(doc,'h3','','Relevant to your shared context'));
+ else root.append(element(doc,'p','rg-copy','No context-backed matches yet. Shared relationship scores can help you find an introducer, but don’t explain why you should meet. Browse the connections below, or share meeting topics and context to find relevant matches.'));
+ for(const d of relevant.slice(0,6)){
+  const card=element(doc,'article','rg-discovery-person'),head=element(doc,'div','rg-discovery-person-head');head.append(portrait(doc,d.person),element(doc,'h3','',d.person.name));card.append(head);
+  card.append(element(doc,'h4','','A conversation to explore'),element(doc,'p','rg-copy',d.topics.length?`Compare perspectives on ${d.topics.join(' and ')} — a topic present in both your shared context and theirs.`:d.pair.reason));
+  card.append(element(doc,'h4','','Why this person?'));
+  const evidence=d.evidence.length?d.evidence:d.pair.evidence;
+  for(const s of [...new Map(evidence.map(s=>[s.id||s.personId+':'+s.date+':'+s.summary,s])).values()].slice(0,4))card.append(element(doc,'p','rg-source',evidenceLine(s)));
+  card.append(element(doc,'p','rg-source','Suggested conversation based on shared records; current interest is not confirmed.'));
+  appendActions(card,d);
+  const details=element(doc,'details');details.append(element(doc,'summary','','Why this introducer?'));
+  for(const r of d.routes)details.append(element(doc,'p','rg-source',`${r.memberName} · ${r.confirmedAt?'Confirmed relationship':scoreBacked(r)?'Published people score':'Recorded contact'}${Number.isFinite(r.score)?' · '+Math.round(r.score)+'/100':''}${r.lastContact?' · last contact '+r.lastContact.slice(0,10):''}`));
+  card.append(details);root.append(card);
+ }
+ for(const member of graph.members||[]){
+  const group=available.filter(d=>d.routes.some(r=>r.memberId===member.id));if(!group.length)continue;
+  const name=member.name.split('@')[0],browse=element(doc,'details','rg-discovery-browse');browse.append(element(doc,'summary','',`Browse ${name}’s connections · ${group.length}`));
+  browse.append(element(doc,'p','rg-source','People with a shared relationship record, without enough context for a personal recommendation.'));
+  const label=element(doc,'label','',`Search ${name}’s connections`),input=element(doc,'input');input.type='search';input.placeholder='Name or company';label.append(input);browse.append(label);
+  const status=element(doc,'p','rg-source'),list=element(doc,'div');status.setAttribute('role','status');browse.append(status,list);
+  const render=()=>{const q=input.value.trim().toLowerCase(),matches=group.filter(d=>(d.person.name+' '+(d.person.company||'')).toLowerCase().includes(q));list.replaceChildren();status.textContent=`${matches.length} connections${matches.length>12?' · showing first 12; search to narrow':''}`;
+   for(const d of matches.slice(0,12)){const row=element(doc,'article','rg-discovery-connection'),head=element(doc,'div','rg-discovery-person-head');head.append(portrait(doc,d.person),element(doc,'h4','',d.person.name));row.append(head);appendActions(row,{person:d.person,card:d.card,routes:d.routes.filter(r=>r.memberId===member.id)});list.append(row);}
+  };
+  input.addEventListener('input',e=>{e.stopPropagation();render();});browse.addEventListener('click',e=>e.stopPropagation());browse.addEventListener('toggle',()=>{if(browse.open&&!list.childElementCount)render();});root.append(browse);
  }
  return root;
 }

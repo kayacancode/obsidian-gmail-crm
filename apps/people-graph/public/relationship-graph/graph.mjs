@@ -947,7 +947,7 @@ export function mountGraph(element, options = {}) {
     const panel=make('section','rg-context-panel rg-introductions');panel.setAttribute('aria-label','Suggested introductions');
     const close=button('×','close-panel','rg-close');close.setAttribute('aria-label','Close suggested introductions');
     panel.append(close,make('p','rg-eyebrow','Discover'),make('h2','','Who could you meet?'));
-    const status=make('p','rg-source',introductionState==='loading'?'Showing shared context now. Jev is checking fit in the background…':introductionState==='checked'?'Ranked by Jev using shared evidence.':introductionState==='fallback'?'Based on shared context · Jev ranking unavailable.':'Based on shared context.');status.setAttribute('role','status');panel.append(status);
+    const status=make('p','rg-source',introductionState==='loading'?'Matching shared context. Checking additional pair suggestions…':introductionState==='checked'?'Based on shared context. Additional pair suggestions checked by Jev.':introductionState==='fallback'?'Based on shared context · Jev ranking unavailable.':'Based on shared context.');status.setAttribute('role','status');panel.append(status);
     panel.append(make('p','rg-copy','Meet someone new through the people sharing this network. Explore the evidence, follow the path, and ask the contributor for an introduction.'));
     panel.append(discoveryCards(document,graph,introductionCards,{onWalk:id=>showContact(id),onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
     const pairSection=make('details','rg-discovery-pairs');pairSection.append(make('summary','','Connect two people in the network'));
