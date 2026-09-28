@@ -37,3 +37,17 @@
 [data-walk-open=true]>.nc-walk-stage{position:absolute;left:0;right:400px;max-height:none;min-height:520px;border:0;border-radius:0;box-shadow:none;background:white}
 .nc-walk-stage .nc-walk-evidence{max-height:160px}
 @media(max-width:700px){[data-walk-open=true]>.nc-walk-stage{right:0;min-height:400px;padding:10px}.nc-walk-chain{height:300px}}
+/* Keep the network as orientation; the focused walk occupies its foreground. */
+[data-walk-open=true] .rg-canvas{visibility:visible;opacity:.12;pointer-events:none}
+[data-walk-open=true]>.nc-walk-stage{background:rgba(255,255,255,.94);border-radius:22px;border:1px solid #e2e7ef}
+.nc-walk-breadcrumb{display:flex;gap:5px;overflow:auto;padding:8px 0 14px}
+.nc-walk-breadcrumb button{white-space:nowrap;font-size:12px;padding:7px 10px}
+.nc-walk-breadcrumb button[aria-current=step]{background:#007aff;color:white}
+.nc-walk-breadcrumb button+button:before{content:'→ ';opacity:.6}
+.nc-walk-edges line{transition:stroke-width .18s ease,opacity .18s ease}
+.nc-walk-edges line[data-traversed=true]{stroke:#007aff}
+.nc-walk-person{transition:box-shadow .18s ease,background .18s ease}
+.nc-walk-stage .nc-nearby:not(line){position:absolute;width:116px;min-height:118px;display:grid;justify-items:center;gap:5px;padding:8px;background:#fff;border:1px dashed #a7b8cd;font-size:12px}
+.nc-nearby .nc-portrait{width:40px;height:40px}.nc-nearby strong{max-width:100%;overflow-wrap:anywhere}.nc-nearby small{font-size:10px;color:#68778a}
+@media(prefers-reduced-motion:reduce){.nc-walk-edges line,.nc-walk-person{transition:none}}
+@media(max-width:700px){[data-walk-open=true]>.nc-walk-stage{padding:12px}.nc-walk-breadcrumb{max-width:100%}}

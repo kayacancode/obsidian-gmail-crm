@@ -217,3 +217,9 @@
 .rg-network-filters{display:flex;gap:8px;align-items:center;margin-bottom:9px}.rg-network-filters .rg-filter-chip{border-radius:16px;font-size:11px}
 .rg-topic-caption{align-self:center;color:var(--rg-muted);font-size:11px;padding-right:4px;flex-shrink:0}
 .rg-topic-filters .rg-filter-chips{max-width:100%;}.rg-topic-filters .rg-filter-chips .rg-filter-chip{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:16px}
+/* Shared exploration controls participate in layout instead of covering the map. */
+.rg-shell[data-workspace=true] .rg-header{position:relative;inset:auto;padding:14px 24px;box-sizing:border-box;flex-wrap:wrap}
+.rg-shell[data-workspace=true] .rg-owner-legend{position:relative;inset:auto;margin:0 24px 8px}
+.rg-shell[data-workspace=true] .rg-topic-bar{position:relative;inset:auto;width:auto;margin:0 24px 12px}
+.rg-shell[data-workspace=true] .rg-network-starts{margin:0 24px}
+@media(max-width:700px){.rg-shell[data-workspace=true] .rg-header{padding:12px 16px}.rg-shell[data-workspace=true] .rg-owner-legend,.rg-shell[data-workspace=true] .rg-topic-bar,.rg-shell[data-workspace=true] .rg-network-starts{margin-left:16px;margin-right:16px}.rg-shell[data-workspace=true] .rg-header-actions{flex-wrap:wrap;width:100%}}

@@ -1,10 +1,12 @@
 # Maps, Memory, and Meaning: contextual network walks
 
-Status: proposed design for review; not implemented.
+Status: product direction confirmed by the user; partially implemented. The demo requirements below are acceptance criteria, not a claim that every behavior is live.
+
+Updated: 2026-09-27.
 
 ## Purpose
 
-Help a person find useful answers and unexpected people without having to interpret a dense network map. The central experience is: question or current concern → supporting memory → relevant person → evidenced route → proposed action. The map follows the sidebar and remains available for free exploration.
+Help a person find useful answers and unexpected people without having to interpret a dense network map. The central experience is: question or current concern → supporting memory → relevant person → evidenced route → proposed action. The graph is the center of the experience. Cards and the sidebar explain the walk alongside the graph; they must not replace it with a disconnected list or obscure the route.
 
 The motivating example is the event “Agent Interfaces: Maps, Memory, and Meaning”: identify people who can contribute a specific perspective, explain the evidence behind that judgment, and show a credible way to reach them. Do not hardcode the event or invented example people into production.
 
@@ -30,7 +32,7 @@ A good match without a supported route remains visible with “No introduction r
 
 ### Guided walk
 
-Selecting a card opens a sequence within the same sidebar: Your question → Why this person → Supporting memory → Route → Next step. A persistent breadcrumb and Back control preserve the original query, result selection, map position, and filters.
+Selecting a person or idea begins a walk on the graph: starting context → current node → chosen edge → next node. The sidebar explains the selected person or edge, its supporting memory, and possible next actions. A persistent breadcrumb and Back control preserve the original query, path taken, result selection, map position, and filters. Changing the question can reveal another branch without erasing the trail already taken.
 
 Selecting a route step highlights only the corresponding nodes and recorded edges. Contextual similarity is visually distinct from a relationship and never inserted as a real edge. Co-occurrence is marked “Shared meeting/context; connection unverified,” not a confirmed introduction route. Member-to-contact relationships may supply a route even when members are not ordinary contact nodes; represent that step explicitly rather than fabricating graph nodes or contact-to-contact edges.
 
@@ -84,3 +86,45 @@ An introduction request is an in-app exchange between its requester and a select
 Requests appear in each participant's real signed-in account. Never ship a control that impersonates John. Other members and workspace administrators do not gain access to request messages merely by role. Shared profile/evidence references are revalidated on read; revoked shared attachments disappear, while deliberately sent request messages remain visible only to current authorized participants. Removed members cannot retrieve or mutate requests. No email, push notification, calendar invitation, or automatic outbound introduction is included in the first release.
 
 The first delivery implements the shared-graph answer sheet, visible routes, request/reply loop, and the existing shared-context discovery entry point. Personal-context ingestion and automated daily suggestions remain the subsequent Wander increment described above.
+
+
+## Graph-centered demo brief
+
+This project explores how agents can use maps of people and relationships to do more than display connections. The central question is what makes a connection meaningful: what context an agent needs to understand why two people might matter to each other, and how memory helps it decide when a connection is worth surfacing or acting on.
+
+The network combines people data with meeting notes, calendar context, Google metadata, and authorized vault evidence. It should surface people on the user's mind, explain relationship activity, enable shared networks, and support specific walks from A to B. Social actions turn a useful discovery into a human conversation through an introduction request. Serendipity comes from varied, contextually supported possibilities across members' networks, not arbitrary strangers or invented relationships.
+
+### The demo sequence
+
+1. Start with a person, idea, or question, such as finding someone for an agent interfaces event. Keep that starting context visible.
+2. Bring a small relevant neighborhood into focus within the graph. Preserve the broader network as orientation; avoid shrinking thousands of nodes into unreadable dots as the main answer.
+3. Select a connection and visibly travel to its next node. Keep the current node and the path already taken visible. Enlarge the active person and highlight the traversed edge; bring nearby alternatives into focus without relaying out the entire network.
+4. Inspect the edge: who contributed it, what kind of connection it represents, the source and date, what the people or ideas have in common, and why it matters to the current question. Distinguish recorded direct contact, shared context, and inferred relevance. Show where the trail becomes uncertain.
+5. Follow another branch or change the question. Previous/Next must visibly move focus and update the accompanying evidence. Back restores the previous position. Motion supports orientation, with equivalent instant focus changes under reduced motion.
+6. Reveal a useful, unexpected person from the shared network and compare the relevant members' relationship evidence. Offer an editable introduction request to the appropriate member when a supported route exists; send only after the user explicitly submits it.
+
+The successful moment is a connection that becomes understandable through the walk and its memories—a useful discovery that a flat list or search result alone would not explain.
+
+### Meaning, memory, and strength
+
+- **Top of mind:** prioritize open questions, promises, follow-ups, repeated discussion, and relationships needing attention. Explain why now with dated sources. A list driven only by recent contact is called Recently in touch.
+- **Distinct evidence:** an email, a calendar invitation, confirmed attendance, and a mention in meeting notes are different signals. An invitation alone does not establish attendance; a name in notes does not establish a relationship. Ambiguous names require resolution.
+- **Per-member strength:** show whose relationship is being measured and the supporting counts and dates. Keep relationship strength, recent activity, query relevance, and uncertainty separate. Do not imply that contribution ownership means personal acquaintance.
+- **Insufficient evidence:** one outgoing email with no reply or meetings must not appear as a substantial relationship. The current recency-heavy score can produce 44/100 for that case; recalibration and an insufficient-evidence state remain required. Merely renaming the score does not resolve this.
+- **Contextual randomness:** vary relevant branches and contributors while retaining an evidence-backed explanation. Let the user request another possibility without losing their current route.
+- **Shared memory:** use only the context authorized for the current viewer. A private memory may inform that owner's experience without becoming visible to everyone in the shared graph.
+
+### Delivery audit and remaining acceptance work
+
+Existing foundations include shared network projection, per-contributor activity, evidence-backed search, path traversal, a focused walk presentation, person/context sheets, and in-app introduction requests. Their presence is not proof that the complete demo experience meets this brief.
+
+Remaining acceptance work includes continuous graph orientation while walking, visible and usable branching as the question changes, explicit edge-level why-this-step context, context-seeded serendipity, and calibrated relationship scoring. Validate the complete sequence on real authorized data and a representative large graph, including missing evidence and uncertain paths. Do not present a prototype or a capability with incomplete source data as a completed live behavior.
+
+
+### 2026-09-27 implementation increment
+
+Shared networks now open with a bounded overview (12 people when the network exceeds 24), up to three evidence-based starting prompts, and a Show all control. Prompts distinguish possible shared follow-ups, context-supported alternative perspectives, and matched mutual contacts; they do not claim access to members’ private top-of-mind context. Missing evidence produces an explicit empty state.
+
+Focused walks include a clickable route breadcrumb, highlighted traversed edges, up to four nearby graph branches, and branch history. Following a branch preserves the selected prefix; Back to previous branch restores its prior route and selected step. The original canvas remains mounted and faintly visible. Existing source evidence, introduction controls, contributor colors, and uncertainty labels remain available. A browser fixture exercises branch selection and return, mobile layout, and a 5,004-person overview.
+
+Not completed by this increment: private-context-seeded cross-network retrieval, collaboration between member agents, relationship score recalibration, or the complete demo acceptance sequence on live multi-member data.
