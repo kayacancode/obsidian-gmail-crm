@@ -5,3 +5,8 @@ const graph={source:'workspace',members:[{id:'me',name:'Kaya',isMe:true},{id:'j'
 test('discovery bridges viewer context to someone new via another member without inventing a path',()=>{const [d]=sharedDiscoveries(graph,[],Date.parse('2026-09-28'));assert.equal(d.person.id,'new');assert.equal(d.routes[0].memberId,'j');assert.deepEqual(d.topics,['Agent memory']);assert.equal(d.walk.edges.length,0);assert.match(d.reason,/Agent memory/);assert.equal(d.evidence.length,2);});
 test('known contacts and one-way email do not become intro recommendations',()=>{const result=sharedDiscoveries(graph,[],Date.parse('2026-09-28'));assert.equal(result.length,1);});
 test('future and subject metadata never drive matching; available routes stay labelled as such',()=>{const result=sharedDiscoveries({...graph,themeSignals:graph.themeSignals.map(s=>({...s,sourceType:'gmail_subject'}))},[],Date.parse('2026-09-28'));assert.equal(result[0].relevant,false);assert.equal(result[0].topics.length,0);});
+test('readiness separates missing identity, unknown relationships and supported new introductions',async()=>{
+ const {relationshipReadiness}=await import('../public/relationship-graph/shared-discovery.mjs');
+ const result=relationshipReadiness({...graph,nodes:[...graph.nodes,{id:'u',name:'Unknown',type:'person',sources:['obsidian'],identityMatchReady:true,relationships:[{memberId:'j',evidenceCategory:'unknown'}]},{id:'old',name:'Old',type:'person',sources:['obsidian'],identityMatchReady:false,relationships:[r('j')]}]});
+ const john=result.find(r=>r.member.id==='j');assert.equal(john.shared,4);assert.equal(john.supported,1);assert.equal(john.newPeople,1);assert.equal(john.needsReview,2);assert.equal(john.needsIdentity,1);
+});

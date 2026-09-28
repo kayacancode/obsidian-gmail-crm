@@ -1,4 +1,4 @@
-import {discoveryCards} from './shared-discovery.mjs';
+import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
 import {mountPersonSuggestionPopup} from './person-suggestions.mjs';
 import {networkStarts,nearbyBranches,extendWalk} from './guided-network.mjs';
@@ -962,7 +962,7 @@ export function mountGraph(element, options = {}) {
       const skip=button('Skip','skip-introduction','rg-text-button');skip.dataset.pairId=pair.id;card.append(explore,skip);pairSection.append(card);
     }
     if(introductionSkipped.size)pairSection.append(button('Start again','reset-introductions','rg-text-button'));
-    panel.append(pairSection);return panel;
+    panel.append(pairSection,readinessPanel(document,graph,id=>showContact(id,null,personWalk(graph,id,pathGraph).nodes.length-1)));return panel;
   }
   function refreshIntroductionPanel(){
     const existing=root.querySelector('.rg-introductions');if(existing)existing.replaceWith(renderIntroductions());

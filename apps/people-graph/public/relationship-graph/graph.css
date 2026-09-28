@@ -989,3 +989,9 @@
 .rg-shell .rg-discovery-intro {display:block;width:100%;margin:8px 0;padding:12px;border:0;border-radius:12px;background:#007aff;color:white;font-size:13px;}
 .rg-discovery-pairs {margin-top:24px;}
 .rg-discovery-pairs summary,.rg-discovery-person summary {cursor:pointer;padding:10px 0;font-size:13px;}
+.rg-intro-readiness {margin-top:24px;border-top:1px solid var(--rg-line);padding-top:20px;}
+.rg-readiness-member {padding:16px 0;border-bottom:1px solid var(--rg-line);}
+.rg-review-connections summary {cursor:pointer;padding:12px 0;color:#1764b5;}
+.rg-review-connections label {display:block;font-size:12px;}
+.rg-review-connections input {display:block;box-sizing:border-box;width:100%;margin:8px 0;padding:10px;border:1px solid var(--rg-line);border-radius:10px;background:var(--rg-panel);color:var(--rg-foreground);font-size:16px;}
+.rg-shell .rg-review-person {display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--rg-line);padding:12px 0;background:transparent;color:#1764b5;}

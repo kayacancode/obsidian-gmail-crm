@@ -45,3 +45,34 @@ export function discoveryCards(doc,graph,pairs,{onWalk,onIntro}={}){
  }
  return root;
 }
+
+export function relationshipReadiness(graph){
+ const self=graph.members?.find(m=>m.isMe),known=new Set(graph.nodes.filter(p=>p.relationships?.some(r=>r.memberId===self?.id&&contact(r))).map(p=>p.id));
+ return (graph.members||[]).map(member=>{
+  const people=graph.nodes.filter(p=>p.relationships?.some(r=>r.memberId===member.id));let supported=0,newPeople=0,needsIdentity=0,needsReview=0;
+  for(const p of people){if(p.sources?.includes('obsidian')&&!p.identityMatchReady){needsIdentity++;continue;}if(p.relationships.some(r=>r.memberId===member.id&&contact(r))){supported++;if(!known.has(p.id))newPeople++;}else needsReview++;}
+  return {member,people,shared:people.length,supported,newPeople,needsIdentity,needsReview};
+ });
+}
+export function readinessPanel(doc,graph,onPerson){
+ const section=element(doc,'section','rg-intro-readiness');section.setAttribute('aria-label','Shared relationship readiness');section.append(element(doc,'h3','','Make more introductions possible'));
+ for(const item of relationshipReadiness(graph)){
+  const row=element(doc,'article','rg-readiness-member'),name=item.member.isMe?'You':item.member.name;
+  row.append(element(doc,'strong','',name),element(doc,'p','rg-source',`${item.shared} people shared · ${item.supported} supported relationships${item.member.isMe?'':' · '+item.newPeople+' new to your recorded network'}`));
+  if(item.needsIdentity)row.append(element(doc,'p','rg-source',`${item.needsIdentity} records need a fresh vault snapshot to match identities.`));
+  if(item.needsReview)row.append(element(doc,'p','rg-source',`${item.needsReview} records lack a confirmed relationship, two-way contact, or meeting evidence.`));
+  const web=graph.sourceCoverage?.find(c=>c.memberId===item.member.id&&c.source==='web');if(web?.included===0)row.append(element(doc,'p','rg-source','No Gmail / Granola contacts are included from this contributor.'));
+  if(item.member.isMe){
+   const review=element(doc,'details','rg-review-connections');review.append(element(doc,'summary','','Review my connections'));
+   review.append(element(doc,'p','rg-source','Open a person to confirm that you know them, or exclude your contribution if you don’t. Each choice is yours; imported names are never confirmed automatically.'));
+   const label=element(doc,'label','','Find one of my shared contacts'),input=element(doc,'input');input.type='search';input.placeholder='Name or company';label.append(input);review.append(label);
+   const list=element(doc,'div'),status=element(doc,'p','rg-source');status.setAttribute('role','status');review.append(status,list);
+   const people=[...item.people].sort((a,b)=>Number(contact(a.relationships.find(r=>r.memberId===item.member.id)))-Number(contact(b.relationships.find(r=>r.memberId===item.member.id)))||a.name.localeCompare(b.name));
+   const render=()=>{const q=input.value.trim().toLowerCase(),matches=people.filter(p=>(p.name+' '+p.company).toLowerCase().includes(q));list.replaceChildren();status.textContent=`${matches.length} contacts${matches.length>20?' · showing first 20; search to narrow':''}`;for(const p of matches.slice(0,20)){const b=action(doc,p.name,()=>onPerson(p.id),'rg-review-person');list.append(b);}};
+   input.addEventListener('input',e=>{e.stopPropagation();render();});review.addEventListener('click',e=>e.stopPropagation());render();row.append(review);
+   const settings=element(doc,'a','rg-text-button','Manage my sources and sharing →');settings.href='/accounts?tab=workspace&workspace='+encodeURIComponent(graph.workspaceId);row.append(settings);
+  }else if(!item.supported)row.append(element(doc,'p','rg-source','This contributor can publish a current vault snapshot containing measured contact activity, connect and share their own Gmail / Granola source, or confirm people they know from “Review my connections” in their Discover view.'));
+  section.append(row);
+ }
+ return section;
+}
