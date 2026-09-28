@@ -1,3 +1,4 @@
+import {topicPanel,animateTopicCluster} from './topic-context.mjs';
 import {mountPersonSuggestionPopup} from './person-suggestions.mjs';
 import {networkStarts,nearbyBranches,extendWalk} from './guided-network.mjs';
 import {personWalk} from './person-walk.mjs';
@@ -332,13 +333,14 @@ export function mountGraph(element, options = {}) {
 
   function canvasLayout() {
     const width = element.clientWidth || 1000;
-    const height = Math.max(800, (view?.innerHeight || 900) - 133);
+    const height = panelMode==='topic'&&width<900?540:Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
-    const usableWidth = Math.max(132, width - (width >= 1100 && (graph.source!=='workspace'||panelMode) ? 380 : 48));
+    const usableWidth = Math.max(132, width - (width >= (panelMode==='topic'?900:1100) && (graph.source!=='workspace'||panelMode) ? 380 : 48));
     const top = graph.source==='workspace' ? 24 : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
     const usableHeight = height - top - 86;
     const baseRelevance=filterRelevance(graph,graph.source==='workspace'?'firm':'my');
-    const layoutThemes=conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
+    const selectedTopic=rankedThemes().find(t=>t.themeId===activeThemeId);
+    const layoutThemes=selectedTopic?[selectedTopic]:conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
     const filtered=graph.source==='workspace'?canvasMatches():graph.nodes;
     const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|')+'|'+(graph.source==='workspace'?activeThemeId+'|'+query+'|'+guidedOverview+'|'+Boolean(searchAnswer)+'|'+(searchAnswer?.results||[]).map(r=>r.personId).join(','):'');
     if(!spatialCache || spatialNodes!==graph.nodes || key!==spatialKey) {
@@ -374,8 +376,8 @@ export function mountGraph(element, options = {}) {
     }
     if(graph.source==='workspace'){
       const groups=new Map();for(const theme of themes.filter(t=>isTopicLabel(t.name))){const key=theme.name.trim().toLocaleLowerCase();const prior=groups.get(key);
-        if(prior){prior.nodeIds=[...new Set([...prior.nodeIds,...theme.nodeIds])];prior.components=[...prior.components,...theme.components];prior.score=Math.max(prior.score,theme.score);}
-        else groups.set(key,{...theme,nodeIds:[...theme.nodeIds],components:[...theme.components]});
+        if(prior){prior.nodeIds=[...new Set([...prior.nodeIds,...theme.nodeIds])];prior.components=[...prior.components,...theme.components];prior.themeIds.push(theme.themeId);prior.score=Math.max(prior.score,theme.score);}
+        else groups.set(key,{...theme,themeIds:[theme.themeId],nodeIds:[...theme.nodeIds],components:[...theme.components]});
       }return [...groups.values()].sort((a,b)=>b.nodeIds.length-a.nodeIds.length||a.name.localeCompare(b.name));
     }
     const previewIds = new Set(lens === 'my' ? meetingPreview?.themes.map(theme => theme.themeId) : []);
@@ -428,7 +430,8 @@ export function mountGraph(element, options = {}) {
       const shared=button(`In multiple networks · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId=activeThemeId==='__connections'?'':'__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));shared.title='People matched across contributors, not a measure of relationship strength';filters.append(shared);
       if(activeThemeId){const clear=button('Clear filter','filter-topic','rg-filter-chip');filters.append(clear);}bar.append(filters);
       if(themes.length){const topics=make('div','rg-filter-chips');topics.setAttribute('aria-label','Topic filters');topics.append(make('span','rg-topic-caption','Topics'));
-       for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));topics.append(chip);}bar.append(topics);
+       for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length} ${theme.nodeIds.length===1?'person':'people'}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));chip.title='Unique people with shared evidence for this topic';topics.append(chip);}bar.append(topics);
+       const covered=new Set(themes.flatMap(t=>t.nodeIds)).size;bar.append(make('p','rg-source',`${covered} of ${graph.nodes.filter(n=>n.type==='person').length} people have shared topic evidence. Counts are people, not meetings. Select a topic to explore its cluster and latest shared context.`));
       }else bar.append(make('p','rg-source','No clear shared topics yet. Meeting and note details are still available in person profiles.'));
       const pending=(graph.sourceCoverage||[]).reduce((n,s)=>n+(s.identityPending||0),0);
       if(pending)bar.append(make('p','rg-source',`${pending} vault records need a fresh push with plugin 0.9.4 to match across contributors.`));
@@ -551,7 +554,7 @@ export function mountGraph(element, options = {}) {
     const data = visibleCanvasData();
     const scale = layout.fitScale * camera.zoom;
     canvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
-    canvas.dataset.detail = String(data.isPath || scale >= .8);
+    canvas.dataset.detail = String(panelMode==='topic' || data.isPath || scale >= .8);
     let scene = canvas;
     if (!data.isPath) {
       const viewport = make('div', 'rg-map-viewport');
@@ -1385,11 +1388,12 @@ export function mountGraph(element, options = {}) {
     }
     if(!pathState && graph.source!=='workspace') root.append(renderTimeControls());
     if (pathBar) root.append(pathBar);
-    if(graph.source==='workspace'&&!pathState){const starts=make('section','rg-network-starts');starts.setAttribute('aria-label','Start exploring');const heading=make('div','rg-start-heading');heading.append(make('h2','','Where do you want to go?'));const all=make('button','rg-filter-chip',guidedOverview?'Show all '+graph.nodes.length+' people':'Focused overview');all.type='button';all.onclick=()=>{clearContact();guidedOverview=!guidedOverview;if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}activeThemeId=null;query='';selectedId=null;panelMode=null;wholeNetworkOverview=!guidedOverview;camera={x:0,y:0,zoom:1};render();};heading.append(all);starts.append(heading,make('p','rg-source','Starting points from shared evidence. Your private top-of-mind context is not shared here.'));const cards=make('div','rg-start-cards');for(const item of networkStarts(graph)){const b=make('button','rg-start-card');b.type='button';b.append(make('small','',item.title),make('strong','',byId.get(item.personId)?.name||'Person'),make('span','',item.reason),make('small','rg-source',item.source));b.title=item.caution;b.onclick=()=>showContact(item.personId);cards.append(b);}if(!cards.children.length)cards.append(make('p','rg-source','Search for a person or question to begin. There isn’t enough shared context for suggestions yet.'));starts.append(cards);root.append(starts);}
+    if(graph.source==='workspace'&&!pathState&&!activeThemeId){const starts=make('section','rg-network-starts');starts.setAttribute('aria-label','Start exploring');const heading=make('div','rg-start-heading');heading.append(make('h2','','Where do you want to go?'));const all=make('button','rg-filter-chip',guidedOverview?'Show all '+graph.nodes.length+' people':'Focused overview');all.type='button';all.onclick=()=>{clearContact();guidedOverview=!guidedOverview;if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}activeThemeId=null;query='';selectedId=null;panelMode=null;wholeNetworkOverview=!guidedOverview;camera={x:0,y:0,zoom:1};render();};heading.append(all);starts.append(heading,make('p','rg-source','Starting points from shared evidence. Your private top-of-mind context is not shared here.'));const cards=make('div','rg-start-cards');for(const item of networkStarts(graph)){const b=make('button','rg-start-card');b.type='button';b.append(make('small','',item.title),make('strong','',byId.get(item.personId)?.name||'Person'),make('span','',item.reason),make('small','rg-source',item.source));b.title=item.caution;b.onclick=()=>showContact(item.personId);cards.append(b);}if(!cards.children.length)cards.append(make('p','rg-source','Search for a person or question to begin. There isn’t enough shared context for suggestions yet.'));starts.append(cards);root.append(starts);}
     const topics = renderTopics();
     if (topics) root.append(topics);
     const canvas = renderCanvas();
     root.append(canvas);
+    if(panelMode==='topic'&&activeThemeId){const topic=rankedThemes().find(t=>t.themeId===activeThemeId);if(topic){canvas.dataset.topicOpen='true';canvas.append(topicPanel(document,relevanceGraph,topic,{onClose:()=>{panelMode=null;render();},onPerson:id=>showContact(id)}));}}
     if(!pathState && !panelMode) {
       const tab=button('Your people','open-digest','rg-digest-tab');if(graph.source==='workspace')tab.hidden=true;
       tab.setAttribute('aria-expanded','false');root.append(tab);
@@ -1593,7 +1597,9 @@ export function mountGraph(element, options = {}) {
       activeThemeId='__intro:'+target.dataset.pairId;selectedId=null;query='';pathState=null;wholeNetworkOverview=false;camera={x:0,y:0,zoom:1};render();return;
     }
     if(action==='filter-topic'){
-      activeThemeId=target.dataset.themeId||null;selectedId=null;panelMode=null;pathState=null;query='';wholeNetworkOverview=false;camera={x:0,y:0,zoom:1};render();return;
+      const previous=new Map([...root.querySelectorAll('.rg-canvas .rg-node')].map(n=>[n.dataset.nodeId,n.getBoundingClientRect()]));
+      clearContact();activeThemeId=target.dataset.themeId||null;selectedId=null;panelMode=activeThemeId&&activeThemeId!=='__connections'?'topic':null;pathState=null;query='';wholeNetworkOverview=false;camera={x:0,y:0,zoom:1};render();
+      if(panelMode==='topic'){const reduced=Boolean(view?.matchMedia('(prefers-reduced-motion: reduce)').matches);animateTopicCluster(root,previous,reduced);root.querySelector('.rg-topic-detail')?.focus({preventScroll:true});}return;
     }
     if(action==='walk-topic'){walkTo({kind:'topic',id:target.dataset.topicId});return;}
     if(action==='walk-person'){walkTo({kind:'person',id:target.dataset.nodeId,reason:target.dataset.reason});return;}
@@ -1771,7 +1777,7 @@ export function mountGraph(element, options = {}) {
       else if (panelMode) { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
       return;
     }
-    if (!event.target.closest?.('.rg-canvas')) return;
+    if (!event.target.closest?.('.rg-canvas') || event.target.closest('.rg-topic-detail')) return;
     const movement = 28;
     if (event.key === 'ArrowLeft') camera.x -= movement;
     else if (event.key === 'ArrowRight') camera.x += movement;
@@ -1786,7 +1792,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function onPointerDown(event) {
-    if (!event.target.closest?.('.rg-canvas') || event.target.closest('button,input,select')) return;
+    if (!event.target.closest?.('.rg-canvas') || event.target.closest('button,input,select,.rg-topic-detail')) return;
     drag = { x: event.clientX, y: event.clientY, camera: { ...camera } };
     root.setPointerCapture?.(event.pointerId);
   }
@@ -1803,7 +1809,7 @@ export function mountGraph(element, options = {}) {
     if (root.hasPointerCapture?.(event.pointerId)) root.releasePointerCapture(event.pointerId);
   };
   function onWheel(event) {
-    if (!event.target.closest?.('.rg-canvas') || (!event.ctrlKey && !event.metaKey)) return;
+    if (!event.target.closest?.('.rg-canvas') || event.target.closest('.rg-topic-detail') || (!event.ctrlKey && !event.metaKey)) return;
     event.preventDefault();
     zoom(Math.exp(-event.deltaY * 0.006));
   }

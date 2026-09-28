@@ -953,3 +953,28 @@
 .rg-owner-swatch {display:inline-block;width:12px;height:12px;border:1.5px solid;}
 @container (max-width:700px){.rg-owner-legend {top:110px;}}
 .rg-network-starts{padding:20px 0;font-family:-apple-system,BlinkMacSystemFont,sans-serif}.rg-start-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.rg-start-heading h2{font-size:23px;letter-spacing:-.6px;margin:0}.rg-start-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}.rg-start-card{display:flex;flex-direction:column;gap:8px;text-align:left;padding:18px;border:1px solid #e1e5ed;border-radius:18px;background:#f7f8fa;color:#202125;font:14px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer}.rg-start-card strong{font-size:20px}.rg-start-card>small:first-child{color:#226ccc}.rg-start-card>span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.rg-start-card:hover{background:#edf4ff;border-color:#97bfff}.rg-start-card:focus-visible{outline:3px solid #007aff;outline-offset:2px}@media(max-width:700px){.rg-start-cards{grid-template-columns:1fr}.rg-start-heading h2{font-size:19px}.rg-start-card{padding:14px}.rg-start-heading{align-items:start}}
+
+/* Topic context stays beside the graph; small screens stack it under the cluster. */
+.rg-shell .rg-topic-detail {position:absolute;z-index:16;top:24px;right:16px;width:340px;max-height:calc(100% - 100px);box-sizing:border-box;overflow:auto;overscroll-behavior:contain;touch-action:pan-y;cursor:auto;padding:24px;background:var(--rg-panel);border:1px solid var(--rg-line);border-radius:24px;box-shadow:0 10px 32px #0000000a;outline-offset:-3px;}
+.rg-topic-detail h2 {font-size:26px;line-height:1.15;margin:12px 28px 12px 0;letter-spacing:-.6px;}
+.rg-topic-detail h3 {font-size:17px;line-height:1.4;margin:24px 0 12px;}
+.rg-topic-detail p,.rg-topic-detail li {font-size:13px;line-height:1.55;}
+.rg-topic-detail .nc-muted {color:var(--rg-muted);font-size:12px;line-height:1.5;}
+.rg-topic-detail .nc-conversation-recap {margin:14px 0;padding:16px;border-radius:16px;background:var(--rg-soft);border:1px solid var(--rg-line);}
+.rg-topic-detail .nc-conversation-recap h4 {font-size:16px;line-height:1.35;margin:10px 0;}
+.rg-topic-detail ul {padding-left:17px;}
+.rg-topic-detail summary {padding:10px 0;cursor:pointer;font-size:13px;}
+.rg-topic-detail .nc-memory {padding:10px 0;border-top:1px solid var(--rg-line);}
+.rg-topic-detail .nc-memory strong,.rg-topic-detail .nc-memory small {display:block;}
+.rg-shell .rg-topic-close {position:absolute;right:16px;top:16px;border:0;border-radius:50%;width:34px;height:34px;background:var(--rg-soft);font-size:22px;color:var(--rg-muted);}
+.rg-shell .rg-topic-person {display:grid;grid-template-columns:38px 1fr;gap:4px 12px;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--rg-line);text-align:left;background:transparent;color:var(--rg-foreground);}
+.rg-topic-person .nc-portrait {grid-row:span 2;position:relative;display:grid;place-items:center;width:38px;height:42px;border-radius:12px;overflow:hidden;background:var(--rg-soft);}
+.rg-topic-person img {position:absolute;width:100%;height:100%;object-fit:cover;}
+.rg-topic-person small {grid-column:2;}
+@media(max-width:899px){
+ .rg-shell .rg-canvas[data-topic-open='true'] {height:auto!important;min-height:500px;padding-top:500px;overflow:visible;}
+ .rg-canvas[data-topic-open='true'] .rg-map-viewport {height:430px!important;}
+ .rg-shell .rg-topic-detail {position:relative;inset:auto;width:calc(100% - 24px);max-height:65dvh;margin:0 12px 70px;}
+ .rg-canvas[data-topic-open='true'] .rg-bottom {top:445px;bottom:auto;}
+ .rg-canvas[data-topic-open='true'] .rg-canvas-note {display:none;}
+}
