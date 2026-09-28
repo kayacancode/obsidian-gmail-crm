@@ -152,7 +152,7 @@ export function mountGraph(element, options = {}) {
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
   let cameraFrame=null,cameraScene=null,cameraCanvas=null,cameraLayout=null;
-  let workspaceCameraReady=false,memberFocus='',wholeNetworkOverview=false;
+  let memberFocus='',wholeNetworkOverview=false;
   let contributorColors=new Map();
   let lens = validLens(graph.source==='workspace'?'firm':options.lens ?? 'my');
   let activeThemeId = null;
@@ -526,7 +526,6 @@ export function mountGraph(element, options = {}) {
   function renderCanvas() {
     const layout = canvasLayout();
     cameraLayout=layout;cameraScene=null;
-    if(graph.source==='workspace'&&(!workspaceCameraReady||(!wholeNetworkOverview&&camera.zoom===1))&&!currentRoute()){camera.zoom=Math.max(1,.85/layout.fitScale);workspaceCameraReady=true;}
     const canvas = make('div', 'rg-canvas');
     cameraCanvas=canvas;
     canvas.dataset.workspace=String(graph.source==='workspace');
@@ -1382,7 +1381,7 @@ export function mountGraph(element, options = {}) {
     }
     if(!pathState && graph.source!=='workspace') root.append(renderTimeControls());
     if (pathBar) root.append(pathBar);
-    if(graph.source==='workspace'&&!pathState){const starts=make('section','rg-network-starts');starts.setAttribute('aria-label','Start exploring');const heading=make('div','rg-start-heading');heading.append(make('h2','','Where do you want to go?'));const all=make('button','rg-filter-chip',guidedOverview?'Show all '+graph.nodes.length+' people':'Focused overview');all.type='button';all.onclick=()=>{clearContact();guidedOverview=!guidedOverview;if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}activeThemeId=null;query='';selectedId=null;panelMode=null;wholeNetworkOverview=!guidedOverview;workspaceCameraReady=false;camera={x:0,y:0,zoom:1};render();};heading.append(all);starts.append(heading,make('p','rg-source','Starting points from shared evidence. Your private top-of-mind context is not shared here.'));const cards=make('div','rg-start-cards');for(const item of networkStarts(graph)){const b=make('button','rg-start-card');b.type='button';b.append(make('small','',item.title),make('strong','',byId.get(item.personId)?.name||'Person'),make('span','',item.reason),make('small','rg-source',item.source));b.title=item.caution;b.onclick=()=>showContact(item.personId);cards.append(b);}if(!cards.children.length)cards.append(make('p','rg-source','Search for a person or question to begin. There isn’t enough shared context for suggestions yet.'));starts.append(cards);root.append(starts);}
+    if(graph.source==='workspace'&&!pathState){const starts=make('section','rg-network-starts');starts.setAttribute('aria-label','Start exploring');const heading=make('div','rg-start-heading');heading.append(make('h2','','Where do you want to go?'));const all=make('button','rg-filter-chip',guidedOverview?'Show all '+graph.nodes.length+' people':'Focused overview');all.type='button';all.onclick=()=>{clearContact();guidedOverview=!guidedOverview;if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}activeThemeId=null;query='';selectedId=null;panelMode=null;wholeNetworkOverview=!guidedOverview;camera={x:0,y:0,zoom:1};render();};heading.append(all);starts.append(heading,make('p','rg-source','Starting points from shared evidence. Your private top-of-mind context is not shared here.'));const cards=make('div','rg-start-cards');for(const item of networkStarts(graph)){const b=make('button','rg-start-card');b.type='button';b.append(make('small','',item.title),make('strong','',byId.get(item.personId)?.name||'Person'),make('span','',item.reason),make('small','rg-source',item.source));b.title=item.caution;b.onclick=()=>showContact(item.personId);cards.append(b);}if(!cards.children.length)cards.append(make('p','rg-source','Search for a person or question to begin. There isn’t enough shared context for suggestions yet.'));starts.append(cards);root.append(starts);}
     const topics = renderTopics();
     if (topics) root.append(topics);
     const canvas = renderCanvas();
@@ -1587,10 +1586,10 @@ export function mountGraph(element, options = {}) {
     if(action==='skip-introduction'){introductionSkipped.add(target.dataset.pairId);if(activeThemeId==='__intro:'+target.dataset.pairId){activeThemeId=null;render();}else refreshIntroductionPanel();return;}
     if(action==='reset-introductions'){introductionSkipped.clear();refreshIntroductionPanel();return;}
     if(action==='explore-introduction'){
-      activeThemeId='__intro:'+target.dataset.pairId;selectedId=null;query='';pathState=null;wholeNetworkOverview=false;workspaceCameraReady=false;camera={x:0,y:0,zoom:1};render();return;
+      activeThemeId='__intro:'+target.dataset.pairId;selectedId=null;query='';pathState=null;wholeNetworkOverview=false;camera={x:0,y:0,zoom:1};render();return;
     }
     if(action==='filter-topic'){
-      activeThemeId=target.dataset.themeId||null;selectedId=null;panelMode=null;pathState=null;query='';wholeNetworkOverview=false;workspaceCameraReady=false;camera={x:0,y:0,zoom:1};render();return;
+      activeThemeId=target.dataset.themeId||null;selectedId=null;panelMode=null;pathState=null;query='';wholeNetworkOverview=false;camera={x:0,y:0,zoom:1};render();return;
     }
     if(action==='walk-topic'){walkTo({kind:'topic',id:target.dataset.topicId});return;}
     if(action==='walk-person'){walkTo({kind:'person',id:target.dataset.nodeId,reason:target.dataset.reason});return;}
@@ -1672,7 +1671,7 @@ export function mountGraph(element, options = {}) {
     else if(action==='path-person'){showContact(target.dataset.nodeId);}
     else if (action === 'save-route' && currentRoute()) callbacks.onSaveTrail(cloneTrail(currentRoute()));
     else if (action === 'overview') {
-      wholeNetworkOverview=false;workspaceCameraReady=false;
+      wholeNetworkOverview=false;
       invalidateRelevance();
       searchAnswer = null; exploration = null;
       activeThemeId = null;
