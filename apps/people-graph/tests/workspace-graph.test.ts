@@ -259,3 +259,15 @@ test('traversal stops emitting evidence after sharing revision changes',async()=
  await assert.rejects(searchWorkspace(f.env,f.id,'owner@example.com','Contact',async e=>{events.push(String(e.type));if(e.type==='scope')await f.call('/'+f.id+'/contribution','PUT',{enabled:false,scope:{kind:'all'},level:'names'});}),/workspace_changed_retry/);
  assert.deepEqual(events,['start','scope']);
 });
+
+test('published vault relationship scores create score-backed routes without personal confirmation',async()=>{
+ const f=await setup(),{matchingKey,identityToken}=await import('../src/workspace-identity');
+ const token=await identityToken(await matchingKey(f.env,f.id),'scored@example.test');
+ f.sqlite.exec('CREATE TABLE graphs (email TEXT PRIMARY KEY,json TEXT,updated_at INTEGER)');
+ await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'names',includeObsidian:true},'member@example.com');
+ f.sqlite.prepare('INSERT INTO graphs VALUES (?,?,?)').run('member@example.com',JSON.stringify({nodes:[{id:'s',name:'Scored',strength:70,momentum:40,combined:55,measuredContact:{version:1,sent:3,received:2,lastEmail:'2026-01-01',meetings:0,lastMeeting:null},workspaceIdentities:{[f.id]:token}},{id:'zero',name:'Zero',strength:0,momentum:70,combined:35},{id:'bad',name:'Bad',strength:120,momentum:40,combined:80}],edges:[]}),1700000000);
+ const g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com'),person=g.nodes.find(n=>n.name==='Scored')!,r=person.relationships[0];
+ assert.equal(r.score,55);assert.equal(r.evidenceCategory,'score');assert.equal(r.confirmedAt,undefined);assert.equal(r.observedAt,'2023-11-14T22:13:20.000Z');
+ const {buildAnswerCards}=await import('../src/network-answer');assert.equal(buildAnswerCards(g,[{personId:person.id}])[0].routes[0].basis,'published_score');
+ for(const name of ['Zero','Bad'])assert.equal(g.nodes.find(n=>n.name===name)!.relationships[0].evidenceCategory,'unknown');
+});

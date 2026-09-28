@@ -1,3 +1,4 @@
+import {supportsIntroduction,scoreBacked} from './relationship-support.mjs';
 const sourceNames={granola:'Granola note context',granola_mention:'Mention in meeting notes',obsidian_note:'Note mention',gmail_body_derived:'Email context',gmail_subject:'Email subject',calendar:'Calendar event'};
 export function personContext(graph,personId) {
  const seen=new Set();let meetingCount=0,otherCount=0;
@@ -57,7 +58,7 @@ export function contactCard(graph,personId,answer){
  const ready=!person.sources?.includes('obsidian')||person.identityMatchReady===true;
  const evidence=personContext(graph,personId);
  const relationships=(person.relationships||[]).map(r=>({...r,isMe:r.memberId===self,memberName:graph.members?.find(m=>m.id===r.memberId)?.name||r.memberName||'Contributor'})).sort((a,b)=>Number(b.isMe)-Number(a.isMe)||(b.score??-1)-(a.score??-1));
- return {person,relationships,workspaceId:graph.source==='workspace'?graph.workspaceId:null,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>r.confirmedAt||['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.confirmedAt||r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.confirmedAt||((r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
+ return {person,relationships,workspaceId:graph.source==='workspace'?graph.workspaceId:null,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>r.confirmedAt||['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>supportsIntroduction(r)&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>supportsIntroduction(r)&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
 }
 export function element(doc,tag,className='',text){const el=doc.createElement(tag);el.className=className;if(text!==undefined)el.textContent=text;return el;}
 export function action(doc,label,fn,className=''){const el=element(doc,'button',className,label);el.type='button';el.addEventListener('click',fn);return el;}
@@ -69,7 +70,7 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
  const tabs=element(doc,'nav','nc-steps');tabs.setAttribute('aria-label','Connection walk');for(const [id,label]of [['person','Person'],...(own&&!card.routes.length?[]:[['route','Route']]),['evidence','Memory']]){const b=action(doc,label,()=>api.setStep(id));b.setAttribute('aria-pressed',String(step===id));tabs.append(b);}panel.append(tabs);
  const identity=element(doc,'div','nc-identity');identity.append(portrait(doc,card.person,'nc-hero'));const title=element(doc,'div');title.append(element(doc,'h2','',card.person.name),element(doc,'p','nc-muted',[card.person.role,card.person.company].filter(Boolean).join(' · ')));identity.append(title);panel.append(identity);
  if(step==='person'){
-  panel.append(element(doc,'p','nc-status',self?.confirmedAt?'Relationship confirmed by you':incoming?'Incoming email only':card.novelty==='recorded_contact'?'Contact activity in your data':card.relationshipUnverified?'Relationship not yet verified':'No direct contact found in shared data'));
+  panel.append(element(doc,'p','nc-status',self?.confirmedAt?'Relationship confirmed by you':self&&scoreBacked(self)?'Score-backed relationship in your vault':incoming?'Incoming email only':card.novelty==='recorded_contact'?'Contact activity in your data':card.relationshipUnverified?'Relationship not yet verified':'No direct contact found in shared data'));
   if(card.query)panel.append(element(doc,'p','nc-query','For: '+card.query));
   const reasons=card.reasons;
   if(reasons[0])panel.append(element(doc,'p','nc-reason',reasons[0].summary));
@@ -93,14 +94,15 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
  }
  if(step==='route'||step==='person'){
   panel.append(element(doc,'h3','',incoming?'Why this person is here':own?'Your connection':'Connections in this network'));
-  if(card.relationships?.some(r=>Number.isFinite(r.score)))panel.append(element(doc,'p','nc-muted','Activity scores reflect recorded contact volume, reciprocity, and recency—not personal closeness.'));
+  if(card.relationships?.some(r=>Number.isFinite(r.score)))panel.append(element(doc,'p','nc-muted','Published people scores are contributor estimates. Activity scores reflect contact volume, reciprocity, and recency. Neither guarantees an introduction.'));
   for(const r of card.relationships||[]){
    const row=element(doc,'article','nc-relationship');row.append(element(doc,'strong','',r.isMe?'You':r.memberName));
    if(r.confirmedAt)row.append(element(doc,'p','nc-confirmed','✓ Relationship confirmed by '+(r.isMe?'you':r.memberName)+' · '+r.confirmedAt.slice(0,10)));
-   const measured=['email','meeting'].includes(r.evidenceCategory)&&Number.isFinite(r.score);
-   row.append(element(doc,'p','',measured?'Activity score: '+Math.round(r.score)+' / 100':'Not measured in shared data'));
-   if(measured){const meter=element(doc,'meter');meter.min=0;meter.max=100;meter.value=r.score;meter.setAttribute('aria-label',(r.isMe?'Your':r.memberName+'’s')+' relationship activity');row.append(meter);}
-   row.append(element(doc,'small','nc-muted',(r.evidenceCategory==='email'?'Email contact':r.evidenceCategory==='meeting'?'Meeting activity':'Vault record · contact evidence unavailable')+(r.lastContact?' · Last contact '+r.lastContact.slice(0,10):'')));
+   const measured=['email','meeting'].includes(r.evidenceCategory)&&Number.isFinite(r.score),scored=scoreBacked(r);
+   row.append(element(doc,'p','',scored?'Published people score: '+Math.round(r.score)+' / 100':measured?'Activity score: '+Math.round(r.score)+' / 100':'Not measured in shared data'));
+   if(scored&&r.publishedScore)row.append(element(doc,'small','nc-muted','Strength '+Math.round(r.publishedScore.strength)+'/100 · momentum '+Math.round(r.publishedScore.momentum)+'/100'));
+   if(measured||scored){const meter=element(doc,'meter');meter.min=0;meter.max=100;meter.value=r.score;meter.setAttribute('aria-label',(r.isMe?'Your':r.memberName+'’s')+' relationship activity');row.append(meter);}
+   row.append(element(doc,'small','nc-muted',(scored?'Obsidian people score · estimate, not personal confirmation':r.evidenceCategory==='email'?'Email contact':r.evidenceCategory==='meeting'?'Meeting activity':'Vault record · contact evidence unavailable')+(r.lastContact?' · Last contact '+r.lastContact.slice(0,10):'')));
    if(r.isMe&&r.inboxes?.length)row.append(element(doc,'small','nc-muted','Imported from '+r.inboxes.join(', ')));
    if(r.activity?.sent===0&&r.activity.received>0&&!r.activity.meetings)row.append(element(doc,'p','','Received email; no sent messages found in the imported history. This does not establish that you know them.'));
    if(r.activity)row.append(element(doc,'small','nc-muted',r.activity.sent+' sent · '+r.activity.received+' received · '+r.activity.meetings+' recorded meeting entries'));
@@ -109,7 +111,7 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
    panel.append(row);
   }
 
-  for(const route of card.routes){const row=element(doc,'div','nc-via');row.append(element(doc,'strong','','Through '+route.memberName),element(doc,'small','nc-muted',`${Number.isFinite(route.score)?Math.round(route.score)+' / 100 measured activity':'Activity not measured'}${route.lastContact?' · '+route.lastContact.slice(0,10):''}`));const ask=action(doc,'Ask '+route.memberName+' for an intro',()=>onRequestIntro?.(card,route.memberId),step==='person'?'nc-primary':'');ask.disabled=!onRequestIntro;row.append(ask);panel.append(row);if(step==='person')break;}
+  for(const route of card.routes){const row=element(doc,'div','nc-via');row.append(element(doc,'strong','','Through '+route.memberName),element(doc,'small','nc-muted',`${Number.isFinite(route.score)?Math.round(route.score)+(scoreBacked(route)?' / 100 published people score':' / 100 measured activity'):'Activity not measured'}${route.lastContact?' · '+route.lastContact.slice(0,10):''}`));const ask=action(doc,'Ask '+route.memberName+' for an intro',()=>onRequestIntro?.(card,route.memberId),step==='person'?'nc-primary':'');ask.disabled=!onRequestIntro;row.append(ask);panel.append(row);if(step==='person')break;}
   if(!card.routes.length&&!own){const known=element(doc,'section','nc-memory');known.append(element(doc,'h3','','Connection details'));
    if(card.contributors?.length)known.append(element(doc,'p','','Shared by '+card.contributors.map(m=>m.name).join(', ')));
    if(card.identityPending)known.append(element(doc,'p','','This older vault record cannot yet be matched with the same person in other members’ networks. The contributor needs to publish a fresh vault snapshot with plugin 0.9.4 or later.'));

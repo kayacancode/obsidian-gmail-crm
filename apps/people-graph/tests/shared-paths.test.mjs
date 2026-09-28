@@ -8,3 +8,7 @@ test('shared routes cross contributors through an actual mutual contact',()=>{co
 test('unknown and unresolved relationships do not create mutual paths',()=>{for(const change of [{relationships:[{memberId:'j',evidenceCategory:'unknown'}]},{sources:['obsidian'],identityMatchReady:false}]){const altered={...g,nodes:g.nodes.map(n=>n.id==='a'?{...n,...change}:n)};assert.equal(findPaths(sharedPathGraph(altered),'a','b',{maxHops:6}).paths.length,0);}});
 test('removed contributor and unshared records cannot bridge networks',()=>{assert.equal(findPaths(sharedPathGraph({...g,members:g.members.slice(0,1)}),'a','b',{maxHops:6}).paths.length,0);});
 test('personal graphs pass through unchanged',()=>{const local={nodes:[],edges:[]};assert.equal(sharedPathGraph(local),local);});
+test('score-backed member edges retain score provenance without claiming confirmation',()=>{
+ const g={source:'workspace',members:[{id:'j',name:'John'}],nodes:[{id:'p',name:'Person',type:'person',identityMatchReady:true,sources:['obsidian'],relationships:[{memberId:'j',evidenceCategory:'score',score:60,observedAt:'2026-09-20',scoreVersion:'obsidian-published-v1'}]}],edges:[]};
+ const edge=sharedPathGraph(g).edges[0];assert.equal(edge.scoreBacked,true);assert.equal(edge.confirmedAt,undefined);assert.match(edge.evidence[0].title,/Published Obsidian/);assert.equal(edge.evidence[0].date,'2026-09-20');
+});

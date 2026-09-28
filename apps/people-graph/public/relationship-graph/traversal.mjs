@@ -20,7 +20,7 @@ export function mountTraversal(root,{graph,query,onOpen}){
  function advance(){if(cursor<events.length-1)cursor++;render();}
  function route(personId){const walk=personWalk(graph,personId,paths);if(!walk)return;
   const area=element(doc,'div','nc-traversal-route');area.setAttribute('aria-label','Recorded graph route');
-  walk.nodes.forEach((node,i)=>{if(i){const edge=walk.edges[i-1],link=element(doc,'span','nc-traversal-edge',edge.confirmedAt?'Confirmed':edge.kind==='personal'?'Recorded contact':'Inferred · verify');link.dataset.kind=edge.kind;area.append(link);}
+  walk.nodes.forEach((node,i)=>{if(i){const edge=walk.edges[i-1],link=element(doc,'span','nc-traversal-edge',edge.confirmedAt?'Confirmed':edge.kind==='personal'?(edge.scoreBacked?'Score-backed relationship':'Recorded contact'):'Inferred · verify');link.dataset.kind=edge.kind;area.append(link);}
    const b=action(doc,'',()=>{if(!node.memberId)onOpen?.(node.id);});b.className='nc-traversal-node';b.append(portrait(doc,node.memberId?{...node,name:node.name.split(' (')[0]}:node),element(doc,'strong','',node.memberId?node.name.split(' (')[0]:node.name));b.disabled=Boolean(node.memberId);b.dataset.current=String(i===walk.nodes.length-1);area.append(b);
   });stage.append(area,element(doc,'p','nc-muted',walk.message));
  }

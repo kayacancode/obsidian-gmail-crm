@@ -10,3 +10,12 @@ test('readiness separates missing identity, unknown relationships and supported 
  const result=relationshipReadiness({...graph,nodes:[...graph.nodes,{id:'u',name:'Unknown',type:'person',sources:['obsidian'],identityMatchReady:true,relationships:[{memberId:'j',evidenceCategory:'unknown'}]},{id:'old',name:'Old',type:'person',sources:['obsidian'],identityMatchReady:false,relationships:[r('j')]}]});
  const john=result.find(r=>r.member.id==='j');assert.equal(john.shared,4);assert.equal(john.supported,1);assert.equal(john.newPeople,1);assert.equal(john.needsReview,2);assert.equal(john.needsIdentity,1);
 });
+test('published scores support discovery and walks without manufacturing confirmation',()=>{
+ const g={...graph,nodes:graph.nodes.map(n=>n.id==='new'?{...n,relationships:[{memberId:'j',memberName:'John',evidenceCategory:'score',score:55,scoreVersion:'obsidian-published-v1',observedAt:'2026-09-20',publishedScore:{strength:70,momentum:40,combined:55}}]}:n)};
+ const [d]=sharedDiscoveries(g,[],Date.parse('2026-09-28'));assert.equal(d.person.id,'new');assert.equal(d.routes[0].confirmedAt,undefined);assert.equal(d.routes[0].score,55);
+});
+test('equally relevant candidates prefer the stronger published contributor score',()=>{
+ const person=(id,score)=>({id,name:id,type:'person',relationships:[{memberId:'j',memberName:'John',score,evidenceCategory:'score',observedAt:'2026-09-20'}]});
+ const ranked=sharedDiscoveries({...graph,themeSignals:[],nodes:[person('A weak',35),person('Z strong',80)]},[],Date.parse('2026-09-28'));
+ assert.equal(ranked[0].person.id,'Z strong');
+});

@@ -1,7 +1,8 @@
+import {supportsIntroduction,scoreBacked} from './relationship-support.mjs';
 import {contactCard,element,action,portrait} from './contact-sheet.mjs';
 import {personWalk} from './person-walk.mjs';
 import {sharedPathGraph} from './shared-paths.mjs';
-const contact=r=>Boolean(r.confirmedAt||(['email','meeting'].includes(r.evidenceCategory)&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)));
+const contact=supportsIntroduction;
 const sources=new Set(['granola','granola_mention','obsidian_note','gmail_body_derived']);
 export function sharedDiscoveries(graph,pairs=[],now=Date.now()){
  const self=graph.members?.find(m=>m.isMe);if(!self)return [];
@@ -19,13 +20,13 @@ export function sharedDiscoveries(graph,pairs=[],now=Date.now()){
   const topics=[...new Set(relevantSignals.map(s=>s.topicName))];
   const pair=pairs.find(p=>p.personIds?.includes(person.id)&&p.personIds.some(id=>known.has(id)));
   const relevant=Boolean(topics.length||pair),evidence=relevantSignals.slice(0,2).flatMap(s=>[ownTopics.get(s.topicKey),s]);
-  results.push({person,card,routes:card.routes,topics,relevant,evidence,reason:topics.length?`Shared context in ${topics.join(', ')} connects this person to conversations with people you know.`:pair?pair.reason:'A contributor has recorded relationship evidence with this person. There is not enough shared context yet to explain a personal match.',pair,rank:topics.length*100+(pair?50:0)+Math.min(30,card.routes[0].score||0)});
+  results.push({person,card,routes:card.routes,topics,relevant,evidence,reason:topics.length?`Shared context in ${topics.join(', ')} connects this person to conversations with people you know.`:pair?pair.reason:'A contributor has recorded relationship evidence with this person. There is not enough shared context yet to explain a personal match.',pair,rank:topics.length*100+(pair?50:0)+(card.routes[0].score||0)*.5});
  }
  return results.sort((a,b)=>b.rank-a.rank||a.person.name.localeCompare(b.person.name)).slice(0,12).map(d=>({...d,walk:personWalk(graph,d.person.id,paths)}));
 }
 export function discoveryCards(doc,graph,pairs,{onWalk,onIntro}={}){
  const root=element(doc,'div','rg-discovery-people'),items=sharedDiscoveries(graph,pairs);
- if(!items.length){root.append(element(doc,'p','rg-copy','No supported introductions to new people yet. Contributors need to share a confirmed relationship, two-way contact, or meeting evidence before we can offer an introduction.'));return root;}
+ if(!items.length){root.append(element(doc,'p','rg-copy','No supported introductions to new people yet. Contributors need to share a published relationship score, confirmation, two-way contact, or meeting evidence before we can offer an introduction.'));return root;}
  const relevant=items.filter(d=>d.relevant),available=items.filter(d=>!d.relevant);
  for(const [label,group]of [['Relevant to your shared context',relevant],['Other people you could ask to meet',available]]){
   if(!group.length)continue;root.append(element(doc,'h3','',label));
@@ -36,7 +37,7 @@ export function discoveryCards(doc,graph,pairs,{onWalk,onIntro}={}){
    if(hasWalk){d.walk.nodes.forEach((n,i)=>{if(i)chain.append(element(doc,'span','rg-discovery-hop',d.walk.edges[i-1].kind==='personal'?'→':'⇢'));chain.append(element(doc,'span','',n.memberId===graph.members.find(m=>m.isMe)?.id?'You':n.name));});}
    else{chain.append(element(doc,'span','','You'),element(doc,'span','rg-discovery-hop','ask →'),element(doc,'span','',name),element(doc,'span','rg-discovery-hop','→'),element(doc,'span','',d.person.name));}
    card.append(chain,element(doc,'p','rg-source',hasWalk?d.walk.message:'The first step is an intro request to your workspace teammate, not a claimed personal relationship.'));
-   for(const r of d.routes)card.append(element(doc,'p','rg-source',`${r.memberName} · ${r.confirmedAt?'Confirmed relationship':r.evidenceCategory==='meeting'?'Recorded meeting':r.activity?.sent&&r.activity?.received?'Two-way contact':'Recorded email contact'}${Number.isFinite(r.score)?' · activity '+Math.round(r.score)+'/100':''}${r.lastContact?' · last contact '+r.lastContact.slice(0,10):''}`));
+   for(const r of d.routes)card.append(element(doc,'p','rg-source',`${r.memberName} · ${r.confirmedAt?'Confirmed relationship':scoreBacked(r)?'Published people score · '+r.observedAt?.slice(0,10):r.evidenceCategory==='meeting'?'Recorded meeting':r.activity?.sent&&r.activity?.received?'Two-way contact':'Recorded email contact'}${Number.isFinite(r.score)?(scoreBacked(r)?' · score ':' · activity ')+Math.round(r.score)+'/100':''}${r.lastContact?' · last contact '+r.lastContact.slice(0,10):''}`));
    if(d.evidence.length){const details=element(doc,'details');details.append(element(doc,'summary','','Why this match?'));const seen=new Set();for(const s of d.evidence){if(seen.has(s.id))continue;seen.add(s.id);const m=graph.members.find(m=>String(s.evidenceRef).startsWith('workspace:'+m.id+':'));details.append(element(doc,'p','rg-source',`${graph.nodes.find(n=>n.id===s.personId)?.name||'Person'} · ${m?.isMe?'Your context':m?.name||'Shared context'} · ${s.sourceType.replaceAll('_',' ')} · ${s.observedAt.slice(0,10)} — ${s.summary}`));}card.append(details);}
    card.append(action(doc,hasWalk?'Walk the path →':'Explore connection →',()=>onWalk(d.person.id),'rg-text-button'));
    if(onIntro)for(const r of d.routes)card.append(action(doc,'Ask '+r.memberName.split('@')[0]+' for an intro',()=>onIntro(d.card,r.memberId),'rg-discovery-intro'));
@@ -60,7 +61,7 @@ export function readinessPanel(doc,graph,onPerson){
   const row=element(doc,'article','rg-readiness-member'),name=item.member.isMe?'You':item.member.name;
   row.append(element(doc,'strong','',name),element(doc,'p','rg-source',`${item.shared} people shared · ${item.supported} supported relationships${item.member.isMe?'':' · '+item.newPeople+' new to your recorded network'}`));
   if(item.needsIdentity)row.append(element(doc,'p','rg-source',`${item.needsIdentity} records need a fresh vault snapshot to match identities.`));
-  if(item.needsReview)row.append(element(doc,'p','rg-source',`${item.needsReview} records lack a confirmed relationship, two-way contact, or meeting evidence.`));
+  if(item.needsReview)row.append(element(doc,'p','rg-source',`${item.needsReview} records lack a published relationship score, confirmation, two-way contact, or meeting evidence.`));
   const web=graph.sourceCoverage?.find(c=>c.memberId===item.member.id&&c.source==='web');if(web?.included===0)row.append(element(doc,'p','rg-source','No Gmail / Granola contacts are included from this contributor.'));
   if(item.member.isMe){
    const review=element(doc,'details','rg-review-connections');review.append(element(doc,'summary','','Review my connections'));
@@ -71,7 +72,7 @@ export function readinessPanel(doc,graph,onPerson){
    const render=()=>{const q=input.value.trim().toLowerCase(),matches=people.filter(p=>(p.name+' '+p.company).toLowerCase().includes(q));list.replaceChildren();status.textContent=`${matches.length} contacts${matches.length>20?' · showing first 20; search to narrow':''}`;for(const p of matches.slice(0,20)){const b=action(doc,p.name,()=>onPerson(p.id),'rg-review-person');list.append(b);}};
    input.addEventListener('input',e=>{e.stopPropagation();render();});review.addEventListener('click',e=>e.stopPropagation());render();row.append(review);
    const settings=element(doc,'a','rg-text-button','Manage my sources and sharing →');settings.href='/accounts?tab=workspace&workspace='+encodeURIComponent(graph.workspaceId);row.append(settings);
-  }else if(!item.supported)row.append(element(doc,'p','rg-source','This contributor can publish a current vault snapshot containing measured contact activity, connect and share their own Gmail / Granola source, or confirm people they know from “Review my connections” in their Discover view.'));
+  }else if(!item.supported)row.append(element(doc,'p','rg-source','This contributor can publish a current vault snapshot containing their people scores, connect and share their own Gmail / Granola source, or confirm people they know from “Review my connections” in their Discover view.'));
   section.append(row);
  }
  return section;

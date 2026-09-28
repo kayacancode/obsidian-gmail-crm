@@ -7,7 +7,7 @@ import type {ShareEnv} from './share-routes';
 import {normalizeSlice} from './network-share';
 import {opaque} from './mail-model';
 import {readWorkspace,memberOf,deny} from './workspace-store';
-import {workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
+import {supportsIntroduction,workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
 import {keywordRank,keywordScores,jevScores,topResults} from './network-search';
 export interface WorkspaceNode {identityMatchReady?:boolean;sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
 export interface WorkspaceGraph {introductionSuggestions?:Introduction[];source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
@@ -123,7 +123,7 @@ export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:str
 }
 export async function draftWorkspace(env:ShareEnv,id:string,me:string,personId:string,memberId:string){
  const graph=await buildWorkspaceGraph(env,id,me),person=graph.nodes.find(n=>n.id===personId),member=graph.members.find(m=>m.id===memberId);
- if(!person||!member||!person.relationships.some(r=>r.memberId===memberId&&(r.confirmedAt||!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings))))return deny(404,'introduction_unavailable');
+ if(!person||!member||!person.relationships.some(r=>r.memberId===memberId&&supportsIntroduction(r)))return deny(404,'introduction_unavailable');
  await assertWorkspaceRevision(env,id,me,graph.revision);
  return {to:member.name,subject:'Introduction to '+person.name,body:`Hi ${member.name.split('@')[0]},\n\nI saw your shared connection to ${person.name} in ${graph.workspaceName}. Would you feel comfortable introducing us? I'd be happy to share a short note about why I'd like to connect.\n\nThank you!`,introVia:member.name,basedOn:[]};
 }
