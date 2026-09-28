@@ -123,8 +123,10 @@ Remaining acceptance work includes continuous graph orientation while walking, v
 
 ### 2026-09-27 implementation increment
 
-Shared networks now open with a bounded overview (12 people when the network exceeds 24), up to three evidence-based starting prompts, and a Show all control. Prompts distinguish possible shared follow-ups, context-supported alternative perspectives, and matched mutual contacts; they do not claim access to members’ private top-of-mind context. Missing evidence produces an explicit empty state.
+Shared networks now open with a bounded overview (12 people when the network exceeds 24), up to three evidence-based starting prompts, and a Show all control. Prompts distinguish possible shared follow-ups and context-supported alternative perspectives; they do not claim access to members’ private top-of-mind context. Missing evidence produces an explicit empty state.
 
 Focused walks include a clickable route breadcrumb, highlighted traversed edges, up to four nearby graph branches, and branch history. Following a branch preserves the selected prefix; Back to previous branch restores its prior route and selected step. The original canvas remains mounted and faintly visible. Existing source evidence, introduction controls, contributor colors, and uncertainty labels remain available. A browser fixture exercises branch selection and return, mobile layout, and a 5,004-person overview.
 
 Not completed by this increment: private-context-seeded cross-network retrieval, collaboration between member agents, relationship score recalibration, or the complete demo acceptance sequence on live multi-member data.
+
+The 2026-09-28 correction removes the mutual-contact suggestion fallback: appearing in multiple networks alone cannot feature a person. Mutual contacts remain accessible through the In multiple networks filter.

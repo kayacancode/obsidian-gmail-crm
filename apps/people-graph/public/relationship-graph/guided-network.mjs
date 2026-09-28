@@ -18,8 +18,6 @@ export function networkStarts(graph,now=Date.now()){
   const id=pair.personIds.find(id=>!nodes.get(id).relationships?.some(r=>r.memberId===me)&&!used.has(id));
   if(id){add({personId:id,title:'Another perspective',reason:pair.reason,source:'Suggested from shared context',caution:'No direct relationship to you is recorded. Explore the evidence.'});break;}
  }
- const mutual=[...nodes.values()].filter(n=>(n.relationships||[]).length>1&&!used.has(n.id)).sort((a,b)=>b.relationships.length-a.relationships.length||a.id.localeCompare(b.id));
- if(mutual.length)add({personId:mutual[0].id,title:'Explore a shared connection',reason:mutual[0].name+' appears in multiple members’ networks.',source:'Matched across contributors',caution:'Inspect each member’s evidence; sharing alone does not establish closeness.'});
  return items.slice(0,3);
 }
 export function nearbyBranches(walk,index,paths,offset=0){
