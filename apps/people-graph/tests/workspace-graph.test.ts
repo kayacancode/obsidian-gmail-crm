@@ -226,3 +226,16 @@ test('exclude only own contribution, preserve others, and undo; exclusions survi
  await f.call('/'+f.id+'/contribution','PUT',{enabled:true,scope:{kind:'all'},level:'themes'},'owner@example.com');graph=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');assert.equal(graph.nodes[0].relationships.length,1);
  assert.equal((await f.call('/'+f.id+'/excluded-people','DELETE',{personId},'owner@example.com')).status,200);assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].relationships.length,2);
 });
+
+test('relationship confirmation belongs only to the contributor and can be revoked',async()=>{
+ const f=await setup(),g=await buildWorkspaceGraph(f.env,f.id,'owner@example.com'),personId=g.nodes[0].id;
+ const path='/'+f.id+'/relationship-confirmations';
+ assert.equal((await f.call(path,'POST',{personId},'outsider@example.com')).status,403);
+ assert.equal((await f.call(path,'POST',{personId:'missing'})).status,404);
+ assert.equal((await f.call(path,'POST',{personId,memberId:g.members.find(m=>!m.isMe)!.id})).status,200);
+ const next=await buildWorkspaceGraph(f.env,f.id,'member@example.com');
+ assert.ok(next.nodes[0].relationships.find(r=>r.memberName==='owner@example.com')?.confirmedAt);
+ assert.equal(next.nodes[0].relationships.find(r=>r.memberName==='member@example.com')?.confirmedAt,undefined);
+ assert.equal((await f.call(path,'DELETE',{personId})).status,200);
+ assert.ok((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].relationships.every(r=>!r.confirmedAt));
+});

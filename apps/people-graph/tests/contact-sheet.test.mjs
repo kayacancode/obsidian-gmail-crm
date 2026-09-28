@@ -22,3 +22,17 @@ test('graph normalization preserves activity direction and viewer inbox provenan
  const g=normalizeGraph({source:'workspace',nodes:[{id:'p',name:'P',relationships:[{memberId:'me',evidenceCategory:'email',activity:{sent:0,received:1,meetings:0},inboxes:['own@example.com']}]}],edges:[]});
  assert.equal(g.nodes[0].relationships[0].activity.sent,0);assert.deepEqual(g.nodes[0].relationships[0].inboxes,['own@example.com']);
 });
+
+test('latest conversation groups shared Granola memory and excludes later mentions or future notes',async()=>{
+ const {latestConversation}=await import('../public/relationship-graph/contact-sheet.mjs');
+ const memories=[{sourceType:'granola',title:'Design sync',date:'2026-09-20',contributor:'John',summary:'Recorded topic: Agent memory'},{sourceType:'granola',title:'Design sync',date:'2026-09-20',contributor:'John',summary:'Recorded topic: UI design'},{sourceType:'granola_mention',title:'A mention',date:'2026-09-21',contributor:'You',summary:'Mentioned Alex'},{sourceType:'granola',date:'2099-01-01',summary:'future'}];
+ const latest=latestConversation(memories);assert.equal(latest.length,2);assert.equal(latest[0].title,'Design sync');
+});
+
+test('confirmed relationships are attributed and form paths without inflating scores',async()=>{
+ const {sharedPathGraph}=await import('../public/relationship-graph/shared-paths.mjs');
+ const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+ const g=normalizeGraph({...graph,source:'workspace',nodes:[{id:'p',name:'Person',relationships:[{memberId:'j',confirmedAt:'2026-09-28T00:00:00Z',evidenceCategory:'unknown',score:null}]}],edges:[]});
+ assert.equal(contactCard(g,'p').routes[0].memberId,'j');assert.equal(contactCard(g,'p').relationships[0].score,null);
+ const paths=sharedPathGraph(g);assert.equal(paths.edges[0].confirmedAt,'2026-09-28T00:00:00Z');assert.match(paths.edges[0].evidence[0].title,/confirmed by John/);
+});

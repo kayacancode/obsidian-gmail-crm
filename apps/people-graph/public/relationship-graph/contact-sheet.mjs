@@ -9,6 +9,10 @@ export function personContext(graph,personId) {
   return [{ref:s.id,summary:s.summary,date:s.observedAt,sourceType:s.sourceType,sourceLabel:sourceNames[s.sourceType]||s.sourceType,title:s.provenance?.title||'',contributor:member?(member.isMe?'You':member.name):graph.source==='workspace'?'Shared source':'You',url}];
  }).slice(0,20);
 }
+export function latestConversation(evidence,now=Date.now()){
+ const meetings=evidence.filter(e=>e.sourceType==='granola'&&Date.parse(e.date)<=now).sort((a,b)=>Date.parse(b.date)-Date.parse(a.date));
+ const latest=meetings[0];return latest?meetings.filter(e=>e.date===latest.date&&e.title===latest.title&&e.contributor===latest.contributor):[];
+}
 export function contextBlock(doc,e) {
  const item=element(doc,'article','nc-memory');
  item.append(element(doc,'small','nc-muted',`${e.sourceLabel} · ${e.date.slice(0,10)} · ${e.contributor==='You'?'You':e.contributor==='Shared source'?'Shared source':'Shared by '+e.contributor}`));
@@ -23,28 +27,31 @@ export function contactCard(graph,personId,answer){
  const ready=!person.sources?.includes('obsidian')||person.identityMatchReady===true;
  const evidence=personContext(graph,personId);
  const relationships=(person.relationships||[]).map(r=>({...r,isMe:r.memberId===self,memberName:graph.members?.find(m=>m.id===r.memberId)?.name||r.memberName||'Contributor'})).sort((a,b)=>Number(b.isMe)-Number(a.isMe)||(b.score??-1)-(a.score??-1));
- return {person,relationships,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
+ return {person,relationships,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>r.confirmedAt||['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.confirmedAt||r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.confirmedAt||((r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
 }
 export function element(doc,tag,className='',text){const el=doc.createElement(tag);el.className=className;if(text!==undefined)el.textContent=text;return el;}
 export function action(doc,label,fn,className=''){const el=element(doc,'button',className,label);el.type='button';el.addEventListener('click',fn);return el;}
 export function portrait(doc,person,className=''){const wrap=element(doc,'span','nc-portrait '+className,(person.name||'?').split(/\s+/).slice(0,2).map(x=>x[0]).join(''));if(person.photoUrl){const image=element(doc,'img');image.src=person.photoUrl;image.alt='';image.referrerPolicy='no-referrer';image.onerror=()=>image.remove();wrap.append(image);}return wrap;}
-export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro,onExcludeContribution,companion}={}){
+export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro,onExcludeContribution,onConfirmRelationship,companion}={}){
  const doc=container.ownerDocument,previous=doc.activeElement;let card,step='person';
  const panel=element(doc,'section','nc-sheet');panel.setAttribute('role','dialog');panel.setAttribute('aria-label','Person and introduction route');container.append(panel);
  function render(){if(!card)return;const own=card.novelty==='recorded_contact';const self=card.relationships?.find(r=>r.isMe),incoming=self?.activity?.sent===0&&self.activity.received>0&&!self.activity.meetings;panel.replaceChildren();const top=element(doc,'div','nc-top');top.append(element(doc,'span','nc-muted',card.query?'Your network’s answer':'A connection in context'),action(doc,'×',close,'nc-close'));top.lastElementChild.setAttribute('aria-label','Close person sheet');panel.append(top);
  const tabs=element(doc,'nav','nc-steps');tabs.setAttribute('aria-label','Connection walk');for(const [id,label]of [['person','Person'],...(own&&!card.routes.length?[]:[['route','Route']]),['evidence','Memory']]){const b=action(doc,label,()=>api.setStep(id));b.setAttribute('aria-pressed',String(step===id));tabs.append(b);}panel.append(tabs);
  const identity=element(doc,'div','nc-identity');identity.append(portrait(doc,card.person,'nc-hero'));const title=element(doc,'div');title.append(element(doc,'h2','',card.person.name),element(doc,'p','nc-muted',[card.person.role,card.person.company].filter(Boolean).join(' · ')));identity.append(title);panel.append(identity);
  if(step==='person'){
-  panel.append(element(doc,'p','nc-status',incoming?'Incoming email only':card.novelty==='recorded_contact'?'Contact activity in your data':card.relationshipUnverified?'Relationship not yet verified':'No direct contact found in shared data'));
+  panel.append(element(doc,'p','nc-status',self?.confirmedAt?'Relationship confirmed by you':incoming?'Incoming email only':card.novelty==='recorded_contact'?'Contact activity in your data':card.relationshipUnverified?'Relationship not yet verified':'No direct contact found in shared data'));
   if(card.query)panel.append(element(doc,'p','nc-query','For: '+card.query));
   const reasons=card.reasons;
   if(reasons[0])panel.append(element(doc,'p','nc-reason',reasons[0].summary));
   if(reasons[0])panel.append(element(doc,'p','nc-muted','Recorded context · '+(reasons[0].date||reasons[0].observedAt||'').slice(0,10)));
  }
- if(step==='person'&&card.evidence.length){
-  const context=element(doc,'section','nc-profile-context');context.append(element(doc,'h3','','Recent context'));
-  for(const e of card.evidence.slice(0,2))context.append(contextBlock(doc,e));
-  if(card.evidence.some(e=>['granola','granola_mention','obsidian_note'].includes(e.sourceType)))context.append(element(doc,'small','nc-muted','Note context is separate from contact activity; a mention does not confirm attendance.'));
+ if(step==='person'){
+  const conversation=latestConversation(card.evidence),context=element(doc,'section','nc-profile-context');
+  context.append(element(doc,'h3','','Last shared conversation'));
+  if(conversation.length){for(const e of conversation)context.append(contextBlock(doc,e));
+   if(conversation.every(e=>e.summary.startsWith('Recorded topic:')))context.append(element(doc,'p','nc-muted','The contributor shared topics and meeting titles. Detailed notes are not shared.'));
+   context.append(element(doc,'small','nc-muted','Latest meeting context available here; this may not be your most recent meeting with this person.'));
+  }else context.append(element(doc,'p','nc-muted','No shared meeting context linked to this person yet.'));
   panel.append(context);
  }
  if(step==='evidence'){
@@ -57,6 +64,7 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
   if(card.relationships?.some(r=>Number.isFinite(r.score)))panel.append(element(doc,'p','nc-muted','Activity scores reflect recorded contact volume, reciprocity, and recency—not personal closeness.'));
   for(const r of card.relationships||[]){
    const row=element(doc,'article','nc-relationship');row.append(element(doc,'strong','',r.isMe?'You':r.memberName));
+   if(r.confirmedAt)row.append(element(doc,'p','nc-confirmed','✓ Relationship confirmed by '+(r.isMe?'you':r.memberName)+' · '+r.confirmedAt.slice(0,10)));
    const measured=['email','meeting'].includes(r.evidenceCategory)&&Number.isFinite(r.score);
    row.append(element(doc,'p','',measured?'Activity score: '+Math.round(r.score)+' / 100':'Not measured in shared data'));
    if(measured){const meter=element(doc,'meter');meter.min=0;meter.max=100;meter.value=r.score;meter.setAttribute('aria-label',(r.isMe?'Your':r.memberName+'’s')+' relationship activity');row.append(meter);}
@@ -78,6 +86,9 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
    panel.append(known);
   }
   if(card.routes.length)panel.append(element(doc,'small','nc-muted','An introduction depends on the contributor’s willingness to help.'));
+ }
+ if(step==='person'&&self&&onConfirmRelationship&&!card.identityPending){
+  const confirm=action(doc,self.confirmedAt?'Remove my confirmation':'I know this person — confirm relationship',async()=>{confirm.disabled=true;try{await onConfirmRelationship(card.person.id,!self.confirmedAt);}catch{confirm.disabled=false;confirm.textContent='Could not save confirmation. Try again';}},'nc-text');panel.append(confirm,element(doc,'small','nc-muted','Your confirmation is visible to this network. It does not change the activity score or promise an introduction.'));
  }
  if(step==='person'&&self&&onExcludeContribution){const exclude=action(doc,'I don’t know this person — exclude my contribution',async()=>{exclude.disabled=true;try{await onExcludeContribution(card.person.id);}catch{exclude.disabled=false;exclude.textContent='Could not exclude. Try again';}},'nc-text');panel.append(exclude);}
  if(step==='person'){if(!own||card.routes.length)panel.append(action(doc,'See route and relationship evidence →',()=>api.setStep('route'),'nc-text'));panel.append(action(doc,own?'View shared context →':'Why this person? →',()=>api.setStep('evidence'),'nc-text'));}

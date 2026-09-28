@@ -41,7 +41,7 @@ export async function introductionRoute(env:ShareEnv,me:string,workspaceId:strin
   if(state==='completed'&&!['checking_interest','agreed'].includes(item.state))deny(409,'agreement_required');
  }
  const message=text(body.reply,2000),graph=await buildWorkspaceGraph(env,workspaceId,me);let alternativePersonId:string|null=null;
- if(state==='alternative_suggested'){alternativePersonId=text(body.alternativePersonId,200);const candidate=graph.nodes.find(n=>n.id===alternativePersonId);if(!candidate||candidate.id===item.personId||candidate.sources?.includes('obsidian')&&!candidate.identityMatchReady||!candidate.relationships.some(r=>(r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self.id&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))deny(400,'invalid_alternative');}
+ if(state==='alternative_suggested'){alternativePersonId=text(body.alternativePersonId,200);const candidate=graph.nodes.find(n=>n.id===alternativePersonId);if(!candidate||candidate.id===item.personId||candidate.sources?.includes('obsidian')&&!candidate.identityMatchReady||!candidate.relationships.some(r=>r.memberId===self.id&&(r.confirmedAt||((r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))))deny(400,'invalid_alternative');}
  await assertWorkspaceRevision(env,workspaceId,me,workspace.revision);
  const updated=await replyToIntroductionRequest(env.DB,{workspaceId,workspaceRevision:workspace.revision,requestId,expectedRevision,state,reply:message,alternativePersonId});await assertWorkspaceRevision(env,workspaceId,me,workspace.revision);return {request:project(updated,graph)};
 }

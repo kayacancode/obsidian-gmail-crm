@@ -49,6 +49,18 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
    if(action==='draft'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.memberId!=='string')deny(400,'invalid_request');return json(await draftWorkspace(env,id,me,body.personId,body.memberId));}
    return json({error:'method_not_allowed'},405);
   }
+  const confirmation=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/relationship-confirmations$/);
+  if(confirmation&&['POST','DELETE'].includes(method)){
+   const id=confirmation[1],personId=body.personId;
+   if(typeof personId!=='string'||!personId||personId.length>200)deny(400,'invalid_person');
+   const snapshot=await readWorkspace(env.DB,id),member=memberOf(snapshot,me);
+   if(method==='POST'){
+    const graph=await buildWorkspaceGraph(env,id,me),person=graph.nodes.find(n=>n.id===personId);
+    if(!person?.relationships.some(r=>r.memberId===member.id))deny(404,'own_contribution_not_found');
+    if(person.sources?.includes('obsidian')&&!person.identityMatchReady)deny(409,'identity_not_resolved');
+   }
+   const updated=await changeWorkspace(env.DB,id,w=>{const self=memberOf(w,me);if(w.revision!==snapshot.revision)deny(409,'workspace_changed_retry');const confirmations={...self.relationshipConfirmations};if(method==='POST')confirmations[personId]=new Date().toISOString();else delete confirmations[personId];if(Object.keys(confirmations).length>10000)deny(400,'confirmation_limit');self.relationshipConfirmations=confirmations;});return json({ok:true,revision:updated.revision});
+  }
   const exclusion=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/excluded-people$/);
   if(exclusion&&['POST','DELETE'].includes(method)){
    const id=exclusion[1],personId=body.personId;

@@ -76,6 +76,10 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  graph.nodes=[...nodes.values()];graph.edges=[...edges.values()];
  for(const member of w.members)if(!graph.coverage.sources.some(s=>s.memberId===member.id&&s.source==='web'))graph.coverage.sources.push({memberId:member.id,memberName:member.email,source:'web',available:null,included:0,status:member.contribution.enabled?'unavailable':'not_shared',limited:false});
  await appendWorkspaceObsidian(env,w,me,graph);
+ for(const person of graph.nodes)for(const relationship of person.relationships){
+  const confirmedAt=w.members.find(m=>m.id===relationship.memberId)?.relationshipConfirmations?.[person.id];
+  if(confirmedAt&&Number.isFinite(Date.parse(confirmedAt)))relationship.confirmedAt=confirmedAt;
+ }
  // A relationship can arrive from both vault and inbox snapshots. Retain its
  // provenance while drawing one undirected connection between canonical people.
  const joinedEdges=new Map<string,WorkspaceGraph['edges'][number]>();
@@ -102,7 +106,7 @@ export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:str
 }
 export async function draftWorkspace(env:ShareEnv,id:string,me:string,personId:string,memberId:string){
  const graph=await buildWorkspaceGraph(env,id,me),person=graph.nodes.find(n=>n.id===personId),member=graph.members.find(m=>m.id===memberId);
- if(!person||!member||!person.relationships.some(r=>r.memberId===memberId&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))return deny(404,'introduction_unavailable');
+ if(!person||!member||!person.relationships.some(r=>r.memberId===memberId&&(r.confirmedAt||!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings))))return deny(404,'introduction_unavailable');
  await assertWorkspaceRevision(env,id,me,graph.revision);
  return {to:member.name,subject:'Introduction to '+person.name,body:`Hi ${member.name.split('@')[0]},\n\nI saw your shared connection to ${person.name} in ${graph.workspaceName}. Would you feel comfortable introducing us? I'd be happy to share a short note about why I'd like to connect.\n\nThank you!`,introVia:member.name,basedOn:[]};
 }

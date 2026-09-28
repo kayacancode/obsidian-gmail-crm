@@ -56,3 +56,5 @@
 @media(max-width:700px){[data-walk-open=true]{display:flex;flex-direction:column}[data-walk-open=true]>.rg-shell{display:none}[data-walk-open=true]>.nc-walk-stage{position:relative;top:auto!important;left:auto;right:auto;order:0;width:100%;max-height:none;min-height:0}[data-walk-open=true]>.nc-layer{position:relative;inset:auto;order:1;width:100%;max-width:100%;margin-top:12px}[data-walk-open=true]>.nc-layer .nc-sheet{max-height:none;animation:none}}
 
 .nc-recorded-connections{border-top:1px solid #dedee8;margin-top:24px;padding-top:16px}.nc-recorded-connection{display:inline-flex;vertical-align:top;flex-direction:column;align-items:flex-start;gap:8px;width:190px;max-width:100%;margin:0 12px 12px 0;padding:16px;border:1px solid #dedee8;border-radius:18px;background:#f7f8fc;color:#235da9;cursor:pointer}.nc-recorded-connection img,.nc-recorded-connection .nc-avatar{width:48px;height:48px;object-fit:cover;border-radius:12px}
+
+.nc-confirmed{color:#17683e;font-weight:600}.nc-profile-context{margin:20px 0;padding-top:16px;border-top:1px solid #dedee8}
