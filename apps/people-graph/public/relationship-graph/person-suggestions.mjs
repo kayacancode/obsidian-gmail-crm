@@ -46,3 +46,17 @@ export function mountPersonSuggestions(container,{graph,personId,onExplore,inten
  }
  form.onsubmit=e=>{e.preventDefault();render();};if(select)select.onchange=render;render();
 }
+
+export function mountPersonSuggestionPopup(container,options){
+ const doc=container.ownerDocument,person=options.graph.nodes.find(n=>n.id===options.personId);if(!person)return;
+ const launch=element(doc,'button','nc-suggestions-launch','Find people for '+person.name);launch.type='button';launch.setAttribute('aria-haspopup','dialog');container.append(launch);
+ const dialog=element(doc,'dialog','nc-suggestions-dialog');dialog.setAttribute('aria-label','Who could '+person.name+' talk to?');
+ const pane=element(doc,'div','nc-suggestions-popup'),close=element(doc,'button','nc-suggestions-close','×');close.type='button';close.setAttribute('aria-label','Close conversation matches');pane.append(close);dialog.append(pane);doc.body.append(dialog);
+ let previousOverflow=null;
+ const unlock=()=>{if(previousOverflow!==null){doc.body.style.overflow=previousOverflow;previousOverflow=null;}};
+ const dismiss=()=>{if(dialog.open)dialog.close();unlock();};
+ close.onclick=dismiss;dialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();dismiss();}},true);dialog.addEventListener('close',unlock);dialog.addEventListener('cancel',e=>{e.preventDefault();dismiss();});dialog.addEventListener('click',e=>{if(e.target===dialog)dismiss();});
+ mountPersonSuggestions(pane,{...options,onExplore:(...args)=>{dismiss();options.onExplore?.(...args);}});
+ launch.onclick=()=>{previousOverflow=doc.body.style.overflow;doc.body.style.overflow='hidden';dialog.showModal();pane.querySelector('input')?.focus();};
+ return {destroy(){dismiss();dialog.remove();launch.remove();}};
+}
