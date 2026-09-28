@@ -10,9 +10,8 @@ try{
 await page.locator('.rg-node[data-node-id="a"]').click();await page.getByRole('button',{name:'Next step',exact:true}).click();
  assert.match(await page.getByRole('navigation',{name:'Path taken'}).innerText(),/You.*Mutual.*John.*Alice/s);
  assert.equal(await page.locator('.rg-canvas').evaluate(el=>getComputedStyle(el).visibility),'visible');
- await page.getByRole('button',{name:'Explore branch to Cora',exact:true}).click();assert.equal(await page.locator('.nc-walk-person').count(),3);assert.match(await page.getByRole('navigation',{name:'Path taken'}).innerText(),/You.*Mutual.*Cora/s);
- await page.getByText('This trail includes shared context; those relationships are unverified.',{exact:true}).waitFor();assert.equal(await page.locator('.nc-walk-person[aria-pressed=true] strong').innerText(),'Cora');await page.waitForTimeout(350);await page.screenshot({path:'/tmp/guided-network-desktop.png'});
- await page.getByRole('button',{name:'Back to previous branch',exact:true}).click();assert.equal(await page.locator('.nc-walk-person').count(),4);assert.equal(await page.locator('.nc-walk-person[aria-pressed=true] strong').innerText(),'Mutual');await page.getByRole('button',{name:'Back to network',exact:true}).click();
+ assert.equal(await page.locator('.nc-nearby').count(),0);await page.getByRole('region',{name:'People for Mutual to talk to'}).waitFor();
+ await page.getByRole('button',{name:'Back to network',exact:true}).click();
  await page.evaluate(()=>app.setGraph({...g,nodes:[...g.nodes,...Array.from({length:5000},(_,i)=>({id:'extra'+i,name:'Contact '+i,type:'person',relationships:[]}))]}));
  assert.ok((await page.locator('.rg-canvas-note').innerText()).includes('focused overview of 5004'));
  const neighborhoodCamera=await page.locator('.rg-scene').getAttribute('style');await page.getByRole('button',{name:'Fit',exact:true}).click();assert.equal(await page.locator('.rg-scene').getAttribute('style'),neighborhoodCamera,'Larger neighborhood should open fitted, not at a forced portrait scale');

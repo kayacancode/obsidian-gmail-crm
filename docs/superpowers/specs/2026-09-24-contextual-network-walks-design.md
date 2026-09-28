@@ -130,3 +130,10 @@ Focused walks include a clickable route breadcrumb, highlighted traversed edges,
 Not completed by this increment: private-context-seeded cross-network retrieval, collaboration between member agents, relationship score recalibration, or the complete demo acceptance sequence on live multi-member data.
 
 The 2026-09-28 correction removes the mutual-contact suggestion fallback: appearing in multiple networks alone cannot feature a person. Mutual contacts remain accessible through the In multiple networks filter.
+
+
+### Person-centered conversation discovery (2026-09-28)
+
+The focused walk no longer displays arbitrary adjacency branches as suggested people. Its conversation section anchors on the selected person (or the requested destination while inspecting a contributor). It compares dated, authorized note and analyzed-email summaries across the shared graph, displaying common terms and source context on both sides. These are explicitly keyword evidence matches, not model-verified recommendations or proof that people know each other. Existing direct contact edges are excluded from suggestions.
+
+A conversation selector and explicit topic field let the viewer guide the match. No candidate is added without dated source evidence; missing context produces an empty state. Exploring a candidate opens their independently recorded route and carries the originating person's reason as context. It never inserts a relationship edge for similarity. People with no recorded route have a one-node exploration view, with source context and the same discovery controls. Complementary-skill inference and member-agent collaboration are not implemented by this increment.

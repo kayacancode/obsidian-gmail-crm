@@ -1,4 +1,5 @@
-import {networkStarts,nearbyBranches,extendWalk} from './guided-network.mjs';
+import {mountPersonSuggestions} from './person-suggestions.mjs';
+import {networkStarts} from './guided-network.mjs';
 import {personWalk} from './person-walk.mjs';
 import {contactCard,mountContactSheet,portrait,personContext,contextBlock} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
@@ -247,20 +248,20 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id,continued=null,startIndex=0){const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
+  function showContact(id,continued=null,startIndex=0,suggestionContext=null){const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=continued||personWalk(graph,id,pathGraph),container=contactContainer();
-    if(!walk.edges.length){root.dataset.contactFocus='false';contactOverlay=mountContactSheet(container,{onClose:clearContact,onExcludeContribution:options.onExcludeContribution,onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);return;}
+
     element.dataset.walkOpen='true';routeStrip=make('section','nc-walk-stage');routeStrip.setAttribute('aria-label','Focused connection walk');routeStrip.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();clearContact();}});
-    const head=make('div','nc-walk-head');head.append(make('h2','','Your path to '+card.person.name));const back=make('button','','Back to network');back.type='button';back.onclick=clearContact;head.append(back);routeStrip.append(head);
+    const head=make('div','nc-walk-head');head.append(make('h2','',(walk.edges.length?'Your path to ':'Explore ')+card.person.name));const back=make('button','','Back to network');back.type='button';back.onclick=clearContact;head.append(back);routeStrip.append(head);
     if(walkBackStack.length){const undo=make('button','','Back to previous branch');undo.type='button';undo.onclick=()=>{const previous=walkBackStack.pop();showContact(previous.walk.nodes.at(-1).id,previous.walk,previous.index);};routeStrip.append(undo);}
     const breadcrumb=make('nav','nc-walk-breadcrumb');breadcrumb.setAttribute('aria-label','Path taken');walk.nodes.forEach((n,i)=>{const b=make('button','',n.memberId===graph.members.find(m=>m.isMe)?.id?'You':n.name);b.type='button';b.onclick=()=>inspect(i);breadcrumb.append(b);});routeStrip.append(breadcrumb);
     routeStrip.append(make('p','nc-muted',walk.message));
-    const chain=make('div','nc-walk-chain'),detail=make('section','nc-walk-evidence');detail.setAttribute('aria-live','polite');
+    const chain=make('div','nc-walk-chain'),detail=make('section','nc-walk-evidence'),suggestions=make('div','nc-suggestions');detail.setAttribute('aria-live','polite');
     const graphWidth=Math.max(650,walk.nodes.length*170+340),graphHeight=330;
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${graphWidth} ${graphHeight}`);svg.setAttribute('class','nc-walk-edges');svg.style.width=graphWidth+'px';svg.style.height=graphHeight+'px';svg.setAttribute('aria-hidden','true');chain.append(svg);
     const point=i=>({x:80+i*170,y:i%2?200:80});
-    let current=startIndex,branchOffset=0;
+    let current=startIndex;
     function inspect(index){current=index;for(const [i,b]of [...breadcrumb.children].entries())b.setAttribute('aria-current',i===index?'step':'false');for(const [i,line]of [...svg.querySelectorAll('line')].entries()){line.dataset.traversed=String(i<index);line.setAttribute('stroke-width',i<index?'4':'2');} const node=walk.nodes[index];for(const [i,b]of [...chain.querySelectorAll('.nc-walk-person')].entries())b.setAttribute('aria-pressed',String(i===index));
       const stops=[...chain.querySelectorAll('.nc-walk-person')],selected=stops[index];
       if(selected)chain.scrollTo({left:Math.max(0,selected.offsetLeft-chain.offsetLeft-(chain.clientWidth-selected.offsetWidth)/2),behavior:'instant'});
@@ -272,13 +273,7 @@ export function mountGraph(element, options = {}) {
 
       if(node.memberId)detail.append(make('p','','Network contributor. The adjoining lines show their recorded contact evidence.'));
       else {highlightContact(node.id);const next=contactCard(graph,node.id,searchAnswer);if(next)contactOverlay.setCard(next,{focus:false});}
-      const branches=nearbyBranches(walk,index,pathGraph,branchOffset).filter(b=>!b.person.memberId);
-      chain.querySelectorAll('.nc-nearby').forEach(n=>n.remove());
-      for(const [j,branch]of branches.entries()){const b=make('button','nc-nearby');b.type='button';b.dataset.personId=branch.person.id;b.setAttribute('aria-label','Explore branch to '+branch.person.name);b.append(portrait(document,branch.person),make('strong','',branch.person.name),make('small','',branch.edge.kind==='personal'?'Recorded contact':'Shared context · unverified'));Object.assign(b.style,{left:(point(index).x-48+j*130)+'px',top:'360px'});b.onclick=()=>{const next=extendWalk(walk,index,branch.person.id,pathGraph);if(next){walkBackStack.push({walk,index});showContact(branch.person.id,next,next.nodes.length-1);}};chain.append(b);
-      const line=document.createElementNS(SVG_NS,'line');for(const [k,v]of Object.entries({x1:point(index).x,y1:point(index).y+65,x2:point(index).x+j*130,y2:360}))line.setAttribute(k,String(v));line.setAttribute('class','nc-nearby');line.setAttribute('stroke','#a7b8cd');line.setAttribute('stroke-dasharray','3 5');svg.append(line);}
-      chain.style.height=branches.length?'500px':'330px';svg.style.height=branches.length?'500px':'330px';svg.setAttribute('viewBox',`0 0 ${graphWidth} ${branches.length?500:330}`);
-      const branchIds=branches.map(b=>b.person.id);
-      if(branchIds.length){detail.append(make('h4','','Other branches to explore'));for(const id of branchIds.slice(0,6)){const branch=make('button','',byId.get(id)?.name||'Person');branch.type='button';branch.onclick=()=>[...chain.querySelectorAll('button.nc-nearby')].find(b=>b.dataset.personId===id)?.click();detail.append(branch);}if(nearbyBranches(walk,index,pathGraph,branchOffset+4).some(b=>!branchIds.includes(b.person.id))){const more=make('button','','Another perspective');more.type='button';more.onclick=()=>{branchOffset+=4;inspect(index);};detail.append(more);}}
+      suggestions.replaceChildren();mountPersonSuggestions(suggestions,{graph,personId:node.memberId?card.person.id:node.id,intent:searchAnswer?.query||'',onExplore:(target,context)=>showContact(target,null,0,context)});
     }
     for(const [i,node]of walk.nodes.entries()){
       const stop=make('button','nc-walk-person');stop.type='button';stop.setAttribute('aria-label','Walk to '+node.name);stop.append(portrait(document,node.memberId?{...node,name:node.memberId===graph.members?.find(m=>m.isMe)?.id?'You':node.name}:node),make('strong','',node.memberId===graph.members?.find(m=>m.isMe)?.id?'You':node.name),make('small','nc-muted',node.memberId?'Contributor':node.company||'Person'));const pos=point(i);Object.assign(stop.style,{left:(pos.x-48)+'px',top:(pos.y-38)+'px'});
@@ -288,7 +283,7 @@ export function mountGraph(element, options = {}) {
     }
     chain.style.setProperty('--walk-width',graphWidth+'px');routeStrip.append(chain);
     if(!walk.edges.length){const known=make('div','nc-known');known.append(make('h3','','What is known'));for(const member of walk.contributors)known.append(make('p','','Shared by '+member.name+' · contribution, not a verified introduction route'));if(!walk.contributors.length)known.append(make('p','','No contributor information available.'));routeStrip.append(known);}
-    const nav=make('div','nc-walk-nav'),progress=make('span','nc-walk-progress');progress.setAttribute('aria-live','polite');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}nav.append(progress);if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail);element.append(routeStrip);const canvasBounds=root.querySelector('.rg-canvas').getBoundingClientRect();routeStrip.style.top=(canvasBounds.top-element.getBoundingClientRect().top)+'px';
+    const nav=make('div','nc-walk-nav'),progress=make('span','nc-walk-progress');progress.setAttribute('aria-live','polite');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}nav.append(progress);if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail,suggestions);if(suggestionContext){const origin=make('div','nc-suggestion-origin');origin.append(make('p','','Exploring for '+suggestionContext.anchorName+' · '+suggestionContext.reason));const returnTo=make('button','','Back to '+suggestionContext.anchorName);returnTo.type='button';returnTo.onclick=()=>showContact(suggestionContext.anchorId);origin.append(returnTo);routeStrip.prepend(origin);}element.append(routeStrip);const canvasBounds=root.querySelector('.rg-canvas').getBoundingClientRect();routeStrip.style.top=(canvasBounds.top-element.getBoundingClientRect().top)+'px';
     contactOverlay=mountContactSheet(container,{companion:routeStrip,onClose:clearContact,onExcludeContribution:options.onExcludeContribution,onSelectStep:step=>{if(step==='route')routeStrip?.scrollIntoView({block:'nearest',behavior:'smooth'});},onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);inspect(current);routeStrip.scrollIntoView({block:'start',behavior:'instant'});
   }
   function showIntroduction(input={}){clearContact();if(!options.onIntroductionRequest)return;const client=createIntroductionClient({workspaceId:graph.workspaceId,fetcher:options.onIntroductionRequest});contactOverlay=mountIntroductionThread(contactContainer(),{...input,client,graph,onClose:clearContact,onPerson:id=>showContact(id)});}
