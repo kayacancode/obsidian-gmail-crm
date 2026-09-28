@@ -1,17 +1,47 @@
 const sourceNames={granola:'Granola note context',granola_mention:'Mention in meeting notes',obsidian_note:'Note mention',gmail_body_derived:'Email context',gmail_subject:'Email subject',calendar:'Calendar event'};
 export function personContext(graph,personId) {
- const seen=new Set();
+ const seen=new Set();let meetingCount=0,otherCount=0;
  return (graph.themeSignals||[]).filter(s=>s.personId===personId&&s.id&&s.summary&&Number.isFinite(Date.parse(s.observedAt)))
  .sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt)).flatMap(s=>{
   const member=(graph.members||[]).find(m=>String(s.evidenceRef||'').startsWith('workspace:'+m.id+':'));
-  const key=[member?.id||'',s.sourceType,s.observedAt,s.summary].join('|');if(seen.has(key))return [];seen.add(key);
+  const key=[member?.id||'',s.sourceType,s.observedAt,s.provenance?.title||'',s.summary].join('|');if(seen.has(key))return [];seen.add(key);
+  if(s.sourceType==='granola'?meetingCount++>=40:otherCount++>=20)return [];
   let url=null;try{const u=new URL(s.provenance?.canonicalUrl);if(u.protocol==='https:'&&!u.username&&!u.password&&(u.hostname==='granola.ai'||u.hostname.endsWith('.granola.ai'))&&u.pathname!=='/')url=u.href;}catch{}
   return [{ref:s.id,summary:s.summary,date:s.observedAt,sourceType:s.sourceType,sourceLabel:sourceNames[s.sourceType]||s.sourceType,title:s.provenance?.title||'',contributor:member?(member.isMe?'You':member.name):graph.source==='workspace'?'Shared source':'You',url}];
- }).slice(0,20);
+ });
 }
 export function latestConversation(evidence,now=Date.now()){
  const meetings=evidence.filter(e=>e.sourceType==='granola'&&Date.parse(e.date)<=now).sort((a,b)=>Date.parse(b.date)-Date.parse(a.date));
  const latest=meetings[0];return latest?meetings.filter(e=>e.date===latest.date&&e.title===latest.title&&e.contributor===latest.contributor):[];
+}
+export function conversationRecaps(evidence,now=Date.now()){
+ const groups=new Map();
+ for(const e of evidence.filter(e=>e.sourceType==='granola'&&Date.parse(e.date)<=now).sort((a,b)=>Date.parse(b.date)-Date.parse(a.date))){
+  const key=JSON.stringify([e.date,e.title,e.contributor]),group=groups.get(key)||{key,date:e.date,title:e.title,contributor:e.contributor,evidence:[],sections:{discussion:[],questions:[],followups:[]},topicsOnly:true};
+  if(group.evidence.some(x=>x.summary===e.summary))continue;
+  group.evidence.push(e);
+  const topic=e.summary.startsWith('Recorded topic:');group.topicsOnly&&=topic;
+  const match=e.summary.match(/^(Ask|Commitment|Follow-up|Intro|Interest):\s*[“"]?([\s\S]*)$/);
+  const category=match&&['Commitment','Follow-up'].includes(match[1])?'followups':match&&['Ask','Intro'].includes(match[1])?'questions':'discussion';
+  const text=topic?e.summary.slice('Recorded topic:'.length).trim():match?match[2].replace(/[”"]$/,''):e.summary;
+  group.sections[category].push({...e,text});groups.set(key,group);
+ }
+ return [...groups.values()];
+}
+export function recapBlock(doc,recap,workspaceId){
+ const block=element(doc,'article','nc-conversation-recap');
+ block.append(element(doc,'small','nc-muted',recap.date.slice(0,10)+' · '+(recap.contributor==='You'?'Your meeting notes':'Shared by '+recap.contributor)),element(doc,'h4','',recap.title||'Meeting conversation'));
+ block.append(element(doc,'p','nc-muted',recap.topicsOnly?'Shared topics only':'Recap from the shared note excerpts'));
+ for(const [key,label]of [['discussion','What came up'],['questions','Questions and introductions'],['followups','Promises and follow-ups']]){
+  if(!recap.sections[key].length)continue;block.append(element(doc,'strong','',label));const list=element(doc,'ul','nc-recap-points');
+  for(const item of recap.sections[key]){const li=element(doc,'li','',item.text);list.append(li);}block.append(list);
+ }
+ if(recap.sections.followups.length)block.append(element(doc,'small','nc-muted','Follow-ups are as recorded at this meeting; completion is not confirmed.'));
+ if(recap.topicsOnly){block.append(element(doc,'p','nc-muted','Detailed discussion has not been shared.'));
+  if(workspaceId&&recap.contributor==='You'){const link=element(doc,'a','nc-text','Choose what meeting context I share →');link.href='/accounts?tab=workspace&workspace='+encodeURIComponent(workspaceId);block.append(link);}
+ }
+ const sources=element(doc,'details','nc-recap-sources');sources.append(element(doc,'summary','','Source excerpts · '+recap.evidence.length));for(const e of recap.evidence)sources.append(contextBlock(doc,e));block.append(sources);
+ return block;
 }
 export function contextBlock(doc,e) {
  const item=element(doc,'article','nc-memory');
@@ -27,7 +57,7 @@ export function contactCard(graph,personId,answer){
  const ready=!person.sources?.includes('obsidian')||person.identityMatchReady===true;
  const evidence=personContext(graph,personId);
  const relationships=(person.relationships||[]).map(r=>({...r,isMe:r.memberId===self,memberName:graph.members?.find(m=>m.id===r.memberId)?.name||r.memberName||'Contributor'})).sort((a,b)=>Number(b.isMe)-Number(a.isMe)||(b.score??-1)-(a.score??-1));
- return {person,relationships,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>r.confirmedAt||['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.confirmedAt||r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.confirmedAt||((r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
+ return {person,relationships,workspaceId:graph.source==='workspace'?graph.workspaceId:null,identityPending:!ready,contributors:(graph.members||[]).filter(m=>person.relationships?.some(r=>r.memberId===m.id)),relationshipUnverified:!(person.relationships||[]).some(r=>r.confirmedAt||['email','meeting'].includes(r.evidenceCategory)),query:answer?.query||'',reasons:answer?.results?.find(p=>p.personId===personId)?.reasons||[],evidence,novelty:person.relationships?.some(r=>(r.confirmedAt||r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&r.memberId===self)?'recorded_contact':'no_recorded_direct_contact',routes:ready?(person.relationships||[]).filter(r=>(r.confirmedAt||((r.evidenceCategory==='email'||r.evidenceCategory==='meeting')&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)))&&r.memberId!==self&&graph.members?.some(m=>m.id===r.memberId)).map(r=>({...r,memberName:graph.members.find(m=>m.id===r.memberId).name})).sort((a,b)=>(b.score??-1)-(a.score??-1)):[]};
 }
 export function element(doc,tag,className='',text){const el=doc.createElement(tag);el.className=className;if(text!==undefined)el.textContent=text;return el;}
 export function action(doc,label,fn,className=''){const el=element(doc,'button',className,label);el.type='button';el.addEventListener('click',fn);return el;}
@@ -46,18 +76,20 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
   if(reasons[0])panel.append(element(doc,'p','nc-muted','Recorded context · '+(reasons[0].date||reasons[0].observedAt||'').slice(0,10)));
  }
  if(step==='person'){
-  const conversation=latestConversation(card.evidence),context=element(doc,'section','nc-profile-context');
+  const recaps=conversationRecaps(card.evidence),context=element(doc,'section','nc-profile-context');
   context.append(element(doc,'h3','','Last shared conversation'));
-  if(conversation.length){for(const e of conversation)context.append(contextBlock(doc,e));
-   if(conversation.every(e=>e.summary.startsWith('Recorded topic:')))context.append(element(doc,'p','nc-muted','The contributor shared topics and meeting titles. Detailed notes are not shared.'));
+  if(recaps.length){context.append(recapBlock(doc,recaps[0],card.workspaceId));
+   if(recaps.length>1)context.append(action(doc,'Earlier conversations ('+(recaps.length-1)+') →',()=>api.setStep('evidence'),'nc-text'));
    context.append(element(doc,'small','nc-muted','Latest meeting context available here; this may not be your most recent meeting with this person.'));
   }else context.append(element(doc,'p','nc-muted','No shared meeting context linked to this person yet.'));
   panel.append(context);
  }
  if(step==='evidence'){
-  panel.append(element(doc,'h3','','Supporting memory'));
+  panel.append(element(doc,'h3','','Conversation memory'));
   if(!card.evidence.length)panel.append(element(doc,'p','nc-muted','No shared meeting or note context is available for this person.'));
-  for(const e of card.evidence)panel.append(contextBlock(doc,e));
+  for(const recap of conversationRecaps(card.evidence))panel.append(recapBlock(doc,recap,card.workspaceId));
+  const other=card.evidence.filter(e=>e.sourceType!=='granola');if(other.length)panel.append(element(doc,'h3','','Other shared context'));
+  for(const e of other)panel.append(contextBlock(doc,e));
  }
  if(step==='route'||step==='person'){
   panel.append(element(doc,'h3','',incoming?'Why this person is here':own?'Your connection':'Connections in this network'));

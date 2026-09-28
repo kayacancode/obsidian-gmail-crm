@@ -36,3 +36,15 @@ test('confirmed relationships are attributed and form paths without inflating sc
  assert.equal(contactCard(g,'p').routes[0].memberId,'j');assert.equal(contactCard(g,'p').relationships[0].score,null);
  const paths=sharedPathGraph(g);assert.equal(paths.edges[0].confirmedAt,'2026-09-28T00:00:00Z');assert.match(paths.edges[0].evidence[0].title,/confirmed by John/);
 });
+test('conversation recaps separate contributors and categorize only source statements',async()=>{
+ const {conversationRecaps}=await import('../public/relationship-graph/contact-sheet.mjs');
+ const base={sourceType:'granola',date:'2026-09-20',title:'Design sync',contributor:'John'};
+ const recaps=conversationRecaps([{...base,ref:'1',summary:'Interest: “Agent memory interfaces”'},{...base,ref:'2',summary:'Commitment: “I will send the prototype”'},{...base,ref:'3',summary:'Ask: “Who could test it?”'},{...base,ref:'4',contributor:'You',summary:'Recorded topic: Agent memory'},{...base,sourceType:'granola_mention',ref:'5',summary:'Mention only'}]);
+ assert.equal(recaps.length,2);assert.equal(recaps[0].sections.discussion[0].text,'Agent memory interfaces');assert.equal(recaps[0].sections.followups[0].ref,'2');assert.equal(recaps[0].sections.questions[0].text,'Who could test it?');assert.equal(recaps[1].topicsOnly,true);
+});
+
+test('recent email metadata does not hide the latest meeting recap',async()=>{
+ const {personContext,conversationRecaps}=await import('../public/relationship-graph/contact-sheet.mjs');
+ const signals=Array.from({length:25},(_,i)=>({id:'email'+i,personId:'p',summary:'Email '+i,sourceType:'gmail_subject',observedAt:'2026-09-25'}));signals.push({id:'meeting',personId:'p',summary:'Interest: “Agent memory”',sourceType:'granola',observedAt:'2026-09-01'});
+ assert.equal(conversationRecaps(personContext({...graph,themeSignals:signals},'p'))[0].date,'2026-09-01');
+});

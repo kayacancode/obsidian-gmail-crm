@@ -58,3 +58,5 @@
 .nc-recorded-connections{border-top:1px solid #dedee8;margin-top:24px;padding-top:16px}.nc-recorded-connection{display:inline-flex;vertical-align:top;flex-direction:column;align-items:flex-start;gap:8px;width:190px;max-width:100%;margin:0 12px 12px 0;padding:16px;border:1px solid #dedee8;border-radius:18px;background:#f7f8fc;color:#235da9;cursor:pointer}.nc-recorded-connection img,.nc-recorded-connection .nc-avatar{width:48px;height:48px;object-fit:cover;border-radius:12px}
 
 .nc-confirmed{color:#17683e;font-weight:600}.nc-profile-context{margin:20px 0;padding-top:16px;border-top:1px solid #dedee8}
+
+.nc-conversation-recap{padding:18px;background:#f5f6fa;border-radius:18px;margin:12px 0}.nc-conversation-recap h4{font-size:18px;margin:10px 0}.nc-recap-points{padding-left:20px;margin:8px 0 18px}.nc-recap-points li{margin:8px 0;line-height:1.5;overflow-wrap:anywhere}.nc-recap-sources{border-top:1px solid #dedee8;margin-top:16px;padding-top:12px}.nc-recap-sources summary{color:#2468b5;cursor:pointer}.nc-recap-sources .nc-memory{padding:12px 0;background:transparent}
