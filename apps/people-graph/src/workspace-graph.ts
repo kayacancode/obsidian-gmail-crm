@@ -94,15 +94,32 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}
  return graph;
 }
-export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:string){
+export async function searchWorkspace(env:ShareEnv,id:string,me:string,query:string,onEvent?:(event:Record<string,unknown>)=>Promise<void>){
  const graph=await buildWorkspaceGraph(env,id,me);
  const signalsByPerson=new Map<string,typeof graph.themeSignals>(),contextsByPerson=new Map<string,string[]>();
  for(const signal of graph.themeSignals){if(!signal.personId)continue;const list=signalsByPerson.get(signal.personId)||[];list.push(signal);signalsByPerson.set(signal.personId,list);}
  for(const edge of graph.edges)for(const id of [edge.source,edge.target]){const list=contextsByPerson.get(id)||[];list.push(...edge.contexts);contextsByPerson.set(id,list);}
  const people=graph.nodes.map(n=>{const signals=signalsByPerson.get(n.id)||[],themeIds=new Set(signals.map(s=>s.themeId));return {personId:n.id,name:n.name,company:n.company,lastContact:null,evidence:signals.map(s=>({summary:s.summary,sourceType:s.sourceType,observedAt:s.observedAt,title:s.provenance?.title})),themes:graph.themes.filter(t=>themeIds.has(t.id)).map(t=>t.name),contexts:contextsByPerson.get(n.id)||[]};});
+ const emit=async(event:Record<string,unknown>)=>{if(onEvent){await assertWorkspaceRevision(env,id,me,graph.revision);await onEvent({...event,revision:graph.revision});}};
+ await emit({type:'start',label:'Shared network loaded',people:graph.nodes.length,unavailable:graph.coverage.unavailable.length});
+ if(onEvent)for(const member of graph.members){
+  const memberPeople=new Set(graph.nodes.filter(n=>n.relationships.some(r=>r.memberId===member.id)).map(n=>n.id)),memberContexts=new Map<string,string[]>();
+  for(const edge of graph.edges)if(edge.contributors.includes(member.id))for(const personId of [edge.source,edge.target]){const values=memberContexts.get(personId)||[];values.push(...edge.evidence.filter(v=>v.owner===member.name).map(v=>v.text));memberContexts.set(personId,values);}
+  const scoped=people.filter(p=>memberPeople.has(p.personId)).map(p=>{
+   const signals=(signalsByPerson.get(p.personId)||[]).filter(s=>String(s.evidenceRef).startsWith('workspace:'+member.id+':')),themeIds=new Set(signals.map(s=>s.themeId));
+   const contexts=memberContexts.get(p.personId)||[];
+   return {...p,evidence:signals.map(s=>({summary:s.summary,sourceType:s.sourceType,observedAt:s.observedAt,title:s.provenance?.title})),themes:graph.themes.filter(t=>themeIds.has(t.id)).map(t=>t.name),contexts};
+  });
+  const matches=keywordRank(query,scoped).filter(p=>p.hits>0);
+  await emit({type:'scope',memberId:member.id,label:member.name,people:scoped.length,matches:matches.length});
+  for(const candidate of matches.slice(0,3))await emit({type:'candidate',memberId:member.id,personId:candidate.personId,label:member.name,reason:candidate.evidence.length?'Found a keyword match in the shared profile or context.':'Found a profile or recorded-edge keyword match; no person-linked notes shared.',evidence:candidate.evidence.slice(0,2)});
+ }
  const ranked=keywordRank(query,people);let scores=keywordScores(ranked),checked=false;
+ await emit({type:'ranking',label:env.TYPESAFE_API_KEY?'Checking candidate relevance with Jev':'Ranking keyword matches',candidates:ranked.length});
  if(env.TYPESAFE_API_KEY&&ranked.length){try{scores=await jevScores(env,query,ranked,AbortSignal.timeout(20000));checked=true;}catch{}}
- await assertWorkspaceRevision(env,id,me,graph.revision);const results=topResults(query,ranked,scores,{checked});return {query,results,cards:buildAnswerCards(graph,results),workspaceId:id,revision:graph.revision,checked,coverage:graph.coverage};
+ await assertWorkspaceRevision(env,id,me,graph.revision);const results=topResults(query,ranked,scores,{checked});
+ for(const card of buildAnswerCards(graph,results).slice(0,5))await emit({type:'relationship',personId:card.personId,label:'Relationship check',reason:card.routes.length?'Found '+card.routes.length+' contributor route(s); inspect the evidence before requesting an introduction.':'No other contributor introduction route is supported in the shared data.',routes:card.routes});
+ return {query,results,cards:buildAnswerCards(graph,results),workspaceId:id,revision:graph.revision,checked,coverage:graph.coverage};
 }
 export async function draftWorkspace(env:ShareEnv,id:string,me:string,personId:string,memberId:string){
  const graph=await buildWorkspaceGraph(env,id,me),person=graph.nodes.find(n=>n.id===personId),member=graph.members.find(m=>m.id===memberId);

@@ -1,3 +1,4 @@
+import {mountTraversal} from './relationship-graph/traversal.mjs';
 const PRIVATE_STATE = { lens: 'my', relevance: null, relevanceEnvelope: null, evidence: null, retrievalPreview: null, publicPreview: null, retrievalJob: null, publicJob: null, workflowMessage: '' };
 const EMPTY_STATE = Object.freeze({ phase: 'idle', account: null, graph: null, source: 'best', message: '', ...PRIVATE_STATE });
 // An address safe to place inside a mailto: link without opening header injection
@@ -17,7 +18,7 @@ function abortableSleep(ms, signal) {
 
 export function createRelationshipController({ fetchImpl = fetch, origin = location.origin, onState = () => {}, sleep = abortableSleep } = {}) {
   let state = { ...EMPTY_STATE };
-  let generation = 0;
+  let generation = 0, searchAbort=null;
   let controller = null;
   let tokenController = null;
   let authenticatedAccount = null;
@@ -34,7 +35,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     onState({ ...state });
   };
   const invalidate = () => {
-    generation += 1;
+    generation += 1;searchAbort?.abort();
     controller?.abort();
     tokenController?.abort();
     controller = null;
@@ -146,8 +147,20 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     return request(workspacePath()?workspacePath()+'/draft':'/api/people/draft', {body:workspacePath()?{personId,memberId}:{personId}}, ctx);
   }
   /** "Who can help with…" over the owner's own graph; the server decides the ranking. */
-  async function searchNetwork(query) {
+  async function searchNetwork(query,onEvent) {
     const ctx = context();
+    if(workspacePath()&&onEvent){
+      searchAbort?.abort();searchAbort=new AbortController();const searchSignal=AbortSignal.any([ctx.signal,searchAbort.signal]);
+      const response=await fetchImpl(workspacePath()+'/search-stream',{method:'POST',headers:{'content-type':'application/json',origin},body:JSON.stringify({query}),signal:searchSignal,cache:'no-store'});current(ctx);
+      if(response.status===401){signedOut('Your session expired.');throw Error('Your session expired.');}
+      if(!response.ok||!response.body)throw Error('Could not start the shared search.');
+      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',answer;
+      try{for(;;){const {done,value}=await reader.read();current(ctx);buffer+=decoder.decode(value,{stream:!done});if(buffer.length>2000000)throw Error('Search event too large');let newline;
+        while((newline=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);if(!line.trim())continue;const event=JSON.parse(line);if(event.type==='error')throw Error(event.message);if(event.type==='result')answer=event.answer;onEvent(event);}
+        if(done)break;
+      }}finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+      if(!answer)throw Error('Search ended before an answer arrived.');return answer;
+    }
     return request(workspacePath()?workspacePath()+'/search':'/api/people/search', {body:{query}}, ctx);
   }
   async function previewPublicSource(input) {
@@ -338,6 +351,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
 
   return {
+    cancelNetworkSearch:()=>searchAbort?.abort(),
     introductionRequest:(path,body,signal)=>request(path,{body,signal},context()),
     async confirmRelationship(personId,confirmed=true){const path=workspacePath();if(!path)throw Error('Select a shared network first');await request(path+'/relationship-confirmations',{body:{personId},method:confirmed?'POST':'DELETE'},context());await load(state.source);},
     async excludeContribution(personId,restore=false,expectedSource=state.source,expectedAccount=state.account){if(expectedSource!==state.source||expectedAccount!==state.account)throw Error('Return to the original network to undo');const path=workspacePath();if(!path)throw Error('Select a shared network first');await request(path+'/excluded-people',{body:{personId},method:restore?'DELETE':'POST'},context());await load(state.source);},
@@ -383,7 +397,7 @@ async function startBrowserApp() {
   const networkStatus = $('#network-search-status');
   const networkResults = $('#network-search-results');
   const networkLabel = $('#network-search-label');
-  let networkRun = 0;
+  let networkRun = 0, traversal=null;
   const meetingPreviewButton = document.createElement('button');
   meetingPreviewButton.id = 'meeting-preview';meetingPreviewButton.type = 'button';meetingPreviewButton.textContent = 'Meeting preview';meetingPreviewButton.hidden = true;
   $('#refresh').after(meetingPreviewButton);
@@ -571,7 +585,7 @@ async function startBrowserApp() {
   function showMode(mode){for(const key of ['wander','answer'])$(`#mode-${key}`).setAttribute('aria-pressed',String(key===mode));}
   function clearNetworkSearch({ input = true, answer = true } = {}) {
     if(answer){graphInstance?.setSearchAnswer?.(null);showMode('wander');}
-    networkRun += 1;
+    networkRun += 1;controller.cancelNetworkSearch();traversal?.destroy();traversal=null;
     if (input) networkQuery.value = '';
     networkStatus.textContent = '';
     networkLabel.textContent = '';
@@ -610,10 +624,13 @@ async function startBrowserApp() {
     graphInstance?.setSearchAnswer?.(null);
     networkResults.replaceChildren(); networkResults.hidden = true; networkLabel.textContent = '';
     networkStatus.textContent = 'Searching\u2026';
+    traversal?.destroy();traversal=null;
+    if(mountedGraph?.source==='workspace'){const stage=document.createElement('section');$('#graph').before(stage);traversal=mountTraversal(stage,{graph:mountedGraph,query,onOpen:id=>graphInstance?.select(id)});}
     let value;
-    try { value = await controller.searchNetwork(query); }
+    try { value = await controller.searchNetwork(query,event=>{if(run===networkRun)traversal?.push(event);}); }
     catch (error) {
       if (run !== networkRun) return;
+      traversal?.fail(error.message);
       // request() throws generic "Context request failed (503)." copy; prefer the server's own
       // message when it sent one, exactly as the draft dialog does.
       networkStatus.textContent = error.name === 'AbortError' ? ''
@@ -622,7 +639,7 @@ async function startBrowserApp() {
     }
     if (run !== networkRun) return;
     const results = Array.isArray(value.results) ? value.results : [];
-    graphInstance?.setSearchAnswer?.({query,results,checked:value.checked===true});
+    graphInstance?.setSearchAnswer?.({query,results,checked:value.checked===true,deferSelection:mountedGraph?.source==='workspace'});
     networkStatus.textContent = results.length
       ? `${results.length} ${results.length === 1 ? 'person' : 'people'} in your network`
       : 'No one in your network matches yet.';
@@ -738,7 +755,7 @@ async function startBrowserApp() {
       onRankIntroductions:()=>controller.rankIntroductions(),
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
       onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });
-    else if (mountedGraph !== state.graph) graphInstance.setGraph(state.graph);
+    else if (mountedGraph !== state.graph) {clearNetworkSearch();graphInstance.setGraph(state.graph);}
     mountedGraph = state.graph;
     if(state.relevanceEnvelope && renderedEnvelope !== state.relevanceEnvelope){renderedEnvelope=state.relevanceEnvelope;graphInstance.setRelevance(renderedEnvelope,state.lens);}
     renderSessionTrails();

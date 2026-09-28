@@ -34,7 +34,8 @@
     "test:person-suggestions-browser": "node tests/person-suggestions-browser.mjs",
     "test:guided-network-browser": "node tests/guided-network-browser.mjs",
     "test:shared-paths-browser": "node tests/shared-paths-browser.mjs",
-    "test:introduction-browser": "node tests/introduction-browser.mjs"
+    "test:introduction-browser": "node tests/introduction-browser.mjs",
+    "test:traversal-browser": "node tests/traversal-browser.mjs && node tests/traversal-host-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",

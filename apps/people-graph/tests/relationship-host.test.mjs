@@ -377,3 +377,12 @@ test('signed-out workspace deep link survives Google sign-in',async()=>{
  const calls=[];const controller=createRelationshipController({origin:'https://people.test',fetchImpl:async(path)=>{calls.push(path);if(path==='/api/accounts')return new Response('{}',{status:401});if(path==='/api/session')return json({account:'new@example.com'});return json({account:'new@example.com',graph:{source:'workspace',nodes:[],edges:[]}});}});
  await controller.resume('workspace:team');await controller.signIn('google-token');assert.ok(calls.includes('/api/workspaces/team/graph'));assert.ok(!calls.includes('/api/graph'));
 });
+test('shared traversal reads fragmented stream events and returns the real answer',async()=>{
+ const events=[{type:'scope',label:'José'},{type:'result',answer:{results:[{personId:'person-a'}]}}],bytes=new TextEncoder().encode(events.map(e=>JSON.stringify(e)+'\n').join(''));
+ const {controller}=await workflowFixture(path=>{
+  if(path.endsWith('/graph'))return json({graph:{...graph,source:'workspace',workspaceId:'test'}});
+  if(path.endsWith('/search-stream'))return new Response(new ReadableStream({start(c){for(let i=0;i<bytes.length;i+=3)c.enqueue(bytes.slice(i,i+3));c.close();}}));
+  return json({});
+ });
+ await controller.load('workspace:test');const seen=[];const answer=await controller.searchNetwork('design',e=>seen.push(e));assert.equal(seen[0].label,'José');assert.equal(answer.results[0].personId,'person-a');
+});

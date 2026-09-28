@@ -41,6 +41,20 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
   }
   const introPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/intro-requests(?:\/([^/]+)(\/reply)?)?$/);
   if(introPath)return json(await introductionRoute(env,me,introPath[1],introPath[2],Boolean(introPath[3]),method,body,url.searchParams.get('cursor')||undefined));
+  const streamPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/search-stream$/);
+  if(streamPath){
+   if(method!=='POST')return json({error:'method_not_allowed'},405);
+   if(typeof body.query!=='string'||!body.query.trim()||body.query.length>200)deny(400,'invalid_query');
+   const id=streamPath[1];memberOf(await readWorkspace(env.DB,id),me);
+   let cancelled=false;const encoder=new TextEncoder();
+   const stream=new ReadableStream<Uint8Array>({
+    async start(controller){const emit=async(event:Record<string,unknown>)=>{if(cancelled||request.signal.aborted)throw Error('cancelled');controller.enqueue(encoder.encode(JSON.stringify({...event,at:new Date().toISOString()})+'\n'));};
+     try{const answer=await searchWorkspace(env,id,me,body.query.trim(),emit);await emit({type:'result',answer});}
+     catch{if(!cancelled&&!request.signal.aborted)controller.enqueue(encoder.encode(JSON.stringify({type:'error',message:'Search stopped. Access or network state changed; retry the query.'})+'\n'));}
+     finally{if(!cancelled)controller.close();}
+    },cancel(){cancelled=true;}
+   });return new Response(stream,{headers:{'content-type':'application/x-ndjson','cache-control':'no-store','x-content-type-options':'nosniff'}});
+  }
   const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft|introductions)$/);
   if(graphPath){const [,id,action]=graphPath;
    if(action==='graph'&&method==='GET')return json({account:me,graph:await buildWorkspaceGraph(env,id,me)});

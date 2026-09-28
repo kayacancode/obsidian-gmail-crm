@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {workspaceFixture} from './workspace-routes.test';
-import {buildWorkspaceGraph} from '../src/workspace-graph';
+import {buildWorkspaceGraph,searchWorkspace} from '../src/workspace-graph';
 async function setup(){
  const f=workspaceFixture(),id=await f.create(),token=await f.invite(id,'member@example.com');
  await f.call('workspace-invites/accept','POST',{token},'member@example.com');
@@ -238,4 +238,24 @@ test('relationship confirmation belongs only to the contributor and can be revok
  assert.equal(next.nodes[0].relationships.find(r=>r.memberName==='member@example.com')?.confirmedAt,undefined);
  assert.equal((await f.call(path,'DELETE',{personId})).status,200);
  assert.ok((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes[0].relationships.every(r=>!r.confirmedAt));
+});
+test('streamed search reports real contributor searches and ends with the answer',async()=>{
+ const f=await setup(),response=await f.call('/'+f.id+'/search-stream','POST',{query:'Contact'});
+ assert.equal(response.status,200);assert.match(response.headers.get('content-type')||'',/ndjson/);
+ const events=(await response.text()).trim().split('\n').map(s=>JSON.parse(s));
+ assert.equal(events.filter(e=>e.type==='scope').length,2);assert.ok(events.some(e=>e.type==='candidate'));
+ assert.equal(events.at(-1).type,'result');assert.equal(events.at(-1).answer.results[0].name,'Contact Name');
+ assert.equal((await f.call('/'+f.id+'/search-stream','POST',{query:'Contact'},'outsider@example.com')).status,403);
+});
+test('contributor search lanes use only evidence from that contributor',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName;
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),exportWorkspaceSlice:async()=>{const value=await original(owner).exportWorkspaceSlice();if(owner==='owner@example.com'){Object.assign(value.slice,{themes:[{id:'memory',name:'Agent memory'}],signals:[{email:'contact@example.test',themeId:'memory',summary:'Recorded topic: Agent memory',observedAt:'2026-09-01',sourceType:'granola',confidence:1}]});}return value;}});
+ const response=await f.call('/'+f.id+'/search-stream','POST',{query:'agent memory'}),events=(await response.text()).trim().split('\n').map(v=>JSON.parse(v));
+ const candidates=events.filter(e=>e.type==='candidate');assert.ok(candidates.length);assert.ok(candidates.every(e=>e.label==='owner@example.com'));
+});
+
+test('traversal stops emitting evidence after sharing revision changes',async()=>{
+ const f=await setup(),events:string[]=[];
+ await assert.rejects(searchWorkspace(f.env,f.id,'owner@example.com','Contact',async e=>{events.push(String(e.type));if(e.type==='scope')await f.call('/'+f.id+'/contribution','PUT',{enabled:false,scope:{kind:'all'},level:'names'});}),/workspace_changed_retry/);
+ assert.deepEqual(events,['start','scope']);
 });

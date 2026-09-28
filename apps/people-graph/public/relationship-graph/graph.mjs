@@ -1865,7 +1865,7 @@ export function mountGraph(element, options = {}) {
         focusCanvas(searchAnswer.results.map(p=>p.personId));
       }
       render();
-      if(searchAnswer?.results.length&&graph.source==='workspace'&&graph.members.length)showContact(searchAnswer.results[0].personId);
+      if(searchAnswer?.results.length&&!searchAnswer.deferSelection&&graph.source==='workspace'&&graph.members.length)showContact(searchAnswer.results[0].personId);
     },
     setMeetingPreview(input) {
       if (destroyed) return;
