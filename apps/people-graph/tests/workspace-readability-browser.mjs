@@ -76,7 +76,7 @@ try {
   const pair={id:'a:b',personIds:['a','b'],topics:['Interface design'],reason:'Both have recorded context about interface design.',evidence:[{personId:'a',source:'obsidian_note',date:'2026-09-23',summary:'Creative tools interfaces'},{personId:'b',source:'granola',date:'2026-09-22',summary:'Interfaces for artists'}]};
   window.introFixture={source:'workspace',nodes:[{id:'a',name:'Ada',type:'person'},{id:'b',name:'Bo',type:'person'},{id:'c',name:'Other',type:'person'}],edges:[],introductionSuggestions:[pair]};window.testGraph.setGraph(window.introFixture);
  });
- await page.getByRole('button',{name:'Discover · 1',exact:true}).click();
+ await page.getByRole('button',{name:'Discover · 1',exact:true}).click();await page.getByText('Connect two people in the network',{exact:true}).click();
  assert.ok((await page.getByRole('region',{name:'Suggested introductions'}).innerText()).includes('Creative tools interfaces'));
  await page.getByRole('button',{name:'Explore this pair',exact:true}).click();assert.equal(await page.locator('.rg-node').count(),2);
  assert.equal(await page.locator('.rg-canvas line').count(),0,'A suggested introduction must not create a recorded edge');
@@ -87,17 +87,17 @@ try {
   window.testGraph.destroy();const {mountGraph}=await import('/relationship-graph/graph.mjs');window.rankCalls=0;
   window.testGraph=mountGraph(document.querySelector('#graph'),{graph:window.introFixture,onRankIntroductions:()=>{window.rankCalls++;return new Promise(resolve=>{window.finishRanking=resolve;});}});
  });
- await page.getByRole('button',{name:'Discover · 1',exact:true}).click();
+ await page.getByRole('button',{name:'Discover · 1',exact:true}).click();await page.getByText('Connect two people in the network',{exact:true}).click();
  await page.evaluate(()=>{window.beforeRankingNode=document.querySelector('.rg-node');window.finishRanking({suggestions:window.introFixture.introductionSuggestions,checked:true});});
  await page.getByText('Ranked by Jev using shared evidence.',{exact:true}).waitFor();
  assert.ok(await page.evaluate(()=>window.beforeRankingNode===document.querySelector('.rg-node')),'Background ranking must not rebuild the map');
  await page.getByRole('button',{name:'Close suggested introductions',exact:true}).click();
- await page.getByRole('button',{name:'Discover · 1',exact:true}).click();assert.equal(await page.evaluate(()=>window.rankCalls),1);
+ await page.getByRole('button',{name:'Discover · 1',exact:true}).click();await page.getByText('Connect two people in the network',{exact:true}).click();assert.equal(await page.evaluate(()=>window.rankCalls),1);
  await page.evaluate(()=>{const h=document.createElement('header');h.style.cssText='position:fixed;inset:0 0 auto;height:100px;background:white;z-index:50';document.body.prepend(h);});
  for(const width of [589,390,900]){
   await page.getByRole('button',{name:'Close suggested introductions',exact:true}).click();
   await page.setViewportSize({width,height:837});
-  await page.getByRole('button',{name:'Discover · 1',exact:true}).click();
+  await page.getByRole('button',{name:'Discover · 1',exact:true}).click();await page.getByText('Connect two people in the network',{exact:true}).click();
   const panel=page.getByRole('region',{name:'Suggested introductions'});
   assert.ok(await panel.evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.top<100&&r.bottom<=innerHeight+1&&r.left>=0&&r.right<=innerWidth+1;}),'Discover must open inside the visible viewport');
   assert.ok(await page.getByRole('button',{name:'Close suggested introductions',exact:true}).evaluate(e=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&e.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));}));

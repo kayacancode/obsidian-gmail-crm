@@ -1,3 +1,4 @@
+import {discoveryCards} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
 import {mountPersonSuggestionPopup} from './person-suggestions.mjs';
 import {networkStarts,nearbyBranches,extendWalk} from './guided-network.mjs';
@@ -425,10 +426,10 @@ export function mountGraph(element, options = {}) {
       const bar=make('section','rg-topic-bar rg-topic-filters');bar.setAttribute('aria-label','Topics and themes');
       const navigation=make('nav','rg-network-navigation');navigation.setAttribute('aria-label','Network views');
       const all=button('People','filter-topic','rg-filter-chip');all.setAttribute('aria-pressed',String(panelMode!=='introductions'));navigation.append(all);
-      const discover=button('Discover','open-introductions','rg-filter-chip');discover.setAttribute('aria-pressed',String(panelMode==='introductions'));navigation.append(discover);bar.append(navigation);
+      const discover=button('Discover','open-introductions','rg-filter-chip');discover.setAttribute('aria-pressed',String(panelMode==='introductions'));navigation.append(discover);if(options.onIntroductionRequest)navigation.append(button('Intro requests','open-intro-requests','rg-filter-chip'));bar.append(navigation);
       const bridges=sharedConnectionIds(),filters=make('div','rg-network-filters');filters.setAttribute('aria-label','People filters');
-      const shared=button(`In multiple networks · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId=activeThemeId==='__connections'?'':'__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));shared.title='People matched across contributors, not a measure of relationship strength';filters.append(shared);
-      if(activeThemeId){const clear=button('Clear filter','filter-topic','rg-filter-chip');filters.append(clear);}bar.append(filters);
+      const shared=button(`Shared contacts · ${bridges.mutual.size}`,'filter-topic','rg-filter-chip');shared.dataset.themeId=activeThemeId==='__connections'?'':'__connections';shared.setAttribute('aria-pressed',String(activeThemeId==='__connections'));shared.title='People matched across contributors, not a measure of relationship strength';filters.append(shared);
+      if(activeThemeId){const clear=button('Clear filter','filter-topic','rg-filter-chip');filters.append(clear);}if(panelMode!=='introductions')bar.append(filters);
       if(themes.length){const topics=make('div','rg-filter-chips');topics.setAttribute('aria-label','Topic filters');topics.append(make('span','rg-topic-caption','Topics'));
        for(const theme of themes){const chip=button(`${theme.name} · ${theme.nodeIds.length} ${theme.nodeIds.length===1?'person':'people'}`,'filter-topic','rg-filter-chip');chip.dataset.themeId=theme.themeId;chip.setAttribute('aria-pressed',String(activeThemeId===theme.themeId));chip.title='Unique people with shared evidence for this topic';topics.append(chip);}bar.append(topics);
        const covered=new Set(themes.flatMap(t=>t.nodeIds)).size;bar.append(make('p','rg-source',`${covered} of ${graph.nodes.filter(n=>n.type==='person').length} people have shared topic evidence. Counts are people, not meetings. Select a topic to explore its cluster and latest shared context.`));
@@ -945,21 +946,23 @@ export function mountGraph(element, options = {}) {
   function renderIntroductions(){
     const panel=make('section','rg-context-panel rg-introductions');panel.setAttribute('aria-label','Suggested introductions');
     const close=button('×','close-panel','rg-close');close.setAttribute('aria-label','Close suggested introductions');
-    panel.append(close,make('p','rg-eyebrow','Discover'),make('h2','','People worth connecting'));
+    panel.append(close,make('p','rg-eyebrow','Discover'),make('h2','','Who could you meet?'));
     const status=make('p','rg-source',introductionState==='loading'?'Showing shared context now. Jev is checking fit in the background…':introductionState==='checked'?'Ranked by Jev using shared evidence.':introductionState==='fallback'?'Based on shared context · Jev ranking unavailable.':'Based on shared context.');status.setAttribute('role','status');panel.append(status);
-    panel.append(make('p','rg-copy','No connection recorded. Their shared context suggests a conversation could be useful.'));
+    panel.append(make('p','rg-copy','Meet someone new through the people sharing this network. Explore the evidence, follow the path, and ask the contributor for an introduction.'));
+    panel.append(discoveryCards(document,graph,introductionCards,{onWalk:id=>showContact(id),onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+    const pairSection=make('details','rg-discovery-pairs');pairSection.append(make('summary','','Connect two people in the network'));
     const cards=introductionCards.filter(p=>!introductionSkipped.has(p.id));
-    if(!cards.length)panel.append(make('p','rg-copy',introductionCards.length?'You’ve seen these suggestions. New shared context can uncover more.':introductionState==='checked'?'No strong introduction suggestions from the available evidence.':'Not enough shared context yet. Contributors can share themes in Accounts → Shared networks. Vaults also need a fresh push with plugin 0.9.4 to match identities.'));
+    if(!cards.length)pairSection.append(make('p','rg-copy',introductionCards.length?'You’ve seen these suggestions. New shared context can uncover more.':introductionState==='checked'?'No strong introduction suggestions from the available evidence.':'Not enough shared context yet. Contributors can share themes in Accounts → Shared networks. Vaults also need a fresh push with plugin 0.9.4 to match identities.'));
     for(const pair of cards.slice(0,3)){
       const card=make('article','rg-introduction-card');
       card.append(make('h3','',pair.personIds.map(id=>byId.get(id)?.name||'Person').join(' + ')),make('p','rg-copy',pair.reason));
       for(const item of pair.evidence.slice(0,4))card.append(make('p','rg-source',`${byId.get(item.personId)?.name||'Person'} · ${String(item.source).replaceAll('_',' ')} · ${String(item.date).slice(0,10)} — ${item.summary}`));
       if(graph.members.length)for(const personId of pair.personIds){const person=byId.get(personId);if(person){const meet=button('Meet '+person.name,'select-node','rg-text-button');meet.dataset.nodeId=personId;card.append(meet);}}
       const explore=button('Explore this pair','explore-introduction','rg-text-button');explore.dataset.pairId=pair.id;
-      const skip=button('Skip','skip-introduction','rg-text-button');skip.dataset.pairId=pair.id;card.append(explore,skip);panel.append(card);
+      const skip=button('Skip','skip-introduction','rg-text-button');skip.dataset.pairId=pair.id;card.append(explore,skip);pairSection.append(card);
     }
-    if(introductionSkipped.size)panel.append(button('Start again','reset-introductions','rg-text-button'));
-    return panel;
+    if(introductionSkipped.size)pairSection.append(button('Start again','reset-introductions','rg-text-button'));
+    panel.append(pairSection);return panel;
   }
   function refreshIntroductionPanel(){
     const existing=root.querySelector('.rg-introductions');if(existing)existing.replaceWith(renderIntroductions());
@@ -968,7 +971,7 @@ export function mountGraph(element, options = {}) {
   async function openIntroductions(){
     const shouldRank=introductionState==='ready'&&introductionCards.length&&options.onRankIntroductions;
     if(shouldRank)introductionState='loading';
-    panelMode='introductions';render('close-panel');if(!shouldRank)return;
+    clearContact();activeThemeId=null;query='';selectedId=null;panelMode='introductions';render('close-panel');if(!shouldRank)return;
     const run=++introductionRun;let refocus=false;
     try{const result=await options.onRankIntroductions();if(destroyed||run!==introductionRun)return;
       introductionCards=(result.suggestions||[]).filter(p=>p.personIds?.length===2&&p.personIds.every(id=>byId.has(id)));
@@ -1351,7 +1354,7 @@ export function mountGraph(element, options = {}) {
     if(!options.externalSearch) header.append(searchWrap);
     const actions = make('nav', 'rg-header-actions');
     actions.setAttribute('aria-label', 'Relationship tools');
-    if(graph.source==='workspace'&&options.onIntroductionRequest)actions.append(button('Requests','open-intro-requests'));
+
     const lensLabel = make('label', 'rg-lens', 'Relevance now');
     const select = make('select');
     select.dataset.action = 'relevance-lens';
