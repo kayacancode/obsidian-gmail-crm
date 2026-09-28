@@ -1,5 +1,5 @@
 import {mountPersonSuggestions} from './person-suggestions.mjs';
-import {networkStarts} from './guided-network.mjs';
+import {networkStarts,nearbyBranches,extendWalk} from './guided-network.mjs';
 import {personWalk} from './person-walk.mjs';
 import {contactCard,mountContactSheet,portrait,personContext,contextBlock} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
@@ -257,7 +257,7 @@ export function mountGraph(element, options = {}) {
     if(walkBackStack.length){const undo=make('button','','Back to previous branch');undo.type='button';undo.onclick=()=>{const previous=walkBackStack.pop();showContact(previous.walk.nodes.at(-1).id,previous.walk,previous.index);};routeStrip.append(undo);}
     const breadcrumb=make('nav','nc-walk-breadcrumb');breadcrumb.setAttribute('aria-label','Path taken');walk.nodes.forEach((n,i)=>{const b=make('button','',n.memberId===graph.members.find(m=>m.isMe)?.id?'You':n.name);b.type='button';b.onclick=()=>inspect(i);breadcrumb.append(b);});routeStrip.append(breadcrumb);
     routeStrip.append(make('p','nc-muted',walk.message));
-    const chain=make('div','nc-walk-chain'),detail=make('section','nc-walk-evidence'),suggestions=make('div','nc-suggestions');detail.setAttribute('aria-live','polite');
+    const chain=make('div','nc-walk-chain'),detail=make('section','nc-walk-evidence'),suggestions=make('div','nc-suggestions'),connections=make('section','nc-recorded-connections');detail.setAttribute('aria-live','polite');
     const graphWidth=Math.max(650,walk.nodes.length*170+340),graphHeight=330;
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${graphWidth} ${graphHeight}`);svg.setAttribute('class','nc-walk-edges');svg.style.width=graphWidth+'px';svg.style.height=graphHeight+'px';svg.setAttribute('aria-hidden','true');chain.append(svg);
     const point=i=>({x:80+i*170,y:i%2?200:80});
@@ -273,6 +273,15 @@ export function mountGraph(element, options = {}) {
 
       if(node.memberId)detail.append(make('p','','Network contributor. The adjoining lines show their recorded contact evidence.'));
       else {highlightContact(node.id);const next=contactCard(graph,node.id,searchAnswer);if(next)contactOverlay.setCard(next,{focus:false});}
+      connections.replaceChildren();
+      const anchorIndex=node.memberId?walk.nodes.findIndex(n=>n.id===card.person.id):index;
+      if(anchorIndex>=0){
+        const anchor=walk.nodes[anchorIndex],branches=[];let offset=0;
+        for(;;){const batch=nearbyBranches(walk,anchorIndex,pathGraph,offset).filter(b=>!branches.some(x=>x.person.id===b.person.id));if(!batch.length)break;branches.push(...batch);offset+=4;}
+        connections.append(make('h3','','Recorded connections for '+anchor.name));
+        if(!branches.length)connections.append(make('p','nc-muted','No additional person-to-person connections are available in the shared data.'));
+        for(const branch of branches){const b=make('button','nc-recorded-connection');b.type='button';b.append(portrait(document,branch.person),make('strong','',branch.person.name),make('small','nc-muted',branch.edge.kind==='personal'?'Recorded contact':'Shared context · relationship unverified'));b.onclick=()=>{const next=extendWalk(walk,anchorIndex,branch.person.id,pathGraph);if(next){walkBackStack.push({walk,index});showContact(branch.person.id,next,next.nodes.length-1);}};connections.append(b);}
+      }
       suggestions.replaceChildren();mountPersonSuggestions(suggestions,{graph,personId:node.memberId?card.person.id:node.id,intent:searchAnswer?.query||'',onExplore:(target,context)=>showContact(target,null,0,context)});
     }
     for(const [i,node]of walk.nodes.entries()){
@@ -283,7 +292,7 @@ export function mountGraph(element, options = {}) {
     }
     chain.style.setProperty('--walk-width',graphWidth+'px');routeStrip.append(chain);
     if(!walk.edges.length){const known=make('div','nc-known');known.append(make('h3','','What is known'));for(const member of walk.contributors)known.append(make('p','','Shared by '+member.name+' · contribution, not a verified introduction route'));if(!walk.contributors.length)known.append(make('p','','No contributor information available.'));routeStrip.append(known);}
-    const nav=make('div','nc-walk-nav'),progress=make('span','nc-walk-progress');progress.setAttribute('aria-live','polite');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}nav.append(progress);if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail,suggestions);if(suggestionContext){const origin=make('div','nc-suggestion-origin');origin.append(make('p','','Exploring for '+suggestionContext.anchorName+' · '+suggestionContext.reason));const returnTo=make('button','','Back to '+suggestionContext.anchorName);returnTo.type='button';returnTo.onclick=()=>showContact(suggestionContext.anchorId);origin.append(returnTo);routeStrip.prepend(origin);}element.append(routeStrip);const canvasBounds=root.querySelector('.rg-canvas').getBoundingClientRect();routeStrip.style.top=(canvasBounds.top-element.getBoundingClientRect().top)+'px';
+    const nav=make('div','nc-walk-nav'),progress=make('span','nc-walk-progress');progress.setAttribute('aria-live','polite');for(const [label,delta]of [['Previous step',-1],['Next step',1]]){const button=make('button','',label);button.type='button';button.onclick=()=>inspect(Math.max(0,Math.min(walk.nodes.length-1,current+delta)));nav.append(button);}nav.append(progress);if(walk.edges.length)routeStrip.append(nav);routeStrip.append(detail,connections,suggestions);if(suggestionContext){const origin=make('div','nc-suggestion-origin');origin.append(make('p','','Exploring for '+suggestionContext.anchorName+' · '+suggestionContext.reason));const returnTo=make('button','','Back to '+suggestionContext.anchorName);returnTo.type='button';returnTo.onclick=()=>showContact(suggestionContext.anchorId);origin.append(returnTo);routeStrip.prepend(origin);}element.append(routeStrip);const canvasBounds=root.querySelector('.rg-canvas').getBoundingClientRect();routeStrip.style.top=(canvasBounds.top-element.getBoundingClientRect().top)+'px';
     contactOverlay=mountContactSheet(container,{companion:routeStrip,onClose:clearContact,onExcludeContribution:options.onExcludeContribution,onSelectStep:step=>{if(step==='route')routeStrip?.scrollIntoView({block:'nearest',behavior:'smooth'});},onRequestIntro:options.onIntroductionRequest?(c,memberId)=>showIntroduction({card:c,memberId}):undefined});contactOverlay.setCard(card);inspect(current);routeStrip.scrollIntoView({block:'start',behavior:'instant'});
   }
   function showIntroduction(input={}){clearContact();if(!options.onIntroductionRequest)return;const client=createIntroductionClient({workspaceId:graph.workspaceId,fetcher:options.onIntroductionRequest});contactOverlay=mountIntroductionThread(contactContainer(),{...input,client,graph,onClose:clearContact,onPerson:id=>showContact(id)});}

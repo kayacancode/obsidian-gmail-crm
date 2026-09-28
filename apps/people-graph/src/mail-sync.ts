@@ -573,10 +573,8 @@ export class MailSync extends DurableObject<MailEnv>{
    if(signal.evidenceRef.startsWith(SHARE_ACCOUNT)||!shareableSourceType(signal.sourceType))return false;
    if(!names.has(signal.themeId))return false;
    if(signal.personId&&!byPerson.has(signal.personId))return false;
-   // `themes` carries theme-level evidence only — topic and metadata signals, plus calendar.
-   // A person-attached statement carries the owner's verbatim quote and needs `statements`,
-   // and so does any other theme-level summary that turns out to quote the owner's notes.
-   return shareLevel==='statements'||((!signal.personId||signal.sourceType==='calendar')&&!carriesQuote(signal));
+   // Topic/title sharing keeps the person association without exporting their quote.
+   return shareLevel==='statements'||signal.sourceType==='granola'||((!signal.personId||signal.sourceType==='calendar')&&!carriesQuote(signal));
   });
   const titled=this.granolaProvenance({themeSignals:visible.map(({owner:_,...signal})=>signal)}).themeSignals.slice(0,SHARE_CAPS.signals);
   // The theme cap is applied first and the signals are then trimmed to what survived it, so a
@@ -586,7 +584,8 @@ export class MailSync extends DurableObject<MailEnv>{
   const kept=new Set(ordered.slice(0,SHARE_CAPS.themes));
   slice.themes=source.themes.filter(theme=>kept.has(theme.id));
   slice.signals=titled.filter(signal=>kept.has(signal.themeId))
-   .map(signal=>({email:signal.personId?byPerson.get(signal.personId)??null:null,themeId:signal.themeId,summary:signal.summary,observedAt:signal.observedAt,sourceType:signal.sourceType,confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})}));
+   .map(signal=>({email:signal.personId?byPerson.get(signal.personId)??null:null,themeId:signal.themeId,summary:shareLevel==='themes'&&signal.sourceType==='granola'&&(signal.personId||carriesQuote(signal))?'Recorded topic: '+names.get(signal.themeId):signal.summary,observedAt:signal.observedAt,sourceType:signal.sourceType,confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})}));
+  slice.signals=[...new Map(slice.signals.map(signal=>[JSON.stringify([signal.email,signal.themeId,signal.sourceType,signal.observedAt,signal.summary,signal.title||'']),signal])).values()];
   return slice;
  }
  /**

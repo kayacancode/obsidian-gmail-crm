@@ -1,5 +1,5 @@
 import {personContext,contextBlock,portrait,element} from './contact-sheet.mjs';
-const stop=new Set('the and for with from that this about their they have has was were will would could should someone people person working work meeting notes discussed discussion follow send share need want into your our you who help find talk conversation building exploring planning'.split(' '));
+const stop=new Set('recorded topic context the and for with from that this about their they have has was were will would could should someone people person working work meeting notes discussed discussion follow send share need want into your our you who help find talk conversation building exploring planning'.split(' '));
 const words=text=>new Set((String(text).toLowerCase().match(/[\p{L}\p{N}]+/gu)||[]).filter(w=>w.length>2&&!stop.has(w)||['ui','ux','ai'].includes(w)));
 const permitted=n=>n&&n.type!=='company'&&!n.memberId&&n.permission!=='denied'&&n.permission!=='conflicted'&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved';
 const contexts=(g,id)=>personContext({...g,themeSignals:(g.themeSignals||[]).filter(e=>['granola','granola_mention','obsidian_note','gmail_body_derived'].includes(e.sourceType)&&Date.parse(e.observedAt)<=Date.now())},id);

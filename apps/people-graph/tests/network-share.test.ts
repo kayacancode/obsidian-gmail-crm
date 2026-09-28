@@ -43,6 +43,7 @@ async function ownerFixture(){
   [theme('theme-pilot','Pilot Rollout'),theme('theme-public','Public Feed'),theme('theme-subject','Acme Acquisition')],
   [signal('sig-topic',undefined,'theme-pilot','Meeting matched Agent Memory'),
    signal('sig-ada',ids['ada@work.test'],'theme-pilot','PLACEHOLDER'),
+   signal('sig-ada-second',ids['ada@work.test'],'theme-pilot','Another private statement'),
    signal('sig-obsidian',ids['ada@work.test'],'theme-pilot','OBSIDIAN FREE TEXT','obsidian_note'),
    // A Gmail subject fragment: the theme name is two canonical tokens of the owner's own
    // subject line, so neither it nor its summary may leave the object at any level.
@@ -81,9 +82,11 @@ test('share export honours scope and level and never carries the owner’s own a
 
   const themes=await service.exportSlice({kind:'all'},'themes');
   assert.ok(themes.themes.some(t=>t.id==='theme-pilot'));
+  assert.equal(themes.signals.filter(s=>s.email==='ada@work.test'&&s.sourceType==='granola').length,1,'identical sanitized topics are exported once');
   assert.ok(themes.signals.some(s=>s.summary==='Meeting matched Agent Memory'),'theme-level topic signals survive');
   assert.ok(themes.signals.some(s=>s.summary==='Quarterly review on the calendar'),'calendar signals survive at themes');
-  assert.ok(!themes.signals.some(s=>s.summary.includes('we need a pilot partner')),'person-attached statements are dropped below the statements level');
+  assert.ok(!themes.signals.some(s=>s.summary.includes('we need a pilot partner')),'quotes stay private below statements');
+  assert.ok(themes.signals.some(s=>s.email==='ada@work.test'&&s.summary==='Recorded topic: Pilot Rollout'&&s.title==='Pilot sync'),'person-linked Granola topic and title survive without the quote');
   assert.ok(!themes.signals.some(s=>s.summary==='OBSIDIAN FREE TEXT'),'obsidian note text is never shared at themes either');
 
   // Raw content in edge contexts: subject lines never, meeting titles only from `themes` up.

@@ -11,3 +11,5 @@ test('newer email subjects cannot crowd out conversation evidence',()=>{
  const subjects=Array.from({length:25},(_,i)=>({...signal('subject'+i,'k','Newsletter '+i),sourceType:'gmail_subject',observedAt:'2026-09-25'}));
  assert.equal(personSuggestions({...graph,themeSignals:[...graph.themeSignals,...subjects]},'k')[0]?.person.id,'a');
 });
+
+test('sanitized topic boilerplate cannot create a match',()=>{assert.deepEqual(personSuggestions({...graph,themeSignals:[signal('k','k','Recorded topic: Agent memory'),signal('a','a','Recorded topic: Climate finance')]},'k'),[]);});
