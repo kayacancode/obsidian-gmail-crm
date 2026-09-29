@@ -409,3 +409,19 @@ test('workspace profiles respect consent and selected people; own identity stays
  assert.deepEqual(Object.keys(shared.profiles!),['ada@work.test']);assert.equal(shared.profiles!['ada@work.test'].photoUrl,'https://lh3.googleusercontent.com/ada');
  const own=await f.service.workspaceProfiles(['ada@work.test','unknown@test.com']);assert.equal(own['ada@work.test'].name,'Ada Lovelace');assert.equal(own['unknown@test.com'],undefined);
 });
+
+test('meeting-only topic reaches its shared attendee without a personal statement or private quote',async()=>{
+ const {service,db}=await ownerFixture();try{
+  const slice=await service.exportWorkspaceSlice({kind:'all'},'themes');
+  const signal=slice.slice.signals.find(s=>s.email==='cia@meet.test'&&s.sourceType==='granola');
+  assert.ok(signal,'meeting attendee must retain the meeting topic');
+  assert.match(signal.summary,/Meeting topic/);assert.equal(signal.title,'Pilot sync');
+  assert.ok(!JSON.stringify(slice).includes('we need a pilot partner'));
+  const restricted=await service.exportWorkspaceSlice({kind:'people',emails:['bo@design.test']},'themes');
+  assert.ok(!restricted.slice.signals.some(s=>s.email==='cia@meet.test'));
+  const names=await service.exportWorkspaceSlice({kind:'all'},'names');assert.equal(names.slice.signals.length,0);
+  const folders=await service.exportWorkspaceSlice({kind:'folders',ids:['fld_two']},'themes');assert.ok(!folders.slice.signals.some(s=>s.email==='cia@meet.test'));
+  db.prepare('UPDATE granola_notes SET hidden=1').run();
+  assert.ok(!(await service.exportWorkspaceSlice({kind:'all'},'themes')).slice.signals.some(s=>s.email==='cia@meet.test'));
+ }finally{db.close();}
+});

@@ -585,6 +585,16 @@ export class MailSync extends DurableObject<MailEnv>{
   slice.themes=source.themes.filter(theme=>kept.has(theme.id));
   slice.signals=titled.filter(signal=>kept.has(signal.themeId))
    .map(signal=>({email:signal.personId?byPerson.get(signal.personId)??null:null,themeId:signal.themeId,summary:shareLevel==='themes'&&signal.sourceType==='granola'&&(signal.personId||carriesQuote(signal))?'Recorded topic: '+names.get(signal.themeId):signal.summary,observedAt:signal.observedAt,sourceType:signal.sourceType,confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})}));
+  // Legacy topic signals have no personId. Project them onto recorded attendees at read time,
+  // so existing meetings become discoverable without re-extraction or sharing raw note text.
+  const meetingTopics=titled.filter(s=>!s.personId&&s.sourceType==='granola'&&s.evidenceRef.startsWith(GRANOLA_NOTE_REF)&&s.evidenceRef.includes('#topic@')&&kept.has(s.themeId));
+  const participants=this.granola().noteParticipants(meetingTopics.map(s=>noteIdOf(s.evidenceRef)),shareScope.kind==='folders'?shareScope.ids:undefined);
+  for(const signal of meetingTopics)for(const email of participants.get(noteIdOf(signal.evidenceRef))||[]){
+   if(!emails.has(email)||slice.signals.length>=SHARE_CAPS.signals)continue;
+   // Existing person-specific context for this topic already supports discovery.
+   if(slice.signals.some(s=>s.email===email&&s.themeId===signal.themeId&&s.observedAt===signal.observedAt&&s.title===signal.provenance?.title))continue;
+   slice.signals.push({email,themeId:signal.themeId,summary:'Meeting topic: '+names.get(signal.themeId)+' (recorded attendee; not an attributed statement)',observedAt:signal.observedAt,sourceType:'granola',confidence:signal.confidence,...(signal.provenance?.title?{title:signal.provenance.title}:{})});
+  }
   slice.signals=[...new Map(slice.signals.map(signal=>[JSON.stringify([signal.email,signal.themeId,signal.sourceType,signal.observedAt,signal.summary,signal.title||'']),signal])).values()];
   return slice;
  }

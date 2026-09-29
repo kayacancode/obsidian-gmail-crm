@@ -616,6 +616,19 @@ export class GranolaSync {
   return out;
  }
 
+ /** Canonical attendees of visible notes; never infer participants from note mentions. */
+ noteParticipants(noteIds:string[],folderIds?:string[]){
+  const out=new Map<string,string[]>(),alias=this.aliases(),own=new Set(this.ownAddresses());
+  const ids=[...new Set(noteIds)].slice(0,GranolaSync.NOTE_META_LIMIT);
+  for(let i=0;i<ids.length;i+=GranolaSync.SQL_IN_CHUNK){const chunk=ids.slice(i,i+GranolaSync.SQL_IN_CHUNK);
+   for(const row of this.ctx.storage.sql.exec<{note_id:string;email:string;folder_ids:string}>(`SELECT a.note_id,a.email,n.folder_ids FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE n.hidden=0 AND a.note_id IN (${chunk.map(()=>'?').join(',')})`,...chunk).toArray()){
+    if(folderIds){let folders:unknown;try{folders=JSON.parse(row.folder_ids);}catch{continue;}if(!Array.isArray(folders)||!folders.some(id=>folderIds.includes(id)))continue;}
+    const email=alias.get(row.email)??row.email;if(own.has(email))continue;
+    const list=out.get(row.note_id)||[];if(!list.includes(email))list.push(email);out.set(row.note_id,list);
+   }
+  }return out;
+ }
+
  ownEmails():string[]{const c=this.read();return c?.ownerEmail?[c.ownerEmail]:[];}
  /**
   * Attendee addresses of visible notes filed in any of these folders, for a folder-scoped

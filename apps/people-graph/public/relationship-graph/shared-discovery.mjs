@@ -31,7 +31,7 @@ export function sharedDiscoveries(graph,pairs=[],now=Date.now(),intent=''){
 export function discoveryCards(doc,graph,pairs,{onWalk,onIntro,intent=''}={}){
  const root=element(doc,'div','rg-discovery-people'),items=sharedDiscoveries(graph,pairs,Date.now(),intent);
  const relevant=items.filter(d=>d.relevant),available=items.filter(d=>!d.relevant);
- const evidenceLine=s=>`${graph.nodes.find(n=>n.id===s.personId)?.name||'Person'} · ${String(s.sourceType||s.source).replaceAll('_',' ')} · ${String(s.observedAt||s.date).slice(0,10)} — ${s.summary}`;
+ const evidenceLine=s=>`${graph.nodes.find(n=>n.id===s.personId)?.name||'Person'} · ${String(s.sourceType||s.source).replaceAll('_',' ')} · ${String(s.observedAt||s.date).slice(0,10)}${s.provenance?.title?' · '+s.provenance.title:''} — ${s.summary}`;
  const appendActions=(card,d)=>{
   if(onIntro)for(const r of d.routes)card.append(action(doc,'Ask '+r.memberName.split('@')[0]+' for an intro',()=>onIntro(d.card,r.memberId),'rg-discovery-intro'));
   card.append(action(doc,'Walk the path →',()=>onWalk?.(d.person.id),'rg-text-button'));
