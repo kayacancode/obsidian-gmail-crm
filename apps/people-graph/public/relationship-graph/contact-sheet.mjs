@@ -94,20 +94,25 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
  }
  if(step==='route'||step==='person'){
   panel.append(element(doc,'h3','',incoming?'Why this person is here':own?'Your connection':'Connections in this network'));
-  if(card.relationships?.some(r=>Number.isFinite(r.score)))panel.append(element(doc,'p','nc-muted','Published people scores are contributor estimates. Activity scores reflect contact volume, reciprocity, and recency. Neither guarantees an introduction.'));
+
   for(const r of card.relationships||[]){
    const row=element(doc,'article','nc-relationship');row.append(element(doc,'strong','',r.isMe?'You':r.memberName));
    if(r.confirmedAt)row.append(element(doc,'p','nc-confirmed','✓ Relationship confirmed by '+(r.isMe?'you':r.memberName)+' · '+r.confirmedAt.slice(0,10)));
+   row.append(element(doc,'p','nc-activity-counts',r.activity?`Email · ${r.activity.sent} sent · ${r.activity.received} received`:'Email counts not shared'));
+   row.append(element(doc,'p','nc-muted',r.lastContact?'Last contact · '+r.lastContact.slice(0,10):'Last contact not shared'));
+   row.append(element(doc,'p','nc-activity-counts',Number.isSafeInteger(r.completedIntroductions)?`${r.completedIntroductions} completed introductions involving this person`:'Introduction count unavailable'));
+   row.append(element(doc,'small','nc-muted','Completed introductions recorded in this workspace; requests and email guesses are excluded.'));
+   const detail=element(doc,'details');detail.append(element(doc,'summary','','Scores and source details'));row.append(detail);
    const measured=['email','meeting'].includes(r.evidenceCategory)&&Number.isFinite(r.score),scored=scoreBacked(r);
-   row.append(element(doc,'p','',scored?'Published people score: '+Math.round(r.score)+' / 100':measured?'Activity score: '+Math.round(r.score)+' / 100':'Not measured in shared data'));
-   if(scored&&r.publishedScore)row.append(element(doc,'small','nc-muted','Strength '+Math.round(r.publishedScore.strength)+'/100 · momentum '+Math.round(r.publishedScore.momentum)+'/100'));
-   if(measured||scored){const meter=element(doc,'meter');meter.min=0;meter.max=100;meter.value=r.score;meter.setAttribute('aria-label',(r.isMe?'Your':r.memberName+'’s')+' relationship activity');row.append(meter);}
-   row.append(element(doc,'small','nc-muted',(scored?'Obsidian people score · estimate, not personal confirmation':r.evidenceCategory==='email'?'Email contact':r.evidenceCategory==='meeting'?'Meeting activity':'Vault record · contact evidence unavailable')+(r.lastContact?' · Last contact '+r.lastContact.slice(0,10):'')));
-   if(r.isMe&&r.inboxes?.length)row.append(element(doc,'small','nc-muted','Imported from '+r.inboxes.join(', ')));
-   if(r.activity?.sent===0&&r.activity.received>0&&!r.activity.meetings)row.append(element(doc,'p','','Received email; no sent messages found in the imported history. This does not establish that you know them.'));
-   if(r.activity)row.append(element(doc,'small','nc-muted',r.activity.sent+' sent · '+r.activity.received+' received · '+r.activity.meetings+' recorded meeting entries'));
-   if(r.isMe)row.append(element(doc,'small','nc-muted','Included through your sharing settings'));
-   if(r.observedAt)row.append(element(doc,'small','nc-muted','Updated '+r.observedAt.slice(0,10)));
+   detail.append(element(doc,'p','',scored?'Published people score: '+Math.round(r.score)+' / 100':measured?'Activity score: '+Math.round(r.score)+' / 100':'Not measured in shared data'));
+   if(scored&&r.publishedScore)detail.append(element(doc,'small','nc-muted','Strength '+Math.round(r.publishedScore.strength)+'/100 · momentum '+Math.round(r.publishedScore.momentum)+'/100'));
+   if(measured||scored){const meter=element(doc,'meter');meter.min=0;meter.max=100;meter.value=r.score;meter.setAttribute('aria-label',(r.isMe?'Your':r.memberName+'’s')+' relationship activity');detail.append(meter);}
+   detail.append(element(doc,'small','nc-muted',(scored?'Obsidian people score · estimate, not personal confirmation':r.evidenceCategory==='email'?'Email contact':r.evidenceCategory==='meeting'?'Meeting activity':'Vault record · contact evidence unavailable')+(r.lastContact?' · Last contact '+r.lastContact.slice(0,10):'')));
+   if(r.isMe&&r.inboxes?.length)detail.append(element(doc,'small','nc-muted','Imported from '+r.inboxes.join(', ')));
+   if(r.activity?.sent===0&&r.activity.received>0&&!r.activity.meetings)detail.append(element(doc,'p','','Received email; no sent messages found in the imported history. This does not establish that you know them.'));
+   if(r.activity)detail.append(element(doc,'small','nc-muted',r.activity.sent+' sent · '+r.activity.received+' received · '+r.activity.meetings+' recorded meeting entries'));
+   if(r.isMe)detail.append(element(doc,'small','nc-muted','Included through your sharing settings'));
+   if(r.observedAt)detail.append(element(doc,'small','nc-muted','Updated '+r.observedAt.slice(0,10)));
    panel.append(row);
   }
 

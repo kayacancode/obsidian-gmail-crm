@@ -1,3 +1,4 @@
+import {completedIntroductionCounts} from './introduction-store';
 import {buildAnswerCards} from './network-answer';
 import {suggestIntroductions,type Introduction} from './workspace-introductions';
 import {matchingKey,identityToken,matchedPersonId} from './workspace-identity';
@@ -89,6 +90,8 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
   prior.evidence=[...new Map([...prior.evidence,...edge.evidence].map(e=>[JSON.stringify(e),e])).values()];
  }
  graph.edges=[...joinedEdges.values()];
+ const completed=new Map((await completedIntroductionCounts(env.DB,id)).map(r=>[r.memberId+':'+r.personId,r.count]));
+ for(const person of graph.nodes)for(const relationship of person.relationships)relationship.completedIntroductions=completed.get(relationship.memberId+':'+person.id)||0;
  graph.introductionSuggestions=suggestIntroductions(graph);
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}

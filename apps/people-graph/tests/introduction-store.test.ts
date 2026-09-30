@@ -6,3 +6,12 @@ test('intro store: idempotent send and conflicting retry',async()=>{const f=awai
 test('intro store: compare and swap prevents lost replies',async()=>{const f=await fixture(),r=await createIntroductionRequest(f.db,f.input);const args={workspaceId:r.workspaceId,workspaceRevision:1,requestId:r.id,expectedRevision:1,state:'agreed' as const,reply:'Yes',alternativePersonId:null};await replyToIntroductionRequest(f.db,args);await assert.rejects(replyToIntroductionRequest(f.db,args),/request_changed/);});
 test('intro store: changed workspace blocks mutation',async()=>{const f=await fixture();f.sqlite.prepare('UPDATE workspaces SET revision=2').run();await assert.rejects(createIntroductionRequest(f.db,f.input),/workspace_changed/);});
 test('intro store: stable pagination excludes other participants',async()=>{const f=await fixture();for(let i=0;i<32;i++)await createIntroductionRequest(f.db,{...f.input,clientRequestId:'key'+i});const first=await listIntroductionRequests(f.db,f.input.workspaceId,'a');assert.equal(first.requests.length,30);const next=await listIntroductionRequests(f.db,f.input.workspaceId,'a',first.nextCursor!);assert.equal(next.requests.length,2);assert.equal(new Set([...first.requests,...next.requests].map(r=>r.id)).size,32);});
+test('completed introduction aggregates exclude requests and other workspaces',async()=>{
+ const {completedIntroductionCounts}=await import('../src/introduction-store');const f=await fixture();
+ const request=await createIntroductionRequest(f.db,f.input);
+ assert.deepEqual(await completedIntroductionCounts(f.db,f.input.workspaceId),[]);
+ await replyToIntroductionRequest(f.db,{workspaceId:request.workspaceId,workspaceRevision:1,requestId:request.id,expectedRevision:1,state:'completed',reply:'Done',alternativePersonId:null});
+ await createIntroductionRequest(f.db,{...f.input,clientRequestId:'pending'});
+ assert.deepEqual(await completedIntroductionCounts(f.db,f.input.workspaceId),[{memberId:'b',personId:'person',count:1}]);
+ assert.deepEqual(await completedIntroductionCounts(f.db,'other'),[]);
+});
