@@ -1,6 +1,8 @@
 # People Graph
 
-Private relationship viewer for the obsidian-gmail-crm people graph, backed by the existing Google sign-in and per-user graph snapshot. The default route uses the shared BetaworksOS photographic graph: complete recorded-text search, labelled relationships, evidence inspection, arbitrary introduction paths and session-only saved route context. The former spatial viewer remains byte-for-byte available at `/spatial`, and the force-directed viewer remains at `/classic.html`. Cloudflare Worker + D1 + static assets; no frontend build step.
+Standalone web app for personal and shared relationship graphs. Connect Google for Gmail metadata and Calendar invitations; optionally add Granola or an Obsidian snapshot. Obsidian is not required. Built with Cloudflare Workers, per-owner SQLite Durable Objects, D1, and static browser assets. `npm run deploy` builds the required static bundles before deployment.
+
+Start with the [repository overview](../../README.md) for features, privacy boundaries, and current limitations. This document covers deployment and technical details.
 
 **Product and demo direction:** [Maps, Memory, and Meaning — contextual network walks](../../docs/superpowers/specs/2026-09-24-contextual-network-walks-design.md). The graph is the central interaction: start with a person or idea, follow visible paths, inspect why each connection matters, explore unexpected branches, and request an introduction. The spec distinguishes implemented foundations from remaining acceptance work.
 
@@ -16,46 +18,61 @@ Private relationship viewer for the obsidian-gmail-crm people graph, backed by t
 
 Imports continue when the page closes. Connected accounts refresh hourly; the graph checks for updates every 15 seconds while visible. Sync now runs an incremental import; Import all history includes older messages. Failed requests retry with backoff, and revoked access prompts reconnection.
 
-After cloud contacts exist, the default relationship graph uses connected email accounts. The original vault snapshot remains available with `/?source=obsidian`, and Connect Obsidian retains the legacy push-token flow. Sources are not merged because vault IDs cannot reliably be matched to mailbox identities. A saved path is held only for the current authenticated browser session, is bound to its account and graph generation, and is cleared when that context changes.
+After cloud contacts exist, the default relationship graph uses connected email accounts. The original vault snapshot remains available with `/?source=obsidian`, and Connect Obsidian retains the legacy push-token flow. Personal source views remain separate. Shared workspaces can match compatible published identities across contributors; legacy vault records may require a fresh snapshot. A saved path is held only for the current authenticated browser session, is bound to its account and graph generation, and is cleared when that context changes.
 
 ## Setup (once)
 
+Run the following from `apps/people-graph/`. You need Node.js with `node:sqlite` support for tests, a Cloudflare account, and a Google Cloud project. Use your own deployment configuration rather than the maintainer's checked-in IDs.
+
+1. Create a Google OAuth **Web application** client. Enable the Gmail, Google Calendar, and Google People APIs. Configure the consent screen for your intended users; a testing app may restrict access to listed test users.
+2. Choose your Worker name and deployment origin. Update `name`, `vars.APP_ORIGIN`, and `vars.GOOGLE_CLIENT_ID` in `wrangler.jsonc`.
+3. Register that origin in Google's **Authorized JavaScript origins** and `<APP_ORIGIN>/api/accounts/callback` in **Authorized redirect URIs**. The Obsidian plugin's Desktop OAuth client is separate.
+4. Install dependencies and create your own database:
+
 ```sh
-npm install
-npx wrangler d1 create people-graph   # paste database_id into wrangler.jsonc
-npm run db:init:remote
-npx wrangler secret put TOKEN_SECRET  # long random string; rotating it revokes all push tokens
-npm run deploy
+npm ci
+npx wrangler login
+npx wrangler d1 create people-graph
 ```
 
-Then add the deployed origin (e.g. `https://people-graph.<account>.workers.dev`)
-to the Google OAuth client's authorized JavaScript origins (same client as
-reconnect-web).
+Replace the D1 `database_id` in `wrangler.jsonc` with the returned ID. If you use a different database name, update the config and database commands accordingly.
 
-## Enable Google inbox connections (one administrator setup)
-
-The existing web OAuth client must have Gmail API access and the callback below registered as an authorized redirect URI:
-
-`https://people-graph.kayarjones901.workers.dev/api/accounts/callback`
-
-Use the matching web-client secret (not the desktop plugin OAuth client). Set secrets interactively from this directory:
+5. Initialize the database and configure secrets:
 
 ```sh
+npm run db:init:remote
+npx wrangler secret put TOKEN_SECRET
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put MAIL_TOKEN_KEY
 ```
 
-Use a fresh cryptographically random key for MAIL_TOKEN_KEY. Keep it stable: changing it makes existing encrypted grants unreadable and requires reconnecting inboxes. Never put either secret in source control or chat. APP_ORIGIN and GOOGLE_CLIENT_ID are configured in wrangler.jsonc. Deploy the MailSync SQLite Durable Object migration with the Worker. The Accounts connection button stays disabled until server configuration exists. Verify a real consent callback and completed import before considering inbox connections activated.
+Use independently generated cryptographically random values for `TOKEN_SECRET` and `MAIL_TOKEN_KEY`; use your Google web OAuth client's secret for `GOOGLE_CLIENT_SECRET`. Do not commit these values. Keep the encryption key stable: changing `MAIL_TOKEN_KEY` requires reconnecting accounts. Rotating `TOKEN_SECRET` invalidates existing tokens and affects derived identities.
 
-The OAuth consent screen must permit the intended users and requested Gmail read scope. Its publication/verification settings are an administrator responsibility; browser fixture tests cannot validate them.
+6. Validate and deploy:
+
+```sh
+npm run typecheck
+npm test
+npm run deploy
+```
+
+Keep the configured `MAIL` Durable Object binding, SQLite migration, `DB` binding, and `AI` binding. Then open your deployment, sign in, and complete a real Google connection and import. OAuth access and publication/verification requirements are deployment-specific and cannot be validated by fixture tests.
+
+For local development, initialize local D1 with `npm run db:init`, configure local secret values in an untracked `.dev.vars`, and run `npm run dev`. Register the local origin and callback with your development OAuth client and set `APP_ORIGIN` to the matching local origin for that run.
+
+## Google permissions and calendar behavior
+
+The web connection requests Gmail read access, read-only Calendar events, and read-only Google contact sources for photos. Normal Gmail import stores metadata, not email bodies. A separate confirmation is required for deeper email retrieval.
+
+Calendar imports the past year and next 30 days of the primary calendar. Shared cards show invitation and mutual-RSVP counts for existing imported contacts. These are not confirmed attendance, do not increase shared email/meeting counts, and do not include event titles. Invite-only people are not automatically added yet. Existing users who have not granted Calendar access can use **Enable Google Calendar** in Accounts.
 
 Email scores use frequency, reciprocity and recency, independently of the optional vault's scoring model. Domain groups are not verified employers. Shared-email edges mean co-recipients, not confirmed introductions.
 
 ## Contextual relevance and evidence
 
-Relevance heat is an advisory view of recent metadata and user-confirmed evidence, not a measure of relationship strength, expertise, closeness, consent or willingness. Evidence remains partitioned by exact visibility: **My mind** can use all evidence authorized for that owner, **Firm** uses only explicitly firm evidence, and **Public momentum** uses only public evidence. Meeting-summary preview files remain local. The separate Granola connection below stores an encrypted API key and syncs meeting content — title, date, attendees, summary, private notes and transcript — into the graph in the background; that evidence is owner-private and never included in Firm or Public momentum. Obsidian material stays local unless the user explicitly pushes a bounded graph snapshot; public URLs are fetched only after a preview and confirmation.
+Relevance heat is an advisory view of recent metadata and user-confirmed evidence, not a measure of relationship strength, expertise, closeness, consent or willingness. Evidence remains partitioned by exact visibility: **My mind** can use all evidence authorized for that owner, **Firm** uses only explicitly firm evidence, and **Public momentum** uses only public evidence. Meeting-summary preview files remain local. The separate Granola connection below stores an encrypted API key and syncs meeting content — title, date, attendees, summary, private notes and transcript — into the graph in the background; that evidence is owner-private by default. Members may explicitly contribute permitted topics or statements to shared workspaces; connecting Granola alone does not publish them. Obsidian material stays local unless the user explicitly pushes a bounded graph snapshot; public URLs are fetched only after a preview and confirmation.
 
-Connector rings summarize documented or inferred graph structure. They do not prove that anyone is close to the user, willing to help, or able to make an introduction. The system never sends outreach, emails or introduction requests; it only presents context for a person to review and act on themselves.
+Connector rings summarize documented or inferred graph structure. They do not prove that anyone is close to the user, willing to help, or able to make an introduction. The app does not send automatic outreach. Shared workspaces support user-submitted introduction requests inside People; these are not outgoing Gmail messages.
 
 The top **Topics & themes** strip labels each theme's source; all themes remain in its picker. Gmail's normal sync supplies subject-derived signals, not body-understood topics. The overview promotes up to five non-boilerplate themes and paints at most three localized fields; selecting a theme focuses one field and brings its members into view. Up to three labeled **Why now** controls expose evidence at close zoom. The full authorized network occupies a spaced world canvas: **Fit** frames every person, drag/arrow keys pan, and zoom or selection reveals names and details. Portraits, heat and labels share one camera transform; viewport size never caps the network. **Off** removes heat without moving the current people.
 

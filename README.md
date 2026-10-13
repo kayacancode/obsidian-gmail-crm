@@ -1,383 +1,142 @@
-# Gmail CRM for Obsidian
+# People — personal and shared relationship graphs
 
-A privacy-first CRM that builds its normal relationship graph from Gmail metadata inside Obsidian. Normal sync does not read email bodies. Optional People Graph cloud features require separate, explicit push or retrieval confirmation and apply the caps and retention rules described in [PRIVACY.md](PRIVACY.md).
+Explore who you know, understand the activity behind a connection, and find a path to someone new through a shared network.
 
-## What It Does
+People brings together **Gmail activity, Google Calendar invitations, and optional meeting or note context**. Start with a person or topic, inspect the evidence behind a connection, and request an introduction from a network member.
 
-Gmail CRM syncs your email metadata (sender, recipient, date, subject line, thread structure) and builds:
+**You do not need Obsidian.** This repository contains both a standalone web app and an optional Obsidian plugin. The repository name reflects the project's origins as Gmail CRM for Obsidian.
 
-- **People pages** — one markdown note per contact with frontmatter stats
-- **Company pages** — auto-created stubs linked to people
-- **Relationship scores** — staleness, strength, momentum, and quadrant assignments
-- **CRM base view** — sortable/filterable table of all contacts
-- **Quadrant view** — 2×2 grid: nurture / re-engage / developing / deprioritize
-- **AI enrichment** (optional) — Claude rewrites people pages with structured sections
-- **Calendar integration** (optional) — meeting history as a relationship signal
+> Active development. Features and data coverage vary by connected source. Relationship scores are estimates; invitations are not proof of attendance, and a graph path does not guarantee an introduction.
 
-### Contextual relevance safety
+## Choose how to use it
 
-Relevance heat is advisory metadata context, not relationship strength or verified expertise. Private, firm and public evidence remain separate: Firm shows only explicitly firm evidence, Public shows only public evidence, and My mind can use all evidence authorized for that owner. Granola and Obsidian material stays local until a user explicitly pushes a bounded graph snapshot.
+| Path | Best for | What you need |
+| --- | --- | --- |
+| **Web app** | Personal graphs, shared networks, Discover, and introduction requests | A configured People deployment and a Google account |
+| **Obsidian plugin** | Markdown people pages and a CRM inside your vault | Obsidian desktop and your own Google OAuth credentials |
+| **PeopleGraph CLI** | Querying a local contact index from a terminal or coding agent | A plugin-generated contact index; Rust to build from source |
 
-Optional deeper Gmail context is a separate confirmation, capped at 50 matching messages and 1 MB of decoded body text. Raw bodies are processed transiently and are not retained. Connector rings never prove closeness, willingness or consent, and the system never sends outreach, email or introduction requests.
+- [Web app setup and deployment](apps/people-graph/README.md)
+- [Obsidian installation, commands, and scoring guide](docs/obsidian-plugin.md)
+- [Privacy and data handling](PRIVACY.md)
 
-## Getting Started
+## What you can do
 
-### 1. Install the Plugin
+- **Explore your network:** search people, inspect contact activity, and navigate the graph.
+- **Share a network:** invite members and choose which contacts and context to contribute. Each contributor's relationship evidence stays distinguishable.
+- **Walk from A to B:** follow recorded connections and inspect the evidence and uncertainty at each step.
+- **Discover people by topic:** enter a goal or question and find new people with matching shared evidence. The current Discover goal matcher uses keywords, not guaranteed semantic understanding.
+- **Ask for an introduction:** review and submit an in-app request to a contributor. Completed-introduction counts include only requests marked completed in that workspace.
+- **See relationship activity:** sent/received email counts, last contact, shared calendar invitations, mutual accepted RSVPs, and upcoming invitations, where available.
+- **Add optional context:** Granola and published Obsidian evidence can explain why a person or topic is relevant.
 
-**Via BRAT (recommended for now):**
-1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) if you haven't
-2. Add `kayacancode/obsidian-gmail-crm` as a beta plugin
-3. Enable "Gmail CRM" in Community Plugins
+For example: enter **“agent memory”** in Discover. If a new person has matching shared evidence and a supported contributor connection, their card shows the evidence, source/date, a suggested conversation, an intro action, and a graph walk. If that evidence is missing, the app does not invent a reason to meet them.
 
-**Manual install:**
-1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/kayacancode/obsidian-gmail-crm/releases)
-2. Create `<vault>/.obsidian/plugins/gmail-crm/` and place the files there
-3. Enable "Gmail CRM" in Community Plugins
+## Start in the web app
 
-### 2. Set Up Google OAuth
+On an existing, configured deployment:
 
-The plugin needs read-only access to your Gmail metadata. You create your own OAuth credentials — no shared API key, no third-party server.
+1. Sign in with Google and open **Accounts**.
+2. Select **Connect Google**. Review Google's requested permissions for Gmail, Calendar, and contact photos.
+3. Let the first import finish. Start with 90 days of email history or select all history. Calendar imports cover the past year and next 30 days of your primary calendar.
+4. Open your personal network. Optionally join or create a shared network under **Accounts → Shared networks**.
+5. Choose which people to share and how much context to include. Other members make their own choices.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Create a new project (or use an existing one)
-3. Enable the **Gmail API** (and optionally **Google Calendar API**)
-4. Go to **OAuth consent screen** → set to "Internal" (Workspace) or "External" (personal Gmail)
-   - For personal Gmail: add your email as a test user
-5. Create **OAuth 2.0 Client ID** → Application type: **Desktop app**
-6. Copy the **Client ID** and **Client Secret**
-7. In Obsidian → Gmail CRM settings:
-   - Paste Client ID and Client Secret
-   - Click **Connect** — a browser window opens for Google sign-in
-   - Authorize the app — you'll be redirected back automatically
+Obsidian and Granola are optional. Connecting Google does not require installing a browser extension or Gmail add-on.
 
-### 3. Run Your First Sync
+**For self-hosting:** follow the [web deployment guide](apps/people-graph/README.md#setup-once). You need your own Cloudflare resources and Google web OAuth client. The checked-in deployment identifiers belong to the maintainer; replace them before deploying. Google OAuth testing/publication settings can limit who is allowed to connect.
 
-- Open the command palette (Cmd/Ctrl + P) → **Gmail CRM: Sync Gmail contacts**
-- The plugin scans your email metadata and builds the contact index
-- First sync may take a few minutes depending on mailbox size
-- Subsequent syncs are incremental (only new messages)
+## What each source contributes
 
-### 4. Explore Your CRM
+| Source | Used for | Important distinction |
+| --- | --- | --- |
+| Gmail | Sent/received activity, reciprocity, contact dates, and thread metadata | Normal sync does not import bodies or attachments. Metadata alone cannot establish expertise. |
+| Google Calendar | Shared invitations, mutual accepted RSVPs, and upcoming invitations | Accepted invitations do not prove attendance. Calendar counts do not increase shared email or meeting counts. |
+| Granola, optional | Meeting attendees, topics, and permitted discussion context | A meeting topic linked to an attendee is not a statement attributed to them. |
+| Obsidian, optional | Published people records, scores, links, and selected topic evidence | A person appearing in a vault does not establish a personal relationship. |
+| In-app introductions | Request status and completed introduction counts | Requests are not counted as completed introductions, and ordinary emails are not guessed to be intros. |
 
-After your first sync, you'll have a **People/** folder with one markdown note per contact. Here's how to make sense of it all:
+## Sharing and privacy
 
-#### People Pages
+The plugin and web app have different storage models:
 
-Each contact gets a markdown note (e.g., `p- Jane Smith.md`) with YAML frontmatter containing their email stats:
+- **Obsidian plugin:** the contact index and generated notes are stored in your vault. Optional graph uploads and AI enrichment send selected data to their configured services.
+- **Web app:** connected-source data is stored on Cloudflare, scoped to the signed-in account. Google refresh grants and Granola API keys are encrypted on the server.
+- **Shared networks:** members choose the people and context they contribute. Connection activity can be shared without sharing discussion text. Event titles are not included in the shared calendar activity summary.
+- **Optional deeper email retrieval:** a separate confirmation permits bounded body processing—up to 50 matching messages and 1 MB of decoded text. Raw bodies are not retained after processing. The web app requests Gmail read access; normal sync still imports metadata only.
+- **Actions:** introduction requests are sent inside People only when a user submits them. The app does not automatically email contacts or guarantee that a contributor will introduce you.
 
-```yaml
----
-email: jane@example.com
-company: "[[Companies/Acme Corp|Acme Corp]]"
-role: "CTO at Acme Corp"
-sent: 45
-received: 38
-total_exchanges: 83
-threads: 22
-first_contact: "2023-03-15"
-last_contact: "2026-06-10"
-staleness: 85
-staleness_label: active
-strength_score: 72
-momentum_score: 65
-combined_score: 69
-quadrant: nurture
-depth: 4
-recency: 9
-nudge: null
----
-```
+Read [PRIVACY.md](PRIVACY.md) before connecting real accounts. Do not commit credentials, tokens, contact indexes, vault notes, or production data when contributing.
 
-If you enable AI enrichment, the page body gets structured sections: Overview, Background, Relationship Map, Key Themes, and Suggested Actions.
+## Current limitations
 
-#### Company Pages
+- Discover depends on context actually shared into the network. A large contact list or high relationship score alone is not enough for a relevant recommendation.
+- Calendar currently enriches existing imported contacts; invite-only people are not automatically added to the graph.
+- Shared calendar counts describe the imported window, not lifetime activity. Missing data is not evidence of no relationship.
+- Personal vault and web imports have separate source views. Shared-network identity matching requires compatible published identities; older vault snapshots may need a fresh push.
+- Gmail deletions are not automatically reconciled with previously imported metadata. Disconnecting an inbox removes its imported contributions.
+- Browser fixture tests do not verify live Google OAuth approval, API access, or real-account sync.
 
-The plugin auto-creates stub notes in the **Companies/** folder, linked from people pages via wiki-links. This lets you click through from a person to see everyone you know at that company.
+## Develop locally
 
-#### CRM Base View
+The shared-network work documented here is on `betaworks-score-push`. Until it is merged into `main`, use this branch when trying these features.
 
-Run **Gmail CRM: Create base view** (Cmd/Ctrl + P) to generate `CRM.base` — a sortable, filterable table of all your contacts. It includes 6 pre-built views:
-
-| View | What It Shows |
-|------|---------------|
-| **CRM** | All contacts sorted by combined score |
-| **Re-engage** | Strong relationships that have gone quiet — people worth reaching out to |
-| **By Company** | Contacts grouped by company |
-| **Nurture** | Your strongest, most active relationships |
-| **Developing** | New or weak relationships with recent activity — potential to grow |
-| **Quadrants** | All contacts with their quadrant assignment visible |
-
-You can sort by any column, filter by company or score range, and click through to any person's page.
-
-#### Staleness Scores
-
-Run **Gmail CRM: Update staleness scores** to compute relationship scores for every contact. Each person gets:
-
-- **Staleness** (0–100) — how fresh is the relationship?
-- **Strength** (0–100) — how deep and balanced is it overall?
-- **Momentum** (0–100) — how active is it right now?
-- **Combined** (0–100) — single sortable number (average of strength + momentum)
-- **Quadrant** — nurture / re-engage / developing / deprioritize
-- **Nudge** — suggested reason to re-engage (for stale contacts that were once strong)
-
-See [How Scoring Works](#how-scoring-works) below for the full algorithm.
-
-#### Quadrant View
-
-Run **Gmail CRM: Create quadrant view** to generate `_Quadrants.md` — a visual 2×2 grid showing your contacts organized by relationship health:
-
-```
-         DEVELOPING        │        NURTURE
-    (new but active)       │   (strong + active)
-                           │
-  ─────────────────────────┼─────────────────────────
-                           │
-       DEPRIORITIZE        │       RE-ENGAGE
-    (weak + dormant)       │   (strong but dormant)
-```
-
-- **Nurture** — your best relationships, keep them going
-- **Re-engage** — strong relationships going cold, reach out
-- **Developing** — new contacts with momentum, invest here
-- **Deprioritize** — low activity, low depth, let these be
-
-#### Relationship Mapping
-
-Run **Gmail CRM: Map relationships** to build a graph of connections between your contacts. The engine detects relationships from:
-
-- Wiki-links between people pages (`[[p- Jane Smith]]` mentioned in another person's page)
-- Shared email threads (introduced-by patterns)
-- Shared calendar meetings
-- Role/company overlaps
-
-These edges feed into the strength score and show up in AI-enriched pages under "Relationship Map."
-
-#### Calendar Integration
-
-Run **Gmail CRM: Sync calendar** to pull meeting history from Google Calendar. This adds:
-
-- Total meetings with each contact
-- Meetings in the last 90 days
-- Whether they organized meetings with you
-- Calendar acceptance count
-
-Calendar data feeds into the strength score (up to 20 bonus points) and can override the quadrant assignment — if you've shared 2+ calendar events with someone, they're treated as a strong relationship regardless of email volume.
-
-## PeopleGraph CLI (optional)
-
-The plugin works on its own, but a companion CLI — `peoplegraph` — lets you (and your coding agents) query the contact index from the terminal: fuzzy person lookup, relationship scores, "who do I know at X", reconnect candidates, and duplicate/merge review.
-
-Install the latest release binary:
+Use a recent Node.js release with `node:sqlite` support for the web tests (Node 22.13+). Cloud deployment also requires a Cloudflare account and Google OAuth configuration.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/main/scripts/install-peoplegraph.sh | bash
+git clone --branch betaworks-score-push https://github.com/kayacancode/obsidian-gmail-crm.git
+cd obsidian-gmail-crm
+npm ci
 ```
 
-This installs the binary to `~/.local/bin/peoplegraph` and an agent skill to `~/.claude/skills/peoplegraph/` so Claude Code and similar agents know how to drive it. The CLI auto-discovers `contact-index.json` in your Obsidian vault; override with `--cache <path>` or `PEOPLEGRAPH_CACHE`. Run `peoplegraph --help` or `peoplegraph describe` for the full command surface.
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| Sync Gmail contacts | Incremental sync of new email metadata |
-| Full re-sync | Wipe and rebuild the entire contact index |
-| Update staleness scores | Recompute all relationship scores and quadrants |
-| Create base view | Generate/refresh the CRM.base sortable table |
-| Create quadrant view | Generate/refresh the _Quadrants.md grid |
-| Enrich current person | AI-rewrite the current people page (requires Anthropic API key) |
-| Enrich all people pages | AI-rewrite all people pages |
-| Map relationships | Build relationship edges from wiki-links and shared meetings |
-| Sync calendar | Pull Google Calendar meeting history into contact records |
-
-## How Scoring Works
-
-Every contact gets scored on multiple dimensions. The system uses **only metadata** — it never reads email body content.
-
-### Staleness Score (0–100)
-
-How fresh is your relationship? Based on days since last contact:
-
-| Days Since Contact | Score Range |
-|---|---|
-| ≤ 7 days | 100 (fresh) |
-| 8–30 days | 70–90 |
-| 31–90 days | 40–70 |
-| 91–180 days | 15–40 |
-| 181–360 days | 0–15 |
-| > 360 days | 0 (dormant) |
-
-**Boosts:** +10 for contacts with 50+ email exchanges, +5 for 20+, +5 for 5+ relationship edges in the graph.
-
-The staleness score maps to a label:
-
-| Score | Label |
-|---|---|
-| 70–100 | **Active** |
-| 50–69 | **Warm** |
-| 30–49 | **Cooling** |
-| 10–29 | **Stale** |
-| 0–9 | **Dormant** |
-
-### Relationship Depth (1–5)
-
-How deep is the conversation? Driven by email thread metadata:
-
-| Depth | Pattern |
-|---|---|
-| **5** | 3+ back-and-forth threads, 20+ exchanges, threads 5+ messages deep |
-| **4** | At least 1 back-and-forth thread with 8+ exchanges |
-| **3** | 8+ exchanges with threads 3+ deep |
-| **2** | 3+ exchanges (unless mostly RSVPs → drops to 1) |
-| **1** | Minimal contact or RSVP-only threads |
-
-Key insight: **back-and-forth replies are the strongest signal**. A deep email thread means a real conversation. Single RSVP responses are explicitly down-weighted.
-
-### Relationship Recency (1–10)
-
-Fine-grained recency scale:
-
-| Days | Score |
-|---|---|
-| 0–2 | 10 |
-| 3–7 | 9 |
-| 8–14 | 8 |
-| 15–21 | 7 |
-| 22–30 | 6 |
-| 31–60 | 5 |
-| 61–90 | 4 |
-| 91–120 | 3 |
-| 121–180 | 2 |
-| 180+ | 1 |
-
-### Strength Score (0–100)
-
-Composite score measuring overall relationship strength. Five weighted components:
-
-| Component | Max Points | How It's Calculated |
-|---|---|---|
-| **Volume** | 25 | Log-scaled email count: `log2(exchanges + 1) × 4` |
-| **Depth** | 30 | Back-and-forth threads (×5, max 20) + max thread depth (×2, max 10) |
-| **Initiation Balance** | 25 | How balanced is sent vs received? 50/50 = 25, one-sided = 5 |
-| **Time Span** | 15 | How long you've been in contact. ~2 years = max |
-| **Calendar** | 20 | Shared meetings: 5+ in 90 days = 20, 3+ = 16, 1+ = 12, etc. |
-
-**Total possible: 115, clamped to 100.** The calendar component means people you actually meet in person get a meaningful boost even with low email volume.
-
-### Momentum Score (0–100)
-
-How active is the relationship right now? Two components:
-
-| Component | Max Points | How It's Calculated |
-|---|---|---|
-| **Recency Decay** | 80 | Exponential decay: `e^(-0.02 × days)`. Half-life ≈ 35 days |
-| **Activity Trend** | 20 | Recent thread depth (max 10) + back-and-forth threads (max 10) |
-
-The exponential decay is aggressive by design — a strong past relationship that has gone quiet will show up in the "re-engage" quadrant, not stay in "active."
-
-### Combined Score (0–100)
-
-Simple average of Strength + Momentum: `(strengthScore + momentumScore) / 2`. This is the single sortable number used in the CRM base view.
-
-### Quadrant Assignment
-
-Contacts are placed in a 2×2 grid based on strength and momentum:
-
-```
-                    High Momentum
-                         │
-         DEVELOPING      │      NURTURE
-       (weak + active)   │   (strong + active)
-                         │
-  ───────────────────────┼───────────────────────
-                         │
-       DEPRIORITIZE      │      RE-ENGAGE
-       (weak + dormant)  │   (strong + dormant)
-                         │
-                    Low Momentum
-```
-
-**Thresholds:** Strength ≥ 40, Momentum ≥ 30.
-
-**Hard overrides** (these trump the thresholds):
-- **Back-and-forth override:** If you've had at least 1 real two-way conversation AND sent 2+ messages, the contact is treated as "strong" — never deprioritized.
-- **Calendar override:** If you've both accepted 2+ shared calendar events, treated as "strong" — real-world face time trumps email patterns.
-
-### Nudges
-
-Stale or cooling contacts that were previously strong/moderate get a nudge — a suggested reason to re-engage:
-
-- How long since last contact
-- Previous activity level ("previously active — 45 emails")
-- Context from the person's page (role, key context)
-
-## AI Enrichment (Optional)
-
-If you add an Anthropic API key in settings, you can use Claude to rewrite people pages with structured sections:
-
-- **Overview** — who they are
-- **Background** — career, education
-- **Relationship Map** — how you're connected
-- **Key Themes** — what you discuss
-- **Strategic Context** — why the relationship matters
-- **Communication Pattern** — how/when you interact
-- **Suggested Actions** — what to do next
-
-This uses the metadata and existing page content — it does not read your emails.
-
-## Privacy & Security
-
-- **No email content is read** — only metadata (From, To, Date, Subject, thread structure)
-- **Everything stays local** — the contact index lives in your vault's plugin data folder
-- **Your OAuth credentials** — you create and control them
-- **No external servers** — the plugin talks directly to Gmail API from your machine
-- **AI enrichment is optional** — only runs when you explicitly trigger it, using your own API key
-
-## Settings
-
-| Setting | Description |
-|---------|-------------|
-| Client ID / Secret | Your Google OAuth credentials |
-| Blocked domains | Comma-separated domains to exclude from sync |
-| Sync interval | Auto-sync frequency (15–480 minutes) |
-| Max messages | Limit how many messages to scan (100–50000, or All) |
-| Contact notes folder | Where people pages are created (default: People) |
-| Companies folder | Where company stubs are created (default: Companies) |
-| Your name | Used for AI enrichment personalization |
-| Anthropic API key | For AI enrichment (optional) |
-| Model | Claude model for enrichment (Sonnet/Opus/Haiku) |
-| Enrich on sync | Auto-run AI enrichment after each sync |
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## People intelligence workspace
-
-Run **Gmail CRM: Open people intelligence** from the command palette, or select the **people** ribbon icon. This opens a native Obsidian tab alongside your existing Base and graph views.
-
-- **Attention:** reconnect candidates and recorded activity changes, with explanations and local Important/Later preferences.
-- **Timeline:** a 12-week grid of email metadata and mutually accepted calendar events. Select a cell for the underlying events.
-- **Goals:** add, edit, or remove goals with explicit keywords/phrases. The people × goals matrix distinguishes profile/note evidence from weaker subject hints. Each note match links to its source. This is transparent keyword matching, not semantic AI inference.
-- **Paths:** potential routes through contacts with two-way email history, supported by documented introductions or shared meetings. Note mentions alone never establish a route. These are possibilities to verify, not assurances that someone can introduce you.
-- **Graph:** a focused, clickable neighborhood with company, goal, activity, connection-type, and recent-contact filters. Solid lines represent introductions/shared meetings; dashed lines represent note references. Larger neighborhoods are limited to 16 visible neighbors, with the total shown.
-
-Every view uses the same person panel for relationship context, evidence, original note links, recent events, and Gmail thread links. Search/filter controls and graph nodes are keyboard accessible. Lists initially show 40 people and support loading more.
-
-### Data and history
-
-Run **Sync contacts** to begin retaining dated email metadata. Run **Sync calendar meeting data** to import up to one year of mutually accepted events. Run **Rescore all contacts (full rebuild)** to refresh the relationship edges used by paths/graph. Regular score updates retain the faster incremental pass. Use **Refresh** in the workspace to reread notes and the saved contact index, including CLI changes.
-
-History, goals, and preferences are saved locally in `.obsidian/plugins/gmail-crm/people-intelligence.json`, separately from `contact-index.json`, so older CLI tools cannot discard them. Writes are serialized. Existing email aliases attach history to the surviving contact after a merge; ambiguous aliases are excluded. Notes require an exact email or saved alias match—names alone do not establish identity.
-
-Existing aggregate totals are **never** turned into invented timeline events. Incremental Gmail sync records only newly fetched messages; a full re-sync can import older metadata within your configured message limit, and does rebuild the existing contact cache. Trend comparisons require 56 days since tracking began and compare recorded counts in two 28-day windows; they do not establish continuous mailbox coverage. Calendar events are accepted invitations, not proof of attendance. No email bodies are read and this workspace does not send messages or make external AI calls.
-
-### Development verification
+### Obsidian plugin
 
 ```bash
 npm run test:intelligence
 npx tsc --noEmit
 npm run build
-npm run preview:intelligence
 ```
 
-The preview at `http://127.0.0.1:4178` runs the same renderer with clearly labeled synthetic people, stored separately in browser demo storage. It never opens a real vault. With Playwright available, run `node tests/intelligence.browser.mjs` while the preview is running. Set `PLAYWRIGHT_MODULE` to an external Playwright module path and `CHROME_EXECUTABLE` to a Chrome binary if needed. Browser checks exercise all views, goals persistence, source links, filters, graph/detail consistency, narrow layout, and empty data.
+Install the built `main.js`, `manifest.json`, and `styles.css` into your vault as described in the [plugin guide](docs/obsidian-plugin.md). For a synthetic-data UI preview, run `npm run preview:intelligence`.
+
+### Web app
+
+```bash
+cd apps/people-graph
+npm ci
+npm run typecheck
+npm test
+```
+
+Follow the [web setup guide](apps/people-graph/README.md#setup-once) before running `npm run dev` or `npm run deploy`. Deployment builds the required static bundles through the `predeploy` script.
+
+### CLI
+
+```bash
+# From the repository root; requires Rust/Cargo
+npm run build:peoplegraph
+./crates/peoplegraph/target/release/peoplegraph --help
+```
+
+The CLI queries a local plugin contact index. It does not require the shared web app.
+
+## Repository map
+
+| Directory | Purpose |
+| --- | --- |
+| `src/` | Obsidian plugin |
+| `apps/people-graph/` | Main web app, API, Google/Granola integrations, shared networks |
+| `shared/` | Shared scoring and data contracts |
+| `crates/peoplegraph/` | Rust CLI |
+| `tests/` | Plugin and intelligence tests |
+| `apps/people-graph/tests/` | Web unit, integration, and browser tests |
+| `docs/` | Guides and design documents; proposals are not a feature guarantee |
+| `apps/people-graph-lab/`, `apps/reconnect-web/` | Related experiments and companion apps |
+
+## Contributing
+
+Open an issue with the problem, reproduction steps, and expected behavior. Use synthetic examples instead of private contact data. For a pull request, describe the behavior change and run the checks for the component you changed. Keep source permissions, contributor attribution, and the distinction between inferred and confirmed relationships intact.
+
+## License
+
+[MIT](LICENSE).

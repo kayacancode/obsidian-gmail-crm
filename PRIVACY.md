@@ -1,6 +1,6 @@
 # Privacy Policy — Gmail CRM for Obsidian
 
-**Last updated:** September 14, 2026
+**Last updated:** October 13, 2026
 
 ## What This Plugin Does
 
@@ -16,6 +16,8 @@ The plugin requests the following Google API scopes:
 - **calendar.events.readonly** (optional) — read-only access to calendar events for meeting history.
 - **userinfo.email** — your email address, used to identify your account.
 
+The separate web app requests `gmail.readonly`, `calendar.events.readonly`, and read-only Google Contacts scopes for authorized contact photos. Normal web sync imports email metadata only. Calendar invitation/RSVP counts can appear on shared connection cards for contributed contacts; event titles are not included in those shared activity summaries. Invitations do not establish attendance.
+
 ## Where Data Is Stored
 
 The desktop plugin stores the following data on your device:
@@ -24,7 +26,7 @@ The desktop plugin stores the following data on your device:
 - People pages (markdown notes) in your vault
 - OAuth tokens in Obsidian's plugin settings (local to your device)
 
-Granola and Obsidian content stays local unless you explicitly push a bounded graph snapshot to the People Graph service. A pushed snapshot uses vault-hashed contact IDs and contains only the graph fields shown for upload; it does not contain raw email bodies. Cloud inbox metadata and encrypted refresh grants are isolated inside the signed-in owner's Durable Object. Public, firm and private evidence are stored and returned as separate visibility classes: Firm views receive only firm evidence, Public views receive only public evidence, and the owner's My view can use all evidence authorized for that owner.
+Local Obsidian content stays local unless you explicitly push a bounded graph snapshot to the People Graph service. Connecting Granola directly to the web app imports meeting content into your account’s cloud storage; workspace sharing is a separate choice. A pushed snapshot uses vault-hashed contact IDs and contains only the graph fields shown for upload; it does not contain raw email bodies. Cloud inbox metadata and encrypted refresh grants are isolated inside the signed-in owner's Durable Object. Public, firm and private evidence are stored and returned as separate visibility classes: Firm views receive only firm evidence, Public views receive only public evidence, and the owner's My view can use all evidence authorized for that owner.
 
 Explicit deeper retrieval holds decoded body text only in transient memory while extracting server-owned topic identifiers. Raw bodies are not retained in SQL, KV, graph responses or logs. Public pages or feeds are also fetched only after preview and confirmation, with redirect, content-type, timeout and 1 MB response limits.
 
@@ -41,7 +43,7 @@ The optional People Graph service uses Cloudflare Workers, Durable Objects, D1 a
 
 ## Advisory outputs and user control
 
-Metadata heat is advisory and may be incomplete or wrong. Connector rings distinguish documented from inferred structure but do not establish closeness, willingness, consent or the ability to introduce someone. Gmail CRM and People Graph never send outreach, email or introduction requests; any action remains with the user.
+Metadata heat is advisory and may be incomplete or wrong. Connector rings distinguish documented from inferred structure but do not establish closeness, willingness, consent or the ability to introduce someone. People Graph sends in-app introduction requests when a user explicitly submits them. It does not automatically email contacts. Shared cards include aggregate counts of requests marked completed within that workspace, not request messages or inferred email introductions.
 
 ## Data Retention
 
