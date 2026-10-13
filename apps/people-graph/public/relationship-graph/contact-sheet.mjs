@@ -102,6 +102,7 @@ export function mountContactSheet(container,{onClose,onSelectStep,onRequestIntro
    row.append(element(doc,'p','nc-muted',r.lastContact?'Last contact · '+r.lastContact.slice(0,10):'Last contact not shared'));
    row.append(element(doc,'p','nc-activity-counts',Number.isSafeInteger(r.completedIntroductions)?`${r.completedIntroductions} completed introductions involving this person`:'Introduction count unavailable'));
    row.append(element(doc,'small','nc-muted','Completed introductions recorded in this workspace; requests and email guesses are excluded.'));
+   if(r.calendarActivity){const c=r.calendarActivity;row.append(element(doc,'p','nc-activity-counts',`Calendar · ${c.invited} shared invitations · ${c.bothAccepted} both accepted · ${c.upcoming} upcoming`));if(c.nextInvite)row.append(element(doc,'small','nc-muted','Next invitation · '+c.nextInvite.slice(0,10)));row.append(element(doc,'small','nc-muted','Imported calendar window: past year and next 30 days. RSVPs do not confirm attendance.'));}
    const detail=element(doc,'details');detail.append(element(doc,'summary','','Scores and source details'));row.append(detail);
    const measured=['email','meeting'].includes(r.evidenceCategory)&&Number.isFinite(r.score),scored=scoreBacked(r);
    detail.append(element(doc,'p','',scored?'Published people score: '+Math.round(r.score)+' / 100':measured?'Activity score: '+Math.round(r.score)+' / 100':'Not measured in shared data'));

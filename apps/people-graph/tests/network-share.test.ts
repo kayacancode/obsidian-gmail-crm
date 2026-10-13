@@ -425,3 +425,14 @@ test('meeting-only topic reaches its shared attendee without a personal statemen
   assert.ok(!(await service.exportWorkspaceSlice({kind:'all'},'themes')).slice.signals.some(s=>s.email==='cia@meet.test'));
  }finally{db.close();}
 });
+test('workspace calendar counts do not export event titles or inflate email/meeting activity',async()=>{
+ const {service,db}=await ownerFixture();try{
+  const before=await service.exportWorkspaceSlice({kind:'all'},'names');
+  db.prepare('INSERT INTO calendar_events VALUES (?,?,?,?)').run('me@example.com','invite',JSON.stringify({key:'invite',at:'2026-10-20T10:00:00Z',end:'2026-10-20T11:00:00Z',allDay:false,title:'PRIVATE CALENDAR TITLE',status:'accepted',people:['ada@work.test'],acceptedPeople:['ada@work.test'],url:null}),'g');
+  const after=await service.exportWorkspaceSlice({kind:'all'},'names');
+  assert.equal(after.relationships['ada@work.test'].calendarActivity?.invited,1);
+  assert.deepEqual(after.relationships['ada@work.test'].activity,before.relationships['ada@work.test'].activity);
+  assert.ok(!JSON.stringify(after).includes('PRIVATE CALENDAR TITLE'));
+  assert.deepEqual(after.slice.signals,[]);
+ }finally{db.close();}
+});

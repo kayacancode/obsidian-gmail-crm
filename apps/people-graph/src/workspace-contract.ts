@@ -1,6 +1,6 @@
 import type {SharedSlice} from './network-share';
 import type {MeasuredContact} from '../../../shared/measured-contact';
-export interface WorkspaceRelationship {completedIntroductions?:number;confirmedAt?:string;activity?:MeasuredContact;inboxes?:string[];score:number|null;scoreVersion:string;lastContact:string|null;observedAt:string;publishedScore?:{strength:number;momentum:number;combined:number};evidenceCategory:'email'|'meeting'|'score'|'unknown'}
+export interface WorkspaceRelationship {calendarActivity?:import('./calendar').CalendarActivity;completedIntroductions?:number;confirmedAt?:string;activity?:MeasuredContact;inboxes?:string[];score:number|null;scoreVersion:string;lastContact:string|null;observedAt:string;publishedScore?:{strength:number;momentum:number;combined:number};evidenceCategory:'email'|'meeting'|'score'|'unknown'}
 export interface WorkspaceProfile {name:string;photoUrl:string|null}
 export function workspacePhoto(value:unknown):string|null {
  try { const u=new URL(typeof value==='string'?value:'');return u.protocol==='https:'&&!u.username&&!u.password&&(u.hostname==='googleusercontent.com'||u.hostname.endsWith('.googleusercontent.com'))?u.href:null;}catch{return null;}

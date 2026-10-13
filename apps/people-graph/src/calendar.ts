@@ -15,3 +15,17 @@ export function normalizeCalendarEvent(raw:any,owner:string):CalendarRecord|null
  return {key:JSON.stringify([raw.iCalUID||owner+':'+raw.id,at]),at,end:new Date(end).toISOString(),allDay:!raw.start?.dateTime,title:String(raw.summary||'Calendar event').slice(0,500),status:accepted?'accepted':'invited',people,acceptedPeople:accepted?people.filter(email=>attendees.some((a:any)=>a.email?.toLowerCase()===email&&a.responseStatus==='accepted')):[],url};
 }
 export interface PersonFeedback {action:'boost'|'suppress'|'snooze';at:number;until:number;delta:number}
+
+export interface CalendarActivity {invited:number;bothAccepted:number;upcoming:number;lastInvite:string|null;nextInvite:string|null}
+export function calendarActivity(records:CalendarRecord[],now=Date.now()):Map<string,CalendarActivity>{
+ const result=new Map<string,CalendarActivity>(),seen=new Set<string>();
+ for(const record of records){const at=Date.parse(record.at);if(!Number.isFinite(at))continue;
+  for(const email of record.people){const key=record.key+'\0'+email;if(seen.has(key))continue;seen.add(key);
+   const item=result.get(email)||{invited:0,bothAccepted:0,upcoming:0,lastInvite:null,nextInvite:null};item.invited++;
+   if(record.status==='accepted'&&record.acceptedPeople.includes(email))item.bothAccepted++;
+   if(at>now){item.upcoming++;if(!item.nextInvite||at<Date.parse(item.nextInvite))item.nextInvite=record.at;}
+   else if(!item.lastInvite||at>Date.parse(item.lastInvite))item.lastInvite=record.at;
+   result.set(email,item);
+  }
+ }return result;
+}

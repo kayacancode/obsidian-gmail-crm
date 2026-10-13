@@ -14,3 +14,9 @@ test('calendar excludes resource calendars, preserves tentative status and all-d
  const value=normalizeCalendarEvent({...event,start:{date:'2026-09-25'},end:{date:'2026-09-26'},attendees:[{email:'room@example.com',resource:true,responseStatus:'accepted'},{email:'ada@example.com',responseStatus:'tentative'}]},'me@example.com')!;
  assert.deepEqual(value.people,['ada@example.com']);assert.equal(value.status,'invited');assert.equal(value.allDay,true);
 });
+test('calendar counts separate invitations and mutual RSVPs, deduplicate, and retain future opportunities',async()=>{
+ const {calendarActivity}=await import('../src/calendar');const record=normalizeCalendarEvent(event,'me@example.com')!;
+ const next={...record,key:'next',at:'2026-10-20T10:00:00Z',acceptedPeople:[]};
+ const counts=calendarActivity([record,record,next],Date.parse('2026-10-13')).get('ada@example.com')!;
+ assert.equal(counts.invited,2);assert.equal(counts.bothAccepted,1);assert.equal(counts.upcoming,1);assert.equal(counts.nextInvite,next.at);assert.equal(counts.lastInvite,record.at);
+});
