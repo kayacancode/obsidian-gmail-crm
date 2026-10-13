@@ -79,12 +79,10 @@ Read [PRIVACY.md](PRIVACY.md) before connecting real accounts. Do not commit cre
 
 ## Develop locally
 
-The shared-network work documented here is on `betaworks-score-push`. Until it is merged into `main`, use this branch when trying these features.
-
 Use a recent Node.js release with `node:sqlite` support for the web tests (Node 22.13+). Cloud deployment also requires a Cloudflare account and Google OAuth configuration.
 
 ```bash
-git clone --branch betaworks-score-push https://github.com/kayacancode/obsidian-gmail-crm.git
+git clone https://github.com/kayacancode/obsidian-gmail-crm.git
 cd obsidian-gmail-crm
 npm ci
 ```
