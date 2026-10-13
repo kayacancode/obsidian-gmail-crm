@@ -2,6 +2,10 @@
 
 Explore who you know, understand the activity behind a connection, and find a path to someone new through a shared network.
 
+**[Open the web app →](https://people-graph.kayarjones901.workers.dev/)** · [Self-hosting guide](apps/people-graph/README.md#setup-once)
+
+The hosted app requires Google sign-in. Your personal network is private; shared networks require membership. You can also run your own deployment.
+
 People brings together **Gmail activity, Google Calendar invitations, and optional meeting or note context**. Start with a person or topic, inspect the evidence behind a connection, and request an introduction from a network member.
 
 **You do not need Obsidian.** This repository contains both a standalone web app and an optional Obsidian plugin. The repository name reflects the project's origins as Gmail CRM for Obsidian.
@@ -34,7 +38,7 @@ For example: enter **“agent memory”** in Discover. If a new person has match
 
 ## Start in the web app
 
-On an existing, configured deployment:
+Open the [hosted web app](https://people-graph.kayarjones901.workers.dev/) or your own configured deployment:
 
 1. Sign in with Google and open **Accounts**.
 2. Select **Connect Google**. Review Google's requested permissions for Gmail, Calendar, and contact photos.
