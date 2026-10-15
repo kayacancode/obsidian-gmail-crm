@@ -9,3 +9,13 @@ test('shared membership alone never features an arbitrary person',()=>{
  const overlap={...graph,themeSignals:[],introductionSuggestions:[],nodes:[{id:'first',name:'Nicole Ripka',relationships:[{memberId:'me'},{memberId:'j'}]}]};
  assert.deepEqual(networkStarts(overlap),[]);
 });
+
+test('focused overview follows fresh shared evidence instead of the first twelve records',async()=>{
+ const {overviewPeople}=await import('../public/relationship-graph/guided-network.mjs');
+ const nodes=Array.from({length:30},(_,i)=>({id:`p${i}`,name:`Person ${i}`,relationships:[]}));
+ const g={nodes,edges:[],members:[],themeSignals:[]};
+ assert.ok(!overviewPeople(g).some(n=>n.id==='p29'));
+ const fresh={...g,themeSignals:[{personId:'p29',observedAt:new Date().toISOString(),sourceType:'granola',summary:'Discussed product design'}]};
+ assert.equal(overviewPeople(fresh)[0].id,'p29');
+ assert.equal(overviewPeople(fresh).length,12);
+});

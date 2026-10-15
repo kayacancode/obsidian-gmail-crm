@@ -1,7 +1,8 @@
+import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
 import {mountPersonSuggestionPopup} from './person-suggestions.mjs';
-import {networkStarts,nearbyBranches,extendWalk} from './guided-network.mjs';
+import {networkStarts,nearbyBranches,extendWalk,overviewPeople} from './guided-network.mjs';
 import {personWalk} from './person-walk.mjs';
 import {contactCard,mountContactSheet,portrait,personContext,contextBlock} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
@@ -139,6 +140,14 @@ export function mountGraph(element, options = {}) {
   let spatialKey = '';
   let spatialNodes = null;
   let discoveryIntent='';
+  const excludedWeeklyTopics=new Set();
+  let weeklyCache=null,weeklyFocusOpen=false;
+  function sharedWeek(){
+    const minute=Math.floor(Date.now()/60000),excluded=[...excludedWeeklyTopics].sort().join('|');
+    if(!weeklyCache||weeklyCache.graph!==graph||weeklyCache.minute!==minute||weeklyCache.excluded!==excluded)weeklyCache={graph,minute,excluded,value:weeklyContext(graph,{excludedTopics:excludedWeeklyTopics})};
+    return weeklyCache.value;
+  }
+
   let introductionCards=graph.introductionSuggestions||[],introductionState='ready',introductionRun=0;
   let introductionSkipped=new Set();
   let searchAnswer = null;
@@ -246,9 +255,9 @@ export function mountGraph(element, options = {}) {
   root.dataset.demo = String(demoEnabled());
   root.setAttribute('aria-label', options.title || 'Relationship graph');
   element.replaceChildren(root);
-  let contactOverlay=null,contactLayer=null,routeStrip=null,suggestionPopup=null;
+  let contactOverlay=null,contactLayer=null,routeStrip=null,suggestionPopup=null,contactFocus=null;
   let guidedOverview=true,walkBackStack=[];
-  function clearContact(){suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
+  function clearContact(){contactFocus=null;suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
   function showContact(id,continued=null,startIndex=0,suggestionContext=null){const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
@@ -265,7 +274,7 @@ export function mountGraph(element, options = {}) {
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${graphWidth} ${graphHeight}`);svg.setAttribute('class','nc-walk-edges');svg.style.width=graphWidth+'px';svg.style.height=graphHeight+'px';svg.setAttribute('aria-hidden','true');chain.append(svg);
     const point=i=>({x:80+i*170,y:i%2?200:80});
     let current=startIndex;
-    function inspect(index){current=index;for(const [i,b]of [...breadcrumb.children].entries())b.setAttribute('aria-current',i===index?'step':'false');for(const [i,line]of [...svg.querySelectorAll('line')].entries()){line.dataset.traversed=String(i<index);line.setAttribute('stroke-width',i<index?'4':'2');} const node=walk.nodes[index];for(const [i,b]of [...chain.querySelectorAll('.nc-walk-person')].entries())b.setAttribute('aria-pressed',String(i===index));
+    function inspect(index){current=index;contactFocus={id,nodeId:walk.nodes[index]?.id};for(const [i,b]of [...breadcrumb.children].entries())b.setAttribute('aria-current',i===index?'step':'false');for(const [i,line]of [...svg.querySelectorAll('line')].entries()){line.dataset.traversed=String(i<index);line.setAttribute('stroke-width',i<index?'4':'2');} const node=walk.nodes[index];for(const [i,b]of [...chain.querySelectorAll('.nc-walk-person')].entries())b.setAttribute('aria-pressed',String(i===index));
       const stops=[...chain.querySelectorAll('.nc-walk-person')],selected=stops[index];
       if(selected)chain.scrollTo({left:Math.max(0,selected.offsetLeft-chain.offsetLeft-(chain.clientWidth-selected.offsetWidth)/2),behavior:'instant'});
       nav.querySelectorAll('button')[0].disabled=index===0;nav.querySelectorAll('button')[1].disabled=index===walk.nodes.length-1;
@@ -344,7 +353,7 @@ export function mountGraph(element, options = {}) {
     const selectedTopic=rankedThemes().find(t=>t.themeId===activeThemeId);
     const layoutThemes=selectedTopic?[selectedTopic]:conversationThemes(baseRelevance.relevance.themes,baseRelevance.themeSignals);
     const filtered=graph.source==='workspace'?canvasMatches():graph.nodes;
-    const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|')+'|'+(graph.source==='workspace'?activeThemeId+'|'+query+'|'+guidedOverview+'|'+Boolean(searchAnswer)+'|'+(searchAnswer?.results||[]).map(r=>r.personId).join(','):'');
+    const key=layoutThemes.map(t=>t.themeId+':'+t.nodeIds.join(',')).join('|')+'|'+(graph.source==='workspace'?activeThemeId+'|'+query+'|'+guidedOverview+'|'+filtered.map(n=>n.id).join(',')+'|'+Boolean(searchAnswer)+'|'+(searchAnswer?.results||[]).map(r=>r.personId).join(','):'');
     if(!spatialCache || spatialNodes!==graph.nodes || key!==spatialKey) {
       spatialCache=spatialLayout(filtered,graph.edges,layoutThemes,graph.source==='workspace'?270:165);
       spatialKey=key;spatialNodes=graph.nodes;
@@ -396,7 +405,7 @@ export function mountGraph(element, options = {}) {
   function canvasMatches(){
     const matches=searchGraph(relevanceGraph,query);
     if(graph.source!=='workspace')return matches;
-    if(!activeThemeId){if(!guidedOverview||query||searchAnswer||matches.length<=24)return matches;const starts=networkStarts(graph).map(s=>s.personId),ids=new Set(starts);for(const id of starts)for(const e of (edgesByNode.get(id)||[]).slice(0,3))ids.add(other(e,id));for(const n of matches)if(ids.size<12)ids.add(n.id);return matches.filter(n=>ids.has(n.id)).slice(0,12);}
+    if(!activeThemeId){if(!guidedOverview||query||searchAnswer||matches.length<=24)return matches;return overviewPeople({...graph,nodes:matches},Date.now(),Object.values(sharedWeek().groups).flat().map(item=>item.person.id));}
     const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
     const ids=introduction?new Set(introduction.personIds):activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
     return matches.filter(n=>ids.has(n.id));
@@ -1397,7 +1406,9 @@ export function mountGraph(element, options = {}) {
     }
     if(!pathState && graph.source!=='workspace') root.append(renderTimeControls());
     if (pathBar) root.append(pathBar);
-    if(graph.source==='workspace'&&!pathState&&!activeThemeId){const starts=make('section','rg-network-starts');starts.setAttribute('aria-label','Start exploring');const heading=make('div','rg-start-heading');heading.append(make('h2','','Where do you want to go?'));const all=make('button','rg-filter-chip',guidedOverview?'Show all '+graph.nodes.length+' people':'Focused overview');all.type='button';all.onclick=()=>{clearContact();guidedOverview=!guidedOverview;if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}activeThemeId=null;query='';selectedId=null;panelMode=null;wholeNetworkOverview=!guidedOverview;camera={x:0,y:0,zoom:1};render();};heading.append(all);starts.append(heading,make('p','rg-source','Starting points from shared evidence. Your private top-of-mind context is not shared here.'));const cards=make('div','rg-start-cards');for(const item of networkStarts(graph)){const b=make('button','rg-start-card');b.type='button';b.append(make('small','',item.title),make('strong','',byId.get(item.personId)?.name||'Person'),make('span','',item.reason),make('small','rg-source',item.source));b.title=item.caution;b.onclick=()=>showContact(item.personId);cards.append(b);}if(!cards.children.length)cards.append(make('p','rg-source','Search for a person or question to begin. There isn’t enough shared context for suggestions yet.'));starts.append(cards);root.append(starts);}
+    if(graph.source==='workspace'&&!pathState&&!activeThemeId){const starts=make('section','rg-network-starts');starts.setAttribute('aria-label','Start exploring');const heading=make('div','rg-start-heading');heading.append(make('h2','','Your shared week'));const all=make('button','rg-filter-chip',guidedOverview?'Show all '+graph.nodes.length+' people':'Focused overview');all.type='button';all.onclick=()=>{clearContact();guidedOverview=!guidedOverview;if(searchAnswer){searchAnswer=null;exploration=null;callbacks.onWander?.();}activeThemeId=null;query='';selectedId=null;panelMode=null;wholeNetworkOverview=!guidedOverview;camera={x:0,y:0,zoom:1};render();};heading.append(all);starts.append(heading);
+      const weekly=weeklyPanel(document,graph,sharedWeek(),{onPerson:id=>showContact(id),onToggleTopic:(key,excluded)=>{if(excluded)excludedWeeklyTopics.add(key);else excludedWeeklyTopics.delete(key);weeklyFocusOpen=true;render();},onReset:()=>{excludedWeeklyTopics.clear();weeklyFocusOpen=true;render();}});
+      const focus=weekly.querySelector('.rg-weekly-focus');focus.open=weeklyFocusOpen;focus.addEventListener('toggle',()=>{weeklyFocusOpen=focus.open;});starts.append(weekly);root.append(starts);}
     const topics = renderTopics();
     if (topics) root.append(topics);
     const canvas = renderCanvas();
@@ -1888,10 +1899,12 @@ export function mountGraph(element, options = {}) {
       meetingBatch = batch;meetingFeedback = Object.create(null);lens = 'my';activeThemeId = null;
       panelMode = 'meeting-review';render();
     },
-    setGraph(nextGraph) {
+    setGraph(nextGraph, {preserveFocus=false}={}) {
       if (destroyed) return;
+      const previousFocus=preserveFocus?contactFocus:null;
       clearContact();
       meetingBatch = null;meetingFeedback = Object.create(null);
+      if(graph.workspaceId!==nextGraph.workspaceId){excludedWeeklyTopics.clear();weeklyFocusOpen=false;}
       graph = normalizeGraph(nextGraph);
       introductionRun++;introductionCards=graph.introductionSuggestions||[];introductionState='ready';introductionSkipped.clear();
       searchAnswer=null;exploration=null;walkHistory=[];walkIndex=-1;eventPeople=null;
@@ -1930,6 +1943,10 @@ export function mountGraph(element, options = {}) {
       const refreshPath = Boolean(pathState?.to);
       render();
       if (refreshPath) requestCurrentPaths();
+      if(previousFocus && byId.has(previousFocus.id)){
+        const walk=personWalk(graph,previousFocus.id,pathGraph);
+        showContact(previousFocus.id,null,Math.max(0,walk.nodes.findIndex(node=>node.id===previousFocus.nodeId)));
+      }
     },
     setRelevance(snapshot, nextLens = lens) {
       if (destroyed) return;

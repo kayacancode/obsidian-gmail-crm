@@ -4,6 +4,27 @@ import {PUBLIC_EXTRACTOR_VERSION,publicURL,type PublicSourceState} from './publi
 
 type SignalInput = ThemeSignal & {account?:string};
 
+// Bound the assembled response, not storage: multiple valid imports can exceed
+// the browser's limits. Keep ranked themes and their original evidence themes
+// together so corrected signals never leave dangling references.
+function boundedGraphRelevance(themes:Theme[],signals:ThemeSignal[],feedback:RelevanceFeedback[],lens:RelevanceLens,now:number) {
+ const ranked=scoreRelevance(signals,feedback,lens,now,themes);
+ const known=new Set(themes.map(theme=>theme.id));
+ const signalThemes=new Map(signals.map(signal=>[signal.id,signal.themeId]));
+ const kept=new Set<string>();
+ for(const theme of ranked.themes){
+  const needed=[theme.themeId,...theme.components.map(component=>signalThemes.get(component.signalId)!)].filter(id=>known.has(id));
+  const additions=new Set(needed.filter(id=>!kept.has(id)));
+  if(kept.size+additions.size<=200)for(const id of additions)kept.add(id);
+ }
+ for(const theme of themes){if(kept.size>=200)break;kept.add(theme.id);}
+ const boundedThemes=themes.filter(theme=>kept.has(theme.id));
+ const boundedSignals=signals.filter(signal=>kept.has(signal.themeId)).slice(0,5_000);
+ const relevance=scoreRelevance(boundedSignals,feedback,lens,now,boundedThemes);
+ relevance.themes=relevance.themes.filter(theme=>kept.has(theme.themeId));
+ return {themes:boundedThemes,signals:boundedSignals,relevance};
+}
+
 export type RetrievalError='reconnect_required'|'gmail_access_denied'|'ai_unavailable'|'invalid_extraction'|'retrieval_failed';
 export interface RetrievalJob {
 	id:string;owner:string;accountId:string;revision:string;personId:string;themeId?:string;
@@ -320,11 +341,12 @@ export class RelevanceStore {
 		// Signals can outlive their node (own addresses are never nodes; contacts can fall below the cap).
 		const nodeIds = new Set(nodes.map(node => node.id));
 		const visible = this.signals(owner).filter(signal => !signal.personId || nodeIds.has(signal.personId));
-		const relevance = scoreRelevance(visible,this.feedback(owner),lens,now,this.themes(owner));
+		const bounded = boundedGraphRelevance(this.themes(owner),visible,this.feedback(owner),lens,now);
+		const relevance = bounded.relevance;
 		const edges = graph.edges.filter(isGraphEdge).map((edge,index) => ({id:`mail-${index}`,source:edge.source,target:edge.target,kind:'cooccurrence' as const}));
 		const connectors = [...scoreConnectors(nodes,edges).values()].sort((a,b) => b.score-a.score || a.nodeId.localeCompare(b.nodeId));
-		const themes = this.themes(owner).map(({owner:_,...theme}) => theme);
-		const themeSignals = visible.map(({owner:_,...signal}) => signal);
+		const themes = bounded.themes.map(({owner:_,...theme}) => theme);
+		const themeSignals = bounded.signals.map(({owner:_,...signal}) => signal);
 		return {...graph,themes,themeSignals,relevance:{...relevance,connectors},connectors};
 	}
 
@@ -336,11 +358,12 @@ export class RelevanceStore {
 		const publicThemes=new Set(publicSignals.map(signal=>signal.themeId));
 		const themes:Theme[]=[...graph.themes.map(theme=>({...theme,owner,createdAt:stamp,updatedAt:stamp})),...this.themes(owner,true).filter(theme=>publicThemes.has(theme.id)&&!graph.themes.some(local=>local.id===theme.id))];
 		const signals:ThemeSignal[]=[...graph.themeSignals.map(signal=>({...signal,owner})),...publicSignals];
-		const relevance=scoreRelevance(signals,this.feedback(owner),lens,now,themes);
+		const bounded=boundedGraphRelevance(themes,signals,this.feedback(owner),lens,now);
+		const relevance=bounded.relevance;
 		const nodes=graph.nodes.filter(isGraphNode);
 		const edges=graph.edges.filter(isGraphEdge).map((edge,index)=>({id:`pushed-${index}`,source:edge.source,target:edge.target,kind:pushedEdgeKind(edge)}));
 		const connectors=[...scoreConnectors(nodes,edges).values()].sort((a,b)=>b.score-a.score||a.nodeId.localeCompare(b.nodeId));
-		return {...graph,themes:themes.map(({owner:_,createdAt:__,updatedAt:___,...theme})=>theme),themeSignals:signals.map(({owner:_,...signal})=>signal),relevance:{...relevance,connectors},connectors};
+		return {...graph,themes:bounded.themes.map(({owner:_,createdAt:__,updatedAt:___,...theme})=>theme),themeSignals:bounded.signals.map(({owner:_,...signal})=>signal),relevance:{...relevance,connectors},connectors};
 	}
 
 	async pushedEvidence<T extends {nodes:unknown[];edges:unknown[];themes:Array<Omit<Theme,'owner'|'createdAt'|'updatedAt'>>;themeSignals:Array<Omit<ThemeSignal,'owner'|'modelId'>>}>(graph:T,themeId:string,lens:RelevanceLens,now=Date.now()):Promise<{theme:Omit<Theme,'owner'|'createdAt'|'updatedAt'>|null;signals:Array<Omit<ThemeSignal,'owner'|'modelId'>>}>{
