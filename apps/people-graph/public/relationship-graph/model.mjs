@@ -171,6 +171,7 @@ function normalizeNode(raw, index) {
     company: optionalString(raw.company),
     companySource: optionalString(raw.companySource),
     photoUrl: photoUrl(raw.photoUrl ?? raw.photo),
+    mergedProfiles:Array.isArray(raw.mergedProfiles)?raw.mergedProfiles.filter(p=>p&&typeof p.id==='string'&&typeof p.name==='string').slice(0,500).map(p=>({id:p.id,name:p.name,company:optionalString(p.company)})):[],
     identityMatchReady:raw.identityMatchReady===true,
     sources:Array.isArray(raw.sources)?raw.sources.filter(s=>['web','obsidian'].includes(s)):[],
     photoPosition: optionalString(raw.photoPosition),

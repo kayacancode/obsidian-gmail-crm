@@ -63,6 +63,14 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
    if(action==='draft'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.memberId!=='string')deny(400,'invalid_request');return json(await draftWorkspace(env,id,me,body.personId,body.memberId));}
    return json({error:'method_not_allowed'},405);
   }
+  const mergePath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/person-merges$/);
+  if(mergePath&&['POST','DELETE'].includes(method)){
+   const id=mergePath[1],{sourceId,targetId}=body;
+   if(typeof sourceId!=='string'||!sourceId||sourceId.length>200||method==='POST'&&(typeof targetId!=='string'||!targetId||targetId.length>200||sourceId===targetId))deny(400,'invalid_person');
+   const snapshot=await readWorkspace(env.DB,id);memberOf(snapshot,me);
+   if(method==='POST'){const graph=await buildWorkspaceGraph(env,id,me);for(const pid of [sourceId,targetId]){const n=graph.nodes.find(n=>n.id===pid);if(!n||!n.identityMatchReady)deny(404,'person_unavailable');}}
+   await changeWorkspace(env.DB,id,w=>{if(w.revision!==snapshot.revision)deny(409,'workspace_changed_retry');const self=memberOf(w,me),merges={...self.personMerges};if(method==='DELETE')delete merges[sourceId];else {if(merges[targetId]||Object.values(merges).includes(sourceId))deny(409,'undo_existing_merge_first');merges[sourceId]=targetId;}if(Object.keys(merges).length>500)deny(400,'merge_limit');self.personMerges=merges;});return json({ok:true});
+  }
   const confirmation=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/relationship-confirmations$/);
   if(confirmation&&['POST','DELETE'].includes(method)){
    const id=confirmation[1],personId=body.personId;

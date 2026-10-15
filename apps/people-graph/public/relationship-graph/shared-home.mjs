@@ -29,7 +29,7 @@ export function connectionContext(graph,personId,memberId,now=Date.now()){
  const evidence=personContext({...graph,themeSignals},personId),latest=evidence[0];
  return latest?evidence.filter(e=>e.date===latest.date&&e.sourceType===latest.sourceType&&e.title===latest.title).slice(0,3):[];
 }
-export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro}={}){
+export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro,onMerge}={}){
  const root=element(doc,'section','shared-home');root.setAttribute('aria-label',compact?'Person details':'Shared people');if(compact)root.classList.add('sh-detail');
  const selected=graph.nodes.find(n=>n.id===selectedId&&sharedHomePersonAllowed(n));
  if(selected){
@@ -69,6 +69,18 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
    for(const e of evidence.slice(0,20)){const block=element(doc,'article','sh-note');block.append(element(doc,'p','',e.summary),element(doc,'small','',`${e.contributor} · ${e.date.slice(0,10)} · ${e.sourceLabel}`));more.append(block);}root.append(more);
   }
   if(!allEvidence.length&&card.relationships.some(r=>r.isMe)&&graph.workspaceId){const link=element(doc,'a','sh-back','Check my shared sources');link.href='/accounts?tab=workspace&workspace='+encodeURIComponent(graph.workspaceId);root.append(link);}
+  if(onMerge){
+   const duplicates=graph.nodes.filter(n=>n.id!==selected.id&&sharedHomePersonAllowed(n)&&n.name.trim().toLowerCase()===selected.name.trim().toLowerCase());
+   const saved=selected.mergedProfiles||[];
+   if(duplicates.length||saved.length){const section=element(doc,'details','sh-more');section.append(element(doc,'summary','','Duplicate profiles'));
+    section.append(element(doc,'p','sh-subtitle','Combines profiles only in your view. Original records and sharing choices stay intact.'));
+    const save=(source,target,control)=>{control.disabled=true;Promise.resolve(onMerge(source,target)).catch(()=>{control.disabled=false;message.textContent='Could not save this change. Please try again.';});};
+    const message=element(doc,'p','sh-subtitle');message.setAttribute('role','status');
+    for(const n of duplicates){const control=action(doc,'Combine with '+n.name+' · '+(n.company||'other profile'),()=>save(n.id,selected.id,control),'sh-back');section.append(control);}
+    for(const n of saved){section.append(element(doc,'p','','Combined: '+n.name+' · '+n.company));const control=action(doc,'Undo merge · '+n.company,()=>save(n.id,null,control),'sh-back');section.append(control);}
+    section.append(message);root.append(section);
+   }
+  }
   const viewerId=graph.members.find(m=>m.isMe)?.id;
   const alreadyInContacts=viewerId&&(selected.relationships||[]).some(r=>r.memberId===viewerId);
   if(onIntro&&!alreadyInContacts&&card?.routes?.length){const route=card.routes[0];root.append(action(doc,'Ask '+name(graph.members.find(m=>m.id===route.memberId))+' for an introduction',()=>onIntro(card,route.memberId),'sh-intro'));}

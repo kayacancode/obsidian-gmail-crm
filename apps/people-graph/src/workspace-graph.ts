@@ -1,3 +1,4 @@
+import {mergeWorkspacePeople} from './workspace-person-merge';
 import {completedIntroductionCounts} from './introduction-store';
 import {buildAnswerCards} from './network-answer';
 import {suggestIntroductions,type Introduction} from './workspace-introductions';
@@ -10,7 +11,7 @@ import {opaque} from './mail-model';
 import {readWorkspace,memberOf,deny} from './workspace-store';
 import {supportsIntroduction,workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
 import {keywordRank,keywordScores,jevScores,topResults} from './network-search';
-export interface WorkspaceNode {identityMatchReady?:boolean;sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
+export interface WorkspaceNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;identityMatchReady?:boolean;sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
 export interface WorkspaceGraph {viewerPrivateContext?:Record<string,import('./workspace-contract').ViewerPrivateContext[]>;introductionSuggestions?:Introduction[];source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
 function nameQuality(name:string,email:string){
  const value=name.trim().toLowerCase();
@@ -99,6 +100,7 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  graph.edges=[...joinedEdges.values()];
  const completed=new Map((await completedIntroductionCounts(env.DB,id)).map(r=>[r.memberId+':'+r.personId,r.count]));
  for(const person of graph.nodes)for(const relationship of person.relationships)relationship.completedIntroductions=completed.get(relationship.memberId+':'+person.id)||0;
+ mergeWorkspacePeople(graph,memberOf(w,me).personMerges||{});
  graph.introductionSuggestions=suggestIntroductions(graph);
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}
