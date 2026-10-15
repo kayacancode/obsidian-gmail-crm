@@ -36,7 +36,9 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
   const evidence=personContext(graph,selected.id),visibleEvidence=compact?1:3;
   if(evidence.length){root.append(element(doc,'h2','','Shared context'));for(const e of evidence.slice(0,visibleEvidence)){const block=element(doc,'article','sh-note');block.append(element(doc,'p','',e.summary),element(doc,'small','',`${e.contributor} · ${e.date.slice(0,10)}`));root.append(block);}if(evidence.length>visibleEvidence){const more=element(doc,'details','sh-more');more.append(element(doc,'summary','','More shared context'));for(const e of evidence.slice(visibleEvidence,20))more.append(element(doc,'p','',`${e.summary} — ${e.date.slice(0,10)}`));root.append(more);}}
   else root.append(element(doc,'p','sh-subtitle','No meeting notes or other context have been shared for this person.'));
-  if(onIntro&&card?.routes?.length){const route=card.routes[0];root.append(action(doc,'Ask '+name(graph.members.find(m=>m.id===route.memberId))+' for an introduction',()=>onIntro(card,route.memberId),'sh-intro'));}
+  const viewerId=graph.members.find(m=>m.isMe)?.id;
+  const alreadyInContacts=viewerId&&(selected.relationships||[]).some(r=>r.memberId===viewerId);
+  if(onIntro&&!alreadyInContacts&&card?.routes?.length){const route=card.routes[0];root.append(action(doc,'Ask '+name(graph.members.find(m=>m.id===route.memberId))+' for an introduction',()=>onIntro(card,route.memberId),'sh-intro'));}
   return root;
  }
  root.append(element(doc,'h1','',sharedHomeTitle(graph)));

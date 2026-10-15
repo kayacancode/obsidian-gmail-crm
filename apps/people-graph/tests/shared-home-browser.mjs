@@ -5,6 +5,7 @@ try{
  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  const r=memberId=>({memberId,memberName:memberId==='j'?'john@betaworks.com':'kaya@betaworks.com',evidenceCategory:'email',activity:{sent:2,received:2,meetings:0}});
  const graph={source:'workspace',workspaceId:'team',workspaceName:'Betaworks',revision:1,members:[{id:'me',name:'kaya@betaworks.com',isMe:true},{id:'j',name:'john@betaworks.com'}],nodes:['Analisa','Jon Chin','Jordan','Alex','Sam','Robin','Casey'].map((name,i)=>({id:'p'+i,name,type:'person',relationships:[r('me'),r('j')]})),edges:[{id:'e1',source:'p0',target:'p1',weight:2},{id:'e2',source:'p1',target:'p2',weight:2},{id:'e3',source:'p2',target:'p3',weight:1},{id:'e4',source:'p0',target:'p4',weight:1}],themes:[],themeSignals:[]};
+ graph.nodes.find(n=>n.name==='Casey').relationships=[r('j')];
  graph.nodes.push(...Array.from({length:3000},(_,i)=>({id:'extra'+i,name:'Contact '+i,type:'person',relationships:[r('j')]})));
  graph.nodes.push({id:'denied',name:'Hidden person',type:'person',permission:'denied',relationships:[r('j')]});
  let searchQuery='';
@@ -33,9 +34,15 @@ try{
  await page.setViewportSize({width:1440,height:1000});
  await page.getByRole('button',{name:'Explore Analisa',exact:true}).click();await page.getByRole('button',{name:'Close details',exact:true}).waitFor();
  assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-detail').count(),1);
+ assert.equal(await page.locator('.sh-intro').count(),0,'mutual contacts do not need an introduction');
  const bounds=await page.locator('.rg-canvas').boundingBox(),detail=await page.locator('.sh-detail').boundingBox();assert.ok(bounds.x+bounds.width<=detail.x+1,'detail does not cover the graph');
  await page.screenshot({path:'/tmp/shared-graph-details.png'});
  await page.getByRole('button',{name:'Close details',exact:true}).click();
+ await page.getByRole('button',{name:'Show all people',exact:true}).click();
+ await page.getByRole('button',{name:'Explore Casey',exact:true}).click();
+ assert.equal(await page.locator('.sh-intro').count(),1,'new contacts retain introduction action');
+ await page.getByRole('button',{name:'Close details',exact:true}).click();
+ await page.getByRole('button',{name:'Focused view',exact:true}).click();
  await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('developer tools');await page.locator('.sh-search-button').click();
  await page.getByRole('button',{name:'Clear search',exact:true}).waitFor();await page.getByRole('button',{name:'Explore Alex',exact:true}).waitFor();assert.equal(searchQuery,'developer tools');assert.equal(await page.locator('.rg-node').count(),1);
  await page.getByRole('button',{name:'Clear search',exact:true}).click();assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-people').count(),0);
