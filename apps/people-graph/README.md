@@ -258,6 +258,6 @@ Run `node --test tests/weekly-context.test.mjs` and `npm run test:weekly-browser
 
 ### Simple shared home
 
-The hosted shared network opens with “You + [other members]”, one search field, and up to six people with a single reason each. The list combines weekly matches in both directions and mutual contacts; when no weekly matches exist, it says so once and shows shared contacts. Search results replace the list. Selecting a person replaces the list with their connection and shared context, with a Back button and an introduction action when supported. The graph, discovery sidebar, topic chips, and source diagnostics are absent from this default view. Existing graph views remain available separately. The topic-adjustment controls described above belong to the legacy graph view.
+The hosted shared network opens with “You + [other members]”, one search field, and a focused graph. Weekly relevance prioritizes people in the graph; Show all people expands it. Search narrows the graph to matching people. Selecting a person opens a compact adjacent panel with their connection and expandable shared context, below the graph on mobile. Weekly cards, discovery sidebar, topic chips, and source diagnostics are absent from this default view. The topic-adjustment controls described above belong to the legacy graph view.
 
 Run `npm run test:shared-home-browser` against a static server at `TEST_ORIGIN` (default `http://127.0.0.1:4198`) for the complete hosted layout, search, detail/back, resize, and mobile checks.

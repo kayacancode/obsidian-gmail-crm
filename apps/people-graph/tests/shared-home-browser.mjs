@@ -4,7 +4,9 @@ const browser=await chromium.launch({headless:true,executablePath:'/Applications
 try{
  const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
  const r=memberId=>({memberId,memberName:memberId==='j'?'john@betaworks.com':'kaya@betaworks.com',evidenceCategory:'email',activity:{sent:2,received:2,meetings:0}});
- const graph={source:'workspace',workspaceId:'team',workspaceName:'Betaworks',revision:1,members:[{id:'me',name:'kaya@betaworks.com',isMe:true},{id:'j',name:'john@betaworks.com'}],nodes:['Analisa','Jon Chin','Jordan','Alex','Sam','Robin','Casey'].map((name,i)=>({id:'p'+i,name,type:'person',relationships:[r('me'),r('j')]})),edges:[],themes:[],themeSignals:[]};
+ const graph={source:'workspace',workspaceId:'team',workspaceName:'Betaworks',revision:1,members:[{id:'me',name:'kaya@betaworks.com',isMe:true},{id:'j',name:'john@betaworks.com'}],nodes:['Analisa','Jon Chin','Jordan','Alex','Sam','Robin','Casey'].map((name,i)=>({id:'p'+i,name,type:'person',relationships:[r('me'),r('j')]})),edges:[{id:'e1',source:'p0',target:'p1',weight:2},{id:'e2',source:'p1',target:'p2',weight:2},{id:'e3',source:'p2',target:'p3',weight:1},{id:'e4',source:'p0',target:'p4',weight:1}],themes:[],themeSignals:[]};
+ graph.nodes.push(...Array.from({length:3000},(_,i)=>({id:'extra'+i,name:'Contact '+i,type:'person',relationships:[r('j')]})));
+ graph.nodes.push({id:'denied',name:'Hidden person',type:'person',permission:'denied',relationships:[r('j')]});
  let searchQuery='';
  await page.route('https://accounts.google.com/gsi/client',r=>r.fulfill({body:''}));
  await page.route('**/api/**',route=>{const path=new URL(route.request().url()).pathname;
@@ -18,24 +20,28 @@ try{
  await page.goto((process.env.TEST_ORIGIN||'http://127.0.0.1:4198')+'/?workspace=team');
  await page.getByRole('heading',{name:'You + John',exact:true}).waitFor();
  assert.equal(await page.locator('input[type=search]:visible').count(),1);
- assert.equal(await page.locator('.sh-person').count(),6);
- assert.equal(await page.locator('.rg-canvas,.rg-weekly,.rg-introductions,.rg-topic-bar,.rg-owner-legend').count(),0);
+ assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-node').count(),12);
+ assert.equal(await page.locator('.rg-weekly,.rg-introductions,.rg-topic-bar,.rg-owner-legend').count(),0);
  assert.equal(await page.locator('#shared-welcome:visible,#network-modes:visible,#viewer-status:visible').count(),0);
  await page.screenshot({path:'/tmp/shared-home-desktop.png'});
+ const scale=await page.locator('.rg-scene').getAttribute('style');await page.getByRole('button',{name:'Zoom in',exact:true}).click();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));assert.notEqual(await page.locator('.rg-scene').getAttribute('style'),scale);await page.getByRole('button',{name:'Fit',exact:true}).click();
+ await page.getByRole('button',{name:'Show all people',exact:true}).click();assert.equal(await page.locator('.rg-node').count(),3007);await page.getByRole('button',{name:'Focused view',exact:true}).click();assert.equal(await page.locator('.rg-node').count(),12);
  await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('draft query');
  await page.setViewportSize({width:1200,height:900});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
  assert.equal(await page.getByRole('searchbox',{name:'Find a person or ask a question'}).inputValue(),'draft query');
  await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('');
  await page.setViewportSize({width:1440,height:1000});
- await page.getByRole('button',{name:/Analisa.*contact/}).click();await page.getByRole('button',{name:'← Back to people',exact:true}).waitFor();
- assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-canvas').count(),0);
- await page.getByRole('button',{name:'← Back to people',exact:true}).click();
+ await page.getByRole('button',{name:'Explore Analisa',exact:true}).click();await page.getByRole('button',{name:'Close details',exact:true}).waitFor();
+ assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-detail').count(),1);
+ const bounds=await page.locator('.rg-canvas').boundingBox(),detail=await page.locator('.sh-detail').boundingBox();assert.ok(bounds.x+bounds.width<=detail.x+1,'detail does not cover the graph');
+ await page.screenshot({path:'/tmp/shared-graph-details.png'});
+ await page.getByRole('button',{name:'Close details',exact:true}).click();
  await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('developer tools');await page.locator('.sh-search-button').click();
- await page.getByText('Works on developer tools.',{exact:true}).waitFor();assert.equal(searchQuery,'developer tools');assert.equal(await page.locator('.sh-person').count(),1);
- await page.getByRole('button',{name:'Clear search',exact:true}).click();assert.equal(await page.locator('.sh-person').count(),6);
- await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('nothing');await page.locator('.sh-search-button').click();await page.getByText('No matches. Try a name, company, or topic.',{exact:true}).waitFor();assert.equal(await page.locator('.sh-person').count(),0);
+ await page.getByRole('button',{name:'Clear search',exact:true}).waitFor();await page.getByRole('button',{name:'Explore Alex',exact:true}).waitFor();assert.equal(searchQuery,'developer tools');assert.equal(await page.locator('.rg-node').count(),1);
+ await page.getByRole('button',{name:'Clear search',exact:true}).click();assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-people').count(),0);
+ await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('nothing');await page.locator('.sh-search-button').click();await page.getByText('No matches. Try a name, company, or topic.',{exact:true}).waitFor();assert.equal(await page.locator('.rg-node').count(),0);
  await page.getByRole('button',{name:'Clear search',exact:true}).click();
  await page.setViewportSize({width:390,height:844});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/shared-home-mobile.png'});
- assert.deepEqual(errors,[]);console.log('PASS actual shared host: one search, one list, no graph/sidebar, detail/back, search and empty results, desktop/mobile');
+ assert.deepEqual(errors,[]);console.log('PASS graph-first shared host: one search, graph stays visible, one compact detail panel, search and empty results, desktop/mobile');
 }finally{await browser.close();}

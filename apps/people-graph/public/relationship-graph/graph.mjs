@@ -1,4 +1,4 @@
-import {sharedHome} from './shared-home.mjs';
+import {sharedHome,sharedHomePersonAllowed} from './shared-home.mjs';
 import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
@@ -263,7 +263,7 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactFocus=null;suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id,continued=null,startIndex=0,suggestionContext=null){if(simpleShared()){homePerson=id;render();const heading=root.querySelector('h1');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
+  function showContact(id,continued=null,startIndex=0,suggestionContext=null){if(simpleShared()){homePerson=id;selectedId=id;render();const heading=root.querySelector('.sh-detail h2');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=continued||personWalk(graph,id,pathGraph),container=contactContainer();
 
@@ -346,8 +346,8 @@ export function mountGraph(element, options = {}) {
   const currentRoute = () => pathState?.result?.paths?.[pathState.index] ?? null;
 
   function canvasLayout() {
-    const width = element.clientWidth || 1000;
-    const height = panelMode==='topic'&&width<900?540:Math.max(800, (view?.innerHeight || 900) - 133);
+    const width = Math.max(300,(element.clientWidth || 1000)-(simpleShared()&&homePerson&&element.clientWidth>800?340:0));
+    const height = simpleShared()?Math.max(440,(view?.innerHeight||900)-225):panelMode==='topic'&&width<900?540:Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
     const usableWidth = Math.max(132, width - (width >= (panelMode==='topic'?900:1100) && (graph.source!=='workspace'||panelMode) ? 380 : 48));
     const top = graph.source==='workspace' ? 24 : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
@@ -406,7 +406,8 @@ export function mountGraph(element, options = {}) {
   }
 
   function canvasMatches(){
-    const matches=searchGraph(relevanceGraph,query);
+    const matches=searchGraph(relevanceGraph,query).filter(n=>!simpleShared()||sharedHomePersonAllowed(n));
+    if(simpleShared()&&searchAnswer){const ids=new Set(searchAnswer.results.map(r=>r.personId));return matches.filter(n=>ids.has(n.id));}
     if(graph.source!=='workspace')return matches;
     if(!activeThemeId){if(!guidedOverview||query||searchAnswer||matches.length<=24)return matches;return overviewPeople({...graph,nodes:matches},Date.now(),Object.values(sharedWeek().groups).flat().map(item=>item.person.id));}
     const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
@@ -647,7 +648,7 @@ export function mountGraph(element, options = {}) {
       }
       nodeButton.append(label);
       nodeLayer.append(nodeButton);
-      if (lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
+      if (!simpleShared() && lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
         const theme = personThemes(node.id).slice().sort((a, b) => b.score - a.score)[0];
         const badge = button('Why now', 'inspect-theme', 'rg-person-heat');
         badge.dataset.themeId = theme.themeId;
@@ -1363,11 +1364,18 @@ export function mountGraph(element, options = {}) {
     root.dataset.simpleShared=String(simpleShared());
     if(simpleShared()){
       root.dataset.profileOpen='false';
-      root.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,query:homeQuery,status:homeStatus,
-        onQueryChange:value=>{homeQuery=value;},onPerson:id=>showContact(id),onBack:()=>{homePerson=null;render();},
-        onSearch:value=>{homeQuery=value;homePerson=null;if(!value){searchAnswer=null;homeStatus='';render();options.onHomeClear?.();}else options.onHomeSearch?.(value);},
-        onClear:()=>{homeQuery='';searchAnswer=null;homeStatus='';render();options.onHomeClear?.();},
+      root.append(sharedHome(document,graph,{answer:searchAnswer,headerOnly:true,query:homeQuery,status:homeStatus,
+        onQueryChange:value=>{homeQuery=value;},onPerson:id=>showContact(id),onBack:()=>{homePerson=null;selectedId=null;render();},
+        onSearch:value=>{homeQuery=value;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};if(!value){searchAnswer=null;homeStatus='';render();options.onHomeClear?.();}else options.onHomeSearch?.(value);},
+        onClear:()=>{homeQuery='';searchAnswer=null;homeStatus='';homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();options.onHomeClear?.();},
         onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      const stage=make('div','sh-graph-stage');stage.dataset.details=String(Boolean(homePerson&&byId.has(homePerson)));
+      const canvas=renderCanvas();const note=canvas.querySelector('.rg-canvas-note');if(note)note.textContent='Drag to explore · Select a person';
+      const controls=make('nav','sh-map-controls');controls.setAttribute('aria-label','Map controls');
+      controls.append(button('−','zoom-out'),button('+','zoom-in'),button('Fit','fit'));controls.children[0].setAttribute('aria-label','Zoom out');controls.children[1].setAttribute('aria-label','Zoom in');
+      const all=make('button','',guidedOverview?'Show all people':'Focused view');all.type='button';all.onclick=()=>{guidedOverview=!guidedOverview;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();};controls.append(all);canvas.append(controls);stage.append(canvas);
+      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      root.append(stage);
       if(focusedSearch){const input=root.querySelector('.sh-search input');input?.focus({preventScroll:true});input?.setSelectionRange(focusedSearch.start,focusedSearch.end);}
       return;
     }
@@ -1808,6 +1816,7 @@ export function mountGraph(element, options = {}) {
 
   function onKeyDown(event) {
     if (event.key === 'Escape') {
+      if(simpleShared()&&homePerson){homePerson=null;selectedId=null;render();return;}
       if (pathState) closePath();
       else if (panelMode) { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
       return;
@@ -1872,12 +1881,12 @@ export function mountGraph(element, options = {}) {
   root.addEventListener('toggle', onToggle, true);
   let lastSize = `${element.clientWidth}:${view?.innerHeight}`;
   function onResize() {
-    if(simpleShared())return;
     const size = `${element.clientWidth}:${view?.innerHeight}`;
     // Expanding evidence/directory changes height, not the layout budget. Replacing
     // controls in that case would discard the keyboard focus we just restored.
     if (size === lastSize) return;
     lastSize = size;
+    if(simpleShared()){render();return;}
     if (pathState) pathState.needsRefit = true;
     else {
       camera = { x: 0, y: 0, zoom: 1 };
@@ -1959,9 +1968,9 @@ export function mountGraph(element, options = {}) {
         }
       }
       const refreshPath = Boolean(pathState?.to);
+      if(!byId.has(homePerson)){homePerson=null;if(simpleShared())selectedId=null;}
       render();
       if (refreshPath) requestCurrentPaths();
-      if(!byId.has(homePerson))homePerson=null;
       if(previousFocus && byId.has(previousFocus.id)){
         const walk=personWalk(graph,previousFocus.id,pathGraph);
         showContact(previousFocus.id,null,Math.max(0,walk.nodes.findIndex(node=>node.id===previousFocus.nodeId)));
