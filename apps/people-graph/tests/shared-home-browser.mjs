@@ -25,6 +25,8 @@ try{
  assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-node').count(),12);
  assert.equal(await page.locator('.rg-weekly,.rg-introductions,.rg-topic-bar,.rg-owner-legend').count(),0);
  assert.equal(await page.locator('#shared-welcome:visible,#network-modes:visible,#viewer-status:visible').count(),0);
+ assert.equal(await page.getByRole('button',{name:'Explore Analisa',exact:true}).count(),0);
+ assert.equal(await page.getByRole('button',{name:'Explore Casey',exact:true}).count(),1);
  await page.screenshot({path:'/tmp/shared-home-desktop.png'});
  const scale=await page.locator('.rg-scene').getAttribute('style');await page.getByRole('button',{name:'Zoom in',exact:true}).click();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));assert.notEqual(await page.locator('.rg-scene').getAttribute('style'),scale);await page.getByRole('button',{name:'Fit',exact:true}).click();
  await page.getByRole('button',{name:'Show all people',exact:true}).click();assert.equal(await page.locator('.rg-node').count(),3007);await page.getByRole('button',{name:'Focused view',exact:true}).click();assert.equal(await page.locator('.rg-node').count(),12);
@@ -33,6 +35,7 @@ try{
  assert.equal(await page.getByRole('searchbox',{name:'Find a person or ask a question'}).inputValue(),'draft query');
  await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('');
  await page.setViewportSize({width:1440,height:1000});
+ await page.getByRole('button',{name:'Show all people',exact:true}).click();
  await page.getByRole('button',{name:'Explore Analisa',exact:true}).click();await page.getByRole('button',{name:'Close details',exact:true}).waitFor();
  assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-canvas').count(),1);assert.equal(await page.locator('.sh-detail').count(),1);
  assert.equal(await page.locator('.sh-intro').count(),0,'mutual contacts do not need an introduction');
@@ -45,7 +48,6 @@ try{
  const bounds=await page.locator('.rg-canvas').boundingBox(),detail=await page.locator('.sh-detail').boundingBox();assert.ok(bounds.x+bounds.width<=detail.x+1,'detail does not cover the graph');
  await page.screenshot({path:'/tmp/shared-graph-details.png'});
  await page.getByRole('button',{name:'Close details',exact:true}).click();
- await page.getByRole('button',{name:'Show all people',exact:true}).click();
  await page.getByRole('button',{name:'Explore Casey',exact:true}).click();
  assert.equal(await page.getByRole('region',{name:'Your private context',exact:true}).count(),0);
  assert.equal(await page.locator('.sh-intro').count(),1,'new contacts retain introduction action');

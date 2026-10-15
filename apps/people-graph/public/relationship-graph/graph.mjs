@@ -3,7 +3,7 @@ import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
 import {mountPersonSuggestionPopup} from './person-suggestions.mjs';
-import {networkStarts,nearbyBranches,extendWalk,overviewPeople} from './guided-network.mjs';
+import {networkStarts,nearbyBranches,extendWalk,overviewPeople,discoveryOverview} from './guided-network.mjs';
 import {personWalk} from './person-walk.mjs';
 import {contactCard,mountContactSheet,portrait,personContext,contextBlock} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
@@ -409,6 +409,7 @@ export function mountGraph(element, options = {}) {
     const matches=searchGraph(relevanceGraph,query).filter(n=>!simpleShared()||sharedHomePersonAllowed(n));
     if(simpleShared()&&searchAnswer){const ids=new Set(searchAnswer.results.map(r=>r.personId));return matches.filter(n=>ids.has(n.id));}
     if(graph.source!=='workspace')return matches;
+    if(simpleShared()&&guidedOverview&&!query&&!searchAnswer)return discoveryOverview({...graph,nodes:matches},Date.now(),sharedWeek().groups.forYou.map(item=>item.person.id));
     if(!activeThemeId){if(!guidedOverview||query||searchAnswer||matches.length<=24)return matches;return overviewPeople({...graph,nodes:matches},Date.now(),Object.values(sharedWeek().groups).flat().map(item=>item.person.id));}
     const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
     const ids=introduction?new Set(introduction.personIds):activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
@@ -1370,7 +1371,7 @@ export function mountGraph(element, options = {}) {
         onClear:()=>{homeQuery='';searchAnswer=null;homeStatus='';homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();options.onHomeClear?.();},
         onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
       const stage=make('div','sh-graph-stage');stage.dataset.details=String(Boolean(homePerson&&byId.has(homePerson)));
-      const canvas=renderCanvas();const note=canvas.querySelector('.rg-canvas-note');if(note)note.textContent='Drag to explore · Select a person';
+      const canvas=renderCanvas();const note=canvas.querySelector('.rg-canvas-note');if(note)note.textContent=guidedOverview&&!query&&!searchAnswer?'New connections · Show all people to see mutual contacts':'Drag to explore · Select a person';
       const controls=make('nav','sh-map-controls');controls.setAttribute('aria-label','Map controls');
       controls.append(button('−','zoom-out'),button('+','zoom-in'),button('Fit','fit'));controls.children[0].setAttribute('aria-label','Zoom out');controls.children[1].setAttribute('aria-label','Zoom in');
       const all=make('button','',guidedOverview?'Show all people':'Focused view');all.type='button';all.onclick=()=>{guidedOverview=!guidedOverview;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();};controls.append(all);canvas.append(controls);stage.append(canvas);

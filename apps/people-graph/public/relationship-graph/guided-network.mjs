@@ -1,3 +1,4 @@
+import {supportsIntroduction,scoreBacked} from './relationship-support.mjs';
 // These prompts use only the graph already authorized for this viewer.
 const permitted=n=>n&&n.type!=='company'&&n.permission!=='denied'&&n.permission!=='conflicted'&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved';
 export function networkStarts(graph,now=Date.now()){
@@ -57,4 +58,15 @@ export function overviewPeople(graph,now=Date.now(),preferredIds=[]){
  for(const id of starts)for(const edge of (graph.edges||[]).filter(e=>e.source===id||e.target===id).slice(0,3))add(edge.source===id?edge.target:edge.source);
  for(const node of nodes.slice().sort((a,b)=>(recent.get(b.id)||0)-(recent.get(a.id)||0)))add(node.id);
  return [...ids].map(id=>byId.get(id));
+}
+
+// Discovery is relative to the signed-in member; contact presence means already known.
+export function discoveryOverview(graph,now=Date.now(),preferredIds=[]){
+ const me=graph.members?.find(m=>m.isMe)?.id;
+ if(!me)return [];
+ const others=new Set(graph.members.filter(m=>m.id!==me).map(m=>m.id));
+ const nodes=graph.nodes.filter(n=>permitted(n)&&!n.relationships?.some(r=>r.memberId===me)&&n.relationships?.some(r=>others.has(r.memberId)&&supportsIntroduction(r)));
+ const strength=n=>Math.max(0,...(n.relationships||[]).filter(r=>others.has(r.memberId)&&scoreBacked(r)).map(r=>r.score));
+ nodes.sort((a,b)=>strength(b)-strength(a));
+ return overviewPeople({...graph,nodes},now,preferredIds);
 }
