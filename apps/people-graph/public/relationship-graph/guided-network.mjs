@@ -41,3 +41,20 @@ export function extendWalk(walk,index,id,paths){
  const edges=[...walk.edges.slice(0,index),edge];
  return {...walk,nodes:[...walk.nodes.slice(0,index+1),person],edges,message:edges.some(e=>e.kind!=='personal')?'This trail includes shared context; those relationships are unverified.':'Following recorded contact. Inspect each edge for its source and date.'};
 }
+
+// Re-rank the compact map from shared evidence whenever its data changes.
+export function overviewPeople(graph,now=Date.now(),preferredIds=[]){
+ const nodes=graph.nodes.filter(permitted),byId=new Map(nodes.map(n=>[n.id,n]));
+ const recent=new Map();
+ const remember=(id,date)=>{const time=Date.parse(date);if(Number.isFinite(time)&&time<=now)recent.set(id,Math.max(recent.get(id)||0,time));};
+ for(const signal of graph.themeSignals||[])remember(signal.personId,signal.observedAt);
+ for(const node of nodes)for(const relationship of node.relationships||[])remember(node.id,relationship.lastContact);
+ const ids=new Set();
+ const add=id=>{if(ids.size<12&&byId.has(id))ids.add(id);};
+ for(const id of preferredIds)add(id);
+ const starts=networkStarts(graph,now).map(s=>s.personId);
+ for(const id of starts)add(id);
+ for(const id of starts)for(const edge of (graph.edges||[]).filter(e=>e.source===id||e.target===id).slice(0,3))add(edge.source===id?edge.target:edge.source);
+ for(const node of nodes.slice().sort((a,b)=>(recent.get(b.id)||0)-(recent.get(a.id)||0)))add(node.id);
+ return [...ids].map(id=>byId.get(id));
+}

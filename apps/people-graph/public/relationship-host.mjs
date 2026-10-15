@@ -18,7 +18,7 @@ function abortableSleep(ms, signal) {
 
 export function createRelationshipController({ fetchImpl = fetch, origin = location.origin, onState = () => {}, sleep = abortableSleep } = {}) {
   let state = { ...EMPTY_STATE };
-  let generation = 0, searchAbort=null;
+  let generation = 0, searchAbort=null, workspaceRefresh=null;
   let controller = null;
   let tokenController = null;
   let authenticatedAccount = null;
@@ -358,7 +358,30 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     rankIntroductions:()=>workspacePath()?request(workspacePath()+'/introductions',{body:{}},context()):Promise.resolve({suggestions:[],checked:false}),
     getState: () => ({ ...state }),
     load,
-    async refreshWorkspace(){if(!workspacePath()||state.phase!=='ready')return;const ctx=context();try{const data=await request(workspacePath()+'/members',{},ctx);if(data.workspace.revision!==state.graph.revision)await load(state.source);else if(state.workflowMessage)publish({workflowMessage:''});}catch(e){if(e.name==='AbortError')return;if(e.status===403){invalidate();publish({phase:'error',graph:null,message:'You no longer have access to this workspace.'});}else publish({workflowMessage:'Connection unavailable. This workspace view is stale; reconnect to check access.'});}},
+    async refreshWorkspace(){
+      if(!workspacePath()||state.phase!=='ready')return;
+      const ctx=context(),path=workspacePath();
+      if(workspaceRefresh?.run===ctx.run)return workspaceRefresh.promise;
+      const refresh={run:ctx.run,promise:null};
+      workspaceRefresh=refresh;
+      refresh.promise=(async()=>{
+        try{
+          const members=await request(path+'/members',{},ctx);
+          if(members.workspace.revision!==state.graph.revision){await load(state.source);return;}
+          const data=await request(path+'/graph',{},ctx);
+          if(accountFrom(data)!==ctx.account||data.graph?.source!=='workspace'||data.graph.workspaceId!==state.source.slice(10))throw Error('Unexpected workspace graph owner or source');
+          // These describe response assembly, not changes to the shared content.
+          const signature=graph=>JSON.stringify(graph,(key,value)=>['pushedAt','calculatedAt','ingestedAt','retrievedAt'].includes(key)?undefined:value);
+          if(signature(data.graph)!==signature(state.graph))publish({graph:data.graph,workflowMessage:''});
+          else if(state.workflowMessage)publish({workflowMessage:''});
+        }catch(e){
+          if(e.name==='AbortError'||ctx.run!==generation||state.phase!=='ready')return;
+          if(e.status===403){invalidate();publish({phase:'error',graph:null,message:'You no longer have access to this workspace.'});}
+          else publish({workflowMessage:'Connection unavailable. This workspace view is stale; reconnect to check access.'});
+        }finally{if(workspaceRefresh===refresh)workspaceRefresh=null;}
+      })();
+      return refresh.promise;
+    },
     resume,
     signIn,
     signOut,
@@ -755,7 +778,7 @@ async function startBrowserApp() {
       onRankIntroductions:()=>controller.rankIntroductions(),
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
       onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });
-    else if (mountedGraph !== state.graph) {clearNetworkSearch();graphInstance.setGraph(state.graph);}
+    else if (mountedGraph !== state.graph) {clearNetworkSearch();graphInstance.setGraph(state.graph,{preserveFocus:state.graph.source==='workspace'&&mountedGraph?.workspaceId===state.graph.workspaceId&&mountedGraph?.revision===state.graph.revision});}
     mountedGraph = state.graph;
     if(state.relevanceEnvelope && renderedEnvelope !== state.relevanceEnvelope){renderedEnvelope=state.relevanceEnvelope;graphInstance.setRelevance(renderedEnvelope,state.lens);}
     renderSessionTrails();

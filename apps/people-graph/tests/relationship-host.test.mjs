@@ -386,3 +386,50 @@ test('shared traversal reads fragmented stream events and returns the real answe
  });
  await controller.load('workspace:test');const seen=[];const answer=await controller.searchNetwork('design',e=>seen.push(e));assert.equal(seen[0].label,'José');assert.equal(answer.results[0].personId,'person-a');
 });
+
+test('workspace refresh loads new synced content at the same membership revision without a loading reset',async()=>{
+ let name='Before',stamp='one',reads=0;
+ const phases=[];
+ const controller=createRelationshipController({origin:'https://people.test',onState:s=>phases.push(s.phase),fetchImpl:async path=>{
+  if(path==='/api/accounts')return json({account:'new@example.com'});
+  if(path.endsWith('/members'))return json({workspace:{revision:1}});
+  reads++;
+  return json({account:'new@example.com',graph:{source:'workspace',workspaceId:'team',revision:1,pushedAt:stamp,nodes:[{id:'a',name}],edges:[]}});
+ }});
+ await controller.resume('workspace:team');phases.length=0;
+ name='After';await controller.refreshWorkspace();
+ assert.equal(controller.getState().graph.nodes[0].name,'After');
+ assert.ok(phases.every(p=>p==='ready'));
+ const unchanged=controller.getState().graph;stamp='two';
+ await controller.refreshWorkspace();assert.equal(controller.getState().graph,unchanged,'timestamps alone must not reset the view');
+ assert.equal(reads,3);
+});
+
+test('workspace refresh rejects mismatched graph owners',async()=>{
+ let wrong=false;
+ const controller=createRelationshipController({origin:'https://people.test',fetchImpl:async path=>{
+  if(path==='/api/accounts')return json({account:'new@example.com'});
+  if(path.endsWith('/members'))return json({workspace:{revision:1}});
+  return json({account:wrong?'other@example.com':'new@example.com',graph:{source:'workspace',workspaceId:'team',revision:1,nodes:[{id:wrong?'private':'a'}],edges:[]}});
+ }});
+ await controller.resume('workspace:team');wrong=true;await controller.refreshWorkspace();
+ assert.equal(controller.getState().graph.nodes[0].id,'a');
+ assert.match(controller.getState().workflowMessage,/stale/i);
+});
+
+test('overlapping workspace refreshes share a request and late content cannot cross a workspace switch',async()=>{
+ let release,refreshing=false,reads=0;
+ const pending=new Promise(resolve=>release=resolve);
+ const controller=createRelationshipController({origin:'https://people.test',fetchImpl:async path=>{
+  if(path==='/api/accounts')return json({account:'new@example.com'});
+  if(path.endsWith('/members'))return json({workspace:{revision:1}});
+  if(refreshing&&path==='/api/workspaces/team/graph'){reads++;return pending;}
+  return json({account:'new@example.com',graph:{source:'workspace',workspaceId:path.includes('/other/')?'other':'team',revision:1,nodes:[],edges:[]}});
+ }});
+ await controller.resume('workspace:team');refreshing=true;
+ const a=controller.refreshWorkspace(),b=controller.refreshWorkspace();
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(reads,1);
+ await controller.load('workspace:other');
+ release(json({account:'new@example.com',graph:{source:'workspace',workspaceId:'team',revision:1,nodes:[{id:'old'}],edges:[]}}));
+ await Promise.all([a,b]);assert.equal(controller.getState().graph.workspaceId,'other');
+});

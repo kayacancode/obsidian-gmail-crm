@@ -163,3 +163,20 @@ test('the next relevance job is the only alarm candidate when it is earlier than
 	assert.equal(await store.nextAlarmAt(NOW+500),NOW+500);
 	db.close();
 });
+
+for (const source of ['mail','obsidian'] as const) test(`large ${source} graphs stay within browser theme limits without deleting stored data`,async()=>{
+ const {store,db}=fixture();
+ try {
+  const signals=Array.from({length:205},(_,i)=>signal({id:`signal-${i}`,themeId:`theme-${String(i).padStart(3,'0')}`,contentHash:`hash-${i}`,confidence:i===204?1:0.1}));
+  await store.ingest(signals.slice(0,200));
+  await store.ingest(signals.slice(200));
+  const graph={nodes:[{id:'person-ada'}],edges:[],themes:signals.map(s=>({id:s.themeId,canonicalName:s.themeId,aliases:[],description:'',status:'active' as const})),themeSignals:signals.map(({owner,...s})=>s)};
+  const attached=source==='mail'?await store.attachToGraph(graph,'my',NOW):await store.attachPushedGraph(graph,'my',NOW);
+  assert.equal(attached.themes.length,200);
+  assert.ok(attached.themes.some(t=>t.id==='theme-204'),'highest-relevance theme survives the cap');
+  const ids=new Set(attached.themes.map(t=>t.id)),signalIds=new Set(attached.themeSignals.map(s=>s.id));
+  assert.ok(attached.themeSignals.every(s=>ids.has(s.themeId)));
+  assert.ok(attached.relevance.themes.every(t=>ids.has(t.themeId)&&t.components.every(c=>signalIds.has(c.signalId))));
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM themes').get().n,205);
+ } finally {db.close();}
+});
