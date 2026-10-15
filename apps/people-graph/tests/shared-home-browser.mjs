@@ -8,6 +8,7 @@ try{
  graph.nodes.find(n=>n.name==='Casey').relationships=[r('j')];
  graph.nodes.push(...Array.from({length:3000},(_,i)=>({id:'extra'+i,name:'Contact '+i,type:'person',relationships:[r('j')]})));
  graph.nodes.push({id:'denied',name:'Hidden person',type:'person',permission:'denied',relationships:[r('j')]});
+ graph.viewerPrivateContext={p0:[{summary:'Private email topic about a pilot',observedAt:'2026-10-15',sourceType:'gmail_subject',title:''}]};
  let searchQuery='';
  await page.route('https://accounts.google.com/gsi/client',r=>r.fulfill({body:''}));
  await page.route('**/api/**',route=>{const path=new URL(route.request().url()).pathname;
@@ -39,11 +40,14 @@ try{
  assert.match(await page.locator('.sh-detail').innerText(),/2 sent · 2 received/);
  assert.equal(await page.getByRole('link',{name:'Check my shared sources'}).count(),1);
  assert.equal(await page.getByText('No meeting notes or other context have been shared for this person.',{exact:true}).count(),0);
+ assert.match(await page.getByRole('region',{name:'Your private context',exact:true}).innerText(),/Private email topic about a pilot/);
+ assert.match(await page.getByRole('region',{name:'Your private context',exact:true}).innerText(),/Only you can see this/);
  const bounds=await page.locator('.rg-canvas').boundingBox(),detail=await page.locator('.sh-detail').boundingBox();assert.ok(bounds.x+bounds.width<=detail.x+1,'detail does not cover the graph');
  await page.screenshot({path:'/tmp/shared-graph-details.png'});
  await page.getByRole('button',{name:'Close details',exact:true}).click();
  await page.getByRole('button',{name:'Show all people',exact:true}).click();
  await page.getByRole('button',{name:'Explore Casey',exact:true}).click();
+ assert.equal(await page.getByRole('region',{name:'Your private context',exact:true}).count(),0);
  assert.equal(await page.locator('.sh-intro').count(),1,'new contacts retain introduction action');
  await page.getByRole('button',{name:'Close details',exact:true}).click();
  await page.getByRole('button',{name:'Focused view',exact:true}).click();

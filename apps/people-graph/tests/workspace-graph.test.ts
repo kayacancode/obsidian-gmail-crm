@@ -271,3 +271,13 @@ test('published vault relationship scores create score-backed routes without per
  const {buildAnswerCards}=await import('../src/network-answer');assert.equal(buildAnswerCards(g,[{personId:person.id}])[0].routes[0].basis,'published_score');
  for(const name of ['Zero','Bad'])assert.equal(g.nodes.find(n=>n.name===name)!.relationships[0].evidenceCategory,'unknown');
 });
+test('private context is loaded only from the authenticated viewer and never used as shared evidence',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName,calls:string[]=[];
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),workspacePrivateContext:async()=>{calls.push(owner);return {'contact@example.test':[{summary:owner+' private topic',observedAt:'2026-10-15',sourceType:'gmail_subject',title:''}]};}});
+ const own=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ assert.equal(own.viewerPrivateContext?.[own.nodes[0].id][0].summary,'owner@example.com private topic');
+ assert.deepEqual(calls,['owner@example.com']);assert.deepEqual(own.themeSignals,[]);
+ const other=await buildWorkspaceGraph(f.env,f.id,'member@example.com');
+ assert.equal(other.viewerPrivateContext?.[other.nodes[0].id][0].summary,'member@example.com private topic');
+ assert.ok(!JSON.stringify(other).includes('owner@example.com private topic'));
+});

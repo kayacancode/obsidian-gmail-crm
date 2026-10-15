@@ -42,6 +42,12 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
    const block=element(doc,'article','sh-note');block.append(element(doc,'strong','',relationship.isMe?'Your connection':name(graph.members.find(m=>m.id===relationship.memberId))+'’s connection'));
    for(const fact of facts)block.append(element(doc,'p','',fact));root.append(block);
   }
+  const privateContext=graph.viewerPrivateContext?.[selected.id]||[];
+  if(privateContext.length){
+   const section=element(doc,'section','sh-private-context');section.setAttribute('aria-label','Your private context');
+   section.append(element(doc,'h2','','Your private context'),element(doc,'small','sh-subtitle','Only you can see this. Not shared with this network.'));
+   for(const item of privateContext.slice(0,3)){const block=element(doc,'article','sh-note');if(item.title)block.append(element(doc,'strong','',item.title));block.append(element(doc,'p','',item.summary),element(doc,'small','',((item.sourceType||'').startsWith('gmail')?'Email':item.sourceType==='granola'?'Meeting notes':'Your source')+' · '+item.observedAt.slice(0,10)));section.append(block);}root.append(section);
+  }
   const evidence=personContext(graph,selected.id),visibleEvidence=compact?1:3;
   if(evidence.length){root.append(element(doc,'h2','','Shared context'));for(const e of evidence.slice(0,visibleEvidence)){const block=element(doc,'article','sh-note');block.append(element(doc,'p','',e.summary),element(doc,'small','',`${e.contributor} · ${e.date.slice(0,10)}`));root.append(block);}if(evidence.length>visibleEvidence){const more=element(doc,'details','sh-more');more.append(element(doc,'summary','','More shared context'));for(const e of evidence.slice(visibleEvidence,20))more.append(element(doc,'p','',`${e.summary} — ${e.date.slice(0,10)}`));root.append(more);}}
   else {

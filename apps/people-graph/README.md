@@ -261,3 +261,5 @@ Run `node --test tests/weekly-context.test.mjs` and `npm run test:weekly-browser
 The hosted shared network opens with “You + [other members]”, one search field, and a focused graph. Weekly relevance prioritizes people in the graph; Show all people expands it. Search narrows the graph to matching people. Selecting a person opens a compact adjacent panel with their connection and expandable shared context, below the graph on mobile. Weekly cards, discovery sidebar, topic chips, and source diagnostics are absent from this default view. The topic-adjustment controls described above belong to the legacy graph view.
 
 Run `npm run test:shared-home-browser` against a static server at `TEST_ORIGIN` (default `http://127.0.0.1:4198`) for the complete hosted layout, search, detail/back, resize, and mobile checks.
+
+Shared profiles also show “Your private context” when the signed-in viewer has their own linked evidence. This viewer-only response field is separate from shared signals and is excluded from shared search, recommendations, introduction drafts, and exports. It does not change contribution settings.

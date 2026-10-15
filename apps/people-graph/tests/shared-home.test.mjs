@@ -17,3 +17,11 @@ test('search replaces the shortlist, excludes missing records, and keeps an empt
 test('unresolved and denied identities are never presented as recommendations or contacts',()=>{
  const result=sharedHomeRows({...graph,nodes:graph.nodes.map(n=>({...n,permission:'denied'}))});assert.equal(result.rows.length,0);
 });
+
+test('private context survives normalization but malformed dates and unknown people are dropped',async()=>{
+ const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+ const input={...graph,source:'workspace',edges:[],relevance:{version:1,lens:'firm',calculatedAt:'2026-10-15T00:00:00Z',scoreVersion:'relevance-v1',themes:[],connectors:[],discoveries:[]},viewerPrivateContext:{a:[{summary:'Private topic',observedAt:'2026-10-15',sourceType:'gmail_subject'},{summary:'Bad date',observedAt:2026}],missing:[{summary:'Unknown',observedAt:'2026-10-15'}]}};
+ const normalized=normalizeGraph(normalizeGraph(input));
+ assert.equal(normalized.viewerPrivateContext.a.length,1);assert.equal(normalized.viewerPrivateContext.a[0].summary,'Private topic');assert.equal(normalized.viewerPrivateContext.missing,undefined);
+ assert.deepEqual(normalized.themeSignals,[]);
+});

@@ -514,6 +514,21 @@ export class MailSync extends DurableObject<MailEnv>{
   }return out;
  }
  // Viewer-only lookup, or an explicitly consented export. Never reads imported people.
+ // Viewer-only RPC: never include these records in an exported share slice.
+ async workspacePrivateContext(emails:string[]):Promise<Record<string,import('./workspace-contract').ViewerPrivateContext[]>>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {};
+  const wanted=new Set(emails.slice(0,10000)),ids=new Map<string,string>();
+  for(const row of this.graphContacts())if(wanted.has(row.email))ids.set(await opaque(owner,row.email,this.env.TOKEN_SECRET),row.email);
+  const source=await this.store().shareSource(),out:Record<string,import('./workspace-contract').ViewerPrivateContext[]>={};
+  let total=0;
+  for(const signal of source.signals.slice().sort((a,b)=>Date.parse(b.observedAt)-Date.parse(a.observedAt))){
+   const email=signal.personId?ids.get(signal.personId):undefined;
+   if(!email||!signal.summary||!Number.isFinite(Date.parse(signal.observedAt))||signal.evidenceRef.startsWith(SHARE_ACCOUNT))continue;
+   const records=out[email]||=[];if(records.length>=10)continue;if(total>=2000)break;
+   records.push({summary:signal.summary.slice(0,1000),observedAt:signal.observedAt,sourceType:signal.sourceType,title:signal.provenance?.title?.slice(0,160)||''});total++;
+  }
+  return out;
+ }
  async workspaceProfiles(emails:string[]):Promise<Record<string,WorkspaceProfile>>{
   const wanted=new Set(emails.slice(0,10000)),out:Record<string,WorkspaceProfile>={};
   const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));

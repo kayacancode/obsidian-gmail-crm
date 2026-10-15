@@ -436,3 +436,11 @@ test('workspace calendar counts do not export event titles or inflate email/meet
   assert.deepEqual(after.slice.signals,[]);
  }finally{db.close();}
 });
+test('private workspace context uses owned evidence and is absent from exported slices',async()=>{
+ const f=await ownerFixture();
+ const context=await f.service.workspacePrivateContext(['ada@work.test','unknown@test.com']);
+ assert.ok(context['ada@work.test'].length>0);assert.equal(context['unknown@test.com'],undefined);
+ const shared=await f.service.exportWorkspaceSlice({kind:'all'},'themes');
+ assert.equal((shared as any).viewerPrivateContext,undefined);
+ assert.ok(shared.slice.signals.every(s=>s.sourceType!=='gmail_subject'));
+});

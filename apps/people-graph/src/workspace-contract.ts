@@ -8,3 +8,5 @@ export function workspacePhoto(value:unknown):string|null {
 export interface WorkspaceSlice {profiles?:Record<string,WorkspaceProfile>;slice:SharedSlice;relationships:Record<string,WorkspaceRelationship>;truncated:boolean}
 
 export function supportsIntroduction(r:WorkspaceRelationship){return Boolean(r.confirmedAt||(r.evidenceCategory==='score'&&Number.isFinite(r.score)&&r.score!>0)||(['email','meeting'].includes(r.evidenceCategory)&&!(r.activity&&(!r.activity.sent||!r.activity.received)&&!r.activity.meetings)));}
+
+export interface ViewerPrivateContext {summary:string;observedAt:string;sourceType:string;title:string}
