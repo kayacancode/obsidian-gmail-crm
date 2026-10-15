@@ -9,6 +9,8 @@ try{
  graph.nodes.push(...Array.from({length:3000},(_,i)=>({id:'extra'+i,name:'Contact '+i,type:'person',relationships:[r('j')]})));
  graph.nodes.push({id:'denied',name:'Hidden person',type:'person',permission:'denied',relationships:[r('j')]});
  graph.viewerPrivateContext={p0:[{summary:'Private email topic about a pilot',observedAt:'2026-10-15',sourceType:'gmail_subject',title:''}]};
+ graph.themes=[{id:'launch',name:'Launch',canonicalName:'Launch'}];
+ graph.themeSignals=[{id:'casey-note',ingestedAt:'2026-10-14',contentHash:'casey-note',extractorVersion:'test-v1',personId:'p6',themeId:'launch',sourceType:'granola',visibility:'firm',confidence:1,observedAt:'2026-10-14',summary:'Discussed the launch plan.',evidenceRef:'workspace:j:casey-note',provenance:{title:'Launch planning'}}];
  let searchQuery='';
  await page.route('https://accounts.google.com/gsi/client',r=>r.fulfill({body:''}));
  await page.route('**/api/**',route=>{const path=new URL(route.request().url()).pathname;
@@ -51,6 +53,10 @@ try{
  await page.getByRole('button',{name:'Explore Casey',exact:true}).click();
  assert.equal(await page.getByRole('region',{name:'Your private context',exact:true}).count(),0);
  assert.equal(await page.locator('.sh-intro').count(),1,'new contacts retain introduction action');
+ const connection=page.locator('article[aria-label="John’s connection"]');
+ assert.match(await connection.innerText(),/Discussed the launch plan/);
+ assert.match(await connection.innerText(),/Latest shared context · 2026-10-14 · Granola note context/);
+ assert.match(await connection.innerText(),/Last contact · Oct 10, 2026/);
  await page.getByRole('button',{name:'Close details',exact:true}).click();
  await page.getByRole('button',{name:'Focused view',exact:true}).click();
  await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('developer tools');await page.locator('.sh-search-button').click();

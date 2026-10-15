@@ -22,6 +22,13 @@ export function sharedHomeRows(graph,answer=null){
  for(const person of sorted){const relationships=ties(person),others=relationships.filter(r=>r.memberId!==self).map(r=>name(graph.members.find(m=>m.id===r.memberId)));if(!others.length)continue;add(person,relationships.some(r=>r.memberId===self)?`A contact you and ${others.join(', ')} share.`:`Shared by ${others.join(', ')}.`);}
  return {rows,message:hasWeekly?'A few people worth a look.':rows.length?'No suggestions for this week yet. Here are people in your shared contacts.':'No shared contacts to show yet.'};
 }
+// Attribute shared evidence by its workspace provenance, never by a matching display name.
+export function connectionContext(graph,personId,memberId,now=Date.now()){
+ if(!graph.members?.some(m=>m.id===memberId))return [];
+ const themeSignals=(graph.themeSignals||[]).filter(s=>String(s.evidenceRef||'').startsWith('workspace:'+memberId+':')&&Date.parse(s.observedAt)<=now);
+ const evidence=personContext({...graph,themeSignals},personId),latest=evidence[0];
+ return latest?evidence.filter(e=>e.date===latest.date&&e.sourceType===latest.sourceType&&e.title===latest.title).slice(0,3):[];
+}
 export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro}={}){
  const root=element(doc,'section','shared-home');root.setAttribute('aria-label',compact?'Person details':'Shared people');if(compact)root.classList.add('sh-detail');
  const selected=graph.nodes.find(n=>n.id===selectedId&&sharedHomePersonAllowed(n));
@@ -38,8 +45,15 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
    if(relationship.lastContact&&Number.isFinite(Date.parse(relationship.lastContact)))facts.push('Last contact · '+new Date(relationship.lastContact).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}));
    const activity=relationship.activity;
    if(activity){if(activity.sent>0||activity.received>0)facts.push('Email · '+activity.sent+' sent · '+activity.received+' received');if(activity.meetings>0)facts.push(activity.meetings+' recorded meeting '+(activity.meetings===1?'entry':'entries'));}
-   if(!facts.length)continue;
+   const latest=connectionContext(graph,selected.id,relationship.memberId);
+   if(!facts.length&&!latest.length)facts.push('Last contact not shared.');
    const block=element(doc,'article','sh-note');block.append(element(doc,'strong','',relationship.isMe?'Your connection':name(graph.members.find(m=>m.id===relationship.memberId))+'’s connection'));
+   block.setAttribute('aria-label',relationship.isMe?'Your connection':name(graph.members.find(m=>m.id===relationship.memberId))+'’s connection');
+   if(latest.length){
+    block.append(element(doc,'small','sh-subtitle','Latest shared context · '+latest[0].date.slice(0,10)+' · '+latest[0].sourceLabel));
+    if(latest[0].title)block.append(element(doc,'p','',latest[0].title));
+    for(const item of latest)block.append(element(doc,'p','',item.summary));
+   }else block.append(element(doc,'p','sh-subtitle','No conversation context shared for this connection yet.'));
    for(const fact of facts)block.append(element(doc,'p','',fact));root.append(block);
   }
   const privateContext=graph.viewerPrivateContext?.[selected.id]||[];
@@ -48,12 +62,13 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
    section.append(element(doc,'h2','','Your private context'),element(doc,'small','sh-subtitle','Only you can see this. Not shared with this network.'));
    for(const item of privateContext.slice(0,3)){const block=element(doc,'article','sh-note');if(item.title)block.append(element(doc,'strong','',item.title));block.append(element(doc,'p','',item.summary),element(doc,'small','',((item.sourceType||'').startsWith('gmail')?'Email':item.sourceType==='granola'?'Meeting notes':'Your source')+' · '+item.observedAt.slice(0,10)));section.append(block);}root.append(section);
   }
-  const evidence=personContext(graph,selected.id),visibleEvidence=compact?1:3;
-  if(evidence.length){root.append(element(doc,'h2','','Shared context'));for(const e of evidence.slice(0,visibleEvidence)){const block=element(doc,'article','sh-note');block.append(element(doc,'p','',e.summary),element(doc,'small','',`${e.contributor} · ${e.date.slice(0,10)}`));root.append(block);}if(evidence.length>visibleEvidence){const more=element(doc,'details','sh-more');more.append(element(doc,'summary','','More shared context'));for(const e of evidence.slice(visibleEvidence,20))more.append(element(doc,'p','',`${e.summary} — ${e.date.slice(0,10)}`));root.append(more);}}
-  else {
-   root.append(element(doc,'p','sh-subtitle','No conversation context is linked to this profile in the shared network yet.'));
-   if(card.relationships.some(r=>r.isMe)&&graph.workspaceId){const link=element(doc,'a','sh-back','Check my shared sources');link.href='/accounts?tab=workspace&workspace='+encodeURIComponent(graph.workspaceId);root.append(link);}
+  const shown=new Set(card.relationships.flatMap(r=>connectionContext(graph,selected.id,r.memberId)).map(e=>e.ref));
+  const allEvidence=personContext(graph,selected.id),evidence=allEvidence.filter(e=>!shown.has(e.ref));
+  if(evidence.length){
+   const more=element(doc,'details','sh-more');more.append(element(doc,'summary','','More shared context'));
+   for(const e of evidence.slice(0,20)){const block=element(doc,'article','sh-note');block.append(element(doc,'p','',e.summary),element(doc,'small','',`${e.contributor} · ${e.date.slice(0,10)} · ${e.sourceLabel}`));more.append(block);}root.append(more);
   }
+  if(!allEvidence.length&&card.relationships.some(r=>r.isMe)&&graph.workspaceId){const link=element(doc,'a','sh-back','Check my shared sources');link.href='/accounts?tab=workspace&workspace='+encodeURIComponent(graph.workspaceId);root.append(link);}
   const viewerId=graph.members.find(m=>m.isMe)?.id;
   const alreadyInContacts=viewerId&&(selected.relationships||[]).some(r=>r.memberId===viewerId);
   if(onIntro&&!alreadyInContacts&&card?.routes?.length){const route=card.routes[0];root.append(action(doc,'Ask '+name(graph.members.find(m=>m.id===route.memberId))+' for an introduction',()=>onIntro(card,route.memberId),'sh-intro'));}
