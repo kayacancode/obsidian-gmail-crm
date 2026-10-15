@@ -1,3 +1,4 @@
+import {helperSection} from './helper-suggestions.mjs';
 import {sharedHome,sharedHomePersonAllowed} from './shared-home.mjs';
 import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
@@ -822,6 +823,7 @@ export function mountGraph(element, options = {}) {
       next.append(nextButton);
     }
     panel.append(next);
+    if(node.type==='person')panel.append(helperSection(document,graph,node.id));
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
     panel.append(actions);

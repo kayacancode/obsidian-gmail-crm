@@ -3,7 +3,7 @@ const stop=new Set('recorded topic context the and for with from that this about
 const words=text=>new Set((String(text).toLowerCase().match(/[\p{L}\p{N}]+/gu)||[]).filter(w=>w.length>2&&!stop.has(w)||['ui','ux','ai'].includes(w)));
 const permitted=n=>n&&n.type!=='company'&&!n.memberId&&n.permission!=='denied'&&n.permission!=='conflicted'&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved';
 const contexts=(g,id)=>personContext({...g,themeSignals:(g.themeSignals||[]).filter(e=>['granola','granola_mention','obsidian_note','gmail_body_derived'].includes(e.sourceType)&&Date.parse(e.observedAt)<=Date.now())},id);
-export function personSuggestions(graph,anchorId,intent='',sourceRef=''){
+export function personSuggestions(graph,anchorId,intent='',sourceRef='',limit=4){
  if(!permitted(graph.nodes.find(n=>n.id===anchorId)))return [];
  const signalsByPerson=new Map();for(const signal of graph.themeSignals||[]){const list=signalsByPerson.get(signal.personId)||[];list.push(signal);signalsByPerson.set(signal.personId,list);}
  const contextFor=id=>contexts({...graph,themeSignals:signalsByPerson.get(id)||[]},id);
@@ -23,7 +23,7 @@ export function personSuggestions(graph,anchorId,intent='',sourceRef=''){
   }
   if(best)results.push(best);
  }
- return results.sort((a,b)=>b.score-a.score||Date.parse(b.evidence.date)-Date.parse(a.evidence.date)||a.person.id.localeCompare(b.person.id)).slice(0,4);
+ return results.sort((a,b)=>b.score-a.score||Date.parse(b.evidence.date)-Date.parse(a.evidence.date)||a.person.id.localeCompare(b.person.id)).slice(0,limit);
 }
 export function mountPersonSuggestions(container,{graph,personId,onExplore,intent:initialIntent=''}){
  const doc=container.ownerDocument,person=graph.nodes.find(n=>n.id===personId);if(!person)return;

@@ -1,3 +1,4 @@
+import {helperSection} from './helper-suggestions.mjs';
 import {weeklyContext} from './weekly-context.mjs';
 import {supportsIntroduction} from './relationship-support.mjs';
 import {element,action,portrait,contactCard,personContext} from './contact-sheet.mjs';
@@ -81,6 +82,7 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
     section.append(message);root.append(section);
    }
   }
+  root.append(helperSection(doc,graph,selected.id));
   const viewerId=graph.members.find(m=>m.isMe)?.id;
   const alreadyInContacts=viewerId&&(selected.relationships||[]).some(r=>r.memberId===viewerId);
   if(onIntro&&!alreadyInContacts&&card?.routes?.length){const route=card.routes[0];root.append(action(doc,'Ask '+name(graph.members.find(m=>m.id===route.memberId))+' for an introduction',()=>onIntro(card,route.memberId),'sh-intro'));}
