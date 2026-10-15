@@ -581,10 +581,6 @@ export function mountGraph(element, options = {}) {
         transform: `translate(${(layout.usableWidth - layout.worldWidth * scale) / 2 + camera.x}px, ${(layout.usableHeight - layout.worldHeight * scale) / 2 + camera.y}px) scale(${scale})` });
       viewport.append(scene);canvas.append(viewport);
     }
-    if(!data.isPath) for(const cluster of layout.spatial.clusters) {
-      const label=make('span','rg-community-label',cluster.name);
-      label.style.left=`${cluster.x}px`;label.style.top=`${cluster.y}px`;scene.append(label);
-    }
     const positions = new Map();
     const pulseIds = new Set(data.nodes.filter(node => node.type === 'person')
       .map(node => ({ id: node.id, score: Math.max(0, ...personThemes(node.id).map(theme => theme.score)) }))
@@ -762,12 +758,12 @@ export function mountGraph(element, options = {}) {
     if (node.type === 'person') {
       const summary = connectionSummary(node,graph.nodes);
       const scores = make('section','rg-profile-section');
-      scores.append(make('h3','','Your connection'));
+      scores.append(make('h3','','People score'));
       scores.append(make('p','rg-profile-score',summary ? `${Math.round(summary.score)} / 100` : 'Not measured'));
-      if(summary) scores.append(make('p','rg-source',`Stronger recorded activity than ${summary.lower} of ${summary.total} other scored direct contacts. Based on frequency and reciprocity; this is not a measure of personal closeness.`));
+      if(summary) scores.append(make('p','rg-source',`Higher score than ${summary.lower} of ${summary.total} other scored direct contacts. Combines activity strength and recency, plus your feedback when provided. It does not measure personal closeness.`));
       const contact = directContact(node);
       scores.append(make('p','rg-source',contact ? `Your last recorded contact: ${contact.slice(0,10)}` : 'No dated direct contact in this data.'));
-      if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`People score: ${Math.round(node.combined)} / 100${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
+      if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`Activity strength: ${Math.round(node.strength)} · recency: ${Math.round(node.momentum)}${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
       if(graph.personFeedback?.[node.id]){const undo=button('Undo person feedback','person-feedback','rg-text-button');undo.dataset.nodeId=node.id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy||!callbacks.onPersonFeedback;scores.append(undo);}
       if(graph.source!=='workspace')panel.append(scores);
       if(graph.source==='workspace'){

@@ -764,3 +764,18 @@ test('Calendar sync pages, deduplicates shared events, prunes stale rows and sur
   await service.remove('me@example.com');assert.equal(db.prepare('SELECT COUNT(*) n FROM calendar_events').get()!.n,0);
  });} finally {db.close();}
 });
+
+test('incoming email connects known sender and CC contacts without inflating direct activity',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ globalThis.fetch=async(input:any)=>{const url=String(input);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(url.includes('/messages?'))return Response.json({messages:[{id:'incoming'},{id:'direct'}]});const direct=new URL(url).pathname.endsWith('/direct');return Response.json({id:direct?'direct':'incoming',internalDate:String(Date.now()-10000),payload:{headers:[{name:'From',value:direct?'Bo <bo@example.com>':'Ada <ada@example.com>'},{name:'To',value:'me@example.com'},{name:'Cc',value:direct?'':'Bo <bo@example.com>'},{name:'Subject',value:'Planning'},{name:'Message-ID',value:direct?'<direct>':'<incoming>'}]}});};
+ try{await service.attachAccount('me@example.com','refresh','all');await service.alarm();const graph=await service.graph();assert.equal(graph!.edges.length,1);assert.equal(graph!.edges[0].types?.[0],'shared_email');assert.equal(db.prepare("SELECT SUM(received) AS n FROM contributions WHERE email='bo@example.com'").get()!.n,1);}finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('thread rebuild revisits old metadata and connects participants across separate replies',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:await (await import('../src/mail-model')).seal('refresh','encrypt-key'),status:'connected',job:null,lastSync:Date.now(),range:'all',nextSync:0}));
+ db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','one','<one>');
+ db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','two','<two>');
+ let query='';globalThis.fetch=async(input:any)=>{const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});if(url.pathname.endsWith('/messages')){query=url.searchParams.get('q')||'';return Response.json({messages:[{id:'one'},{id:'two'}]});}const one=url.pathname.endsWith('/one');return Response.json({id:one?'one':'two',threadId:'same-thread',internalDate:String(Date.now()-10000),payload:{headers:[{name:'From',value:one?'Ada <ada@example.com>':'Bo <bo@example.com>'},{name:'To',value:'me@example.com'},{name:'Message-ID',value:one?'<one>':'<two>'}]}});};
+ try{await service.start('me@example.com');await service.alarm();assert.equal(query,'');assert.equal((await service.graph())!.edges.length,1);assert.equal(JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string).emailEdgeVersion,2);await service.start('me@example.com');await service.alarm();assert.match(query,/after:/);assert.equal((await service.graph())!.edges.length,1);}finally{globalThis.fetch=originalFetch;db.close();}
+});

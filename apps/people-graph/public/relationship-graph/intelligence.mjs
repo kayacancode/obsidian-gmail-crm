@@ -15,10 +15,11 @@ export function inWindow(value, window, now = new Date()) {
 }
 export function connectionSummary(person, nodes) {
   if (person.directRelationship === false || (person.directRelationship !== true && person.via?.length)) return null;
-  if (typeof person.strength !== 'number' || !Number.isFinite(person.strength) || person.strength<0 || person.strength>100) return null;
+  const score=n=>Number.isFinite(n.combined)?n.combined:n.strength;
+  if (!Number.isFinite(score(person)) || score(person)<0 || score(person)>100) return null;
   const peers = nodes.filter(n => n.id !== person.id && n.directRelationship !== false
-    && (n.directRelationship === true || !n.via?.length) && typeof n.strength === 'number' && Number.isFinite(n.strength));
-  return {score: person.strength, lower: peers.filter(n => n.strength < person.strength).length, total: peers.length};
+    && (n.directRelationship === true || !n.via?.length) && Number.isFinite(score(n)));
+  return {score: score(person), lower: peers.filter(n => score(n) < score(person)).length, total: peers.length};
 }
 export function ownSignals(signals) {
   return signals.filter(s => s.visibility === 'private' && ['granola','gmail_subject','gmail_body_derived','obsidian_note'].includes(s.sourceType)
