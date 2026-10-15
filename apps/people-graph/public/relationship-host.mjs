@@ -647,8 +647,9 @@ async function startBrowserApp() {
     graphInstance?.setSearchAnswer?.(null);
     networkResults.replaceChildren(); networkResults.hidden = true; networkLabel.textContent = '';
     networkStatus.textContent = 'Searching\u2026';
+    graphInstance?.setSearchStatus?.('Searching…');
     traversal?.destroy();traversal=null;
-    if(mountedGraph?.source==='workspace'){const stage=document.createElement('section');$('#graph').before(stage);traversal=mountTraversal(stage,{graph:mountedGraph,query,onOpen:id=>graphInstance?.select(id)});}
+    if(mountedGraph?.source==='workspace'&&!document.body.classList.contains('shared-simple')){const stage=document.createElement('section');$('#graph').before(stage);traversal=mountTraversal(stage,{graph:mountedGraph,query,onOpen:id=>graphInstance?.select(id)});}
     let value;
     try { value = await controller.searchNetwork(query,event=>{if(run===networkRun)traversal?.push(event);}); }
     catch (error) {
@@ -658,6 +659,7 @@ async function startBrowserApp() {
       // message when it sent one, exactly as the draft dialog does.
       networkStatus.textContent = error.name === 'AbortError' ? ''
         : error.status ? (error.serverMessage || 'Could not search your network right now. Try again in a moment.') : error.message;
+      graphInstance?.setSearchStatus?.(networkStatus.textContent);
       return;
     }
     if (run !== networkRun) return;
@@ -667,7 +669,7 @@ async function startBrowserApp() {
       ? `${results.length} ${results.length === 1 ? 'person' : 'people'} in your network`
       : 'No one in your network matches yet.';
     networkLabel.textContent = value.checked ? 'Ranked by Jev' : 'Keyword match only';
-    if (!results.length) return;
+    if (!results.length || document.body.classList.contains('shared-simple')) return;
     for (const person of results) { const item = document.createElement('li'); item.append(networkResultButton(person)); networkResults.append(item); }
     networkResults.hidden = mountedGraph?.source==='workspace';
   }
@@ -754,11 +756,12 @@ async function startBrowserApp() {
   function mountAuthorizedGraph(state) {
     const shared=state.graph.source==='workspace';
     document.body.classList.toggle('shared-handoff',shared);
-    $('#shared-welcome').hidden=!shared;
+    document.body.classList.toggle('shared-simple',shared);
+    $('#shared-welcome').hidden=true;
     $('#shared-network-name').textContent=shared?(state.graph.workspaceName||'Shared network'):'';
     gate.hidden = true;
     workspace.hidden = false;
-    networkSearch.hidden = false;$('#network-modes').hidden=false;
+    networkSearch.hidden = shared;$('#network-modes').hidden=shared;
     if (mountedAccount !== state.account) {
       if (trailOwner && trailOwner !== state.account) clearSessionTrails();
       graphInstance?.destroy();
@@ -767,7 +770,7 @@ async function startBrowserApp() {
       mountedAccount = state.account;
       clearNetworkSearch();
     }
-    if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, externalSearch:true, compactHeader:true, title: 'All people', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
+    if (!graphInstance) graphInstance = mountGraph($('#graph'), { graph: state.graph, simpleShared:true, onHomeSearch:value=>{networkQuery.value=value;void runNetworkSearch();},onHomeClear:()=>clearNetworkSearch({answer:false}), externalSearch:true, compactHeader:true, title: 'All people', previewAccount: state.account, onSaveTrail: saveBrowserTrail,
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,

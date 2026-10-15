@@ -1,3 +1,4 @@
+import {sharedHome} from './shared-home.mjs';
 import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
@@ -140,6 +141,8 @@ export function mountGraph(element, options = {}) {
   let spatialKey = '';
   let spatialNodes = null;
   let discoveryIntent='';
+  let homePerson=null,homeQuery='',homeStatus='';
+  const simpleShared=()=>options.simpleShared===true&&graph.source==='workspace';
   const excludedWeeklyTopics=new Set();
   let weeklyCache=null,weeklyFocusOpen=false;
   function sharedWeek(){
@@ -260,7 +263,7 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactFocus=null;suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id,continued=null,startIndex=0,suggestionContext=null){const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
+  function showContact(id,continued=null,startIndex=0,suggestionContext=null){if(simpleShared()){homePerson=id;render();const heading=root.querySelector('h1');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=continued||personWalk(graph,id,pathGraph),container=contactContainer();
 
@@ -1355,7 +1358,19 @@ export function mountGraph(element, options = {}) {
     root.dataset.profileOpen = String(Boolean(panelMode && !pathState));
     root.dataset.demo = String(demoEnabled());
     root.dataset.workspace = String(graph.source==='workspace');
+    const focusedSearch=simpleShared()&&document.activeElement?.matches('.sh-search input')?{start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd}:null;
     root.replaceChildren();
+    root.dataset.simpleShared=String(simpleShared());
+    if(simpleShared()){
+      root.dataset.profileOpen='false';
+      root.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,query:homeQuery,status:homeStatus,
+        onQueryChange:value=>{homeQuery=value;},onPerson:id=>showContact(id),onBack:()=>{homePerson=null;render();},
+        onSearch:value=>{homeQuery=value;homePerson=null;if(!value){searchAnswer=null;homeStatus='';render();options.onHomeClear?.();}else options.onHomeSearch?.(value);},
+        onClear:()=>{homeQuery='';searchAnswer=null;homeStatus='';render();options.onHomeClear?.();},
+        onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      if(focusedSearch){const input=root.querySelector('.sh-search input');input?.focus({preventScroll:true});input?.setSelectionRange(focusedSearch.start,focusedSearch.end);}
+      return;
+    }
     const header = make('header', 'rg-header');
     header.append(button(options.title || 'Relationships', 'overview', 'rg-wordmark'));
     const searchWrap = make('label', 'rg-search-wrap');
@@ -1857,6 +1872,7 @@ export function mountGraph(element, options = {}) {
   root.addEventListener('toggle', onToggle, true);
   let lastSize = `${element.clientWidth}:${view?.innerHeight}`;
   function onResize() {
+    if(simpleShared())return;
     const size = `${element.clientWidth}:${view?.innerHeight}`;
     // Expanding evidence/directory changes height, not the layout budget. Replacing
     // controls in that case would discard the keyboard focus we just restored.
@@ -1878,8 +1894,10 @@ export function mountGraph(element, options = {}) {
 
   return {
     openWander(){panelMode='wander';topicsOpen=false;render();},
+    setSearchStatus(message){if(simpleShared()){homeStatus=message;render();}},
     setSearchAnswer(answer) {
       if(destroyed)return;
+      if(simpleShared()){searchAnswer=answer;homeStatus='';if(answer)homeQuery=answer.query;render();return;}
       clearContact();
       if(answer && !searchAnswer) exploration={camera:{...camera},selectedId,panelMode,query,timeWindow,eventPeople,activeThemeId,pathState,trail:cloneTrail(trail)};
       if(!answer && searchAnswer && exploration) {
@@ -1904,7 +1922,7 @@ export function mountGraph(element, options = {}) {
       const previousFocus=preserveFocus?contactFocus:null;
       clearContact();
       meetingBatch = null;meetingFeedback = Object.create(null);
-      if(graph.workspaceId!==nextGraph.workspaceId){excludedWeeklyTopics.clear();weeklyFocusOpen=false;}
+      if(graph.workspaceId!==nextGraph.workspaceId){excludedWeeklyTopics.clear();weeklyFocusOpen=false;homePerson=null;homeQuery='';homeStatus='';}
       graph = normalizeGraph(nextGraph);
       introductionRun++;introductionCards=graph.introductionSuggestions||[];introductionState='ready';introductionSkipped.clear();
       searchAnswer=null;exploration=null;walkHistory=[];walkIndex=-1;eventPeople=null;
@@ -1943,6 +1961,7 @@ export function mountGraph(element, options = {}) {
       const refreshPath = Boolean(pathState?.to);
       render();
       if (refreshPath) requestCurrentPaths();
+      if(!byId.has(homePerson))homePerson=null;
       if(previousFocus && byId.has(previousFocus.id)){
         const walk=personWalk(graph,previousFocus.id,pathGraph);
         showContact(previousFocus.id,null,Math.max(0,walk.nodes.findIndex(node=>node.id===previousFocus.nodeId)));

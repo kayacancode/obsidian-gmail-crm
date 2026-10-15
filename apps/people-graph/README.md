@@ -249,8 +249,15 @@ Limits: 20 members; each member contributes up to 500 contacts, 2,000 edges and 
 
 ### Shared weekly context
 
-The shared network opens with **Your shared week**: mutual contacts with activity in the last seven days, contacts from other members relevant to the viewer’s inferred week, and the viewer’s contacts relevant to another member’s week. Suggestions use only the authorized shared snapshot. Weekly topics require the contributor’s own shared note/meeting or derived email context from the past seven days; a matching contact needs supported relationship evidence and matching topic evidence no older than 90 days. Subject metadata, generic topics, private signals, future dates, and unresolved identities do not support these recommendations. Each group displays up to three people, rotating across contributors or recipients, with dates and source excerpts under **Why this person?**.
+The shared network’s weekly ranking considers mutual contacts with activity in the last seven days, contacts from other members relevant to the viewer’s inferred week, and the viewer’s contacts relevant to another member’s week. Suggestions use only the authorized shared snapshot. Weekly topics require the contributor’s own shared note/meeting or derived email context from the past seven days; a matching contact needs supported relationship evidence and matching topic evidence no older than 90 days. Subject metadata, generic topics, private signals, future dates, and unresolved identities do not support these recommendations. Each group displays up to three people, rotating across contributors or recipients, with supporting shared context available on the person’s detail view.
 
 **What this week is based on** lists inferred topics for each member. A viewer can exclude their own inferred topics and reset those adjustments. Adjustments survive background refreshes, but reset on workspace change or page reload; they are not saved or shared. Recommendations are hypotheses from shared records, not confirmed current interests. Missing shared context produces an empty explanation rather than an invented match. The compact map prioritizes the recommended people while the full network remains available.
 
 Run `node --test tests/weekly-context.test.mjs` and `npm run test:weekly-browser` (with a local static server at `TEST_ORIGIN`, default `http://127.0.0.1:4198`) to verify weekly matching and the interface.
+
+
+### Simple shared home
+
+The hosted shared network opens with “You + [other members]”, one search field, and up to six people with a single reason each. The list combines weekly matches in both directions and mutual contacts; when no weekly matches exist, it says so once and shows shared contacts. Search results replace the list. Selecting a person replaces the list with their connection and shared context, with a Back button and an introduction action when supported. The graph, discovery sidebar, topic chips, and source diagnostics are absent from this default view. Existing graph views remain available separately. The topic-adjustment controls described above belong to the legacy graph view.
+
+Run `npm run test:shared-home-browser` against a static server at `TEST_ORIGIN` (default `http://127.0.0.1:4198`) for the complete hosted layout, search, detail/back, resize, and mobile checks.

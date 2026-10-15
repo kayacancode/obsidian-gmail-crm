@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+try{
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const r=memberId=>({memberId,memberName:memberId==='j'?'john@betaworks.com':'kaya@betaworks.com',evidenceCategory:'email',activity:{sent:2,received:2,meetings:0}});
+ const graph={source:'workspace',workspaceId:'team',workspaceName:'Betaworks',revision:1,members:[{id:'me',name:'kaya@betaworks.com',isMe:true},{id:'j',name:'john@betaworks.com'}],nodes:['Analisa','Jon Chin','Jordan','Alex','Sam','Robin','Casey'].map((name,i)=>({id:'p'+i,name,type:'person',relationships:[r('me'),r('j')]})),edges:[],themes:[],themeSignals:[]};
+ let searchQuery='';
+ await page.route('https://accounts.google.com/gsi/client',r=>r.fulfill({body:''}));
+ await page.route('**/api/**',route=>{const path=new URL(route.request().url()).pathname;
+  if(path==='/api/accounts')return route.fulfill({json:{account:'kaya@betaworks.com',accounts:[]}});
+  if(path==='/api/workspaces')return route.fulfill({json:{workspaces:[{id:'team',name:'Betaworks'}]}});
+  if(path.endsWith('/members'))return route.fulfill({json:{workspace:{revision:1}}});
+  if(path.endsWith('/search-stream')){searchQuery=route.request().postDataJSON().query;return route.fulfill({contentType:'application/x-ndjson',body:JSON.stringify({type:'result',answer:{results:searchQuery==='nothing'?[]:[{personId:'p3',name:'Alex',reasons:[{summary:'Works on developer tools.'}]}]}})+'\n'});}
+  if(path.endsWith('/graph'))return route.fulfill({json:{account:'kaya@betaworks.com',graph}});
+  return route.fulfill({json:{}});
+ });
+ await page.goto((process.env.TEST_ORIGIN||'http://127.0.0.1:4198')+'/?workspace=team');
+ await page.getByRole('heading',{name:'You + John',exact:true}).waitFor();
+ assert.equal(await page.locator('input[type=search]:visible').count(),1);
+ assert.equal(await page.locator('.sh-person').count(),6);
+ assert.equal(await page.locator('.rg-canvas,.rg-weekly,.rg-introductions,.rg-topic-bar,.rg-owner-legend').count(),0);
+ assert.equal(await page.locator('#shared-welcome:visible,#network-modes:visible,#viewer-status:visible').count(),0);
+ await page.screenshot({path:'/tmp/shared-home-desktop.png'});
+ await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('draft query');
+ await page.setViewportSize({width:1200,height:900});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ assert.equal(await page.getByRole('searchbox',{name:'Find a person or ask a question'}).inputValue(),'draft query');
+ await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('');
+ await page.setViewportSize({width:1440,height:1000});
+ await page.getByRole('button',{name:/Analisa.*contact/}).click();await page.getByRole('button',{name:'← Back to people',exact:true}).waitFor();
+ assert.equal(await page.locator('.sh-people').count(),0);assert.equal(await page.locator('.rg-canvas').count(),0);
+ await page.getByRole('button',{name:'← Back to people',exact:true}).click();
+ await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('developer tools');await page.locator('.sh-search-button').click();
+ await page.getByText('Works on developer tools.',{exact:true}).waitFor();assert.equal(searchQuery,'developer tools');assert.equal(await page.locator('.sh-person').count(),1);
+ await page.getByRole('button',{name:'Clear search',exact:true}).click();assert.equal(await page.locator('.sh-person').count(),6);
+ await page.getByRole('searchbox',{name:'Find a person or ask a question'}).fill('nothing');await page.locator('.sh-search-button').click();await page.getByText('No matches. Try a name, company, or topic.',{exact:true}).waitFor();assert.equal(await page.locator('.sh-person').count(),0);
+ await page.getByRole('button',{name:'Clear search',exact:true}).click();
+ await page.setViewportSize({width:390,height:844});await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/shared-home-mobile.png'});
+ assert.deepEqual(errors,[]);console.log('PASS actual shared host: one search, one list, no graph/sidebar, detail/back, search and empty results, desktop/mobile');
+}finally{await browser.close();}
