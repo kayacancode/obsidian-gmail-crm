@@ -779,3 +779,46 @@ test('thread rebuild revisits old metadata and connects participants across sepa
  let query='';globalThis.fetch=async(input:any)=>{const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});if(url.pathname.endsWith('/messages')){query=url.searchParams.get('q')||'';return Response.json({messages:[{id:'one'},{id:'two'}]});}const one=url.pathname.endsWith('/one');return Response.json({id:one?'one':'two',threadId:'same-thread',internalDate:String(Date.now()-10000),payload:{headers:[{name:'From',value:one?'Ada <ada@example.com>':'Bo <bo@example.com>'},{name:'To',value:'me@example.com'},{name:'Message-ID',value:one?'<one>':'<two>'}]}});};
  try{await service.start('me@example.com');await service.alarm();assert.equal(query,'');assert.equal((await service.graph())!.edges.length,1);assert.equal(JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string).emailEdgeVersion,2);await service.start('me@example.com');await service.alarm();assert.match(query,/after:/);assert.equal((await service.graph())!.edges.length,1);}finally{globalThis.fetch=originalFetch;db.close();}
 });
+
+test('automatic Gmail context stores only grounded sender statements and clears them when disabled',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  const {extractMailContext}=await import('../src/gmail-context');
+  const text='I am building a scheduling tool for clinics. Alice needs funding. We need feedback from hospital nurses.';
+  const ai=new FakeAI({response:{facts:[{sentence:0,kind:'building'},{sentence:1,kind:'need'}]}});
+  const facts=await extractMailContext(ai as any,text);assert.deepEqual(facts,[{kind:'building',quote:'I am building a scheduling tool for clinics.'}]);
+  await assert.rejects(()=>extractMailContext(new FakeAI({response:{facts:[{sentence:99,kind:'building'}]}}) as any,text),/invalid_extraction/);
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',status:'connected',job:null,emailEdgeVersion:2,lastSync:Date.now(),range:'recent'}));
+  await service.setAutomaticContext('me@example.com',true);assert.equal(service.list()[0].contextEnabled,true);
+  db.prepare('INSERT INTO gmail_context VALUES (?,?,?,?,?)').run('me@example.com','m','person',Date.now(),JSON.stringify(facts));
+  await service.setAutomaticContext('me@example.com',false);assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);
+ }finally{db.close();}
+});
+
+test('automatic Gmail context backfills existing mail, attributes only sender, never exports quotes, and resumes without duplicate reads',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');const calls:string[]=[];
+ const quote='I am building scheduling software for clinics.';
+ try{
+  Object.assign((service as any).env,{AI:new FakeAI({response:{facts:[{sentence:0,kind:'building'}]}}),THEME_MODEL});
+  globalThis.fetch=async(input:any)=>{const url=String(input);calls.push(url);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(url.includes('/messages?'))return Response.json({messages:[{id:'inbound'}]});return Response.json({id:'inbound',internalDate:String(Date.now()-10000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Ada <ada@example.com>'},{name:'To',value:'Me <me@example.com>, Bo <bo@example.com>'},{name:'Message-ID',value:'<inbound>'}],body:{data:Buffer.from(quote+'\n--\nSECRET SIGNATURE').toString('base64url')}}});};
+  await service.attachAccount('me@example.com','refresh','recent');await service.alarm();assert.equal(calls.some(u=>u.includes('format=full')),false);
+  await service.setAutomaticContext('me@example.com',true);await service.alarm();
+  const graph:any=await service.graph(),ada=graph.nodes.find((n:any)=>n.name==='Ada');const signals=graph.themeSignals.filter((s:any)=>s.evidenceRef.startsWith('gmail-context:'));
+  assert.equal(signals.length,1);assert.equal(signals[0].personId,ada.id);assert.equal(signals[0].summary,quote);assert.equal(signals[0].visibility,'private');
+  assert.ok(!storageText(db,kv).includes('SECRET SIGNATURE'));
+  const shared=await service.exportSlice({kind:'all'},'statements');assert.ok(!JSON.stringify(shared).includes(quote));
+  await service.start('me@example.com');await service.alarm();assert.equal(calls.filter(u=>u.includes('format=full')).length,1);
+  await service.remove('me@example.com');assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('disabling automatic Gmail context during analysis prevents late storage',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');let release!:(value:any)=>void,entered!:()=>void;const started=new Promise<void>(r=>entered=r);
+ try{
+  Object.assign((service as any).env,{AI:{run:()=>{entered();return new Promise(r=>release=r);}},THEME_MODEL});
+  globalThis.fetch=async(input:any)=>{const url=String(input);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(url.includes('/messages?'))return Response.json({messages:[{id:'in'}]});return Response.json({id:'in',internalDate:String(Date.now()-1000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Ada <ada@example.com>'},{name:'To',value:'Me <me@example.com>'}],body:{data:Buffer.from('I am building a clinical scheduling tool.').toString('base64url')}}});};
+  await service.attachAccount('me@example.com','refresh','recent');await service.setAutomaticContext('me@example.com',true);
+  const running=service.alarm();await started;await service.setAutomaticContext('me@example.com',false);release({response:{facts:[{sentence:0,kind:'building'}]}});await running;
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);assert.equal(service.list()[0].contextEnabled,false);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});

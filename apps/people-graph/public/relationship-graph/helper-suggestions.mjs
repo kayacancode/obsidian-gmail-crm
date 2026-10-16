@@ -25,23 +25,26 @@ export function helperSection(doc,graph,personId,onFindHelpers){
   if(!section.open||loaded)return;loaded=true;
   const items=helperSuggestions(graph,personId);
   section.append(element(doc,'p','rg-source','What-if suggestions from recent context. These are possible conversations, not recorded relationships.'));
-  const form=element(doc,'form','rg-helper-form'),label=element(doc,'label','','What is '+person.name+' building or looking for help with?'),input=element(doc,'textarea');
-  input.rows=3;input.maxLength=1000;input.required=true;input.placeholder='e.g. Building a scheduling tool for clinics and needs feedback from people who have researched healthcare workflows.';label.append(input);
+  const form=element(doc,'form','rg-helper-form'),label=element(doc,'label','','Refine what '+person.name+' needs (optional)'),input=element(doc,'textarea');
+  input.rows=3;input.maxLength=1000;input.required=false;input.placeholder='e.g. Building a scheduling tool for clinics and needs feedback from people who have researched healthcare workflows.';label.append(input);
   const submit=element(doc,'button','rg-button','Find people who could help');submit.type='submit';form.append(label,submit,element(doc,'p','rg-source','Used for this search. Your description is not added to shared notes.'));section.append(form);
-  const output=element(doc,'div');output.setAttribute('aria-live','polite');section.append(output);
-  form.addEventListener('submit',async event=>{event.preventDefault();const brief=input.value.trim();if(!brief)return;submit.disabled=true;input.disabled=true;output.replaceChildren(element(doc,'p','','Looking for complementary experience…'));
+  const output=element(doc,'div');output.setAttribute('aria-live','polite');section.append(output,form);
+  async function find(){const brief=input.value.trim();submit.disabled=true;input.disabled=true;output.replaceChildren(element(doc,'p','','Looking for complementary experience…'));
    try{if(!onFindHelpers)throw Error('unavailable');const result=await onFindHelpers(personId,brief);if(!section.isConnected)return;if(!result.checked||result.status==='unavailable')throw Error('unavailable');
-    const matches=(result.results||[]).map(r=>({person:graph.nodes.find(n=>n.id===r.personId),reason:r.reason,evidence:r.evidence[0],allEvidence:r.evidence,brief})).filter(r=>r.person&&r.evidence);
+    const matches=(result.results||[]).map(r=>({person:graph.nodes.find(n=>n.id===r.personId),reason:r.reason,evidence:r.evidence[0],allEvidence:r.evidence,brief:result.automatic?null:brief,automatic:result.automatic,anchorEvidence:result.anchorEvidence?.[0]})).filter(r=>r.person&&r.evidence);
     output.replaceChildren();render(matches);
-    if(!matches.length)output.append(element(doc,'p','',result.status==='no_evidence'?'There are no recent conversation notes available to match against yet. Add or sync meeting notes, then try this brief again.':'No concrete match for this brief yet. Try naming the kind of help or experience you need.'));
+    if(result.automatic&&result.anchorEvidence?.length){const basis=element(doc,'details');basis.append(element(doc,'summary','','Using recent conversation context'));for(const e of result.anchorEvidence)basis.append(contextBlock(doc,e));output.prepend(basis);}
+    if(!matches.length)output.append(element(doc,'p','',result.status==='no_anchor_context'?'No specific recent conversation context for this person yet. Enable Gmail conversation context in Accounts, or refine the search above.':result.status==='no_evidence'?'There are no recent conversation notes available to match against yet. Add or sync meeting notes, then try this brief again.':'No concrete match for this brief yet. Try naming the kind of help or experience you need.'));
     output.append(element(doc,'p','rg-source','Checked '+result.considered+' people with recent context'+(result.available>result.considered?' out of '+result.available+'; most recent first':'')+'. Interest and availability are unknown.'));
    }catch{output.replaceChildren(element(doc,'p','','The search could not finish. Your brief is still here—please try again.'));}
    finally{submit.disabled=false;input.disabled=false;}
-  });
-  if(!items.length)output.append(element(doc,'p','rg-source','Add a short brief above to look for people with relevant experience.'));
-  render(items);
+  }
+  form.addEventListener('submit',event=>{event.preventDefault();void find();});
+  if(onFindHelpers)void find();
+  if(!onFindHelpers&&!items.length)output.append(element(doc,'p','rg-source','Add a short brief above to look for people with relevant experience.'));
+  if(!onFindHelpers)render(items);
   function render(items){for(const item of items){
-   const card=element(doc,'article','rg-helper-card');card.append(element(doc,'h3','',item.person.name),element(doc,'p','',item.reason),element(doc,'small','rg-source',item.brief?'Possible fit for your brief · interest and availability unknown':'Specific wording overlap · review whether they could help each other'));
+   const card=element(doc,'article','rg-helper-card');card.append(element(doc,'h3','',item.person.name),element(doc,'p','',item.reason),element(doc,'small','rg-source',(item.brief||item.automatic)?'Possible fit from conversation context · interest and availability unknown':'Specific wording overlap · review whether they could help each other'));
    const evidence=element(doc,'details');evidence.append(element(doc,'summary','','Why this match?'));if(item.anchorEvidence)evidence.append(element(doc,'strong','',person.name),contextBlock(doc,item.anchorEvidence));else evidence.append(element(doc,'p','','Your brief: '+item.brief));evidence.append(element(doc,'strong','',item.person.name));for(const source of item.allEvidence||[item.evidence])evidence.append(contextBlock(doc,{...source,sourceLabel:source.sourceLabel||({granola:'Meeting notes',obsidian_note:'Notes',gmail_body_derived:'Email context'}[source.sourceType]||'Source'),contributor:source.contributor||(graph.source==='workspace'?'Shared source':'You')}));card.append(evidence);
    const members=(graph.members||[]).filter(m=>item.person.relationships?.some(r=>r.memberId===m.id&&supportsIntroduction(r)));
    const you=graph.source!=='workspace'&&item.person.directRelationship!==false&&!item.person.via?.length;

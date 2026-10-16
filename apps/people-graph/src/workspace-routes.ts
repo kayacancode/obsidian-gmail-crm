@@ -58,7 +58,7 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
   }
   const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft|introductions|helpers)$/);
   if(graphPath){const [,id,action]=graphPath;
-   if(action==='helpers'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.brief!=='string'||!body.brief.trim()||body.brief.length>1000)deny(400,'invalid_request');const graph=await buildWorkspaceGraph(env,id,me);if(!graph.nodes.some(n=>n.id===body.personId))deny(400,'invalid_request');const result=await rankHelperBrief(env,graph,body.personId,body.brief);await assertWorkspaceRevision(env,id,me,graph.revision);return json(result);}
+   if(action==='helpers'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.brief!=='string'||body.brief.length>1000)deny(400,'invalid_request');const graph=await buildWorkspaceGraph(env,id,me);if(!graph.nodes.some(n=>n.id===body.personId))deny(400,'invalid_request');const result=await rankHelperBrief(env,graph,body.personId,body.brief);await assertWorkspaceRevision(env,id,me,graph.revision);return json(result);}
    if(action==='graph'&&method==='GET')return json({account:me,graph:await buildWorkspaceGraph(env,id,me)});
    if(action==='introductions'&&method==='POST'){const graph=await buildWorkspaceGraph(env,id,me);const result=await rankIntroductions(env,graph);await assertWorkspaceRevision(env,id,me,graph.revision);return json(result);}
    if(action==='search'&&method==='POST'){if(typeof body.query!=='string'||!body.query.trim()||body.query.length>200)deny(400,'invalid_query');return json(await searchWorkspace(env,id,me,body.query.trim()));}

@@ -8,7 +8,7 @@ try{
   document.body.replaceChildren();const root=document.createElement('main');document.body.append(root);
   const {mountGraph}=await import('/relationship-graph/graph.mjs');
   const date=new Date(Date.now()-86400000).toISOString();
-  window.graph=mountGraph(root,{onFindHelpers:async(id,brief)=>{if(brief==='fail')return {checked:false,status:'unavailable'};return {checked:true,status:'ready',considered:1,available:1,results:[{personId:'m',reason:'Relevant research experience',evidence:[{summary:'Ran moderated usability interviews with hospital nurses',date,sourceType:'granola',ref:'sm'}]}]};},graph:{nodes:[{id:'a',name:'Angelica',strength:50,combined:60,directRelationship:true},{id:'m',name:'Max',strength:40,combined:50,directRelationship:true}],edges:[],themes:[{id:'t',canonicalName:'User research'}],themeSignals:[{id:'sa',personId:'a',summary:'Building user research interviews for design teams'},{id:'sm',personId:'m',summary:'Helping design teams conduct user research interviews'}].map(s=>({...s,themeId:'t',sourceType:'granola',visibility:'private',observedAt:date,ingestedAt:date,confidence:1,evidenceRef:s.id,contentHash:s.id,extractorVersion:'test'}))}});
+  window.graph=mountGraph(root,{onFindHelpers:async(id,brief)=>{if(brief==='fail')return {checked:false,status:'unavailable'};return {automatic:!brief,anchorEvidence:!brief?[{summary:'Building user research interviews for design teams',date,sourceType:'granola',sourceLabel:'Meeting notes',contributor:'You',ref:'sa'}]:[],checked:true,status:'ready',considered:1,available:1,results:[{personId:'m',reason:'Relevant research experience',evidence:[{summary:'Ran moderated usability interviews with hospital nurses',date,sourceType:'granola',ref:'sm'}]}]};},graph:{nodes:[{id:'a',name:'Angelica',strength:50,combined:60,directRelationship:true},{id:'m',name:'Max',strength:40,combined:50,directRelationship:true}],edges:[],themes:[{id:'t',canonicalName:'User research'}],themeSignals:[{id:'sa',personId:'a',summary:'Building user research interviews for design teams'},{id:'sm',personId:'m',summary:'Helping design teams conduct user research interviews'}].map(s=>({...s,themeId:'t',sourceType:'granola',visibility:'private',observedAt:date,ingestedAt:date,confidence:1,evidenceRef:s.id,contentHash:s.id,extractorVersion:'test'}))}});
  });
  await page.getByRole('button',{name:'Explore Angelica',exact:true}).click();
  await page.getByText('Who could help this person?',{exact:true}).click();
@@ -18,7 +18,7 @@ try{
  await page.getByRole('button',{name:'Draft an introduction',exact:true}).click();
  const draft=page.getByRole('textbox',{name:'Introduction draft for Angelica and Max'});assert.match(await draft.inputValue(),/Would you both be open/);
  await draft.fill('My edited invitation');assert.equal(await draft.inputValue(),'My edited invitation');
- const brief=page.getByRole('textbox',{name:'What is Angelica building or looking for help with?'});
+ const brief=page.getByRole('textbox',{name:'Refine what Angelica needs (optional)'});
  await brief.fill('Needs feedback on a clinical scheduling prototype');await page.getByRole('button',{name:'Find people who could help',exact:true}).click();
  await page.getByText('Relevant research experience',{exact:true}).waitFor();await page.getByText('Why this match?',{exact:true}).click();assert.match(await page.locator('.rg-helper-card').innerText(),/hospital nurses/);
  await page.getByRole('button',{name:'Draft an introduction',exact:true}).click();assert.match(await draft.inputValue(),/Your description of Angelica/);

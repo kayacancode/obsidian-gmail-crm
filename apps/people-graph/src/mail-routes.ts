@@ -20,7 +20,7 @@ export async function mailRoute(request:Request,env:MailEnv,owner:string){
  if(!configured(env))return json({error:'mail_not_configured',message:'Email connections are not enabled on this server yet.'},503);
  if(request.method!=='POST')return json({error:'method_not_allowed'},405);
  if(request.headers.get('origin')!==url.origin)return json({error:'invalid_origin'},403);
- const raw=await request.text();if(raw.length>2000)return json({error:'request_too_large'},413);let body:{email?:string;range?:string};try{body=JSON.parse(raw);}catch{return json({error:'invalid_json'},400);}
+ const raw=await request.text();if(raw.length>2000)return json({error:'request_too_large'},413);let body:{email?:string;range?:string;enabled?:boolean};try{body=JSON.parse(raw);}catch{return json({error:'invalid_json'},400);}
  const range=body.range==='all'?'all':'recent';
  if(path==='/api/accounts/connect'){
   const nonce=crypto.randomUUID(),verifier=b64(crypto.getRandomValues(new Uint8Array(32))),browser=b64(crypto.getRandomValues(new Uint8Array(32))),redirect=env.APP_ORIGIN+'/api/accounts/callback';
@@ -30,6 +30,7 @@ export async function mailRoute(request:Request,env:MailEnv,owner:string){
   return Response.json({url:google.href},{headers:{'cache-control':'no-store','set-cookie':`__Host-people-connect=${browser}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`}});
  }
  if(typeof body.email!=='string'||body.email.length>320)return json({error:'invalid_account'},400);
+ if(path==='/api/accounts/context'){if(typeof body.enabled!=='boolean')return json({error:'invalid_request'},400);await stub.bindOwner(owner);return json(await stub.setAutomaticContext(body.email,body.enabled));}
  if(path==='/api/accounts/sync'){await stub.start(body.email,body.range==='all'||body.range==='recent'?body.range:undefined);return json({ok:true});}
  if(path==='/api/accounts/disconnect'){await stub.remove(body.email);return json({ok:true});}
  return json({error:'not_found'},404);
@@ -92,7 +93,7 @@ export async function helperRoute(request:Request,env:MailEnv,owner:string){
  if(request.method!=='POST')return json({error:'method_not_allowed'},405);
  if(request.headers.get('origin')!==new URL(request.url).origin)return json({error:'invalid_origin'},403);
  let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),8000);}catch{return json({error:'invalid_request'},400);}
- if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||!body.brief.trim()||body.brief.length>1000)return json({error:'invalid_request'},400);
+ if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||body.brief.length>1000)return json({error:'invalid_request'},400);
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
  try{return json(await stub.helperPeople(body.personId,body.brief));}catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
 }
