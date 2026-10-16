@@ -823,7 +823,7 @@ export function mountGraph(element, options = {}) {
       next.append(nextButton);
     }
     panel.append(next);
-    if(node.type==='person')panel.append(helperSection(document,graph,node.id));
+    if(node.type==='person')panel.append(helperSection(document,graph,node.id,options.onFindHelpers));
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
     panel.append(actions);
@@ -1373,7 +1373,7 @@ export function mountGraph(element, options = {}) {
       const controls=make('nav','sh-map-controls');controls.setAttribute('aria-label','Map controls');
       controls.append(button('−','zoom-out'),button('+','zoom-in'),button('Fit','fit'));controls.children[0].setAttribute('aria-label','Zoom out');controls.children[1].setAttribute('aria-label','Zoom in');
       const all=make('button','',guidedOverview?'Show all people':'Focused view');all.type='button';all.onclick=()=>{guidedOverview=!guidedOverview;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();};controls.append(all);canvas.append(controls);stage.append(canvas);
-      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,onFindHelpers:options.onFindHelpers,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
       root.append(stage);
       if(focusedSearch){const input=root.querySelector('.sh-search input');input?.focus({preventScroll:true});input?.setSelectionRange(focusedSearch.start,focusedSearch.end);}
       return;

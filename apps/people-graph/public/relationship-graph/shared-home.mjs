@@ -30,7 +30,7 @@ export function connectionContext(graph,personId,memberId,now=Date.now()){
  const evidence=personContext({...graph,themeSignals},personId),latest=evidence[0];
  return latest?evidence.filter(e=>e.date===latest.date&&e.sourceType===latest.sourceType&&e.title===latest.title).slice(0,3):[];
 }
-export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro,onMerge}={}){
+export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro,onMerge,onFindHelpers}={}){
  const root=element(doc,'section','shared-home');root.setAttribute('aria-label',compact?'Person details':'Shared people');if(compact)root.classList.add('sh-detail');
  const selected=graph.nodes.find(n=>n.id===selectedId&&sharedHomePersonAllowed(n));
  if(selected){
@@ -82,7 +82,7 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
     section.append(message);root.append(section);
    }
   }
-  root.append(helperSection(doc,graph,selected.id));
+  root.append(helperSection(doc,graph,selected.id,onFindHelpers));
   const viewerId=graph.members.find(m=>m.isMe)?.id;
   const alreadyInContacts=viewerId&&(selected.relationships||[]).some(r=>r.memberId===viewerId);
   if(onIntro&&!alreadyInContacts&&card?.routes?.length){const route=card.routes[0];root.append(action(doc,'Ask '+name(graph.members.find(m=>m.id===route.memberId))+' for an introduction',()=>onIntro(card,route.memberId),'sh-intro'));}

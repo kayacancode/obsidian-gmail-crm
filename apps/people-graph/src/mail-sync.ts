@@ -1,3 +1,4 @@
+import {rankHelperBrief} from './helper-brief';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
 import {DurableObject} from 'cloudflare:workers';
@@ -465,6 +466,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   * email address, an opaque id, a note body or anybody else's evidence. A Jev failure is silent —
   * the owner still gets the keyword ranking, labelled `checked:false`.
   */
+ async helperPeople(personId:string,brief:string){return rankHelperBrief(this.env,await this.graph(),personId,brief);}
  async searchPeople(query:string){
   if(typeof query!=='string')throw Error('invalid_request');
   const text=query.trim();
