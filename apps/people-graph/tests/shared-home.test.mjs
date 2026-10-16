@@ -1,0 +1,36 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {sharedHomeRows,sharedHomeTitle} from '../public/relationship-graph/shared-home.mjs';
+const tie=memberId=>({memberId,evidenceCategory:'email',activity:{sent:2,received:2,meetings:0}});
+const graph={members:[{id:'me',name:'kaya@betaworks.com',isMe:true},{id:'j',name:'john@betaworks.com'}],nodes:[{id:'a',name:'Alex',type:'person',relationships:[tie('me'),tie('j')]},{id:'b',name:'Bob',type:'person',relationships:[tie('j')]}],themes:[],themeSignals:[]};
+test('shared home has a human title and one bounded deduplicated list',()=>{
+ assert.equal(sharedHomeTitle(graph),'You + John');
+ const result=sharedHomeRows(graph);assert.equal(result.rows[0].person.id,'a');assert.match(result.rows[0].reason,/share/);
+ assert.ok(result.rows.length<=6);assert.equal(new Set(result.rows.map(r=>r.person.id)).size,result.rows.length);
+ assert.ok(result.message.includes('No suggestions'));
+});
+test('search replaces the shortlist, excludes missing records, and keeps an empty answer empty',()=>{
+ const result=sharedHomeRows(graph,{query:'Bob',results:[{personId:'b',reasons:[{summary:'Works on design'}]},{personId:'missing'}]});
+ assert.deepEqual(result.rows.map(r=>r.person.id),['b']);assert.equal(result.rows[0].reason,'Works on design');
+ assert.equal(sharedHomeRows(graph,{query:'nothing',results:[]}).rows.length,0);
+});
+test('unresolved and denied identities are never presented as recommendations or contacts',()=>{
+ const result=sharedHomeRows({...graph,nodes:graph.nodes.map(n=>({...n,permission:'denied'}))});assert.equal(result.rows.length,0);
+});
+
+test('private context survives normalization but malformed dates and unknown people are dropped',async()=>{
+ const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+ const input={...graph,source:'workspace',edges:[],relevance:{version:1,lens:'firm',calculatedAt:'2026-10-15T00:00:00Z',scoreVersion:'relevance-v1',themes:[],connectors:[],discoveries:[]},viewerPrivateContext:{a:[{summary:'Private topic',observedAt:'2026-10-15',sourceType:'gmail_subject'},{summary:'Bad date',observedAt:2026}],missing:[{summary:'Unknown',observedAt:'2026-10-15'}]}};
+ const normalized=normalizeGraph(normalizeGraph(input));
+ assert.equal(normalized.viewerPrivateContext.a.length,1);assert.equal(normalized.viewerPrivateContext.a[0].summary,'Private topic');assert.equal(normalized.viewerPrivateContext.missing,undefined);
+ assert.deepEqual(normalized.themeSignals,[]);
+});
+
+test('latest connection context belongs to its contributor and ignores future records',async()=>{
+ const {connectionContext}=await import('../public/relationship-graph/shared-home.mjs');
+ const signal=(id,member,date,summary)=>({id,personId:'a',evidenceRef:'workspace:'+member+':'+id,observedAt:date,summary,sourceType:'granola',provenance:{title:'Planning'}});
+ const g={...graph,themeSignals:[signal('old','j','2026-10-01','Old discussion'),signal('new','j','2026-10-14','Discussed the launch'),signal('next','j','2026-10-14','Follow-up: Send the brief'),signal('mine','me','2026-10-15','My separate meeting'),signal('future','j','2027-01-01','Future event')],viewerPrivateContext:{a:[{summary:'Private email',observedAt:'2026-10-15'}]}};
+ assert.deepEqual(connectionContext(g,'a','j',Date.parse('2026-10-16')).map(e=>e.summary),['Discussed the launch','Follow-up: Send the brief']);
+ assert.deepEqual(connectionContext(g,'a','me',Date.parse('2026-10-16')).map(e=>e.summary),['My separate meeting']);
+ assert.deepEqual(connectionContext(g,'a','unknown'),[]);
+});

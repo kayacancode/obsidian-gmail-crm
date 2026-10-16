@@ -11,7 +11,7 @@ try {
     const {mountGraph}=await import('/relationship-graph/graph.mjs');
     const recent=new Date(Date.now()-60000).toISOString();
     window.instance=mountGraph(document.querySelector('#graph'),{graph:{nodes:[
-      {id:'a',name:'Ada Rivera',strength:30,directRelationship:true,directLastContact:recent},
+      {id:'a',name:'Ada Rivera',strength:30,combined:55,directRelationship:true,directLastContact:recent},
       {id:'b',name:'Bo Chen',strength:90,directRelationship:true,directLastContact:'2020-01-01'},
       {id:'c',name:'Shared Person',strength:100,directRelationship:false,directLastContact:null,lastContact:recent,via:['teammate']}
     ],activity:[{id:'email1',kind:'email',at:recent,personIds:['a'],title:'Design review',source:'Gmail metadata'}],edges:[{id:'ab',source:'a',target:'b',kind:'cooccurrence',label:'Shared meeting'}]}});
@@ -44,7 +44,10 @@ try {
   await page.getByRole('button',{name:'Recently in touch',exact:true}).click();
   assert.equal(await page.locator('.rg-digest-person').count(),2);
   await page.locator('.rg-digest-person').first().click();
-  assert.equal(await page.locator('.rg-profile-score').innerText(),'30 / 100');
+  assert.equal(await page.locator('.rg-profile-score').innerText(),'55 / 100');
+  assert.equal(await page.locator('.rg-community-label').count(),0);
+  assert.ok(await page.locator('.rg-edge[data-selected="true"]').count()>0);
+  assert.equal(await page.getByRole('heading',{name:'People score',exact:true}).count(),1);
   await page.getByRole('button',{name:'Request intro from Bo Chen',exact:true}).click();
   const draft=page.getByRole('dialog',{name:'Introduction request draft'});
   assert.match(await draft.locator('textarea').inputValue(),/Do you know Ada Rivera/);

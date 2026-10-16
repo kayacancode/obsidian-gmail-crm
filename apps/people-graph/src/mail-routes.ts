@@ -87,3 +87,12 @@ export async function personFeedbackRoute(request:Request,env:MailEnv,owner:stri
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
  try{return json(await stub.setPersonFeedback(body.personId,body.action));}catch(error){if(error instanceof Error&&error.message==='unknown_person')return json({error:'unknown_person',message:'This action is available for your synced web contacts.'},404);throw error;}
 }
+
+export async function helperRoute(request:Request,env:MailEnv,owner:string){
+ if(request.method!=='POST')return json({error:'method_not_allowed'},405);
+ if(request.headers.get('origin')!==new URL(request.url).origin)return json({error:'invalid_origin'},403);
+ let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),8000);}catch{return json({error:'invalid_request'},400);}
+ if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||!body.brief.trim()||body.brief.length>1000)return json({error:'invalid_request'},400);
+ const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+ try{return json(await stub.helperPeople(body.personId,body.brief));}catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
+}

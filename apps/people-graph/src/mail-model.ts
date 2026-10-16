@@ -1,4 +1,4 @@
-export interface Metadata {id?:string; internalDate?:string; payload?:{headers?:{name:string;value:string}[]}}
+export interface Metadata {id?:string;threadId?:string; internalDate?:string; payload?:{headers?:{name:string;value:string}[]}}
 export interface GmailPart {mimeType?:string;filename?:string;headers?:{name:string;value:string}[];body?:{data?:string;attachmentId?:string;size?:number};parts?:GmailPart[]}
 export interface GmailMessage extends Metadata {payload?:GmailPart}
 export interface ParsedMessage {key:string;date:number;subject:string;participants:{email:string;name:string;sent:number;received:number}[]}

@@ -24,3 +24,23 @@ test('Jev ranks existing introductions only and a failure preserves evidence-bas
   const fallback=await rankIntroductions({TYPESAFE_API_KEY:'test'},g);assert.equal(fallback.checked,false);assert.equal(fallback.suggestions.length,1);assert.equal(calls,1);
  }finally{globalThis.fetch=original;}
 });
+
+test('helper brief ranks complementary evidence without a keyword gate and never exports private shared context',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const {choiceA}=await import('./granola-jev-extractor.test');
+ const now=new Date().toISOString();const g:any={source:'workspace',nodes:[{id:'a',name:'Angelica'},{id:'b',name:'Max'},{id:'c',name:'Hidden'}],themeSignals:[{id:'s',personId:'b',summary:'Ran moderated usability interviews with hospital nurses',sourceType:'granola',visibility:'firm',observedAt:now},{id:'private',personId:'c',summary:'SECRET',sourceType:'granola',visibility:'private',observedAt:now}]};
+ const original=globalThis.fetch;try{globalThis.fetch=jevServer((id:string,_q:any,state:any)=>{assert.equal(state.candidates.length,1);assert.ok(!JSON.stringify(state).includes('SECRET'));return id.startsWith('fit')?scoreA(3):choiceA('experience',.9);}).fake;
+ const result=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','Needs feedback on a clinical scheduling prototype');assert.equal(result.results[0].personId,'b');assert.equal(result.results[0].evidence[0].ref,'s');assert.equal(result.checked,true);
+ globalThis.fetch=async()=>new Response('',{status:503});const failed=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','Needs prototype feedback');assert.equal(failed.status,'unavailable');assert.deepEqual(failed.results,[]);
+ }finally{globalThis.fetch=original;}
+});
+
+test('helper brief excludes incoming personal shares, stale notes, metadata and denied people',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');
+ const graph:any={nodes:[{id:'a'},{id:'b'},{id:'c',permission:'denied'}],themeSignals:[
+ {personId:'b',sourceType:'granola',summary:'Private incoming shared work',observedAt:new Date().toISOString(),evidenceRef:'share:other:1'},
+ {personId:'b',sourceType:'granola',summary:'Old work',observedAt:'2020-01-01'},
+ {personId:'b',sourceType:'gmail_subject',summary:'Clinical scheduling',observedAt:new Date().toISOString()},
+ {personId:'c',sourceType:'granola',summary:'Denied work',observedAt:new Date().toISOString()}]};
+ const result=await rankHelperBrief({},graph,'a','Clinical scheduling');assert.equal(result.status,'no_evidence');assert.equal(result.considered,0);
+ await assert.rejects(()=>rankHelperBrief({},graph,'unknown','Clinical scheduling'),/invalid_request/);
+});

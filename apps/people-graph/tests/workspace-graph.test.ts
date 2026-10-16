@@ -271,3 +271,36 @@ test('published vault relationship scores create score-backed routes without per
  const {buildAnswerCards}=await import('../src/network-answer');assert.equal(buildAnswerCards(g,[{personId:person.id}])[0].routes[0].basis,'published_score');
  for(const name of ['Zero','Bad'])assert.equal(g.nodes.find(n=>n.name===name)!.relationships[0].evidenceCategory,'unknown');
 });
+test('private context is loaded only from the authenticated viewer and never used as shared evidence',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName,calls:string[]=[];
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),workspacePrivateContext:async()=>{calls.push(owner);return {'contact@example.test':[{summary:owner+' private topic',observedAt:'2026-10-15',sourceType:'gmail_subject',title:''}]};}});
+ const own=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');
+ assert.equal(own.viewerPrivateContext?.[own.nodes[0].id][0].summary,'owner@example.com private topic');
+ assert.deepEqual(calls,['owner@example.com']);assert.deepEqual(own.themeSignals,[]);
+ const other=await buildWorkspaceGraph(f.env,f.id,'member@example.com');
+ assert.equal(other.viewerPrivateContext?.[other.nodes[0].id][0].summary,'member@example.com private topic');
+ assert.ok(!JSON.stringify(other).includes('owner@example.com private topic'));
+});
+
+test('viewer merges preserve sources and context without inflating overlapping relationship counts',async()=>{
+ const {mergeWorkspacePeople}=await import('../src/workspace-person-merge');
+ const graph:any={nodes:[{id:'a',name:'Dennis Crowley',company:'hopscotchlabs.co',sources:['web'],relationships:[{memberId:'l',lastContact:'2026-10-01',activity:{sent:4,received:3}}]},{id:'b',name:'Dennis Crowley',company:'teendrama.com',sources:['web'],relationships:[{memberId:'l',lastContact:'2026-10-10',activity:{sent:2,received:1}},{memberId:'j'}]}],edges:[{source:'b',target:'x',weight:1}],themeSignals:[{personId:'b',summary:'Note'}],viewerPrivateContext:{b:[{summary:'Private'}]}};
+ const merged=mergeWorkspacePeople(structuredClone(graph),{b:'a'});
+ assert.equal(merged.nodes.length,1);assert.equal(merged.nodes[0].relationships.length,2);assert.equal(merged.nodes[0].relationships[0].lastContact,'2026-10-10');assert.deepEqual(merged.nodes[0].mergedProfiles,[{id:'b',name:'Dennis Crowley',company:'teendrama.com'}]);assert.equal(merged.edges[0].source,'a');assert.equal(merged.themeSignals[0].personId,'a');assert.equal(merged.viewerPrivateContext.a[0].summary,'Private');
+ assert.equal(mergeWorkspacePeople(structuredClone(graph),{}).nodes.length,2);
+ const revoked={...structuredClone(graph),nodes:graph.nodes.slice(0,1),edges:[],themeSignals:[],viewerPrivateContext:{}};
+ assert.equal(mergeWorkspacePeople(revoked,{b:'a'}).nodes[0].mergedProfiles,undefined);
+});
+
+test('person merges are reversible, viewer scoped and reject inaccessible IDs',async()=>{
+ const f=await setup(),original=f.env.MAIL.getByName;
+ f.env.MAIL.getByName=(owner:string)=>({...original(owner),exportWorkspaceSlice:async()=>{const value=await original(owner).exportWorkspaceSlice();value.slice.people.push({email:'second@example.test',name:'Contact Name',lastContact:null,meetings:0});return value;}});
+ const graph=await buildWorkspaceGraph(f.env,f.id,'owner@example.com');const [a,b]=graph.nodes;
+ assert.equal((await f.call('/'+f.id+'/person-merges','POST',{sourceId:b.id,targetId:'missing'})).status,404);
+ assert.equal((await f.call('/'+f.id+'/person-merges','POST',{sourceId:b.id,targetId:a.id},'stranger@example.com')).status,403);
+ assert.equal((await f.call('/'+f.id+'/person-merges','POST',{sourceId:b.id,targetId:a.id})).status,200);
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes.length,1);
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'member@example.com')).nodes.length,2);
+ assert.equal((await f.call('/'+f.id+'/person-merges','DELETE',{sourceId:b.id})).status,200);
+ assert.equal((await buildWorkspaceGraph(f.env,f.id,'owner@example.com')).nodes.length,2);
+});

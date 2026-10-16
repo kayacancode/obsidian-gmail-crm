@@ -19,3 +19,10 @@ test('focused overview follows fresh shared evidence instead of the first twelve
  assert.equal(overviewPeople(fresh)[0].id,'p29');
  assert.equal(overviewPeople(fresh).length,12);
 });
+test('discovery overview excludes existing contacts and prioritizes supported new matches',async()=>{
+ const {discoveryOverview}=await import('../public/relationship-graph/guided-network.mjs');
+ const tie=memberId=>({memberId,evidenceCategory:'score',score:70});
+ const g={members:[{id:'me',isMe:true},{id:'j'}],nodes:[{id:'mutual',type:'person',relationships:[tie('me'),tie('j')]},{id:'own',type:'person',relationships:[tie('me')]},{id:'new',type:'person',relationships:[tie('j')]},{id:'match',type:'person',relationships:[tie('j')]},{id:'unknown',type:'person',relationships:[{memberId:'j'}]}],themeSignals:[],edges:[]};
+ assert.deepEqual(discoveryOverview(g,Date.now(),['mutual','match']).map(n=>n.id),['match','new']);
+ assert.deepEqual(discoveryOverview({...g,members:[{id:'j',isMe:true},{id:'me'}]}).map(n=>n.id),['own']);
+});

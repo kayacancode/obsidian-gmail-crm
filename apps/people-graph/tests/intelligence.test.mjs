@@ -146,3 +146,7 @@ test('topic labels reject raw tasks and preserve concise subject areas',async()=
  for(const name of ['[ ] Email Detailed Proposal With Pricing And Timeline','Coordinate With P- Dfuller On Investor Deck/product Roadmap Sharing','Send follow-up to John','Follow up with Maya','Action items','Schedule a meeting'])assert.equal(isTopicLabel(name),false,name);
  for(const name of ['Agent interfaces','UI design','Fundraising','Email infrastructure','Maps, Memory, and Meaning'])assert.equal(isTopicLabel(name),true,name);
 });
+test('headline comparison uses People score including recency and feedback',()=>{
+ const person={id:'p',strength:45,combined:60};
+ assert.deepEqual(connectionSummary(person,[person,{id:'a',strength:80,combined:50},{id:'b',strength:20,combined:70}]),{score:60,lower:1,total:2});
+});

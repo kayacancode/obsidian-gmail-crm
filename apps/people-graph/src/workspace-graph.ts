@@ -1,3 +1,4 @@
+import {mergeWorkspacePeople} from './workspace-person-merge';
 import {completedIntroductionCounts} from './introduction-store';
 import {buildAnswerCards} from './network-answer';
 import {suggestIntroductions,type Introduction} from './workspace-introductions';
@@ -10,8 +11,8 @@ import {opaque} from './mail-model';
 import {readWorkspace,memberOf,deny} from './workspace-store';
 import {supportsIntroduction,workspacePhoto,type WorkspaceSlice,type WorkspaceRelationship} from './workspace-contract';
 import {keywordRank,keywordScores,jevScores,topResults} from './network-search';
-export interface WorkspaceNode {identityMatchReady?:boolean;sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
-export interface WorkspaceGraph {introductionSuggestions?:Introduction[];source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
+export interface WorkspaceNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;identityMatchReady?:boolean;sources?:string[];id:string;name:string;company:string;type:'person';photoUrl:string|null;directRelationship:false;combined:null;lastContact:null;viewerScore?:{base:number;delta:number;score:number};relationships:Array<WorkspaceRelationship&{memberId:string;memberName:string}>}
+export interface WorkspaceGraph {viewerPrivateContext?:Record<string,import('./workspace-contract').ViewerPrivateContext[]>;introductionSuggestions?:Introduction[];source:'workspace';workspaceId:string;workspaceName:string;revision:number;pushedAt:string;nodes:WorkspaceNode[];edges:Array<{source:string;target:string;weight:number;types:string[];contexts:string[];contributors:string[];evidence:Array<{owner:string;title:string;text:string}>}>;relevance:ReturnType<typeof scoreRelevance>;themes:any[];themeSignals:any[];activity:never[];members:Array<{id:string;name:string;isMe:boolean}>;coverage:{sources:WorkspaceSourceCoverage[];unavailable:string[];truncated:boolean;contributors:number}}
 function nameQuality(name:string,email:string){
  const value=name.trim().toLowerCase();
  if(!value||value==='name unavailable'||value.startsWith('someone at '))return 0;
@@ -73,6 +74,13 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
    if(profile){node.name=preferName(node.name,profile.name,email,true);node.photoUrl=workspacePhoto(profile.photoUrl)||node.photoUrl;}
   }
  }catch{ /* Known shared identities remain available when the private source is offline. */ }
+ // Keep viewer evidence outside themeSignals: shared ranking, intros and drafts
+ // must never consume it. Only the authenticated viewer's object is queried.
+ try {
+  const own=env.MAIL.getByName(me);await own.bindOwner(me);
+  const context=await own.workspacePrivateContext([...personEmails.keys()]);
+  graph.viewerPrivateContext=Object.fromEntries([...personEmails].filter(([email])=>context[email]?.length).map(([email,pid])=>[pid,context[email]]));
+ }catch{ /* Shared graph remains usable if the viewer's private source is offline. */ }
  for(const node of nodes.values())if(node.name.startsWith('Someone at '))node.name='Name unavailable';
  graph.nodes=[...nodes.values()];graph.edges=[...edges.values()];
  for(const member of w.members)if(!graph.coverage.sources.some(s=>s.memberId===member.id&&s.source==='web'))graph.coverage.sources.push({memberId:member.id,memberName:member.email,source:'web',available:null,included:0,status:member.contribution.enabled?'unavailable':'not_shared',limited:false});
@@ -92,6 +100,7 @@ export async function buildWorkspaceGraph(env:ShareEnv,id:string,me:string,attem
  graph.edges=[...joinedEdges.values()];
  const completed=new Map((await completedIntroductionCounts(env.DB,id)).map(r=>[r.memberId+':'+r.personId,r.count]));
  for(const person of graph.nodes)for(const relationship of person.relationships)relationship.completedIntroductions=completed.get(relationship.memberId+':'+person.id)||0;
+ mergeWorkspacePeople(graph,memberOf(w,me).personMerges||{});
  graph.introductionSuggestions=suggestIntroductions(graph);
  graph.relevance=scoreRelevance(graph.themeSignals.map(s=>({...s,owner:id})),[],'firm',Date.now(),graph.themes);
  try{await assertWorkspaceRevision(env,id,me,w.revision);}catch(e){if((e as Error).message==='workspace_changed_retry'&&attempt===0)return buildWorkspaceGraph(env,id,me,1);throw e;}

@@ -1,3 +1,4 @@
+import {rankHelperBrief} from './helper-brief';
 import {introductionRoute} from './introduction-routes';
 import {rankIntroductions} from './workspace-introductions';
 import {buildWorkspaceGraph,searchWorkspace,draftWorkspace,assertWorkspaceRevision} from './workspace-graph';
@@ -55,13 +56,22 @@ export async function workspaceRoute(request:Request,env:ShareEnv,me:string):Pro
     },cancel(){cancelled=true;}
    });return new Response(stream,{headers:{'content-type':'application/x-ndjson','cache-control':'no-store','x-content-type-options':'nosniff'}});
   }
-  const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft|introductions)$/);
+  const graphPath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(graph|search|draft|introductions|helpers)$/);
   if(graphPath){const [,id,action]=graphPath;
+   if(action==='helpers'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.brief!=='string'||!body.brief.trim()||body.brief.length>1000)deny(400,'invalid_request');const graph=await buildWorkspaceGraph(env,id,me);if(!graph.nodes.some(n=>n.id===body.personId))deny(400,'invalid_request');const result=await rankHelperBrief(env,graph,body.personId,body.brief);await assertWorkspaceRevision(env,id,me,graph.revision);return json(result);}
    if(action==='graph'&&method==='GET')return json({account:me,graph:await buildWorkspaceGraph(env,id,me)});
    if(action==='introductions'&&method==='POST'){const graph=await buildWorkspaceGraph(env,id,me);const result=await rankIntroductions(env,graph);await assertWorkspaceRevision(env,id,me,graph.revision);return json(result);}
    if(action==='search'&&method==='POST'){if(typeof body.query!=='string'||!body.query.trim()||body.query.length>200)deny(400,'invalid_query');return json(await searchWorkspace(env,id,me,body.query.trim()));}
    if(action==='draft'&&method==='POST'){if(typeof body.personId!=='string'||typeof body.memberId!=='string')deny(400,'invalid_request');return json(await draftWorkspace(env,id,me,body.personId,body.memberId));}
    return json({error:'method_not_allowed'},405);
+  }
+  const mergePath=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/person-merges$/);
+  if(mergePath&&['POST','DELETE'].includes(method)){
+   const id=mergePath[1],{sourceId,targetId}=body;
+   if(typeof sourceId!=='string'||!sourceId||sourceId.length>200||method==='POST'&&(typeof targetId!=='string'||!targetId||targetId.length>200||sourceId===targetId))deny(400,'invalid_person');
+   const snapshot=await readWorkspace(env.DB,id);memberOf(snapshot,me);
+   if(method==='POST'){const graph=await buildWorkspaceGraph(env,id,me);for(const pid of [sourceId,targetId]){const n=graph.nodes.find(n=>n.id===pid);if(!n||!n.identityMatchReady)deny(404,'person_unavailable');}}
+   await changeWorkspace(env.DB,id,w=>{if(w.revision!==snapshot.revision)deny(409,'workspace_changed_retry');const self=memberOf(w,me),merges={...self.personMerges};if(method==='DELETE')delete merges[sourceId];else {if(merges[targetId]||Object.values(merges).includes(sourceId))deny(409,'undo_existing_merge_first');merges[sourceId]=targetId;}if(Object.keys(merges).length>500)deny(400,'merge_limit');self.personMerges=merges;});return json({ok:true});
   }
   const confirmation=url.pathname.match(/^\/api\/workspaces\/([^/]+)\/relationship-confirmations$/);
   if(confirmation&&['POST','DELETE'].includes(method)){

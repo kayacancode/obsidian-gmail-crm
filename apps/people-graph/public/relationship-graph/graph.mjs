@@ -1,8 +1,10 @@
+import {helperSection} from './helper-suggestions.mjs';
+import {sharedHome,sharedHomePersonAllowed} from './shared-home.mjs';
 import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
 import {topicPanel,animateTopicCluster} from './topic-context.mjs';
 import {mountPersonSuggestionPopup} from './person-suggestions.mjs';
-import {networkStarts,nearbyBranches,extendWalk,overviewPeople} from './guided-network.mjs';
+import {networkStarts,nearbyBranches,extendWalk,overviewPeople,discoveryOverview} from './guided-network.mjs';
 import {personWalk} from './person-walk.mjs';
 import {contactCard,mountContactSheet,portrait,personContext,contextBlock} from './contact-sheet.mjs';
 import {mountIntroductionThread} from './introduction-thread.mjs';
@@ -140,6 +142,8 @@ export function mountGraph(element, options = {}) {
   let spatialKey = '';
   let spatialNodes = null;
   let discoveryIntent='';
+  let homePerson=null,homeQuery='',homeStatus='';
+  const simpleShared=()=>options.simpleShared===true&&graph.source==='workspace';
   const excludedWeeklyTopics=new Set();
   let weeklyCache=null,weeklyFocusOpen=false;
   function sharedWeek(){
@@ -260,7 +264,7 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactFocus=null;suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id,continued=null,startIndex=0,suggestionContext=null){const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
+  function showContact(id,continued=null,startIndex=0,suggestionContext=null){if(simpleShared()){homePerson=id;selectedId=id;render();const heading=root.querySelector('.sh-detail h2');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=continued||personWalk(graph,id,pathGraph),container=contactContainer();
 
@@ -343,8 +347,8 @@ export function mountGraph(element, options = {}) {
   const currentRoute = () => pathState?.result?.paths?.[pathState.index] ?? null;
 
   function canvasLayout() {
-    const width = element.clientWidth || 1000;
-    const height = panelMode==='topic'&&width<900?540:Math.max(800, (view?.innerHeight || 900) - 133);
+    const width = Math.max(300,(element.clientWidth || 1000)-(simpleShared()&&homePerson&&element.clientWidth>800?340:0));
+    const height = simpleShared()?Math.max(440,(view?.innerHeight||900)-225):panelMode==='topic'&&width<900?540:Math.max(800, (view?.innerHeight || 900) - 133);
     // Reserve the detail rail on wide screens, and a real text/portrait gutter.
     const usableWidth = Math.max(132, width - (width >= (panelMode==='topic'?900:1100) && (graph.source!=='workspace'||panelMode) ? 380 : 48));
     const top = graph.source==='workspace' ? 24 : options.compactHeader ? (width <= 700 ? 210 : 150) : (width <= 700 ? 285 : 195);
@@ -403,8 +407,10 @@ export function mountGraph(element, options = {}) {
   }
 
   function canvasMatches(){
-    const matches=searchGraph(relevanceGraph,query);
+    const matches=searchGraph(relevanceGraph,query).filter(n=>!simpleShared()||sharedHomePersonAllowed(n));
+    if(simpleShared()&&searchAnswer){const ids=new Set(searchAnswer.results.map(r=>r.personId));return matches.filter(n=>ids.has(n.id));}
     if(graph.source!=='workspace')return matches;
+    if(simpleShared()&&guidedOverview&&!query&&!searchAnswer)return discoveryOverview({...graph,nodes:matches},Date.now(),sharedWeek().groups.forYou.map(item=>item.person.id));
     if(!activeThemeId){if(!guidedOverview||query||searchAnswer||matches.length<=24)return matches;return overviewPeople({...graph,nodes:matches},Date.now(),Object.values(sharedWeek().groups).flat().map(item=>item.person.id));}
     const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
     const ids=introduction?new Set(introduction.personIds):activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
@@ -576,10 +582,6 @@ export function mountGraph(element, options = {}) {
         transform: `translate(${(layout.usableWidth - layout.worldWidth * scale) / 2 + camera.x}px, ${(layout.usableHeight - layout.worldHeight * scale) / 2 + camera.y}px) scale(${scale})` });
       viewport.append(scene);canvas.append(viewport);
     }
-    if(!data.isPath) for(const cluster of layout.spatial.clusters) {
-      const label=make('span','rg-community-label',cluster.name);
-      label.style.left=`${cluster.x}px`;label.style.top=`${cluster.y}px`;scene.append(label);
-    }
     const positions = new Map();
     const pulseIds = new Set(data.nodes.filter(node => node.type === 'person')
       .map(node => ({ id: node.id, score: Math.max(0, ...personThemes(node.id).map(theme => theme.score)) }))
@@ -644,7 +646,7 @@ export function mountGraph(element, options = {}) {
       }
       nodeButton.append(label);
       nodeLayer.append(nodeButton);
-      if (lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
+      if (!simpleShared() && lens !== 'off' && node.type === 'person' && badgeIds.has(node.id)) {
         const theme = personThemes(node.id).slice().sort((a, b) => b.score - a.score)[0];
         const badge = button('Why now', 'inspect-theme', 'rg-person-heat');
         badge.dataset.themeId = theme.themeId;
@@ -757,12 +759,12 @@ export function mountGraph(element, options = {}) {
     if (node.type === 'person') {
       const summary = connectionSummary(node,graph.nodes);
       const scores = make('section','rg-profile-section');
-      scores.append(make('h3','','Your connection'));
+      scores.append(make('h3','','People score'));
       scores.append(make('p','rg-profile-score',summary ? `${Math.round(summary.score)} / 100` : 'Not measured'));
-      if(summary) scores.append(make('p','rg-source',`Stronger recorded activity than ${summary.lower} of ${summary.total} other scored direct contacts. Based on frequency and reciprocity; this is not a measure of personal closeness.`));
+      if(summary) scores.append(make('p','rg-source',`Higher score than ${summary.lower} of ${summary.total} other scored direct contacts. Combines activity strength and recency, plus your feedback when provided. It does not measure personal closeness.`));
       const contact = directContact(node);
       scores.append(make('p','rg-source',contact ? `Your last recorded contact: ${contact.slice(0,10)}` : 'No dated direct contact in this data.'));
-      if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`People score: ${Math.round(node.combined)} / 100${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
+      if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`Activity strength: ${Math.round(node.strength)} · recency: ${Math.round(node.momentum)}${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
       if(graph.personFeedback?.[node.id]){const undo=button('Undo person feedback','person-feedback','rg-text-button');undo.dataset.nodeId=node.id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy||!callbacks.onPersonFeedback;scores.append(undo);}
       if(graph.source!=='workspace')panel.append(scores);
       if(graph.source==='workspace'){
@@ -821,6 +823,7 @@ export function mountGraph(element, options = {}) {
       next.append(nextButton);
     }
     panel.append(next);
+    if(node.type==='person')panel.append(helperSection(document,graph,node.id,options.onFindHelpers));
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
     panel.append(actions);
@@ -1355,7 +1358,26 @@ export function mountGraph(element, options = {}) {
     root.dataset.profileOpen = String(Boolean(panelMode && !pathState));
     root.dataset.demo = String(demoEnabled());
     root.dataset.workspace = String(graph.source==='workspace');
+    const focusedSearch=simpleShared()&&document.activeElement?.matches('.sh-search input')?{start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd}:null;
     root.replaceChildren();
+    root.dataset.simpleShared=String(simpleShared());
+    if(simpleShared()){
+      root.dataset.profileOpen='false';
+      root.append(sharedHome(document,graph,{answer:searchAnswer,headerOnly:true,query:homeQuery,status:homeStatus,
+        onQueryChange:value=>{homeQuery=value;},onPerson:id=>showContact(id),onBack:()=>{homePerson=null;selectedId=null;render();},
+        onSearch:value=>{homeQuery=value;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};if(!value){searchAnswer=null;homeStatus='';render();options.onHomeClear?.();}else options.onHomeSearch?.(value);},
+        onClear:()=>{homeQuery='';searchAnswer=null;homeStatus='';homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();options.onHomeClear?.();},
+        onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      const stage=make('div','sh-graph-stage');stage.dataset.details=String(Boolean(homePerson&&byId.has(homePerson)));
+      const canvas=renderCanvas();const note=canvas.querySelector('.rg-canvas-note');if(note)note.textContent=guidedOverview&&!query&&!searchAnswer?'New connections · Show all people to see mutual contacts':'Drag to explore · Select a person';
+      const controls=make('nav','sh-map-controls');controls.setAttribute('aria-label','Map controls');
+      controls.append(button('−','zoom-out'),button('+','zoom-in'),button('Fit','fit'));controls.children[0].setAttribute('aria-label','Zoom out');controls.children[1].setAttribute('aria-label','Zoom in');
+      const all=make('button','',guidedOverview?'Show all people':'Focused view');all.type='button';all.onclick=()=>{guidedOverview=!guidedOverview;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();};controls.append(all);canvas.append(controls);stage.append(canvas);
+      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,onFindHelpers:options.onFindHelpers,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      root.append(stage);
+      if(focusedSearch){const input=root.querySelector('.sh-search input');input?.focus({preventScroll:true});input?.setSelectionRange(focusedSearch.start,focusedSearch.end);}
+      return;
+    }
     const header = make('header', 'rg-header');
     header.append(button(options.title || 'Relationships', 'overview', 'rg-wordmark'));
     const searchWrap = make('label', 'rg-search-wrap');
@@ -1793,6 +1815,7 @@ export function mountGraph(element, options = {}) {
 
   function onKeyDown(event) {
     if (event.key === 'Escape') {
+      if(simpleShared()&&homePerson){homePerson=null;selectedId=null;render();return;}
       if (pathState) closePath();
       else if (panelMode) { invalidateRelevance(); activeThemeId = null; panelMode = null; selectedEdgeId = null; render(); }
       return;
@@ -1862,6 +1885,7 @@ export function mountGraph(element, options = {}) {
     // controls in that case would discard the keyboard focus we just restored.
     if (size === lastSize) return;
     lastSize = size;
+    if(simpleShared()){render();return;}
     if (pathState) pathState.needsRefit = true;
     else {
       camera = { x: 0, y: 0, zoom: 1 };
@@ -1878,8 +1902,10 @@ export function mountGraph(element, options = {}) {
 
   return {
     openWander(){panelMode='wander';topicsOpen=false;render();},
+    setSearchStatus(message){if(simpleShared()){homeStatus=message;render();}},
     setSearchAnswer(answer) {
       if(destroyed)return;
+      if(simpleShared()){searchAnswer=answer;homeStatus='';if(answer)homeQuery=answer.query;render();return;}
       clearContact();
       if(answer && !searchAnswer) exploration={camera:{...camera},selectedId,panelMode,query,timeWindow,eventPeople,activeThemeId,pathState,trail:cloneTrail(trail)};
       if(!answer && searchAnswer && exploration) {
@@ -1904,7 +1930,7 @@ export function mountGraph(element, options = {}) {
       const previousFocus=preserveFocus?contactFocus:null;
       clearContact();
       meetingBatch = null;meetingFeedback = Object.create(null);
-      if(graph.workspaceId!==nextGraph.workspaceId){excludedWeeklyTopics.clear();weeklyFocusOpen=false;}
+      if(graph.workspaceId!==nextGraph.workspaceId){excludedWeeklyTopics.clear();weeklyFocusOpen=false;homePerson=null;homeQuery='';homeStatus='';}
       graph = normalizeGraph(nextGraph);
       introductionRun++;introductionCards=graph.introductionSuggestions||[];introductionState='ready';introductionSkipped.clear();
       searchAnswer=null;exploration=null;walkHistory=[];walkIndex=-1;eventPeople=null;
@@ -1941,6 +1967,7 @@ export function mountGraph(element, options = {}) {
         }
       }
       const refreshPath = Boolean(pathState?.to);
+      if(!byId.has(homePerson)){homePerson=null;if(simpleShared())selectedId=null;}
       render();
       if (refreshPath) requestCurrentPaths();
       if(previousFocus && byId.has(previousFocus.id)){

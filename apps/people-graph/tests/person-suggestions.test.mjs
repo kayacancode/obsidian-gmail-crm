@@ -13,3 +13,12 @@ test('newer email subjects cannot crowd out conversation evidence',()=>{
 });
 
 test('sanitized topic boilerplate cannot create a match',()=>{assert.deepEqual(personSuggestions({...graph,themeSignals:[signal('k','k','Recorded topic: Agent memory'),signal('a','a','Recorded topic: Climate finance')]},'k'),[]);});
+
+test('what-if helpers need recent specific evidence on both sides and show at most three',async()=>{
+ const {helperSuggestions,helperDraft}=await import('../public/relationship-graph/helper-suggestions.mjs');
+ const now=Date.parse('2026-10-15');const g={...graph,nodes:[...nodes,...['b','c','d'].map(id=>({id,name:id}))],themeSignals:[...graph.themeSignals,...['b','c','d'].map(id=>signal(id,id,'Developing agent memory interfaces'))]};
+ const matches=helperSuggestions(g,'k',now);assert.equal(matches.length,3);assert.ok(matches.every(m=>m.anchorEvidence&&m.evidence));assert.match(helperDraft('Kaspian',matches[0]),/Would you both be open/);
+ assert.deepEqual(helperSuggestions({...g,themeSignals:g.themeSignals.map(s=>({...s,summary:'Recorded topic: AI agents'}))},'k',now),[]);
+ assert.deepEqual(helperSuggestions({...g,themeSignals:g.themeSignals.map(s=>({...s,observedAt:'2020-01-01'}))},'k',now),[]);
+ assert.deepEqual(helperSuggestions({...g,source:'workspace',themeSignals:g.themeSignals.map(s=>({...s,visibility:'private'}))},'k',now),[]);
+});
