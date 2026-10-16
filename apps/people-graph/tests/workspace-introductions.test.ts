@@ -44,3 +44,11 @@ test('helper brief excludes incoming personal shares, stale notes, metadata and 
  const result=await rankHelperBrief({},graph,'a','Clinical scheduling');assert.equal(result.status,'no_evidence');assert.equal(result.considered,0);
  await assert.rejects(()=>rankHelperBrief({},graph,'unknown','Clinical scheduling'),/invalid_request/);
 });
+
+test('automatic helper suggestions use dated context without a manual brief',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const {choiceA}=await import('./granola-jev-extractor.test');const original=globalThis.fetch;
+ const now=new Date().toISOString(),g:any={nodes:[{id:'a'},{id:'b'}],themeSignals:[{id:'a1',personId:'a',summary:'We are building scheduling tools for clinics.',sourceType:'gmail_body_derived',visibility:'private',observedAt:now,evidenceRef:'gmail-context:a1'},{id:'b1',personId:'b',summary:'I have led usability studies with hospital nurses.',sourceType:'gmail_body_derived',visibility:'private',observedAt:now,evidenceRef:'gmail-context:b1'}]};
+ try{globalThis.fetch=jevServer((id:string,_q:any,state:any)=>{assert.match(state.brief,/clinics/);return id.startsWith('fit')?scoreA(3):choiceA('experience',.9);}).fake;
+ const result=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','');assert.equal(result.results.length,1);assert.equal(result.automatic,true);assert.equal(result.anchorEvidence[0].ref,'a1');
+ }finally{globalThis.fetch=original;}
+});
