@@ -201,6 +201,36 @@ test('HTTP failures and redirects are explicit and never retried',async()=>{
  });}
 });
 
+test('failure diagnostics distinguish HTTP, timeout, and invalid output without logging private values',async()=>{
+ const warnings:unknown[][]=[],originalWarn=console.warn,originalTimeout=AbortSignal.timeout;
+ console.warn=(...args:unknown[])=>{warnings.push(args);};
+ try{
+  await withFetch(async()=>new Response('test-key '+sources[0].text,{status:503}),async()=>{
+   assert.equal((await syncHonchoLens(env,'owner@example.com',sources)).status,'unavailable');
+  });
+  AbortSignal.timeout=(milliseconds:number)=>milliseconds===15000?AbortSignal.abort(new DOMException('test-key '+sources[0].text,'TimeoutError')):originalTimeout(milliseconds);
+  await withFetch(async(_input:any,init:any)=>{throw init.signal.reason;},async()=>{
+   assert.equal((await syncHonchoLens(env,'owner@example.com',sources)).status,'unavailable');
+  });
+  AbortSignal.timeout=originalTimeout;
+  const fake=fakeHoncho();fake.setAnswer(()=>({entries:[{kind:'focus',text:sources[0].text,sources:[]}]}));
+  await withFetch(fake.fetcher,async()=>assert.equal((await syncHonchoLens(env,'owner@example.com',sources)).status,'invalid'));
+ }finally{console.warn=originalWarn;AbortSignal.timeout=originalTimeout;}
+ assert.equal(warnings.length,3);
+ const diagnostics=warnings.map(args=>{assert.equal(args.length,1);assert.equal(typeof args[0],'string');return JSON.parse(args[0] as string) as Record<string,unknown>;});
+ assert.deepEqual(diagnostics.map(({stage,kind,httpStatus})=>({stage,kind,httpStatus})),[
+  {stage:'workspace',kind:'http',httpStatus:503},{stage:'workspace',kind:'timeout',httpStatus:undefined},{stage:'chat',kind:'invalid',httpStatus:undefined},
+ ]);
+ for(const diagnostic of diagnostics){
+  assert.equal(diagnostic.event,'honcho_lens_failure');assert.equal(diagnostic.sourceCount,1);
+  assert.ok(typeof diagnostic.elapsedMs==='number'&&diagnostic.elapsedMs>=0);
+  assert.ok(Object.keys(diagnostic).every(key=>['event','stage','elapsedMs','sourceCount','kind','httpStatus'].includes(key)));
+ }
+ const serialized=JSON.stringify(warnings);
+ for(const privateValue of [env.HONCHO_API_KEY,env.TOKEN_SECRET,sources[0].text,sources[0].id,'owner@example.com','https://','snapshot_'])assert.ok(!serialized.includes(privateValue));
+ assert.doesNotMatch(serialized,/lens_[A-Za-z0-9_-]{20,}/);
+});
+
 test('oversized and malformed responses fail closed while a pending model remains pending',async()=>{
  const fake=fakeHoncho();for(const response of [()=>new Response('x'.repeat(256*1024)),()=>Response.json({content:'not json'}),()=>Response.json({content:null})]){
   await withFetch(async(input:any,init:any)=>String(input).endsWith('/chat')?response():fake.fetcher(input,init),async()=>{

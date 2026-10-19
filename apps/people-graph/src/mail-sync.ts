@@ -1,4 +1,4 @@
-import {OwnerLensStore,OWNER_LENS_WINDOW,type OwnerLensFields} from './owner-lens';
+import {OwnerLensStore,OWNER_LENS_WINDOW,ownerLensDiagnostic,type OwnerLensDiagnosticStage,type OwnerLensFields,type OwnerLensCollectionResult} from './owner-lens';
 import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
@@ -170,37 +170,48 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  }
 
  /** Bounded owner learning uses only recent messages already attributed as sent. */
- private async collectOwnerLens(valid:()=>boolean){
-  const accounts=new Map(this.rows().filter(a=>['connected','syncing'].includes(a.status)).map(a=>[a.email,a]));
-  const selected=this.ctx.storage.sql.exec<{account:string;id:string}>(`SELECT m.account,m.id,MAX(c.date) AS observed FROM messages m JOIN contributions c ON c.account=m.account AND c.canonical=m.canonical LEFT JOIN owner_lens_messages o ON o.account=m.account AND o.message=m.id WHERE c.sent>0 AND c.received=0 AND c.date>=? AND c.date<=? AND o.message IS NULL GROUP BY m.account,m.id ORDER BY observed DESC LIMIT 40`,Date.now()-OWNER_LENS_WINDOW,Date.now()).toArray().filter(r=>accounts.has(r.account)).slice(0,4);
-  const accessByAccount=new Map<string,string>();
-  for(const item of selected){
-   if(!valid())return;const account=accounts.get(item.account)!;
-   if(this.get(account.email)?.revision!==account.revision)continue;
-   let access=accessByAccount.get(account.email);
-   if(!access){
-    if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('mail_not_configured');
-    const refresh=await unseal(account.grant,this.env.MAIL_TOKEN_KEY);if(!valid())return;
-    const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});
-    const token=await readBoundedJSON(response,32_768) as {access_token?:string};if(!response.ok||!token.access_token)throw Error('owner_lens_unavailable');access=token.access_token;accessByAccount.set(account.email,access);
+ private async collectOwnerLens(valid:()=>boolean):Promise<OwnerLensCollectionResult|void>{
+  const started=Date.now();let stage:OwnerLensDiagnosticStage='selection',selectedCount=0,attempted=0,failed=0,httpStatus:number|undefined;
+  try{
+   const accounts=new Map(this.rows().filter(a=>['connected','syncing'].includes(a.status)).map(a=>[a.email,a]));
+   const selected=this.ctx.storage.sql.exec<{account:string;id:string}>(`SELECT m.account,m.id,MAX(c.date) AS observed FROM messages m JOIN contributions c ON c.account=m.account AND c.canonical=m.canonical LEFT JOIN owner_lens_messages o ON o.account=m.account AND o.message=m.id LEFT JOIN owner_lens_retries r ON r.account=m.account AND r.message=m.id WHERE (r.next_attempt IS NULL OR r.next_attempt<=?) AND c.sent>0 AND c.received=0 AND c.date>=? AND c.date<=? AND o.message IS NULL GROUP BY m.account,m.id ORDER BY CASE WHEN r.message IS NULL THEN 0 ELSE 1 END,observed DESC LIMIT 40`,Date.now(),Date.now()-OWNER_LENS_WINDOW,Date.now()).toArray().filter(r=>accounts.has(r.account)).slice(0,4);selectedCount=selected.length;
+   const accessByAccount=new Map<string,string>();
+   for(const item of selected){
+    if(!valid())return;const account=accounts.get(item.account)!;
+    if(this.get(account.email)?.revision!==account.revision)continue;
+    let access=accessByAccount.get(account.email);
+    if(!access){
+     stage='token-unseal';httpStatus=undefined;
+     if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('mail_not_configured');
+     const refresh=await unseal(account.grant,this.env.MAIL_TOKEN_KEY);if(!valid())return;
+     stage='token-refresh';const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});httpStatus=response.status;
+     const token=await readBoundedJSON(response,32_768) as {access_token?:string};if(!response.ok||!token.access_token)throw Error('owner_lens_unavailable');access=token.access_token;accessByAccount.set(account.email,access);
+    }
+    stage='collection';httpStatus=undefined;
+    const result=await this.collectOwnerMessage(account,item.id,access,valid);if(result!==undefined)attempted++;
+    if(result===false)throw Error('owner_lens_unavailable');if(result==='invalid_extraction')failed++;
    }
-   if(await this.collectOwnerMessage(account,item.id,access,valid)===false)throw Error('owner_lens_unavailable');
-  }
+   if(failed)ownerLensDiagnostic('collection',Error('invalid_extraction'),{elapsedMs:Date.now()-started,selected:selectedCount,attempted});
+   return {failed,deferred:this.ownerLens().deferredCount(new Set(accounts.keys()))};
+  }catch(error){ownerLensDiagnostic(stage,error,{elapsedMs:Date.now()-started,selected:selectedCount,attempted,httpStatus});throw error;}
  }
- private async collectOwnerMessage(account:Account,id:string,access:string,valid:()=>boolean):Promise<boolean|undefined>{
+ private async collectOwnerMessage(account:Account,id:string,access:string,valid:()=>boolean):Promise<boolean|'invalid_extraction'|undefined>{
   const lens=this.ownerLens(),current=()=>valid()&&this.get(account.email)?.revision===account.revision;
-  if(!current()||lens.hasMessage(account.email,id))return;
+  if(!current()||lens.hasMessage(account.email,id)||lens.retryAfter(account.email,id)>Date.now())return;
   const row=this.ctx.storage.sql.exec<{date:number}>('SELECT c.date FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.sent>0 AND c.received=0 AND c.date>=? AND c.date<=? LIMIT 1',account.email,id,Date.now()-OWNER_LENS_WINDOW,Date.now()).toArray()[0];
   if(!row)return;
+  const started=Date.now();let stage:OwnerLensDiagnosticStage='gmail-read',httpStatus:number|undefined;
   try{
    const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','full');url.searchParams.set('fields','id,internalDate,payload');
-   const response=await fetch(url.href,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});
+   const response=await fetch(url.href,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});httpStatus=response.status;
    if(!current()) {await response.body?.cancel();return true;}
-   if(response.status===404){await response.body?.cancel();await lens.recordMail(account.email,id,row.date,null,current);return true;}
+   if(response.status===404){await response.body?.cancel();stage='source-store';await lens.recordMail(account.email,id,row.date,null,current);return true;}
    if(!response.ok){await response.body?.cancel();throw Error('owner_lens_unavailable');}
    const raw=await readBoundedJSON(response,2_000_000) as GmailMessage;
-   if(current())await lens.recordMail(account.email,id,row.date,raw,current);return true;
-  }catch{return false;} // Foreground refresh reports failure; background contact sync continues.
+   stage='mail-processing';if(current())await lens.recordMail(account.email,id,row.date,raw,current);return true;
+  }catch(error){ownerLensDiagnostic(stage,error,{elapsedMs:Date.now()-started,httpStatus});
+   if(error instanceof Error&&error.message==='invalid_extraction'&&current()){lens.deferExtraction(account.email,id,row.date,current);return 'invalid_extraction';}
+   return false;} // Foreground refresh reports failure; background contact sync continues.
  }
  async setAutomaticContext(email:string,enabled:boolean){
   const a=this.get(email);if(!a||typeof enabled!=='boolean')throw Error('invalid_account');

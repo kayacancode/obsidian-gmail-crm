@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {OwnerLensStore,ownerMailPassages,OWNER_LENS_WINDOW} from '../src/owner-lens';
+import {OwnerLensStore,ownerMailPassages,OWNER_LENS_WINDOW,ownerLensDiagnostic} from '../src/owner-lens';
 import {MailSync} from '../src/mail-sync';
 import {seal} from '../src/mail-model';
 
@@ -263,4 +263,122 @@ test('owner lens background budget counts eligible sent attempts after incoming 
   const processed=f.db.prepare('SELECT message FROM owner_lens_messages ORDER BY message').all().map(r=>r.message);
   assert.deepEqual(processed,['sent0','sent1','sent3']);assert.equal(f.service.list()[0].status,'connected');
  }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens diagnostics whitelist codes and never emit arbitrary exception messages',()=>{
+ const original=console.warn,lines:string[]=[];console.warn=(value:unknown)=>{lines.push(String(value));};
+ try{
+  ownerLensDiagnostic('token-unseal',Error('Secret grant or email me@example.com must never be logged'),{elapsedMs:12,selected:4,attempted:1});
+  ownerLensDiagnostic('mail-extraction',Error('invalid_extraction'),{elapsedMs:20,httpStatus:200});
+  assert.deepEqual(lines.map(line=>JSON.parse(line)),[
+   {event:'owner_lens_failure',stage:'token-unseal',code:'unknown',elapsedMs:12,selected:4,attempted:1},
+   {event:'owner_lens_failure',stage:'mail-extraction',code:'invalid_extraction',elapsedMs:20,httpStatus:200},
+  ]);
+  assert.ok(!lines.join('').includes('me@example.com'));assert.ok(!lines.join('').includes('Secret'));
+ }finally{console.warn=original;}
+});
+
+test('owner lens collection diagnostics distinguish read, decode, extraction, and storage without private content',async()=>{
+ const originalFetch=globalThis.fetch,originalWarn=console.warn;
+ for(const failure of ['read','decode','extraction','store'] as const){
+  const f=fixture(true),lines:string[]=[];console.warn=(value:unknown)=>{lines.push(String(value));};
+  try{
+   await account(f);indexed(f,'private-message-id');await enabled(f.store);
+   if(failure==='extraction')f.ai.run=async()=>({response:{facts:'private-invalid-model-output'}} as any);
+   if(failure==='store')f.db.exec("CREATE TRIGGER fail_owner_lens_store BEFORE INSERT ON owner_lens_messages BEGIN SELECT RAISE(ABORT, 'private-storage-details'); END");
+   globalThis.fetch=async(input:any)=>{
+    if(String(input).includes('oauth2'))return Response.json({access_token:'private-access-token'});
+    if(failure==='read')return new Response('private-provider-error-body',{status:503});
+    const raw=message('private-message-id');if(failure==='decode')raw.payload.body.data='not valid base64!';return Response.json(raw);
+   };
+   const state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});assert.equal(state.honcho.status,'unavailable');
+   const events=lines.map(line=>JSON.parse(line)),stage=failure==='read'?'gmail-read':failure==='store'?'source-store':'mail-extraction';
+   assert.ok(events.some(event=>event.event==='owner_lens_failure'&&event.stage===stage));
+   if(failure==='extraction')assert.ok(events.some(event=>event.code==='invalid_extraction'));
+   if(failure==='decode')assert.ok(events.some(event=>event.code==='retrieval_failed'));
+   assert.ok(events.some(event=>event.stage==='collection'&&event.selected===1&&event.attempted===1));
+   for(const forbidden of ['private-message-id','private-access-token','private-provider-error-body','private-invalid-model-output','private-storage-details',OWN,WORK])assert.ok(!lines.join('').includes(forbidden));
+   for(const event of events.filter(event=>event.event==='owner_lens_failure'))assert.ok(Object.keys(event).every(key=>['event','stage','code','elapsedMs','selected','attempted','sources','httpStatus'].includes(key)));
+  }finally{globalThis.fetch=originalFetch;console.warn=originalWarn;f.db.close();}
+ }
+});
+
+test('owner lens isolates invalid extraction, respects the four-message budget, and advances past deferred mail',async()=>{
+ const f=fixture(true),net=honchoNetwork(),provider=globalThis.fetch,readIds:string[]=[];
+ try{
+  await account(f);await enabled(f.store);indexed(f,'bad',1,Date.now()-1000);
+  for(let i=0;i<4;i++)indexed(f,'good'+i,1,Date.now()-2000-i);
+  f.ai.run=async(_model,input)=>JSON.stringify(input).includes('bad extraction marker')?{response:{facts:'invalid'}} as any:facts;
+  globalThis.fetch=async(input:any,init:any)=>{
+   const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
+   if(url.hostname==='gmail.googleapis.com'){const id=url.pathname.split('/').at(-1)!;readIds.push(id);return Response.json(message(id,OWN,id==='bad'?'I am building a bad extraction marker that the test model cannot process.':WORK));}
+   return provider(input,init);
+  };
+  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});
+  assert.deepEqual(readIds,['bad','good0','good1','good2']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,3);assert.equal(state.suggestions.length,1);
+  assert.equal(f.store.hasMessage(OWN,'bad'),false);assert.equal(f.db.prepare('SELECT attempts FROM owner_lens_retries WHERE message=?').get('bad')!.attempts,1);
+  state=await f.service.refreshOwnerLens({revision:state.revision});
+  assert.deepEqual(readIds,['bad','good0','good1','good2','good3']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,4);
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens empty failed collections stay unavailable while extraction retries back off and later recover',async()=>{
+ const f=fixture(true),net=honchoNetwork(),provider=globalThis.fetch,originalNow=Date.now;let clock=originalNow(),reads=0,repaired=false;
+ try{
+  Date.now=()=>clock;await account(f);await enabled(f.store);indexed(f,'bad');
+  f.ai.run=async()=>repaired?facts:{response:{facts:'invalid'}} as any;
+  globalThis.fetch=async(input:any,init:any)=>{
+   const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
+   if(url.hostname==='gmail.googleapis.com'){reads++;return Response.json(message('bad'));}return provider(input,init);
+  };
+  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});
+  assert.equal(state.honcho.status,'unavailable');assert.equal(reads,1);assert.deepEqual(state.sources,[]);assert.equal(f.store.hasMessage(OWN,'bad'),false);
+  let retry=f.db.prepare('SELECT attempts,next_attempt FROM owner_lens_retries').get()!;assert.equal(retry.attempts,1);assert.equal(retry.next_attempt,clock+60000);
+  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.equal(reads,1);
+  clock=Number(retry.next_attempt);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.equal(reads,2);
+  retry=f.db.prepare('SELECT attempts,next_attempt FROM owner_lens_retries').get()!;assert.equal(retry.attempts,2);assert.equal(retry.next_attempt,clock+120000);
+  repaired=true;clock=Number(retry.next_attempt);state=await f.service.refreshOwnerLens({revision:state.revision});
+  assert.equal(reads,3);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,1);assert.equal(f.store.hasMessage(OWN,'bad'),true);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM owner_lens_retries').get()!.n,0);
+ }finally{Date.now=originalNow;net.restore();f.db.close();}
+});
+
+test('owner lens uses an existing valid snapshot despite a new invalid extraction',async()=>{
+ const f=fixture(true),net=honchoNetwork(),provider=globalThis.fetch;
+ try{
+  await account(f);await enabled(f.store);await addMail(f.store);
+  let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});const sources=state.sources,chats=net.calls.filter(call=>call.path.endsWith('/chat')).length;
+  indexed(f,'bad');f.ai.run=async()=>({response:{facts:'invalid'}} as any);
+  globalThis.fetch=async(input:any,init:any)=>{
+   const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
+   if(url.hostname==='gmail.googleapis.com')return Response.json(message('bad'));return provider(input,init);
+  };
+  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'ready');assert.deepEqual(state.sources,sources);assert.equal(state.suggestions.length,1);
+  assert.equal(net.calls.filter(call=>call.path.endsWith('/chat')).length,chats);assert.equal(f.store.hasMessage(OWN,'bad'),false);
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens retry metadata expires and clears with account withdrawal or disabling learning',async()=>{
+ const f=fixture();try{
+  await enabled(f.store);const valid=f.store.guard();
+  f.store.deferExtraction(OWN,'one',Date.now()-1000,valid);f.store.deferExtraction('second@example.com','two',Date.now()-1000,valid);
+  await f.store.removeAccount(OWN);assert.deepEqual(f.db.prepare('SELECT message FROM owner_lens_retries').all().map(row=>row.message),['two']);
+  await f.store.setEnabled({revision:f.store.get().revision,enabled:false});assert.equal(f.db.prepare('SELECT COUNT(*) n FROM owner_lens_retries').get()!.n,0);
+  await enabled(f.store);f.store.deferExtraction(OWN,'expired',Date.now()-OWNER_LENS_WINDOW-1,f.store.guard());f.store.get();assert.equal(f.db.prepare('SELECT COUNT(*) n FROM owner_lens_retries').get()!.n,0);
+ }finally{f.db.close();}
+});
+
+test('owner lens due retries cannot starve older mail that has not yet been attempted',async()=>{
+ const f=fixture(true),net=honchoNetwork(),provider=globalThis.fetch,originalNow=Date.now,readIds:string[]=[];let clock=originalNow();
+ try{
+  Date.now=()=>clock;await account(f);await enabled(f.store);
+  for(let i=0;i<4;i++){indexed(f,'bad'+i,1,clock-1000-i);indexed(f,'good'+i,1,clock-2000-i);}
+  f.ai.run=async(_model,input)=>JSON.stringify(input).includes('bad extraction marker')?{response:{facts:'invalid'}} as any:facts;
+  globalThis.fetch=async(input:any,init:any)=>{
+   const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
+   if(url.hostname==='gmail.googleapis.com'){const id=url.pathname.split('/').at(-1)!;readIds.push(id);return Response.json(message(id,OWN,id.startsWith('bad')?'I am building a bad extraction marker that the test model cannot process.':WORK));}return provider(input,init);
+  };
+  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});assert.equal(state.honcho.status,'unavailable');assert.deepEqual(readIds,['bad0','bad1','bad2','bad3']);
+  clock+=86400000;state=await f.service.refreshOwnerLens({revision:state.revision});
+  assert.deepEqual(readIds.slice(4),['good0','good1','good2','good3']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,4);
+ }finally{Date.now=originalNow;net.restore();f.db.close();}
 });

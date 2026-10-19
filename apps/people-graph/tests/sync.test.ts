@@ -780,6 +780,31 @@ test('thread rebuild revisits old metadata and connects participants across sepa
  try{await service.start('me@example.com');await service.alarm();assert.equal(query,'');assert.equal((await service.graph())!.edges.length,1);assert.equal(JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string).emailEdgeVersion,2);await service.start('me@example.com');await service.alarm();assert.match(query,/after:/);assert.equal((await service.graph())!.edges.length,1);}finally{globalThis.fetch=originalFetch;db.close();}
 });
 
+test('Gmail extraction diagnostics identify malformed structure without exposing private content',async()=>{
+ const {extractMailContext}=await import('../src/gmail-context');
+ const warn=console.warn,logs:string[]=[];console.warn=(message:any)=>logs.push(String(message));
+ try{
+  const text='I am building PRIVATE_PRODUCT for PRIVATE_AUDIENCE.';
+  for(const output of [{response:'PRIVATE_SECRET invalid JSON'},{response:{other:'PRIVATE_SECRET'}},{response:{facts:[{start:99,end:99,anchor:99,kind:'building'}]}}]){
+   await assert.rejects(()=>extractMailContext(new FakeAI(output) as any,text),/invalid_extraction/);
+  }
+  const events=logs.map(value=>JSON.parse(value));
+  assert.deepEqual(events.map(event=>event.reason),['json','shape','range']);
+  assert.ok(events.every(event=>event.event==='gmail_context_failure'&&event.sentenceCount===1));
+  assert.ok(!logs.join('').includes('PRIVATE_'));
+ }finally{console.warn=warn;}
+});
+
+test('Gmail extraction keeps valid exact passages when another model range is invalid',async()=>{
+ const {extractMailContext}=await import('../src/gmail-context');
+ const text='I am building scheduling software for clinics. We need feedback from nurses leading emergency departments.';
+ const valid={start:0,end:0,anchor:0,kind:'building'};
+ for(const invalid of [null,{start:99,end:99,anchor:99,kind:'need'},{start:0,end:1,anchor:2,kind:'need'},{start:1,end:0,anchor:0,kind:'need'},{start:'0',end:0,anchor:0,kind:'building'}]){
+  const facts=await extractMailContext(new FakeAI({response:{facts:[invalid,valid]}}) as any,text);
+  assert.deepEqual(facts,[{kind:'building',quote:'I am building scheduling software for clinics.'}]);
+ }
+});
+
 test('automatic Gmail context stores only grounded sender statements and clears them when disabled',async()=>{
  const {service,db,kv}=fixture();kv.set('owner','owner');
  try{
