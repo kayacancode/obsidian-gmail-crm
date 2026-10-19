@@ -23,6 +23,7 @@ function cachedNote(f:ReturnType<typeof fixture>,id=NOTE,options:{hidden?:boolea
  const detail={id,title:'Climate research meeting',webUrl:'https://notes.granola.ai/d/'+id,createdAt:date,updatedAt:date,meetingAt:date,dateBasis:'scheduled',ownerEmail:options.ownerEmail??OWNER,ownerName:'Kaya Jones',folderIds:[FOLDER],attendees:options.attendees??[{email:OWNER,name:'Kaya Jones'},{email:'friend@example.test',name:'Alex Friend'}],summary,privateNotes:''};
  f.db.prepare('INSERT OR REPLACE INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,detail.title,detail.webUrl,date,'scheduled',date,date,JSON.stringify([FOLDER]),summary,'','',hash,summary.length,options.status??'done',null,'granola-v2',0,Date.now(),options.hidden?1:0);
  f.db.prepare('INSERT OR REPLACE INTO granola_owner_context VALUES (?,?,?)').run(id,version,JSON.stringify({detail,ownerTranscript:options.ownerTranscript??''}));
+ f.db.prepare('DELETE FROM granola_attendees WHERE note_id=?').run(id);for(const attendee of detail.attendees)f.db.prepare('INSERT INTO granola_attendees VALUES (?,?,?)').run(id,attendee.email,attendee.name);
  return version;
 }
 async function enabled(f:ReturnType<typeof fixture>,granola=true){
@@ -155,5 +156,29 @@ test('MailSync reconnecting an existing Gmail address preserves Granola attribut
   await f.service.attachAccount('existing-owner-alias@example.test','first-refresh-token','recent');const version=cachedNote(f);let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.sources.length,1);const sources=state.sources,revision=state.revision,valid=f.lens.guard();
   await f.service.attachAccount('existing-owner-alias@example.test','renewed-refresh-token','recent');state=await f.service.getOwnerLens();
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM granola_owner_context').get()!.n,1);assert.equal(f.lens.hasGranolaNote(NOTE,version),true);assert.equal(valid(),true);assert.equal(state.revision,revision);assert.deepEqual(state.sources,sources);
+ }finally{f.db.close();}
+}));
+
+test('MailSync prioritizes older verified-attendance meetings before newer unmatched notes',async()=>withoutNetwork(async()=>{
+ const f=fixture();try{
+  await f.service.attachAccount('verified-alias@example.test','alias-refresh-token','recent');
+  const unmatched={ownerEmail:'friend@example.test',attendees:[{email:'friend@example.test',name:'Alex Friend'}],summary:'Alex Friend needs laboratory partners for a robotics project.'};
+  for(let i=0;i<3;i++){cachedNote(f,'unmatched-'+i,{...unmatched,observed:Date.now()-1000-i});cachedNote(f,'attended-'+i,{observed:Date.now()-2000-i,...(i===1?{ownerEmail:'verified-alias@example.test',attendees:[{email:'verified-alias@example.test',name:'Kaya Jones'}]}:{})});}
+  let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});
+  assert.deepEqual(f.db.prepare('SELECT id FROM owner_lens_granola ORDER BY id').all().map(row=>row.id),['attended-0','attended-1','attended-2']);assert.equal(state.sources.length,3);assert.equal(f.ai.calls.length,3);
+  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.sources.length,3);assert.ok(state.sources.every(source=>source.text===WORK));assert.equal(f.ai.calls.length,6);
+ }finally{f.db.close();}
+}));
+
+test('MailSync fresh unmatched notes still precede due retries of known attended meetings',async()=>withoutNetwork(async()=>{
+ const f=fixture();try{
+  for(let i=0;i<3;i++){
+   cachedNote(f,'known-bad-'+i,{observed:Date.now()-1000-i,summary:'Kaya Jones is building a bad extraction marker for climate research.'});
+   cachedNote(f,'fresh-unmatched-'+i,{observed:Date.now()-2000-i,ownerEmail:'friend@example.test',attendees:[{email:'friend@example.test',name:'Alex Friend'}],summary:'Alex Friend needs laboratory partners for a robotics project.'});
+  }
+  f.ai.run=async(model,input)=>{f.ai.calls.push({model,input});return JSON.stringify(input).includes('bad extraction marker')?{response:{passages:'invalid'}}:{response:{passages:[]}};};
+  let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(f.ai.calls.length,3);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM owner_lens_granola').get()!.n,0);
+  f.db.prepare('UPDATE owner_lens_granola_retries SET next_attempt=?').run(Date.now()-1);state=await f.service.refreshOwnerLens({revision:state.revision});
+  assert.deepEqual(f.db.prepare('SELECT id FROM owner_lens_granola ORDER BY id').all().map(row=>row.id),['fresh-unmatched-0','fresh-unmatched-1','fresh-unmatched-2']);assert.equal(f.ai.calls.length,6);assert.deepEqual(state.sources,[]);
  }finally{f.db.close();}
 }));

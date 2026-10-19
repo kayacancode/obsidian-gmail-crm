@@ -182,8 +182,9 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(this.ownerLens().get().granolaEnabled){
    const owner=await this.ctx.storage.get<string>('owner'),ownerEmails=[...new Set([...(owner?[owner]:[]),...this.rows().map(a=>a.email)])];
    const eligible=[...this.granola().ownerLensVersions()].filter(([id,version])=>!this.ownerLens().hasGranolaNote(id,version));
+   const attended=new Set(ownerEmails.length&&eligible.length?this.ctx.storage.sql.exec<{id:string}>(`SELECT j.value AS id FROM json_each(?) j WHERE EXISTS (SELECT 1 FROM granola_attendees a WHERE a.note_id=j.value AND a.email IN (${ownerEmails.map(()=>'?').join(',')})) LIMIT 1000`,JSON.stringify(eligible.map(([id])=>id)),...ownerEmails).toArray().map(row=>row.id):[]);
    granolaDeferred=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)>Date.now()).length;
-   const selected=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)<=Date.now()).sort((a,b)=>Number(this.ownerLens().granolaRetryAfter(...a)>0)-Number(this.ownerLens().granolaRetryAfter(...b)>0)).slice(0,3);
+   const selected=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)<=Date.now()).sort((a,b)=>Number(this.ownerLens().granolaRetryAfter(...a)>0)-Number(this.ownerLens().granolaRetryAfter(...b)>0)||Number(attended.has(b[0]))-Number(attended.has(a[0]))).slice(0,3);
    if(!this.granola().status().connected)granolaFailed++;
    for(const [id,version] of selected){
     const current=()=>valid()&&this.ownerLens().get().granolaEnabled&&this.granola().ownerLensVersions().get(id)===version;
