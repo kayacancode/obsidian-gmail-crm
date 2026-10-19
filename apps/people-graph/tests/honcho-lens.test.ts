@@ -59,7 +59,101 @@ test('Honcho attributes sources to only the opaque owner and returns verified lo
   assert.deepEqual(chat.body.filters,{session_id:chat.body.session_id});
   assert.ok(!JSON.stringify(fake.calls.map(c=>({url:c.url.href,body:c.body}))).includes('owner@example.com'));
   assert.equal(fake.calls.find(c=>c.url.pathname.endsWith('/sessions'))!.body.configuration.peer_card.use,false);
+});
+});
+
+test('current evidence can yield a proposal before asynchronous recall has any messages',async()=>{
+ const fake=fakeHoncho(),explicit=[{id:'private-owner-note',text:'I source early-stage startups and lead technical diligence, focusing on agents, context, and memory.',observedAt:sources[0].observedAt}];
+ await withFetch(async(input:any,init:any)=>{
+  if(!String(input).endsWith('/chat'))return fake.fetcher(input,init);
+  const query=JSON.parse(init.body).query,marker='\nCURRENT_SOURCE_MESSAGES_JSON:\n',offset=query.indexOf(marker);
+  const supplied=offset<0?[]:JSON.parse(query.slice(offset+marker.length));
+  const original=supplied.find((message:any)=>message.attribution==='OWNER'&&message.text===explicit[0].text);
+  // No recalled messages or conclusions are available: only the supplied query data.
+  return Response.json({content:JSON.stringify({entries:original?[{kind:'focus',text:'Sourcing early-stage startups and leading technical diligence on agents, context, and memory',sources:[{sourceId:original.sourceId,quote:original.text}]}]:[]})});
+ },async()=>{
+  assert.deepEqual(await syncHonchoLens(env,'owner',explicit),{status:'ready',entries:[{kind:'focus',text:'Sourcing early-stage startups and leading technical diligence on agents, context, and memory',sourceIds:['private-owner-note']}]});
  });
+});
+
+test('inline evidence stays within query limits and prioritizes recent owner statements and distinct meetings without clipping',async()=>{
+ const fake=fakeHoncho();fake.setAnswer(()=>({entries:[]}));
+ const bounded:HonchoLensSource[]=[
+  {...sources[0],id:'old-owner',observedAt:'2026-10-01T12:00:00.000Z'},
+  {...sources[0],id:'new-owner',text:'I need design partners for a retrieval evaluation tool.',observedAt:'2026-10-19T12:00:00.000Z'},
+  ...Array.from({length:38},(_,index)=>({id:'meeting-'+String(index).padStart(2,'0'),text:'Discussed retrieval evaluation: '+String(index)+' '+('x'.repeat(800)),observedAt:'2026-10-18T12:00:00.000Z',attribution:'meeting' as const,meetingId:index<2?'same-private-meeting':'private-meeting-'+index})),
+ ];
+ await withFetch(fake.fetcher,async()=>{
+  assert.equal((await syncHonchoLens(env,'owner',bounded)).status,'ready');
+  const chat=fake.calls.find(call=>call.url.pathname.endsWith('/chat'))!,query=chat.body.query,marker='\nCURRENT_SOURCE_MESSAGES_JSON:\n';
+  assert.ok(query.length<=10000);
+  assert.ok(query.includes(marker));
+  const inline=JSON.parse(query.slice(query.indexOf(marker)+marker.length));
+  assert.ok(inline.length>3&&inline.length<bounded.length);
+  assert.equal(inline[0].text,bounded[1].text);assert.equal(inline[1].text,bounded[0].text);
+  const meetingGroups=inline.filter((message:any)=>message.attribution==='OWNER_MEETING_ACTIVITY').map((message:any)=>message.meetingGroup);
+  assert.equal(new Set(meetingGroups).size,meetingGroups.length,'First passages from distinct meetings take priority over repeated passages');
+  const written=fake.calls.find(call=>call.body?.messages)!.body.messages.map((message:any)=>JSON.parse(message.content));
+  for(const message of inline)assert.deepEqual(message,written.find((original:any)=>original.sourceId===message.sourceId));
+  for(const source of bounded){assert.ok(!query.includes(source.id));if(source.meetingId)assert.ok(!query.includes(source.meetingId));}
+ });
+});
+
+test('projection diagnostics distinguish provider output and accepted output using only counts',async()=>{
+ const originalInfo=console.info,logs:string[]=[];console.info=(...args:unknown[])=>logs.push(args.join(' '));
+ try{
+  const fake=fakeHoncho();fake.setAnswer(messages=>({entries:[
+   {kind:'focus',text:'Building agent memory tools',sources:[quotedSource(messages[0])]},
+   {kind:'need',text:'Private invalid proposal',sources:[{sourceId:'unknown-private-id',quote:'Private quote'}]},
+  ]}));
+  await withFetch(fake.fetcher,async()=>assert.equal((await syncHonchoLens(env,'private-owner@example.test',sources)).status,'ready'));
+  fake.setAnswer(()=>({entries:[]}));
+  await withFetch(fake.fetcher,async()=>assert.deepEqual(await syncHonchoLens(env,'private-owner@example.test',sources),{status:'ready',entries:[]}));
+  const parsed=logs.map(line=>JSON.parse(line));assert.equal(parsed.length,2);
+  assert.equal(parsed[0].event,'honcho_lens_projection');assert.equal(parsed[0].sourceCount,1);assert.equal(parsed[0].statementSourceCount,1);assert.equal(parsed[0].meetingSourceCount,0);
+  assert.equal(parsed[0].suppliedSourceCount,1);assert.equal(parsed[0].providerEntries,2);assert.equal(parsed[0].acceptedEntries,1);
+  assert.equal(parsed[1].providerEntries,0);assert.equal(parsed[1].acceptedEntries,0);
+  for(const log of parsed){assert.ok(log.queryChars>0&&log.queryChars<=10000);for(const [key,value] of Object.entries(log))if(key!=='event')assert.equal(typeof value,'number');}
+  for(const privateValue of [env.HONCHO_API_KEY,env.TOKEN_SECRET,sources[0].id,sources[0].text,'private-owner@example.test','Private invalid proposal','unknown-private-id','Private quote','https://','snapshot_'])assert.ok(!logs.join('\n').includes(privateValue));
+ }finally{console.info=originalInfo;}
+});
+
+test('invalid chat responses report fixed parser codes without response data',async()=>{
+ const originalWarn=console.warn,warnings:string[]=[];console.warn=(...args:unknown[])=>warnings.push(args.join(' '));
+ try{
+  for(const [response,errorCode] of [
+   [()=>Response.json({private:'private-response-value'}),'invalid_response_shape'],
+   [()=>Response.json({content:{entries:[]}}),'invalid_response_shape'],
+   [()=>Response.json({content:'Private model text {truncated'}),'invalid_projection'],
+   [()=>Response.json({content:JSON.stringify({private:'private-response-value'})}),'invalid_projection_shape'],
+   [()=>Response.json({content:JSON.stringify({entries:[null]})}),'invalid_entries'],
+   [()=>new Response('Private non-JSON response'),'invalid_response_body'],
+  ] as const){
+   const fake=fakeHoncho();await withFetch(async(input:any,init:any)=>String(input).endsWith('/chat')?response():fake.fetcher(input,init),async()=>assert.equal((await syncHonchoLens(env,'owner',sources)).status,'invalid'));
+   const log=JSON.parse(warnings.at(-1)!);assert.equal(log.stage,'chat');assert.equal(log.kind,'invalid');assert.equal(log.errorCode,errorCode);
+  }
+  assert.ok(!warnings.join('\n').includes('private-response-value'));assert.ok(!warnings.join('\n').includes('Private model text'));assert.ok(!warnings.join('\n').includes('Private non-JSON response'));
+ }finally{console.warn=originalWarn;}
+});
+
+test('projection rejection counts separate entry shape, source identity, exact quotes and meeting attribution',async()=>{
+ const originalInfo=console.info,logs:string[]=[];console.info=(...args:unknown[])=>logs.push(args.join(' '));
+ try{
+  const fake=fakeHoncho();fake.setAnswer(messages=>{
+   const own=messages.find((message:any)=>JSON.parse(message.content).attribution==='OWNER'),meeting=messages.find((message:any)=>JSON.parse(message.content).attribution==='OWNER_MEETING_ACTIVITY');
+   return {entries:[
+    {kind:'focus',text:'Building agent memory tools',sources:[quotedSource(own)]},
+    null,
+    {kind:'focus',text:'Private unknown source',sources:[{sourceId:'private-unknown-source',quote:sources[0].text}]},
+    {kind:'focus',text:'Private mismatched quote',sources:[{...quotedSource(own),quote:'private-mismatched-quote'}]},
+    {kind:'need',text:'Private misattributed need',sources:[quotedSource(meeting)]},
+   ]};
+  });
+  await withFetch(fake.fetcher,async()=>assert.equal((await syncHonchoLens(env,'owner',[...sources,...meetingSources])).status,'ready'));
+  const log=JSON.parse(logs.at(-1)!);assert.equal(log.providerEntries,5);assert.equal(log.acceptedEntries,1);
+  assert.equal(log.rejectedShape,1);assert.equal(log.rejectedSource,1);assert.equal(log.rejectedQuote,1);assert.equal(log.rejectedMeeting,1);
+  for(const privateValue of ['private-unknown-source','private-mismatched-quote','Private misattributed need',sources[0].text])assert.ok(!logs.join('\n').includes(privateValue));
+ }finally{console.info=originalInfo;}
 });
 
 test('repeated snapshots and uncertain completed message writes never duplicate owner messages',async()=>{
@@ -286,7 +380,7 @@ test('failure diagnostics distinguish HTTP, timeout, and invalid output without 
  for(const diagnostic of diagnostics){
   assert.equal(diagnostic.event,'honcho_lens_failure');assert.equal(diagnostic.sourceCount,1);
   assert.ok(typeof diagnostic.elapsedMs==='number'&&diagnostic.elapsedMs>=0);
-  assert.ok(Object.keys(diagnostic).every(key=>['event','stage','elapsedMs','sourceCount','kind','httpStatus'].includes(key)));
+  assert.ok(Object.keys(diagnostic).every(key=>['event','stage','elapsedMs','sourceCount','kind','httpStatus','errorCode'].includes(key)));
  }
  const serialized=JSON.stringify(warnings);
  for(const privateValue of [env.HONCHO_API_KEY,env.TOKEN_SECRET,sources[0].text,sources[0].id,'owner@example.com','https://','snapshot_'])assert.ok(!serialized.includes(privateValue));
@@ -319,7 +413,70 @@ test('delete removes only this owner dedicated sessions before requesting asynch
   assert.deepEqual(calls[0].body,{filters:{id:calls[1].url.pathname.split('/')[3]}});
   assert.equal(calls[2].init.method,'DELETE');assert.ok(calls[2].url.pathname.endsWith('/sessions/snapshot-a'));
   assert.equal(calls[3].init.method,'DELETE');assert.ok(!calls[3].url.pathname.includes('/sessions'));assert.ok(!JSON.stringify(calls).includes('owner@example.com'));
+});
+});
+
+test('statement proposals keep the individual as actor when an employer appears in the same source',async()=>{
+ const fake=fakeHoncho(),individual=[{id:'individual-owner-note',text:'I am on the investment team at Example Ventures. I am also building tools for sourcing startups and technical diligence.',observedAt:sources[0].observedAt}];
+ fake.setAnswer(messages=>({entries:[{kind:'focus',text:'I am building tools for startup sourcing and technical diligence',sources:[quotedSource(messages[0])]}]}));
+ await withFetch(fake.fetcher,async()=>{
+  const result=await syncHonchoLens(env,'owner',individual);
+  assert.deepEqual(result,{status:'ready',entries:[{kind:'focus',text:'I am building tools for startup sourcing and technical diligence',sourceIds:['individual-owner-note']}]});
+  const query=fake.calls.find(call=>call.url.pathname.endsWith('/chat'))!.body.query;
+  assert.match(query,/OWNER is one individual, not their employer/);
+  assert.match(query,/OWNER-statement entries in first person singular/);
+  assert.match(query,/Never make the employer or another organization the actor/);
+  assert.match(query,/Do not use we or our/);
+  assert.match(query,/Meeting-derived focus keeps the required conversation wording/);
  });
+});
+
+test('cleanup diagnostics expose stage, counts and HTTP status without logging private identifiers or contents',async()=>{
+ const originalInfo=console.info,logs:string[]=[];console.info=(...args:unknown[])=>logs.push(args.join(' '));
+ let present=true;
+ try{
+  await withFetch(async(input:any,init:any)=>{
+   const url=new URL(String(input)),body=init.body?JSON.parse(init.body):undefined;
+   if(url.pathname==='/v3/workspaces/list')return Response.json({items:present?[{id:body.filters.id,metadata:{purpose:'private-owner-lens-v1'}}]:[],total:present?1:0});
+   if(url.pathname.endsWith('/sessions/list'))return Response.json({items:[{id:'private-snapshot-id',workspace_id:url.pathname.split('/')[3],is_active:true}],total:1});
+   return new Response('Private deletion payload '+env.HONCHO_API_KEY,{status:202});
+  },async()=>{
+   assert.deepEqual(await deleteHonchoLens(env,'private-owner@example.test'),{status:'deleting'});
+   const accepted=logs.map(line=>JSON.parse(line));
+   assert.deepEqual(accepted.map(log=>log.stage),['input','delete/list','delete/session_list','delete/session','delete/workspace']);
+   assert.equal(accepted[1].workspaceExists,1);assert.equal(accepted[2].sessionTotal,1);assert.equal(accepted[2].activeSessionCount,1);assert.equal(accepted[2].inactiveSessionCount,0);
+   assert.equal(accepted.at(-1).status,'deleting');assert.equal(accepted.at(-1).acceptedDeleteCount,2);assert.equal(accepted.at(-1).deletedCount,0);assert.equal(accepted.at(-1).httpStatus,202);
+   present=false;
+   assert.deepEqual(await deleteHonchoLens(env,'private-owner@example.test'),{status:'deleted'});
+  });
+  const parsed=logs.map(line=>JSON.parse(line)),last=parsed.at(-1);
+  assert.equal(last.event,'honcho_lens_cleanup');assert.equal(last.status,'deleted');assert.equal(last.workspaceExists,0);assert.equal(last.httpStatus,200);
+  for(const log of parsed)for(const [key,value] of Object.entries(log))if(!['event','stage','status'].includes(key))assert.equal(typeof value,'number');
+  for(const privateValue of [env.HONCHO_API_KEY,env.TOKEN_SECRET,'private-owner@example.test','private-snapshot-id','Private deletion payload','https://','snapshot_'])assert.ok(!logs.join('\n').includes(privateValue));
+ }finally{console.info=originalInfo;}
+});
+
+test('cleanup diagnostics distinguish conflicts from provider failure and record partial batch progress',async()=>{
+ const originalInfo=console.info,logs:string[]=[];console.info=(...args:unknown[])=>logs.push(args.join(' '));
+ try{
+  for(const httpStatus of [409,503]){
+   await withFetch(async(input:any,init:any)=>{
+    const url=new URL(String(input)),body=init.body?JSON.parse(init.body):undefined;
+    if(url.pathname==='/v3/workspaces/list')return Response.json({items:[{id:body.filters.id,metadata:{purpose:'private-owner-lens-v1'}}],total:1});
+    if(url.pathname.endsWith('/sessions/list'))return Response.json({items:[],total:0});
+    return new Response('Do not log this response',{status:httpStatus});
+   },async()=>assert.equal((await deleteHonchoLens(env,'owner')).status,httpStatus===409?'deleting':'unavailable'));
+   const log=JSON.parse(logs.at(-1)!);assert.equal(log.stage,'delete/workspace');assert.equal(log.httpStatus,httpStatus);assert.equal(log.status,httpStatus===409?'deleting':'unavailable');assert.equal(log.sessionTotal,0);
+  }
+  await withFetch(async(input:any,init:any)=>{
+   const url=new URL(String(input)),body=init.body?JSON.parse(init.body):undefined;
+   if(url.pathname==='/v3/workspaces/list')return Response.json({items:[{id:body.filters.id,metadata:{purpose:'private-owner-lens-v1'}}],total:1});
+   if(url.pathname.endsWith('/sessions/list'))return Response.json({items:Array.from({length:10},(_,index)=>({id:'session-'+index,workspace_id:url.pathname.split('/')[3],is_active:index!==0})),total:11});
+   assert.ok(url.pathname.includes('/sessions/'),'More sessions must be handled before workspace deletion');
+   return new Response(null,{status:202});
+  },async()=>assert.equal((await deleteHonchoLens(env,'owner')).status,'deleting'));
+  const last=JSON.parse(logs.at(-1)!);assert.equal(last.sessionTotal,11);assert.equal(last.acceptedDeleteCount,10);assert.equal(last.deletedCount,0);assert.equal(last.activeSessionCount,9);assert.equal(last.inactiveSessionCount,1);
+ }finally{console.info=originalInfo;}
 });
 
 test('deletion reports success only after confirmed absence and keeps failed cleanup retryable',async()=>{

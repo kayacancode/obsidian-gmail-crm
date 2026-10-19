@@ -1,7 +1,7 @@
 import {extractMailContext,type MailFact} from './gmail-context';
 import {decodeGmailMessage} from './gmail-body';
 import {digest,parseMessage,type GmailMessage} from './mail-model';
-import {deleteHonchoLens,honchoConfigured,syncHonchoLens,type HonchoLensEnv,type HonchoLensEntry} from './honcho-lens';
+import {deleteHonchoLens,honchoConfigured,syncHonchoLens,HONCHO_LENS_PROJECTION_VERSION,type HonchoLensEnv,type HonchoLensEntry} from './honcho-lens';
 
 export type OwnerLensKind='focus'|'need'|'offer';
 export interface OwnerLensFields {focus:string;needs:string;offers:string}
@@ -20,7 +20,7 @@ interface Accepted {text:string;sourceIds:string[];acceptedAt:string}
 interface State extends Omit<OwnerLens,'sources'|'honcho'|'granolaProgress'> {
  generation:string;sources:StoredSource[];dismissed:string[];
  accepted:Partial<Record<keyof OwnerLensFields,Accepted>>;
- status:OwnerLens['honcho']['status'];lastSync:string|null;pendingDelete:string|null;remotePossible?:boolean;syncedSources?:string;cleanupAttempts?:number;nextCleanup?:number;pendingSnapshot?:{fingerprint:string;attempts:number;since:number};
+ status:OwnerLens['honcho']['status'];lastSync:string|null;pendingDelete:string|null;remotePossible?:boolean;syncedSources?:string;cleanupAttempts?:number;nextCleanup?:number;projectionRequested?:boolean;projectionVersion?:number;pendingSnapshot?:{fingerprint:string;attempts:number;since:number};
 }
 type OwnerLensEnv=HonchoLensEnv&{AI?:Env['AI']};
 export const OWNER_LENS_WINDOW=90*86400000;
@@ -119,20 +119,21 @@ export class OwnerLensStore {
   const state=this.read();if(!state.pendingDelete)return true;
   const token=state.pendingDelete;state.cleanupAttempts=(state.cleanupAttempts??0)+1;
   state.nextCleanup=Date.now()+Math.min(3600000,5000*2**Math.min(state.cleanupAttempts-1,10));this.touch(state,false);this.write(state);
-  const owner=await this.owner();if(!owner)return false;
+  const finish=(status:string,complete:boolean)=>{console.info(JSON.stringify({event:'owner_lens_cleanup',status:['deleted','deleting','unconfigured','unavailable'].includes(status)?status:'unavailable',attempt:state.cleanupAttempts,nextDelayMs:complete?0:Math.max(0,state.nextCleanup!-Date.now()),complete}));return complete;};
+  const owner=await this.owner();if(!owner)return finish('unavailable',false);
   let status:string;try{status=(await deleteHonchoLens(this.env,owner)).status;}catch{status='unavailable';}
-  const latest=this.read();if(latest.pendingDelete!==token)return false;
-  if(status==='deleted'){latest.pendingDelete=null;latest.nextCleanup=undefined;latest.cleanupAttempts=0;latest.remotePossible=false;latest.status=latest.enabled?'pending':'disabled';this.touch(latest,false);this.write(latest);return true;}
+  const latest=this.read();if(latest.pendingDelete!==token)return finish(status,false);
+  if(status==='deleted'){latest.pendingDelete=null;latest.nextCleanup=undefined;latest.cleanupAttempts=0;latest.remotePossible=false;latest.status=latest.enabled?'pending':'disabled';this.touch(latest,false);this.write(latest);return finish(status,true);}
   // With no configured key there is no remote state to erase if we have never synced it.
-  if(status==='unconfigured'&&!state.remotePossible){latest.pendingDelete=null;latest.nextCleanup=undefined;latest.cleanupAttempts=0;latest.status=latest.enabled?'unconfigured':'disabled';this.touch(latest,false);this.write(latest);return true;}
-  latest.status='unavailable';this.touch(latest,false);this.write(latest);return false;
+  if(status==='unconfigured'&&!state.remotePossible){latest.pendingDelete=null;latest.nextCleanup=undefined;latest.cleanupAttempts=0;latest.status=latest.enabled?'unconfigured':'disabled';this.touch(latest,false);this.write(latest);return finish(status,true);}
+  latest.status='unavailable';this.touch(latest,false);this.write(latest);return finish(status,false);
  }
  async setEnabled(input:{revision:string;enabled:boolean}){
   if(!input||typeof input.enabled!=='boolean')throw Error('invalid_owner_lens');
   const state=this.current();this.check(state,input.revision);
   if(state.enabled===input.enabled){if(!state.enabled&&state.pendingDelete)await this.serial(()=>this.cleanup());return this.get();}
   state.enabled=input.enabled;this.touch(state);state.status=input.enabled?'pending':'disabled';
-  if(!input.enabled){state.granolaEnabled=false;this.withdraw(state,[]);state.suggestions=[];this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages');this.ctx.storage.sql.exec('DELETE FROM owner_lens_retries');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries');}
+  if(!input.enabled){state.projectionRequested=false;state.granolaEnabled=false;this.withdraw(state,[]);state.suggestions=[];this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages');this.ctx.storage.sql.exec('DELETE FROM owner_lens_retries');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries');}
   this.write(state);
   if(!input.enabled)await this.serial(()=>this.cleanup());
   return this.get();
@@ -206,13 +207,19 @@ export class OwnerLensStore {
  private addSources(state:State,sources:StoredSource[]){
   const merged=[...sources,...state.sources.filter(old=>!sources.some(s=>s.id===old.id))].sort((a,b)=>b.observedAt.localeCompare(a.observedAt));
   const keep=this.retained(merged);
+  // Older collected passages can be discarded without changing the evidence already reviewed.
+  if(JSON.stringify(keep)===JSON.stringify(state.sources))return;
   if(state.sources.some(old=>!keep.some(s=>s.id===old.id)))this.withdraw(state,keep,false);else {state.sources=keep;this.touch(state,false);}
   state.status='pending';state.suggestions=[];this.write(state);
  }
  async refresh(input:{revision:string;note?:string},collect:(valid:()=>boolean)=>Promise<OwnerLensCollectionResult|void>){
   if(!input||input.note!==undefined&&(typeof input.note!=='string'||input.note.length>3000))throw Error('invalid_owner_lens');
   const state=this.current();this.check(state,input.revision);if(!state.enabled)throw Error('owner_lens_disabled');
-  this.touch(state);state.status='pending';this.write(state);const generation=state.generation;
+  // Finish projecting the collected batch before a retry can evict more evidence.
+  // pendingSnapshot also recognizes unfinished work from records predating this flag.
+  const outdatedProjection=!!state.lastSync&&state.projectionVersion!==HONCHO_LENS_PROJECTION_VERSION;
+  const resumeProjection=honchoConfigured(this.env)&&!!(state.projectionRequested||state.pendingSnapshot||outdatedProjection)&&state.sources.length>0;
+  state.projectionRequested=true;this.touch(state);state.status='pending';this.write(state);const generation=state.generation;
   const valid=()=>{const latest=this.read();return latest.enabled&&latest.generation===generation;};
   return this.serial(async()=>{
    if(!valid())return this.get();
@@ -224,14 +231,15 @@ export class OwnerLensStore {
      const sources=await Promise.all(facts.map(async(fact,index)=>({id:'owner-note:'+await digest(input.note+'\0'+index+'\0'+fact.quote),text:fact.quote,observedAt,label:'Your note' as const,account:null,message:''})));
      if(!valid())return this.get();if(sources.length)this.addSources(this.read(),sources);
     }
-    stage='collection';const collection=await collect(valid),collectionFailed=!!collection&&(collection.failed>0||collection.deferred>0);if(!valid())return this.get();
+    stage='collection';const collection=resumeProjection?undefined:await collect(valid),collectionFailed=!!collection&&(collection.failed>0||collection.deferred>0);if(!valid())return this.get();
     // Retention eviction or account withdrawal requires removal before another remote snapshot.
     stage='cleanup';if(!await this.cleanup()||!valid())return this.get();
     const snapshot=this.read(),owner=await this.owner();if(!owner||!valid()||this.read().revision!==snapshot.revision)return this.get();
-    if(!snapshot.sources.length){snapshot.status=collectionFailed?'unavailable':honchoConfigured(this.env)?'ready':'unconfigured';this.touch(snapshot,false);this.write(snapshot);return this.get();}
+    if(!snapshot.sources.length){snapshot.status=collectionFailed?'unavailable':honchoConfigured(this.env)?'ready':'unconfigured';if(snapshot.status==='ready')snapshot.projectionRequested=false;this.touch(snapshot,false);this.write(snapshot);return this.get();}
     const providerSources=this.providerSources(snapshot.sources),fingerprint=await digest(JSON.stringify(providerSources));
     if(!valid()||this.read().revision!==snapshot.revision)return this.get();
-    if(snapshot.lastSync&&snapshot.syncedSources===fingerprint){snapshot.status='ready';this.touch(snapshot,false);this.write(snapshot);return this.get();}
+    // An explicit refresh may retry an empty result against the same uploaded evidence.
+    if(snapshot.lastSync&&snapshot.projectionVersion===HONCHO_LENS_PROJECTION_VERSION&&snapshot.syncedSources===fingerprint&&snapshot.suggestions.length){snapshot.status='ready';snapshot.projectionRequested=false;this.touch(snapshot,false);this.write(snapshot);return this.get();}
     const controller=new AbortController();this.controller=controller;
     if(honchoConfigured(this.env)){
      snapshot.remotePossible=true;const previous=snapshot.pendingSnapshot;
@@ -246,7 +254,7 @@ export class OwnerLensStore {
      for(const entry of response.entries){if(!['focus','need','offer'].includes(entry.kind)||typeof entry.text!=='string'||!entry.text.trim()||entry.text.length>500||!entry.sourceIds.length||entry.sourceIds.some(id=>!ids.has(id))||latest.dismissed.includes(signature(entry)))continue;
       const id='owner-suggestion:'+await digest(signature(entry));if(!valid())return this.get();latest.suggestions.push({id,kind:entry.kind,text:entry.text,sourceIds:[...new Set(entry.sourceIds)]});
      }
-     latest.lastSync=stamp();latest.syncedSources=fingerprint;latest.pendingSnapshot=undefined;
+     latest.lastSync=stamp();latest.syncedSources=fingerprint;latest.pendingSnapshot=undefined;latest.projectionRequested=false;latest.projectionVersion=HONCHO_LENS_PROJECTION_VERSION;
     }
     if(!valid()||this.read().revision!==snapshot.revision)return this.get();
     if(response.status==='pending'&&latest.pendingSnapshot&&latest.pendingSnapshot.attempts>=2&&Date.now()-latest.pendingSnapshot.since>=60000){
@@ -255,6 +263,7 @@ export class OwnerLensStore {
      this.requestCleanup(latest);latest.suggestions=[];latest.status='pending';
     }
     this.touch(latest,false);this.write(latest);
+    if(response.status==='ready')console.info(JSON.stringify({event:'owner_lens_projection',sourceCount:latest.sources.length,providerEntries:response.entries.length,reviewableEntries:latest.suggestions.length,filteredEntries:response.entries.length-latest.suggestions.length}));
    }catch(error){ownerLensDiagnostic(stage,error,{elapsedMs:Date.now()-started});if(valid()){const latest=this.read();latest.status='unavailable';this.touch(latest,false);this.write(latest);}}
    return this.get();
   });

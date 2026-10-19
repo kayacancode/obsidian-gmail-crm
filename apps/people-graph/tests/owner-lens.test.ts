@@ -181,6 +181,139 @@ test('owner lens unchanged source snapshots reuse suggestions and dismissals per
  }finally{net.restore();f.db.close();}
 });
 
+test('owner lens explicit refresh retries an empty result without duplicating its evidence upload',async()=>{
+ const f=fixture(true),net=honchoNetwork(),originalInfo=console.info,projectionLogs:string[]=[];let chats=0;
+ try{
+  console.info=(value:unknown)=>{projectionLogs.push(String(value));};
+  const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{
+   const response=await network(input,init);
+   if(new URL(String(input)).pathname.endsWith('/chat')&&++chats===1)return Response.json({content:JSON.stringify({entries:[]})});
+   return response;
+  };
+  await enabled(f.store);await addMail(f.store);
+  let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});
+  assert.equal(state.honcho.status,'ready');assert.deepEqual(state.suggestions,[]);const sources=state.sources;
+  state=await f.store.refresh({revision:state.revision},async()=>{});
+  assert.equal(state.suggestions.length,1);assert.equal(chats,2);assert.deepEqual(state.sources,sources);
+  assert.equal(net.calls.filter(call=>call.path.endsWith('/messages')).length,1);assert.equal(state.fields.focus,'');
+  state=f.store.decide({revision:state.revision,id:state.suggestions[0].id},false);
+  state=await f.store.refresh({revision:state.revision},async()=>{});assert.deepEqual(state.suggestions,[]);
+  assert.deepEqual(projectionLogs.map(line=>JSON.parse(line)).filter(event=>event.event==='owner_lens_projection'),[
+   {event:'owner_lens_projection',sourceCount:1,providerEntries:0,reviewableEntries:0,filteredEntries:0},
+   {event:'owner_lens_projection',sourceCount:1,providerEntries:1,reviewableEntries:1,filteredEntries:0},
+   {event:'owner_lens_projection',sourceCount:1,providerEntries:1,reviewableEntries:0,filteredEntries:1},
+  ]);
+ }finally{console.info=originalInfo;net.restore();f.db.close();}
+});
+
+test('owner lens collecting evidence outside its retained window preserves current suggestions',async()=>{
+ const f=fixture(true),net=honchoNetwork();try{
+  await enabled(f.store);const now=Date.now();
+  for(let i=0;i<30;i++)await addMail(f.store,'recent'+i,OWN,WORK,now-1000-i);
+  let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});
+  const suggestions=state.suggestions,sources=state.sources,chats=net.calls.filter(call=>call.path.endsWith('/chat')).length;
+  assert.equal(suggestions.length,1);
+  state=await f.store.refresh({revision:state.revision},async()=>{await addMail(f.store,'older',OWN,WORK,now-100000);});
+  assert.deepEqual(state.sources,sources);assert.deepEqual(state.suggestions,suggestions);
+  assert.equal(state.honcho.status,'ready');assert.equal(net.calls.filter(call=>call.path.endsWith('/chat')).length,chats);
+  assert.equal(f.store.hasMessage(OWN,'older'),true);
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens resumes an unfinished projection after cleanup without collecting another batch',async()=>{
+ const f=fixture(true),net=honchoNetwork();let collected=0;
+ try{
+  await enabled(f.store);const now=Date.now();
+  for(let i=0;i<30;i++)await addMail(f.store,'baseline'+i,OWN,WORK,now-10000-i);
+  let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});
+  const collect=async()=>{collected++;await addMail(f.store,'replacement'+collected,OWN,WORK,now-1000+collected);};
+  state=await f.store.refresh({revision:state.revision},collect);
+  assert.equal(collected,1);assert.equal(state.honcho.cleanupPending,true);const batch=state.sources;
+  await f.store.retryCleanup(Date.now()+10000);state=f.store.get();assert.equal(state.honcho.cleanupPending,false);
+  const reloaded=(f.service as any).ownerLens() as OwnerLensStore;
+  state=await reloaded.refresh({revision:state.revision},collect);
+  assert.equal(collected,1);assert.equal(state.honcho.status,'ready');assert.equal(state.suggestions.length,1);assert.deepEqual(state.sources,batch);
+  state=await reloaded.refresh({revision:state.revision},collect);assert.equal(collected,2);
+  assert.ok(!('projectionRequested' in state));
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens retries a legacy invalid projection before collecting and resumes collection after success',async()=>{
+ const f=fixture(true),net=honchoNetwork();let chats=0,collected=0;
+ try{
+  const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{
+   const response=await network(input,init);
+   if(new URL(String(input)).pathname.endsWith('/chat')&&++chats===1)return Response.json({content:'Not valid projection JSON'});
+   return response;
+  };
+  await enabled(f.store);
+  const collect=async()=>{collected++;await addMail(f.store,'batch'+collected);};
+  let state=await f.store.refresh({revision:f.store.get().revision},collect);
+  assert.equal(state.honcho.status,'invalid');assert.equal(collected,1);const batch=state.sources;
+  const stored=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);
+  assert.ok(stored.pendingSnapshot);delete stored.projectionRequested;
+  f.db.prepare('UPDATE owner_lens_state SET data=? WHERE id=1').run(JSON.stringify(stored));
+  state=await f.store.refresh({revision:state.revision},collect);
+  assert.equal(state.honcho.status,'ready');assert.equal(collected,1);assert.deepEqual(state.sources,batch);
+  state=await f.store.refresh({revision:state.revision},collect);assert.equal(collected,2);assert.equal(state.sources.length,2);
+  assert.equal(state.fields.focus,'');assert.ok(!('projectionRequested' in state));
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens unfinished projection still accepts an explicit note and clears on master disable',async()=>{
+ const f=fixture(true),net=honchoNetwork();let collected=0;
+ try{
+  const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{const response=await network(input,init);return new URL(String(input)).pathname.endsWith('/chat')?Response.json({content:'Not valid projection JSON'}):response;};
+  await enabled(f.store);const collect=async()=>{collected++;await addMail(f.store,'batch'+collected);};
+  let state=await f.store.refresh({revision:f.store.get().revision},collect);
+  state=await f.store.refresh({revision:state.revision,note:WORK},collect);
+  assert.equal(collected,1);assert.equal(state.sources.length,2);assert.ok(state.sources.some(source=>source.label==='Your note'));assert.equal(state.fields.focus,'');
+  state=await f.store.setEnabled({revision:state.revision,enabled:false});
+  assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).projectionRequested,false);
+  assert.deepEqual(state.sources,[]);assert.ok(!('projectionRequested' in state));
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens keeps collecting without Honcho credentials and projects that batch when configured',async()=>{
+ const f=fixture(),net=honchoNetwork();let collected=0;
+ try{
+  await enabled(f.store);const collect=async()=>{collected++;await addMail(f.store,'batch'+collected);};
+  let state=await f.store.refresh({revision:f.store.get().revision},collect);
+  state=await f.store.refresh({revision:state.revision},collect);
+  assert.equal(state.honcho.status,'unconfigured');assert.equal(collected,2);assert.equal(state.sources.length,2);assert.equal(net.calls.length,0);
+  f.env.HONCHO_API_KEY='test-honcho-key';state=await f.store.refresh({revision:state.revision},collect);
+  assert.equal(state.honcho.status,'ready');assert.equal(collected,2);assert.equal(state.sources.length,2);
+  state=await f.store.refresh({revision:state.revision},collect);assert.equal(collected,3);
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens upgrades successful projections using the same evidence and preserves saved fields',async()=>{
+ for(const accept of [false,true]){
+  const f=fixture(true),net=honchoNetwork();let collected=0,chats=0;
+  try{
+   const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{
+    const response=await network(input,init);
+    if(!new URL(String(input)).pathname.endsWith('/chat')||++chats===1)return response;
+    const body=await response.json() as any,projection=JSON.parse(body.content);projection.entries[0].text='I build research tools for climate scientists.';
+    return Response.json({...body,content:JSON.stringify(projection)});
+   };
+   let state=await enabled(f.store);state=f.store.update({revision:state.revision,fields:{focus:'My manually saved focus',needs:'',offers:''}});
+   const collect=async()=>{collected++;await addMail(f.store,'batch'+collected);};
+   state=await f.store.refresh({revision:state.revision},collect);
+   if(accept)state=f.store.decide({revision:state.revision,id:state.suggestions[0].id},true);
+   const stored=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string),fields={...state.fields},accepted=stored.accepted,batch=state.sources;
+   if(accept)stored.projectionVersion=1;else delete stored.projectionVersion;
+   f.db.prepare('UPDATE owner_lens_state SET data=? WHERE id=1').run(JSON.stringify(stored));
+   state=await f.store.refresh({revision:state.revision},collect);
+   assert.equal(collected,1);assert.equal(chats,2);assert.deepEqual(state.sources,batch);assert.deepEqual(state.fields,fields);
+   assert.equal(state.suggestions[0].text,'I build research tools for climate scientists.');
+   assert.equal(net.calls.filter(call=>call.path.endsWith('/messages')).length,1);
+   const upgraded=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);assert.deepEqual(upgraded.accepted,accepted);assert.ok(upgraded.projectionVersion>1);assert.ok(!('projectionVersion' in state));
+   state=await f.store.refresh({revision:state.revision},collect);assert.equal(collected,2);
+  }finally{net.restore();f.db.close();}
+ }
+});
+
 test('owner lens missing credentials cannot claim deletion of previously uploaded evidence',async()=>{
  const f=fixture(true),net=honchoNetwork();try{
   await enabled(f.store);await addMail(f.store);let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});assert.equal(state.honcho.status,'ready');
@@ -191,9 +324,10 @@ test('owner lens missing credentials cannot claim deletion of previously uploade
 });
 
 test('owner lens retries asynchronous remote cleanup through the DO alarm while learning remains off',async()=>{
- const f=fixture(true),net=honchoNetwork(),originalNow=Date.now;let clock=originalNow(),confirm=false,cleanupCalls=0;
+ const f=fixture(true),net=honchoNetwork(),originalNow=Date.now,originalInfo=console.info,logs:string[]=[];let clock=originalNow(),confirm=false,cleanupCalls=0;
  try{
   Date.now=()=>clock;await enabled(f.store);await addMail(f.store);await f.store.refresh({revision:f.store.get().revision},async()=>{});
+  console.info=(value:unknown)=>{logs.push(String(value));};
   const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{
    const url=new URL(String(input));if(url.pathname==='/v3/workspaces/list'){cleanupCalls++;const request=JSON.parse(init.body);return Response.json({items:confirm?[]:[{id:request.filters.id,metadata:{purpose:'private-owner-lens-v1'}}],total:confirm?0:1});}
    if(url.pathname.endsWith('/sessions/list'))return Response.json({items:[],total:0});
@@ -203,7 +337,11 @@ test('owner lens retries asynchronous remote cleanup through the DO alarm while 
   assert.equal(state.honcho.cleanupPending,true);assert.equal(state.honcho.retryAt,new Date(clock+5000).toISOString());assert.equal(f.kv.get('alarm'),clock+5000);
   await f.service.alarm();assert.equal(cleanupCalls,1);confirm=true;clock+=5001;const chats=net.calls.filter(c=>c.path.endsWith('/chat')).length;
   await f.service.alarm();state=await f.service.getOwnerLens();assert.equal(cleanupCalls,2);assert.equal(state.enabled,false);assert.equal(state.honcho.cleanupPending,false);assert.equal(state.honcho.status,'disabled');assert.equal(net.calls.filter(c=>c.path.endsWith('/chat')).length,chats);
- }finally{Date.now=originalNow;net.restore();f.db.close();}
+  assert.deepEqual(logs.map(line=>JSON.parse(line)).filter(event=>event.event==='owner_lens_cleanup'),[
+   {event:'owner_lens_cleanup',status:'deleting',attempt:1,nextDelayMs:5000,complete:false},
+   {event:'owner_lens_cleanup',status:'deleted',attempt:2,nextDelayMs:0,complete:true},
+  ]);
+ }finally{console.info=originalInfo;Date.now=originalNow;net.restore();f.db.close();}
 });
 
 test('owner lens cleanup failures use durable exponential backoff capped at one hour',async()=>{

@@ -8,18 +8,19 @@ function granolaLink(value){
 /** Private, in-memory editor. The host owns authentication and discards this on context changes. */
 export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplore}){
  const doc=button.ownerDocument;
- let dialog=null,view=null,disposed=false,run=0,busy=false,model=null;
+ let dialog=null,view=null,disposed=false,run=0,busy=false,busyAction='',model=null;
  let draft={focus:'',needs:'',offers:''},note='',dirty=new Set();
  const el=(tag,cls,text)=>{const node=doc.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;};
  const action=(text,handler,cls='')=>{const b=el('button',cls,text);b.type='button';b.onclick=handler;return b;};
  const alive=token=>!disposed&&dialog?.isConnected&&token===run;
  const message=text=>{if(view)view.status.textContent=text;};
- function close(){run++;dialog?.close();dialog?.remove();dialog=null;view=null;busy=false;button.setAttribute('aria-expanded','false');}
- function setBusy(value){
-  busy=value;if(!view)return;
+ function close(){run++;dialog?.close();dialog?.remove();dialog=null;view=null;busy=false;busyAction='';button.setAttribute('aria-expanded','false');}
+ function setBusy(value,operation=busyAction){
+  busy=value;busyAction=value?operation:'';if(!view)return;
   for(const control of view.content.querySelectorAll('button,input,textarea'))control.disabled=value||!model;
   view.note.disabled=value||!model?.enabled;
   view.refresh.disabled=value||!model?.enabled;
+  view.refresh.textContent=busyAction==='refresh'?'Reading context…':'Refresh suggestions';
   view.granola.disabled=value||!model?.enabled;
   view.save.disabled=value||!model;
   view.find.disabled=value||!model||dirty.size>0||!Object.values(model.fields||{}).some(v=>typeof v==='string'&&v.trim());
@@ -35,9 +36,12 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   return block;
  }
  function learningStatus(value){
+  const saved=Object.values(model?.fields||{}).some(text=>typeof text==='string'&&text.trim());
+  const count=(model?.suggestions||[]).filter(s=>KIND_FIELDS[s.kind]).length;
   if(model?.enabled===false&&value?.status==='unavailable')return 'Learning is off. Clearing learned context is still pending. Retry to finish clearing it.';
+  if(model?.enabled===true&&value?.configured&&value.cleanupPending)return 'Updating stored context. Refresh again after cleanup finishes.';
   if(!value?.configured)return 'Honcho is not configured. You can still edit your lens and find people.';
-  return ({disabled:'Learning is off. Your saved lens still works.',pending:'An update is being prepared. Refresh to check for suggestions.',ready:model?.suggestions?.length?'Suggestions are ready to review.':'No new suggestions. Your saved lens is unchanged.',unavailable:'Learning is temporarily unavailable. Your saved lens still works.',invalid:'No reliable update was returned. Your saved lens is unchanged.'})[value.status]||'Ready to learn from your work context.';
+  return ({disabled:saved?'Learning is off. Your saved lens still works.':'Learning is off. You can fill in your lens above.',pending:'No completed updates yet. Refresh again to check.',ready:count?`${count} proposed ${count===1?'update is':'updates are'} ready to review. Choose Use update to add each one to your lens.`:saved?'No new updates. Your saved lens is unchanged.':'No profile updates found yet. Add a note about your work or fill in your lens above.',unavailable:saved?'Learning is temporarily unavailable. Your saved lens still works.':'Learning is temporarily unavailable. You can still fill in your lens above.',invalid:saved?'No reliable update was returned. Your saved lens is unchanged.':'No reliable profile update was returned. Add a note about your work or fill in your lens above.'})[value.status]||'Ready to learn from your work context.';
  }
  function renderModel(value){
   model=value;if(!view)return;
@@ -55,7 +59,8 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   view.suggestions.replaceChildren();
   const suggestions=(value.suggestions||[]).filter(s=>KIND_FIELDS[s.kind]);
   if(suggestions.length){
-   view.suggestions.append(el('h3','','Proposed updates'),el('p','owner-lens-muted','Review each suggestion. Only updates you use become part of your lens.'));
+   const heading=el('h3','',`Proposed updates (${suggestions.length})`);heading.tabIndex=-1;heading.style.scrollMarginTop='100px';
+   view.suggestions.append(heading,el('p','owner-lens-muted','Review the sources, then choose Use update or Dismiss for each proposal. Only updates you use become part of your lens.'));
    for(const suggestion of suggestions){
     const card=el('article','owner-lens-suggestion');card.append(el('small','owner-lens-category',FIELD_LABELS[KIND_FIELDS[suggestion.kind]]),el('p','',suggestion.text));
     const evidence=(suggestion.sourceIds||[]).map(id=>(value.sources||[]).find(s=>s.id===id)).filter(Boolean);
@@ -70,23 +75,26 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
  }
  async function mutate(body,success){
   if(busy||!model)return;
-  const token=run;setBusy(true);message('Saving…');
+  const token=run;setBusy(true,body.action);
+  const pending=body.action==='refresh'?'Reading your work context and preparing profile updates…':body.action==='accept'?'Adding this update to your lens…':body.action==='dismiss'?'Dismissing this update…':'Saving…';
+  message(pending);if(body.action==='refresh')view.learningStatus.textContent=pending;
   try{
    const next=await update({...body,revision:model.revision});if(!alive(token))return;
    if(body.action==='save')dirty.clear();
+   if(body.action==='accept'){const suggestion=model.suggestions?.find(s=>s.id===body.id);if(suggestion)dirty.delete(KIND_FIELDS[suggestion.kind]);}
    renderModel(next);view.matches.replaceChildren();
    if(body.action==='refresh'){
-    message(next.honcho?.status==='ready'&&next.suggestions?.length?'Review the proposed updates below.':learningStatus(next.honcho));
+    message(learningStatus(next.honcho));
+    if(next.honcho?.status==='ready'&&next.suggestions?.length){const heading=view.suggestions.querySelector('h3');heading?.focus({preventScroll:true});heading?.scrollIntoView({block:'start'});}
     if(next.honcho?.status==='ready'){note='';view.note.value='';}
    }else message(body.action==='learning'&&next.enabled===false&&next.honcho?.status==='unavailable'?learningStatus(next.honcho):success);
   }catch(error){
    if(!alive(token)||error.name==='AbortError')return;
    if(error.status===409){
-    // Keep every draft value while obtaining the revision needed for an explicit retry.
-    for(const field of Object.keys(FIELD_LABELS))dirty.add(field);
-    try{const latest=await load();if(!alive(token))return;renderModel(latest);message('Your lens changed elsewhere. Your edits are still here; review them and save again.');}
-    catch(reloadError){if(alive(token))message('Your lens changed elsewhere. Your edits are still here. Reopen the panel to retry.');}
-   }else{if(body.action==='learning')view.learning.checked=model.enabled===true;if(body.action==='granola')view.granola.checked=model.granolaEnabled===true;message(error.serverMessage||'Could not save your lens. Your edits are still here. Try again.');}
+    // Keep genuine local edits; untouched fields follow the latest saved revision.
+    try{const latest=await load();if(!alive(token))return;renderModel(latest);message(dirty.size?'Your lens changed elsewhere. Your edits are still here; review them and save again.':'Your lens changed elsewhere. The latest saved lens is now shown; try again.');}
+    catch(reloadError){if(alive(token))message(dirty.size?'Your lens changed elsewhere. Your edits are still here. Reopen the panel to retry.':'Your lens changed elsewhere. Reopen the panel to load the latest saved lens.');}
+   }else{if(body.action==='learning')view.learning.checked=model.enabled===true;if(body.action==='granola')view.granola.checked=model.granolaEnabled===true;view.learningStatus.textContent=learningStatus(model.honcho);message(error.serverMessage||(body.action==='refresh'?'Could not refresh profile updates. Your edits are still here. Try again.':'Could not save your lens. Your edits are still here. Try again.'));}
   }finally{if(alive(token))setBusy(false);}
  }
  async function search(){
