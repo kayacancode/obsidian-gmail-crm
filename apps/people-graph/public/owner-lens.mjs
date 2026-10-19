@@ -1,6 +1,9 @@
 const FIELD_LABELS={focus:'Focused on',needs:'Looking for',offers:'Can help with'};
 const KIND_FIELDS={focus:'focus',need:'needs',offer:'offers'};
 const dateLabel=value=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'Date unavailable';};
+function granolaLink(value){
+ try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&(url.hostname==='granola.ai'||url.hostname.endsWith('.granola.ai'))?url.href:null;}catch{return null;}
+}
 
 /** Private, in-memory editor. The host owns authentication and discards this on context changes. */
 export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplore}){
@@ -17,12 +20,17 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   for(const control of view.content.querySelectorAll('button,input,textarea'))control.disabled=value||!model;
   view.note.disabled=value||!model?.enabled;
   view.refresh.disabled=value||!model?.enabled;
+  view.granola.disabled=value||!model?.enabled;
   view.save.disabled=value||!model;
   view.find.disabled=value||!model||dirty.size>0||!Object.values(model.fields||{}).some(v=>typeof v==='string'&&v.trim());
  }
  function sourceBlock(source){
   const block=el('div','owner-lens-source');
-  block.append(el('small','',`${source.label||source.sourceLabel||'Source'} · ${dateLabel(source.observedAt||source.date)}`),el('p','',source.text||source.summary||''));
+  block.append(el('small','',`${source.label||source.sourceLabel||'Source'} · ${dateLabel(source.observedAt||source.date)}`));
+  const url=granolaLink(source.url);
+  if(url){const link=el('a','owner-lens-source-title',source.title||'Open Granola meeting');link.href=url;link.target='_blank';link.rel='noopener noreferrer';block.append(link);}
+  else if(source.title)block.append(el('strong','owner-lens-source-title',source.title));
+  block.append(el('p','',source.text||source.summary||''));
   return block;
  }
  function learningStatus(value){
@@ -35,6 +43,7 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   for(const field of Object.keys(FIELD_LABELS)){if(!dirty.has(field))draft[field]=String(value.fields?.[field]||'');view.inputs[field].value=draft[field];}
   view.updated.textContent=value.updatedAt?'Last saved '+dateLabel(value.updatedAt):'Add what matters to you right now.';
   view.learning.checked=value.enabled===true;
+  view.granola.checked=value.granolaEnabled===true;
   view.learningHint.hidden=value.enabled===true;
   view.cleanup.hidden=value.enabled!==false||value.honcho?.status!=='unavailable';
   view.learningStatus.textContent=learningStatus(value.honcho)+(value.honcho?.lastSync?' Last checked '+dateLabel(value.honcho.lastSync)+'.':'');
@@ -45,7 +54,7 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
    for(const suggestion of suggestions){
     const card=el('article','owner-lens-suggestion');card.append(el('small','owner-lens-category',FIELD_LABELS[KIND_FIELDS[suggestion.kind]]),el('p','',suggestion.text));
     const evidence=(suggestion.sourceIds||[]).map(id=>(value.sources||[]).find(s=>s.id===id)).filter(Boolean);
-    if(evidence.length){const details=el('details');details.append(el('summary','','Based on your words'));for(const source of evidence)details.append(sourceBlock(source));card.append(details);}
+    if(evidence.length){const details=el('details');details.append(el('summary','','Based on your work context'));for(const source of evidence)details.append(sourceBlock(source));card.append(details);}
     const actions=el('div','owner-lens-actions');actions.append(action('Use update',()=>mutate({action:'accept',id:suggestion.id},'Update added to your lens.')),action('Dismiss',()=>mutate({action:'dismiss',id:suggestion.id},'Suggestion dismissed.'),'owner-lens-quiet'));card.append(actions);view.suggestions.append(card);
    }
   }
@@ -72,7 +81,7 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
     for(const field of Object.keys(FIELD_LABELS))dirty.add(field);
     try{const latest=await load();if(!alive(token))return;renderModel(latest);message('Your lens changed elsewhere. Your edits are still here; review them and save again.');}
     catch(reloadError){if(alive(token))message('Your lens changed elsewhere. Your edits are still here. Reopen the panel to retry.');}
-   }else{if(body.action==='learning')view.learning.checked=model.enabled===true;message(error.serverMessage||'Could not save your lens. Your edits are still here. Try again.');}
+   }else{if(body.action==='learning')view.learning.checked=model.enabled===true;if(body.action==='granola')view.granola.checked=model.granolaEnabled===true;message(error.serverMessage||'Could not save your lens. Your edits are still here. Try again.');}
   }finally{if(alive(token))setBusy(false);}
  }
  async function search(){
@@ -115,15 +124,16 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   const find=action('Find people for me',search,'owner-lens-primary');actions.append(save,find);form.append(actions,el('p','owner-lens-muted','Matches use your saved lens. Suggestions need your review first.'));content.append(form);
   const status=el('p','owner-lens-status');status.setAttribute('role','status');status.setAttribute('aria-live','polite');content.append(status);
   const matches=el('div','owner-lens-matches'),suggestions=el('section','owner-lens-suggestions');suggestions.setAttribute('aria-label','Proposed lens updates');content.append(matches,suggestions);
-  const learningSection=el('section','owner-lens-learning'),learningLabel=el('label','owner-lens-learning-toggle'),learning=el('input');learning.type='checkbox';learning.setAttribute('aria-label','Learn from my sent emails');learning.onchange=()=>void mutate({action:'learning',enabled:learning.checked},learning.checked?'Learning enabled. Refresh to look for updates.':'Learning turned off.');
-  learningLabel.append(learning,doc.createTextNode('Learn from my sent emails'));
+  const learningSection=el('section','owner-lens-learning'),learningLabel=el('label','owner-lens-learning-toggle'),learning=el('input');learning.type='checkbox';learning.setAttribute('aria-label','Learn from my work context');learning.onchange=()=>void mutate({action:'learning',enabled:learning.checked},learning.checked?'Learning enabled. Refresh to look for updates.':'Learning turned off.');
+  learningLabel.append(learning,doc.createTextNode('Learn from my work context'));
+  const granolaLabel=el('label','owner-lens-learning-toggle'),granola=el('input');granola.type='checkbox';granola.setAttribute('aria-label','Include my Granola notes');granola.onchange=()=>void mutate({action:'granola',enabled:granola.checked},granola.checked?'Granola notes included. Refresh to look for updates.':'Granola notes excluded.');granolaLabel.append(granola,doc.createTextNode('Include my Granola notes'));
   const learningState=el('p','owner-lens-muted'),learningHint=el('p','owner-lens-muted','Turn on learning to add a note or refresh suggestions.');
   const cleanup=action('Retry clearing learned context',()=>mutate({action:'learning',enabled:false},'Learned context cleared. Learning is off.'),'owner-lens-cleanup');cleanup.hidden=true;
-  learningSection.append(learningLabel,el('p','owner-lens-muted','When enabled, selected work excerpts from your sent emails go to Honcho to suggest updates. Your lens stays private, and you choose which updates to use.'),learningState,cleanup,learningHint);
+  learningSection.append(learningLabel,el('p','owner-lens-muted','When enabled, selected work excerpts from your sent emails and any notes you add go to Honcho to suggest updates. Your lens stays private, and you choose which updates to use.'),granolaLabel,el('p','owner-lens-muted','Granola notes go to Honcho only when included. Suggestions use work attributed to you, not other attendees’ work.'),learningState,cleanup,learningHint);
   const noteLabel=el('label','owner-lens-field','Tell it what you’re working on'),noteInput=el('textarea');noteInput.rows=3;noteInput.maxLength=3000;noteInput.value=note;noteInput.setAttribute('aria-label','Tell it what you’re working on');noteInput.placeholder='An optional note about your current work, needs or experience';noteInput.oninput=()=>{note=noteInput.value;};noteLabel.append(noteInput);
   const refresh=action('Refresh suggestions',()=>mutate({action:'refresh',...(note.trim()?{note:note.trim()}:{})},''));learningSection.append(noteLabel,el('p','owner-lens-muted','Refresh sends this note to Honcho to propose updates.'),refresh);
   const sources=el('details','owner-lens-sources');sources.hidden=true;content.append(learningSection,sources);dialog.append(heading,content);
-  view={content,inputs,updated,save,find,status,matches,suggestions,learning,learningHint,cleanup,learningStatus:learningState,note:noteInput,refresh,sources};
+  view={content,inputs,updated,save,find,status,matches,suggestions,learning,granola,learningHint,cleanup,learningStatus:learningState,note:noteInput,refresh,sources};
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
   dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)close();}});
   doc.body.append(dialog);button.setAttribute('aria-expanded','true');dialog.showModal();setBusy(true);message('Loading your lens…');

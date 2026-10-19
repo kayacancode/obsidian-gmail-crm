@@ -28,6 +28,7 @@
 .owner-lens-dialog summary{color:#64765a;cursor:pointer;font-size:12px;padding:7px 0}
 .owner-lens-source{border-left:2px solid #dbe2d2;margin:10px 0;padding-left:11px;overflow-wrap:anywhere}
 .owner-lens-source small{color:#798370;font-size:11px}
+.owner-lens-source-title{display:block;font-size:12px;font-weight:500;color:#4c6541;margin-top:3px}
 .owner-lens-source p{font-size:12px;line-height:1.6;margin:3px 0 10px}
 .owner-lens-learning-toggle{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600}
 .owner-lens-learning-toggle input{width:17px;height:17px;accent-color:#4f6842;flex:none}

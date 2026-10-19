@@ -6,10 +6,10 @@ import {rankOwnerLens} from '../src/helper-brief';
 import {jevServer,scoreA} from './granola-jev-extractor.test';
 
 const fields={focus:'Building a clinic scheduling tool.',needs:'Validate nurse shift handoffs.',offers:''};
-const lens=()=>({revision:'rev',enabled:false,fields,updatedAt:null,suggestions:[],sources:[],honcho:{configured:false,status:'disabled',lastSync:null}});
+const lens=()=>({revision:'rev',enabled:false,granolaEnabled:false,fields,updatedAt:null,suggestions:[],sources:[],honcho:{configured:false,status:'disabled',lastSync:null}});
 async function fixture(){
  const calls:string[]=[];let value:any=lens();
- const stub:any={bindOwner:async()=>calls.push('bind'),getOwnerLens:async()=>{calls.push('get');return value;},updateOwnerLens:async(input:any)=>{calls.push('save');assert.equal(input.revision,'rev');if(value instanceof Error)throw value;return value;},graph:async()=>{calls.push('graph');return {nodes:[],themeSignals:[]};},helperContext:async()=>[]};
+ const stub:any={bindOwner:async()=>calls.push('bind'),getOwnerLens:async()=>{calls.push('get');if(value instanceof Error)throw value;return value;},updateOwnerLens:async(input:any)=>{calls.push('save');assert.equal(input.revision,'rev');if(value instanceof Error)throw value;return value;},graph:async()=>{calls.push('graph');return {nodes:[],themeSignals:[]};},helperContext:async()=>[]};
  const env:any={TOKEN_SECRET:'test',GOOGLE_CLIENT_ID:'test',MAIL:{getByName(owner:string){assert.equal(owner,'owner@example.test');calls.push('owner');return stub;}}};
  const cookie=sessionCookie(await makeSession('owner@example.test','test')).split(';')[0];
  const request=(path:string,body?:any,options:any={})=>worker.fetch(new Request('https://people.test'+path,{method:body===undefined?'GET':'POST',headers:{cookie,...(body===undefined?{}:{origin:'https://people.test'}),...options.headers},...(body===undefined?{}:{body:JSON.stringify(body)}),...options}),env);
@@ -35,6 +35,22 @@ test('owner matches use stored confirmed fields, never browser-supplied profile 
  const response=await f.request('/api/lens/matches',{});assert.equal(response.status,200);const body:any=await response.json();assert.equal(body.status,'no_owner_context');assert.deepEqual(body.results,[]);
  assert.equal((await f.request('/api/lens/matches')).status,405);
 });
+test('Granola owner learning requires a revisioned boolean opt-in and calls only the authenticated owner store',async()=>{
+ const f=await fixture(),updates:Array<{revision:string;enabled:boolean}>=[];
+ f.stub.setOwnerLensGranolaEnabled=async(input:{revision:string;enabled:boolean})=>{updates.push(input);return {...lens(),enabled:true,granolaEnabled:input.enabled};};
+ for(const body of [{action:'granola',revision:'rev',enabled:'true'},{action:'granola',revision:'rev'},{action:'granola',enabled:true},{action:'granola',revision:'rev',enabled:true,owner:'other@example.test'}])assert.equal((await f.request('/api/lens',body)).status,400);
+ assert.deepEqual(f.calls,[]);assert.deepEqual(updates,[]);
+ for(const enabled of [true,false]){
+  const response=await f.request('/api/lens',{action:'granola',revision:'rev',enabled});
+  assert.equal(response.status,200);assert.equal((await response.json() as any).granolaEnabled,enabled);
+ }
+ assert.deepEqual(updates,[{revision:'rev',enabled:true},{revision:'rev',enabled:false}]);
+ assert.deepEqual(f.calls,['owner','bind','get','owner','bind','get']);
+ f.stub.setOwnerLensGranolaEnabled=async()=>{throw Error('owner_lens_disabled');};
+ const disabled=await f.request('/api/lens',{action:'granola',revision:'rev',enabled:true});assert.equal(disabled.status,409);assert.deepEqual(await disabled.json(),{error:'owner_lens_disabled'});
+ f.stub.setOwnerLensGranolaEnabled=async()=>{throw Error('owner_lens_conflict');};
+ assert.equal((await f.request('/api/lens',{action:'granola',revision:'old',enabled:false})).status,409);
+});
 test('owner match search discards results if the saved lens changes during the search',async()=>{
  const f=await fixture();f.stub.graph=async()=>{f.set({...lens(),revision:'new',fields:{...fields,focus:'Changed work'}});return {nodes:[],themeSignals:[]};};
  const response=await f.request('/api/lens/matches',{});assert.equal(response.status,409);assert.deepEqual(await response.json(),{error:'owner_lens_conflict'});
@@ -59,3 +75,9 @@ test('empty owner fields perform no model calls and shared graphs cannot supply 
  const result=await rankOwnerLens({AI:ai},{nodes:[],themeSignals:[]},{focus:'',needs:'',offers:''});assert.equal(result.status,'no_owner_context');
  await assert.rejects(()=>rankOwnerLens({AI:ai},{source:'workspace',nodes:[]},fields),/invalid_request/);
 });
+
+ test('Granola opt-in handles older Durable Object versions without changing master learning',async()=>{
+ const f=await fixture();const {granolaEnabled,...legacy}=lens();f.set(legacy);
+ const result=await f.request('/api/lens',{action:'granola',revision:'rev',enabled:true});assert.equal(result.status,503);assert.equal((await result.json() as any).error,'owner_lens_updating');assert.deepEqual(f.calls,['owner','bind','get']);
+ f.set(new TypeError('The RPC receiver does not implement the method "setOwnerLensGranolaEnabled"'));assert.equal((await f.request('/api/lens',{action:'granola',revision:'rev',enabled:true})).status,503);
+ });

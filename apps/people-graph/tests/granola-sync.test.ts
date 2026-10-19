@@ -920,3 +920,39 @@ test('a meeting with both an aliased address and its contact counts once',async(
   'one meeting is one point of weight, however many of its addresses fold into the same person');
  assert.deepEqual(edges[0].titles,['Alpha']);
 });
+
+test('owner Granola learning rehydrates legacy notes, verifies identity and caches by note version',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Owner work');
+ const now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;
+ raw.owner={name:'Kaya Jones',email:'owner@example.test'};raw.attendees=[{name:'Kaya Jones',email:'owner@example.test'},{name:'Max Wells',email:'max@example.test'}];
+ const net=network({notes:[raw]});let transcriptCalls=0;
+ const fake=(async(input:any,init:any)=>String(input).includes('/transcript')?(transcriptCalls++,Response.json({transcript:[{speaker:{name:'Kaya',attribution:'me'},text:'I am building an introduction tool.'},{speaker:{name:'Max',attribution:'them'},text:'I need funding.'}],hasMore:false,cursor:null})):net.fake(input,init)) as typeof fetch;
+ await withFetch(fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;assert.ok(version);
+ const note=await withFetch(fake,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));
+ assert.equal(note?.ownerTranscript,'I am building an introduction tool.');assert.deepEqual(note?.ownerNames,['Kaya Jones','Kaya']);assert.equal(note?.title,'Owner work');
+ const calls=transcriptCalls;
+ await withFetch((async()=>{throw Error('must use cache');}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));assert.equal(transcriptCalls,calls);
+ const other=await f.sync.ownerLensNote(NOTE_A,version,['someone@example.test'],()=>true);assert.equal(other?.ownerTranscript,'');assert.deepEqual(other?.ownerNames,[]);
+ f.db.prepare('UPDATE granola_notes SET content_hash=? WHERE id=?').run('changed',NOTE_A);
+ assert.notEqual(f.sync.ownerLensVersions().get(NOTE_A),version);assert.equal(await f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true),null);
+ await f.sync.setExcluded(['fol_1234567890abcd']);assert.equal(f.sync.ownerLensVersions().size,0);
+ await f.sync.disconnect();assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_owner_context').get()!.n,0);
+});
+
+test('owner Granola learning never infers ownership from the connector global owner or microphone alone',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Shared meeting');const now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;
+ raw.owner={name:'Another Person',email:'other@example.test'};raw.attendees=[{name:'Kaya Jones',email:'owner@example.test'},{name:'Kaya Smith',email:'other@example.test'}];
+ const net=network({notes:[raw]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;
+ const note=await withFetch((async(input:any,init:any)=>{assert.ok(!String(input).includes('/transcript'));return net.fake(input,init);}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));
+ assert.equal(note?.ownerTranscript,'');assert.deepEqual(note?.ownerNames,['Kaya Jones']);
+});
+
+test('owner Granola learning cannot persist a late fetch after disconnect',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Owner work');const now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;
+ const net=network({notes:[raw]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;const held=heldNoteFetch(net);
+ await withFetch(held.fake,async()=>{const pending=f.sync.ownerLensNote(NOTE_A,version,['me@example.test'],()=>true);await held.ready;await f.sync.disconnect();held.release(Response.json(raw));assert.equal(await pending,null);});
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_owner_context').get()!.n,0);
+});

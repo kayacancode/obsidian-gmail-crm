@@ -7,13 +7,14 @@ export type OwnerLensKind='focus'|'need'|'offer';
 export interface OwnerLensFields {focus:string;needs:string;offers:string}
 export interface OwnerLensCollectionResult {failed:number;deferred:number}
 export interface OwnerLensSuggestion {id:string;kind:OwnerLensKind;text:string;sourceIds:string[]}
-export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'}
+export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'|'Your Granola meeting';title?:string;url?:string|null}
+export interface OwnerGranolaInput {id:string;version:string;observedAt:string;title:string;url:string|null;passages:string[]}
 export interface OwnerLens {
- revision:string;enabled:boolean;fields:OwnerLensFields;updatedAt:string|null;
+ revision:string;enabled:boolean;granolaEnabled:boolean;fields:OwnerLensFields;updatedAt:string|null;
  suggestions:OwnerLensSuggestion[];sources:OwnerLensSource[];
  honcho:{configured:boolean;status:'disabled'|'unconfigured'|'pending'|'ready'|'unavailable'|'invalid';lastSync:string|null;cleanupPending:boolean;retryAt:string|null};
 }
-interface StoredSource extends OwnerLensSource {account:string|null;message:string}
+interface StoredSource extends OwnerLensSource {account:string|null;message:string;version?:string}
 interface Accepted {text:string;sourceIds:string[];acceptedAt:string}
 interface State extends Omit<OwnerLens,'sources'|'honcho'> {
  generation:string;sources:StoredSource[];dismissed:string[];
@@ -51,18 +52,18 @@ export class OwnerLensStore {
  private operation:Promise<void>=Promise.resolve();
  private controller?:AbortController;
  constructor(private ctx:DurableObjectState,private env:OwnerLensEnv,private owner:()=>Promise<string|undefined>){
-  ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS owner_lens_state (id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS owner_lens_messages (account TEXT NOT NULL,message TEXT NOT NULL,observed INTEGER NOT NULL,PRIMARY KEY(account,message)); CREATE TABLE IF NOT EXISTS owner_lens_retries (account TEXT NOT NULL,message TEXT NOT NULL,observed INTEGER NOT NULL,attempts INTEGER NOT NULL,next_attempt INTEGER NOT NULL,PRIMARY KEY(account,message));');
+  ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS owner_lens_state (id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS owner_lens_messages (account TEXT NOT NULL,message TEXT NOT NULL,observed INTEGER NOT NULL,PRIMARY KEY(account,message)); CREATE TABLE IF NOT EXISTS owner_lens_retries (account TEXT NOT NULL,message TEXT NOT NULL,observed INTEGER NOT NULL,attempts INTEGER NOT NULL,next_attempt INTEGER NOT NULL,PRIMARY KEY(account,message)); CREATE TABLE IF NOT EXISTS owner_lens_granola (id TEXT PRIMARY KEY,version TEXT NOT NULL,observed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS owner_lens_granola_retries (id TEXT PRIMARY KEY,version TEXT NOT NULL,observed INTEGER NOT NULL,attempts INTEGER NOT NULL,next_attempt INTEGER NOT NULL);');
  }
  private read():State{
   const row=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM owner_lens_state WHERE id=1').toArray()[0];
-  if(row)return JSON.parse(row.data) as State;
-  const state:State={revision:crypto.randomUUID(),generation:crypto.randomUUID(),enabled:false,fields:{focus:'',needs:'',offers:''},updatedAt:null,suggestions:[],sources:[],dismissed:[],accepted:{},status:'disabled',lastSync:null,pendingDelete:null};this.write(state);return state;
+  if(row){const state=JSON.parse(row.data) as State;state.granolaEnabled=state.enabled&&state.granolaEnabled===true;return state;}
+  const state:State={revision:crypto.randomUUID(),generation:crypto.randomUUID(),enabled:false,granolaEnabled:false,fields:{focus:'',needs:'',offers:''},updatedAt:null,suggestions:[],sources:[],dismissed:[],accepted:{},status:'disabled',lastSync:null,pendingDelete:null};this.write(state);return state;
  }
  private write(state:State){this.ctx.storage.sql.exec('INSERT OR REPLACE INTO owner_lens_state VALUES (1,?)',JSON.stringify(state));}
  private touch(state:State,invalidate=true){state.revision=crypto.randomUUID();state.updatedAt=stamp();if(invalidate){state.generation=crypto.randomUUID();this.controller?.abort();}}
  private check(state:State,revision:string){if(typeof revision!=='string'||revision!==state.revision)throw Error('owner_lens_conflict');}
  private result(state:State):OwnerLens{
-  return {revision:state.revision,enabled:state.enabled,fields:{...state.fields},updatedAt:state.updatedAt,suggestions:state.suggestions.map(s=>({...s,sourceIds:[...s.sourceIds]})),sources:state.sources.map(({id,text,observedAt,label})=>({id,text,observedAt,label})),honcho:{configured:honchoConfigured(this.env),status:state.pendingDelete?'unavailable':!state.enabled?'disabled':!honchoConfigured(this.env)?'unconfigured':state.status,lastSync:state.lastSync,cleanupPending:!!state.pendingDelete,retryAt:state.pendingDelete&&state.nextCleanup?new Date(state.nextCleanup).toISOString():null}};
+  return {revision:state.revision,enabled:state.enabled,granolaEnabled:state.granolaEnabled,fields:{...state.fields},updatedAt:state.updatedAt,suggestions:state.suggestions.map(s=>({...s,sourceIds:[...s.sourceIds]})),sources:state.sources.map(({id,text,observedAt,label,title,url})=>({id,text,observedAt,label,...(title!==undefined?{title}:{}),...(url!==undefined?{url}:{})})),honcho:{configured:honchoConfigured(this.env),status:state.pendingDelete?'unavailable':!state.enabled?'disabled':!honchoConfigured(this.env)?'unconfigured':state.status,lastSync:state.lastSync,cleanupPending:!!state.pendingDelete,retryAt:state.pendingDelete&&state.nextCleanup?new Date(state.nextCleanup).toISOString():null}};
  }
  private requestCleanup(state:State){state.pendingDelete=crypto.randomUUID();state.cleanupAttempts=0;state.nextCleanup=Date.now();state.lastSync=null;state.syncedSources=undefined;state.pendingSnapshot=undefined;}
  private withdraw(state:State,keep:StoredSource[],invalidate=true){
@@ -82,6 +83,8 @@ export class OwnerLensStore {
   const state=this.read(),keep=this.retained(state.sources);
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_retries WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
+  this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
+  this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
   if(keep.length!==state.sources.length){this.withdraw(state,keep);this.write(state);}
   return state;
  }
@@ -127,10 +130,58 @@ export class OwnerLensStore {
   const state=this.current();this.check(state,input.revision);
   if(state.enabled===input.enabled){if(!state.enabled&&state.pendingDelete)await this.serial(()=>this.cleanup());return this.get();}
   state.enabled=input.enabled;this.touch(state);state.status=input.enabled?'pending':'disabled';
-  if(!input.enabled){this.withdraw(state,[]);state.suggestions=[];this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages');this.ctx.storage.sql.exec('DELETE FROM owner_lens_retries');}
+  if(!input.enabled){state.granolaEnabled=false;this.withdraw(state,[]);state.suggestions=[];this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages');this.ctx.storage.sql.exec('DELETE FROM owner_lens_retries');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries');}
   this.write(state);
   if(!input.enabled)await this.serial(()=>this.cleanup());
   return this.get();
+ }
+ async setGranolaEnabled(input:{revision:string;enabled:boolean}){
+  if(!input||typeof input.enabled!=='boolean')throw Error('invalid_owner_lens');
+  const state=this.current();this.check(state,input.revision);if(input.enabled&&!state.enabled)throw Error('owner_lens_disabled');
+  if(state.granolaEnabled===input.enabled){if(!input.enabled&&state.pendingDelete)await this.serial(()=>this.cleanup());return this.get();}
+  state.granolaEnabled=input.enabled;
+  const keep=state.sources.filter(source=>source.account!=='granola');
+  if(!input.enabled){this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries');if(keep.length!==state.sources.length)this.withdraw(state,keep);else this.touch(state);}
+  else {state.status='pending';this.touch(state);}
+  this.write(state);if(!input.enabled)await this.serial(()=>this.cleanup());return this.get();
+ }
+ hasGranolaNote(id:string,version:string){return this.ctx.storage.sql.exec('SELECT id FROM owner_lens_granola WHERE id=? AND version=? AND observed>=?',id,version,Date.now()-OWNER_LENS_WINDOW).toArray().length>0;}
+ granolaRetryAfter(id:string,version:string){return this.ctx.storage.sql.exec<{next_attempt:number}>('SELECT next_attempt FROM owner_lens_granola_retries WHERE id=? AND version=?',id,version).toArray()[0]?.next_attempt??0;}
+ deferGranola(id:string,version:string,valid:()=>boolean){
+  const state=this.read();if(!valid()||!state.enabled||!state.granolaEnabled||this.hasGranolaNote(id,version))return;
+  const previous=this.ctx.storage.sql.exec<{attempts:number}>('SELECT attempts FROM owner_lens_granola_retries WHERE id=? AND version=?',id,version).toArray()[0];
+  const attempts=(previous?.attempts??0)+1,now=Date.now(),next=now+Math.min(3600000,60000*2**Math.min(attempts-1,6));
+  this.ctx.storage.sql.exec('INSERT OR REPLACE INTO owner_lens_granola_retries VALUES (?,?,?,?,?)',id,version,now,attempts,next);
+ }
+ /** Passages have already been attributed and selected by the Granola collector. */
+ async recordGranola(input:OwnerGranolaInput,valid:()=>boolean):Promise<void>{
+  if(!valid()||!this.read().granolaEnabled)return;
+  if(!input||typeof input.id!=='string'||!input.id||input.id.length>512||typeof input.version!=='string'||!input.version||input.version.length>512||typeof input.observedAt!=='string'||typeof input.title!=='string'||input.url!==null&&typeof input.url!=='string'||!Array.isArray(input.passages)||input.passages.length>8||input.passages.some(text=>typeof text!=='string'||!text.trim()||text.length>2000))throw Error('invalid_owner_lens');
+  const observed=Date.parse(input.observedAt);if(!Number.isFinite(observed))throw Error('invalid_owner_lens');if(observed<Date.now()-OWNER_LENS_WINDOW||observed>Date.now()||this.hasGranolaNote(input.id,input.version))return;
+  let url:string|null=null;try{const parsed=input.url&&input.url.length<=2048?new URL(input.url):null;if(parsed?.protocol==='https:'&&!parsed.username&&!parsed.password)url=parsed.href;}catch{}
+  const sources=await Promise.all(input.passages.map(async(text,index):Promise<StoredSource>=>({id:'owner-granola:'+await digest(JSON.stringify([input.id,input.version,index,text])),text,observedAt:new Date(observed).toISOString(),label:'Your Granola meeting',account:'granola',message:input.id,version:input.version,title:input.title.trim().slice(0,300),url})));
+  if(!valid())return;
+  this.ctx.storage.transactionSync(()=>{
+   const state=this.read();if(!state.enabled||!state.granolaEnabled||!valid()||this.hasGranolaNote(input.id,input.version))return;
+   const keep=state.sources.filter(source=>source.account!=='granola'||source.message!==input.id||source.version===input.version);
+   if(keep.length!==state.sources.length){this.withdraw(state,keep,false);this.write(state);}
+   this.ctx.storage.sql.exec('INSERT OR REPLACE INTO owner_lens_granola VALUES (?,?,?)',input.id,input.version,observed);
+   this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries WHERE id=?',input.id);
+   if(sources.length)this.addSources(state,sources);
+  });
+ }
+ /** No network here: refresh/alarm performs queued remote cleanup without nested locks. */
+ async reconcileGranola(eligible:Map<string,string>,force=false):Promise<void>{
+  const state=this.current(),keep=state.sources.filter(source=>source.account!=='granola'||!!source.version&&eligible.get(source.message)===source.version);
+  const stale=this.ctx.storage.sql.exec<{id:string;version:string}>('SELECT id,version FROM owner_lens_granola').toArray().filter(row=>eligible.get(row.id)!==row.version);
+  const staleRetries=this.ctx.storage.sql.exec<{id:string;version:string}>('SELECT id,version FROM owner_lens_granola_retries').toArray().filter(row=>eligible.get(row.id)!==row.version);
+  if(!force&&!stale.length&&!staleRetries.length&&keep.length===state.sources.length)return;
+  this.ctx.storage.transactionSync(()=>{
+   for(const row of stale)this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola WHERE id=?',row.id);
+   for(const row of staleRetries)this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries WHERE id=?',row.id);
+   if(keep.length!==state.sources.length)this.withdraw(state,keep);else this.touch(state);
+   this.write(state);
+  });
  }
  async recordMail(account:string,message:string,observed:number,raw:GmailMessage|null,valid:()=>boolean){
   if(!valid()||this.hasMessage(account,message))return;
@@ -215,6 +266,7 @@ export class OwnerLensStore {
   const state=this.current(),keep=state.sources.filter(s=>s.account!==account);
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages WHERE account=?',account);
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_retries WHERE account=?',account);
+  if(account==='granola'){this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola');this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries');}
   if(keep.length===state.sources.length){this.touch(state);this.write(state);return;}
   this.withdraw(state,keep);this.write(state);await this.serial(()=>this.cleanup());
  }

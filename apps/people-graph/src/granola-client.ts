@@ -23,8 +23,8 @@ export async function listGranolaFolders(apiKey:string,cursor?:string):Promise<F
 }
 
 export type NoteListOptions={folderId?:string;createdAfter?:string;updatedAfter?:string;cursor?:string};
-export type NoteDetail={id:string;title:string;webUrl:string|null;createdAt:string;updatedAt:string;meetingAt:string;dateBasis:'scheduled'|'created';ownerEmail:string|null;folderIds:string[];attendees:{email:string;name:string}[];summary:string;privateNotes:string};
-export type TranscriptPage={text:string;hasMore:boolean;cursor:string|null};
+export type NoteDetail={id:string;title:string;webUrl:string|null;createdAt:string;updatedAt:string;meetingAt:string;dateBasis:'scheduled'|'created';ownerEmail:string|null;ownerName?:string;folderIds:string[];attendees:{email:string;name:string}[];summary:string;privateNotes:string};
+export type TranscriptPage={text:string;ownerText:string;hasMore:boolean;cursor:string|null};
 const MAX_ATTENDEES=50;
 const MAX_TEXT=400*1024;
 const EMAIL=/^[^\s@]{1,64}@[^\s@]{1,255}$/;
@@ -59,7 +59,7 @@ export async function getGranolaNote(apiKey:string,noteId:string):Promise<NoteDe
  const scheduled=event&&validDate(event.scheduled_start_time)?event.scheduled_start_time:null;
  const owner=record(raw.owner)&&typeof raw.owner.email==='string'?raw.owner.email.trim().toLowerCase():null;
  const webUrl=typeof raw.web_url==='string'?safeGranolaUrl(raw.web_url):null;
- return {...base,webUrl,meetingAt:scheduled??base.createdAt,dateBasis:scheduled?'scheduled':'created',ownerEmail:owner&&EMAIL.test(owner)?owner:null,folderIds,attendees,summary:text(raw.summary_text),privateNotes:text(raw.private_notes_text)};
+ return {...base,webUrl,meetingAt:scheduled??base.createdAt,dateBasis:scheduled?'scheduled':'created',ownerEmail:owner&&EMAIL.test(owner)?owner:null,ownerName:record(raw.owner)&&typeof raw.owner.name==='string'?raw.owner.name.trim().slice(0,160):'',folderIds,attendees,summary:text(raw.summary_text),privateNotes:text(raw.private_notes_text)};
 }
 
 export async function getGranolaTranscript(apiKey:string,noteId:string,cursor?:string):Promise<TranscriptPage>{
@@ -67,14 +67,17 @@ export async function getGranolaTranscript(apiKey:string,noteId:string,cursor?:s
  const url=new URL(`/v1/notes/${noteId}/transcript`,BASE_URL);url.searchParams.set('page_size','100');if(cursor)url.searchParams.set('cursor',cursor);
  const raw=await granolaJSON(url,apiKey,MAX_TEXT);
  const page=pagination(raw,'transcript',cursor,100);
- const lines:string[]=[];
+ const lines:string[]=[],ownerLines:string[]=[];
  for(const item of page.items){
   if(!record(item)||typeof item.text!=='string')invalid('note_shape');
   const speaker=record(item.speaker)?item.speaker:{};
   const label=typeof speaker.name==='string'&&speaker.name.trim()?speaker.name.trim().slice(0,80):typeof speaker.diarization_label==='string'?speaker.diarization_label.slice(0,40):speaker.attribution==='me'?'me':'them';
   lines.push(`${label}: ${item.text.slice(0,4000)}`);
+  // A display name, microphone channel or anonymous diarization bucket alone is
+  // not evidence of who spoke (in-person recordings may share one microphone).
+  if(speaker.attribution==='me'&&item.text.length<=4000)ownerLines.push(item.text);
  }
- return {text:lines.join('\n'),hasMore:page.hasMore,cursor:page.cursor};
+ return {text:lines.join('\n'),ownerText:ownerLines.join('\n'),hasMore:page.hasMore,cursor:page.cursor};
 }
 
 function text(value:unknown):string{return typeof value==='string'?value.slice(0,MAX_TEXT):'';}

@@ -14,10 +14,11 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
 try{
  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],calls=[];
+ page.setDefaultTimeout(5000);
  page.on('pageerror',e=>errors.push(e.message));
  await page.route('https://accounts.google.com/**',route=>route.abort());
  const stamp='2026-10-17T12:00:00Z';
- let state={revision:'r1',enabled:false,fields:{focus:'Agent interfaces',needs:'',offers:'Product feedback'},updatedAt:stamp,suggestions:[{id:'s1',kind:'need',text:'Talk to design partners',sourceIds:['n1']},{id:'s2',kind:'offer',text:'A second suggestion',sourceIds:['n1']}],sources:[{id:'n1',text:'I am looking for design partners.',observedAt:stamp,label:'Your note'}],honcho:{configured:false,status:'unconfigured',lastSync:null}},conflict=false,failSave=false,cleanupPending=true,slow=false,release;
+ let state={revision:'r1',enabled:false,granolaEnabled:false,fields:{focus:'Agent interfaces',needs:'',offers:'Product feedback'},updatedAt:stamp,suggestions:[{id:'s1',kind:'need',text:'Talk to design partners',sourceIds:['n1','g1','g2','g3']},{id:'s2',kind:'offer',text:'A second suggestion',sourceIds:['n1']}],sources:[{id:'n1',text:'I am looking for design partners.',observedAt:stamp,label:'Your note'},{id:'g1',text:'Kaya is researching agent interfaces.',observedAt:stamp,label:'Your Granola meeting',title:'Design research meeting',url:'https://notes.granola.ai/d/research'},{id:'g2',text:'Kaya would like design feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Untrusted destination',url:'https://granola.ai.evil.test/d/research'},{id:'g3',text:'Kaya can share product feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Unsafe scheme',url:'javascript:alert(1)'}],honcho:{configured:false,status:'unconfigured',lastSync:null}},conflict=false,failSave=false,cleanupPending=true,slow=false,release;
  const graph={source:'email_accounts',nodes:[{id:'p',name:'Jordan Rivera',type:'person',strength:50,momentum:50,combined:50,directRelationship:true}],edges:[],themes:[],themeSignals:[]};
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname;
@@ -32,7 +33,8 @@ try{
    if(failSave&&body.action==='save'){failSave=false;return reply({error:'temporarily_unavailable'},503);}
    if(conflict){conflict=false;state={...state,revision:'r-conflict',fields:{...state.fields,focus:'Changed elsewhere'}};return reply({error:'revision_conflict'},409);}
    if(body.action==='save')state={...state,fields:body.fields};
-   if(body.action==='learning'){state={...state,enabled:body.enabled};if(!body.enabled){state.honcho={...state.honcho,status:cleanupPending?'unavailable':'disabled'};cleanupPending=false;}}
+   if(body.action==='learning'){state={...state,enabled:body.enabled};if(!body.enabled){state.granolaEnabled=false;state.honcho={...state.honcho,status:cleanupPending?'unavailable':'disabled'};cleanupPending=false;}}
+   if(body.action==='granola')state={...state,granolaEnabled:body.enabled};
    if(body.action==='accept'){const suggestion=state.suggestions.find(s=>s.id===body.id);state={...state,fields:{...state.fields,[{focus:'focus',need:'needs',offer:'offers'}[suggestion.kind]]:suggestion.text}};}
    if(['accept','dismiss'].includes(body.action))state={...state,suggestions:state.suggestions.filter(s=>s.id!==body.id)};
    state={...state,revision:'r'+calls.length,updatedAt:stamp};return reply(state);
@@ -48,7 +50,9 @@ try{
  const panel=page.getByRole('dialog',{name:'Your lens',exact:true});
  await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
  assert.doesNotMatch(await panel.locator('textarea').first().evaluate(node=>getComputedStyle(node).fontFamily),/monospace/i,'the editor must inherit readable app typography');
- assert.equal(await panel.getByRole('checkbox',{name:'Learn from my sent emails'}).isChecked(),false);
+ assert.equal(await panel.getByRole('checkbox',{name:'Learn from my work context'}).isChecked(),false);
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isChecked(),false);
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isDisabled(),true);
  assert.equal(await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).isDisabled(),true,'learning must be enabled before generating suggestions');
  assert.equal(await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).isDisabled(),true);
  assert.match(await panel.innerText(),/Honcho.*not configured/i);
@@ -56,22 +60,35 @@ try{
  await panel.getByRole('button',{name:'Save lens',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Saved'));
  assert.equal(calls[0].fields.focus,'Researching useful agent interfaces');
+ await panel.getByText('Based on your work context',{exact:true}).first().click();
+ const suggestion=panel.locator('.owner-lens-suggestion').first();
+ assert.equal(await suggestion.getByRole('link',{name:'Design research meeting'}).getAttribute('href'),'https://notes.granola.ai/d/research');
+ assert.equal(await suggestion.locator('a').count(),1,'only approved HTTPS Granola destinations become links');
+ assert.match(await suggestion.innerText(),/Your Granola meeting/);
+ assert.match(await suggestion.innerText(),/Kaya is researching agent interfaces/);
  await panel.getByRole('button',{name:'Use update',exact:true}).first().click();
  await page.waitForFunction(()=>document.querySelector('[aria-label="Looking for"]')?.value==='Talk to design partners');
  await panel.getByRole('button',{name:'Dismiss',exact:true}).click();
  await page.waitForFunction(()=>!document.body.textContent.includes('A second suggestion'));
  assert.equal(calls.at(-1).action,'dismiss');
- await panel.getByRole('checkbox',{name:'Learn from my sent emails'}).check();
+ await panel.getByRole('checkbox',{name:'Learn from my work context'}).check();
  await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Learning enabled'));
  assert.equal(calls.at(-1).enabled,true);
+ await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).check();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Granola notes included'));
+ assert.equal(calls.at(-1).action,'granola');
+ assert.equal(calls.at(-1).enabled,true);
+ assert.equal(typeof calls.at(-1).revision,'string');
  await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).fill('I am exploring agent interfaces with design partners.');
  await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Honcho is not configured'));
  assert.equal(calls.at(-1).note,'I am exploring agent interfaces with design partners.');
  assert.equal(await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).inputValue(),'I am exploring agent interfaces with design partners.');
- await panel.getByRole('checkbox',{name:'Learn from my sent emails'}).uncheck();
+ await panel.getByRole('checkbox',{name:'Learn from my work context'}).uncheck();
  await panel.getByRole('button',{name:'Retry clearing learned context',exact:true}).waitFor();
  assert.match(await panel.innerText(),/Clearing learned context is still pending/);
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isChecked(),false,'master off resets Granola consent');
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isDisabled(),true);
  await panel.getByRole('button',{name:'Retry clearing learned context',exact:true}).click();
  await page.waitForFunction(()=>!document.querySelector('.owner-lens-cleanup')||document.querySelector('.owner-lens-cleanup').hidden);
  assert.equal(calls.at(-1).enabled,false);

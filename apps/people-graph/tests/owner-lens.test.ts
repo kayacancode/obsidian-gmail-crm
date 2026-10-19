@@ -21,6 +21,7 @@ async function enabled(store:OwnerLensStore){return store.setEnabled({revision:s
 async function addMail(store:OwnerLensStore,id='sent',account=OWN,text=WORK,observed=Date.now()-1000){await store.recordMail(account,id,observed,message(id,account,text,observed),store.guard());}
 async function account(f:ReturnType<typeof fixture>,email=OWN){f.db.prepare('INSERT INTO accounts VALUES (?,?)').run(email,JSON.stringify({email,grant:await seal('refresh-token',f.env.MAIL_TOKEN_KEY),revision:'account-revision',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+3600000}));}
 function indexed(f:ReturnType<typeof fixture>,id:string,sent=1,observed=Date.now()-1000){f.db.prepare('INSERT INTO messages VALUES (?,?,?)').run(OWN,id,id);f.db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(OWN,id,'friend@example.com','Friend',observed,'Research',sent,sent?0:1);}
+function granolaNote(id='meeting',version='version-1',passages=[WORK]){return {id,version,observedAt:new Date(Date.now()-500).toISOString(),title:'Research meeting',url:'https://notes.granola.ai/d/meeting',passages};}
 function honchoNetwork(options:{chat?:()=>Promise<void>;deleteFailure?:boolean}={}){
  const original=globalThis.fetch,calls:{path:string;body:any;method:string}[]=[],messages=new Map<string,any[]>(),metadata=new Map<string,any>();let workspacePresent=false;
  globalThis.fetch=async(input:any,init:any={})=>{
@@ -381,4 +382,81 @@ test('owner lens due retries cannot starve older mail that has not yet been atte
   clock+=86400000;state=await f.service.refreshOwnerLens({revision:state.revision});
   assert.deepEqual(readIds.slice(4),['good0','good1','good2','good3']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,4);
  }finally{Date.now=originalNow;net.restore();f.db.close();}
+});
+
+test('owner lens Granola opt-in defaults off for new and legacy state and stores only private selected passages',async()=>{
+ const f=fixture();try{
+  assert.equal(f.store.get().granolaEnabled,false);
+  const legacy=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);delete legacy.granolaEnabled;f.db.prepare('UPDATE owner_lens_state SET data=?').run(JSON.stringify(legacy));assert.equal(f.store.get().granolaEnabled,false);
+  await assert.rejects(f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true}),/owner_lens_disabled/);
+  await enabled(f.store);await f.store.recordGranola(granolaNote(),f.store.guard());assert.deepEqual(f.store.get().sources,[]);assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);
+  const prior=f.store.get();let state=await f.store.setGranolaEnabled({revision:prior.revision,enabled:true});await assert.rejects(f.store.setGranolaEnabled({revision:prior.revision,enabled:false}),/owner_lens_conflict/);
+  await f.store.recordGranola(granolaNote(),f.store.guard());state=f.store.get();assert.equal(state.sources.length,1);assert.equal(state.sources[0].label,'Your Granola meeting');assert.equal(state.sources[0].title,'Research meeting');assert.equal(state.sources[0].url,'https://notes.granola.ai/d/meeting');assert.equal(state.sources[0].text,WORK);
+  assert.ok(!('account' in state.sources[0]));assert.ok(!('message' in state.sources[0]));assert.ok(!('version' in state.sources[0]));assert.equal(f.store.hasGranolaNote('meeting','version-1'),true);
+  await f.store.recordGranola(granolaNote(),f.store.guard());assert.equal(f.store.get().sources.length,1);
+  await f.store.recordGranola(granolaNote('empty','empty-v1',[]),f.store.guard());assert.equal(f.store.hasGranolaNote('empty','empty-v1'),true);assert.equal(f.store.get().sources.length,1);
+  assert.equal(f.ai.calls.length,0);
+ }finally{f.db.close();}
+});
+
+test('owner lens disabling Granola withdraws its accepted evidence while preserving mail and manual fields',async()=>{
+ const f=fixture(true),net=honchoNetwork();try{
+  await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});await addMail(f.store);await f.store.recordGranola(granolaNote(),f.store.guard());
+  let state=f.store.update({revision:f.store.get().revision,fields:{focus:'',needs:'My manual need',offers:''}});
+  state=await f.store.refresh({revision:state.revision},async()=>{});assert.equal(state.suggestions[0].sourceIds[0],state.sources.find(source=>source.label==='Your Granola meeting')!.id);
+  state=f.store.decide({revision:state.revision,id:state.suggestions[0].id},true);assert.ok(state.fields.focus);
+  state=await f.store.setGranolaEnabled({revision:state.revision,enabled:false});assert.equal(state.granolaEnabled,false);assert.equal(state.enabled,true);assert.equal(state.fields.focus,'');assert.equal(state.fields.needs,'My manual need');assert.equal(state.sources.length,1);assert.equal(state.sources[0].label,'Your sent email');assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);assert.ok(net.calls.some(call=>call.method==='DELETE'));
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens reconciles changed and removed Granola versions without invalidating unchanged reads',async()=>{
+ const f=fixture();try{
+  await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});await addMail(f.store);await f.store.recordGranola(granolaNote(),f.store.guard());await f.store.recordGranola(granolaNote('empty','empty-v1',[]),f.store.guard());
+  const oldRevision=f.store.get().revision,valid=f.store.guard();await f.store.reconcileGranola(new Map([['meeting','version-1'],['empty','empty-v1']]));assert.equal(f.store.get().revision,oldRevision);assert.equal(valid(),true);
+  await f.store.reconcileGranola(new Map([['meeting','version-2']]));assert.equal(valid(),false);assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);assert.equal(f.store.hasGranolaNote('empty','empty-v1'),false);assert.equal(f.store.get().sources.length,1);assert.equal(f.store.get().sources[0].label,'Your sent email');assert.equal(f.store.get().honcho.cleanupPending,true);
+  await f.store.recordGranola(granolaNote('meeting','version-2'),f.store.guard());assert.equal(f.store.hasGranolaNote('meeting','version-2'),true);assert.equal(f.store.get().sources.length,2);
+  await f.store.reconcileGranola(new Map());assert.equal(f.store.get().sources.length,1);assert.equal(f.store.hasGranolaNote('meeting','version-2'),false);
+ }finally{f.db.close();}
+});
+
+test('owner lens late Granola writes cannot restore disabled or revoked meeting evidence',async()=>{
+ for(const action of ['granola-off','master-off','revoke'] as const){
+  const f=fixture();try{
+   await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});
+   const write=f.store.recordGranola(granolaNote(),f.store.guard());
+   if(action==='granola-off')await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:false});
+   else if(action==='master-off')await f.store.setEnabled({revision:f.store.get().revision,enabled:false});
+   else await f.store.reconcileGranola(new Map(),true);
+   await write;assert.deepEqual(f.store.get().sources,[]);assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);
+   if(action==='master-off'){assert.equal(f.store.get().enabled,false);assert.equal(f.store.get().granolaEnabled,false);}
+  }finally{f.db.close();}
+ }
+});
+
+test('owner lens Granola expiry clears private success markers and source evidence',async()=>{
+ const f=fixture(),originalNow=Date.now;let clock=originalNow();try{
+  Date.now=()=>clock;await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});await f.store.recordGranola(granolaNote(),f.store.guard());
+  clock+=OWNER_LENS_WINDOW+1000;assert.deepEqual(f.store.get().sources,[]);assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);
+ }finally{Date.now=originalNow;f.db.close();}
+});
+
+test('owner lens Granola passage bounds preserve exact text and sanitize citation links',async()=>{
+ const f=fixture();try{
+  await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});
+  await assert.rejects(f.store.recordGranola(granolaNote('too-many','v1',Array(9).fill(WORK)),f.store.guard()),/invalid_owner_lens/);
+  await assert.rejects(f.store.recordGranola(granolaNote('too-long','v1',['x'.repeat(2001)]),f.store.guard()),/invalid_owner_lens/);
+  const input={...granolaNote('bounded','v1',Array(8).fill(' '+WORK+' ')),url:'javascript:alert(1)',title:'x'.repeat(350)};
+  await f.store.recordGranola(input,f.store.guard());const first=f.store.get().sources;assert.equal(first.length,8);assert.ok(first.every(source=>source.text===' '+WORK+' '&&source.url===null&&source.title?.length===300));
+  await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:false});await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});await f.store.recordGranola(input,f.store.guard());assert.deepEqual(f.store.get().sources.map(source=>source.id),first.map(source=>source.id));
+ }finally{f.db.close();}
+});
+
+test('owner lens late provider response cannot restore Granola evidence after its opt-in is withdrawn',async()=>{
+ const f=fixture(true);let entered!:()=>void,release!:()=>void;const ready=new Promise<void>(resolve=>entered=resolve),held=new Promise<void>(resolve=>release=resolve),net=honchoNetwork({chat:async()=>{entered();await held;}});
+ try{
+  await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});await addMail(f.store);await f.store.recordGranola(granolaNote(),f.store.guard());
+  const running=f.store.refresh({revision:f.store.get().revision},async()=>{});await ready;
+  const disabled=f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:false});assert.equal(f.store.get().granolaEnabled,false);release();await running;await disabled;
+  assert.deepEqual(f.store.get().suggestions,[]);assert.equal(f.store.get().sources.length,1);assert.equal(f.store.get().sources[0].label,'Your sent email');assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);
+ }finally{release?.();net.restore();f.db.close();}
 });

@@ -15,11 +15,12 @@ export interface GranolaIdentitySuggestion {attendeeEmail:string;attendeeName:st
 export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus|null;range:GranolaRange|null;lastSync:number;nextSync:number;error:string;counts:{folders:number;notes:number;pending:number;extracted:number;failed:number;skipped:number};folders:{id:string;name:string;parentId:string|null;excluded:boolean;noteCount:number}[];identities:GranolaIdentitySuggestion[]}
 /** One Gmail contact, with the name and the canonical subject themes Jev may see. Never raw subjects. */
 export interface GranolaGmailContact {email:string;name:string;subjects:string[]}
-export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
+export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
+export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerNames:string[];summary:string;privateNotes:string;ownerTranscript:string}
 /** One attendee/contact pair queued for a single Jev judgment, carried in the job across ticks. */
 interface IdentityPair {attendeeEmail:string;attendeeName:string;contactEmail:string;contactName:string;meetings:string[];recentSubjects:string[]}
 export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'identity'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];identityPairs?:IdentityPair[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean;capDropped?:boolean}
-interface Connection {grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null;/** When TypeSafe first rejected the key; holds the paused state until a Jev call succeeds. */jevUnauthorizedAt?:number}
+interface Connection {lensGeneration?:string;grant:string;ownerEmail:string|null;status:GranolaConnectionStatus;range:GranolaRange;watermark:string|null;lastSync:number;nextSync:number;lastReconcile:number;error:string;job:GranolaJob|null;/** When TypeSafe first rejected the key; holds the paused state until a Jev call succeeds. */jevUnauthorizedAt?:number}
 
 export const GRANOLA_ACCOUNT='granola';
 export const LLAMA_EXTRACTOR_VERSION='granola-v2',JEV_EXTRACTOR_VERSION='granola-v3-jev';
@@ -28,6 +29,7 @@ export function extractorVersion(env:{TYPESAFE_API_KEY?:string}):string{return j
 const API_KEY=/^grn_[\x21-\x7e]{4,508}$/;
 const FOLDER_ID=/^fol_[a-zA-Z0-9]{14}$/;
 const HOUR=3_600_000,DAY=86_400_000;
+function wholeExcerpt(text:string,limit:number){if(text.length<=limit)return text;const prefix=text.slice(0,limit);const ends=[...prefix.matchAll(/[.!?](?=\s)|\n/g)];return ends.length?prefix.slice(0,ends.at(-1)!.index!+1):'';}
 
 export class GranolaSync {
  private static readonly FETCH_PER_TICK=5;
@@ -58,6 +60,7 @@ export class GranolaSync {
   // Added after the first release: who decided this row. An owner decision ('owner') is final —
   // a later auto judgment of another pair for the same attendee must never resurrect it.
   if(!ctx.storage.sql.exec("SELECT name FROM pragma_table_info('granola_identity') WHERE name='decided_by'").toArray().length)ctx.storage.sql.exec("ALTER TABLE granola_identity ADD COLUMN decided_by TEXT NOT NULL DEFAULT 'auto'");
+  ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS granola_owner_context (note_id TEXT PRIMARY KEY,version TEXT NOT NULL,data TEXT NOT NULL)');
  }
  private read():Connection|null{const row=this.ctx.storage.sql.exec<{grant:string;data:string}>('SELECT grant,data FROM granola_connection WHERE id=1').toArray()[0];if(!row)return null;return {...JSON.parse(row.data),grant:row.grant} as Connection;}
  private write(c:Connection){const {grant,...data}=c;this.ctx.storage.sql.exec('INSERT INTO granola_connection (id,grant,data) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET grant=excluded.grant,data=excluded.data',grant,JSON.stringify(data));}
@@ -74,8 +77,9 @@ export class GranolaSync {
   catch(e){if(e instanceof GranolaClientError)throw Error('granola:'+e.failure+':'+e.diagnostic);throw e;}
   const grant=await seal(apiKey,this.env.MAIL_TOKEN_KEY);
   const old=this.read();
-  const c:Connection={grant,ownerEmail:old?.ownerEmail??null,status:'syncing',range,watermark:null,lastSync:old?.lastSync??0,nextSync:0,lastReconcile:old?.lastReconcile??0,error:'',job:{phase:'folders',pending:[],maxUpdated:'',retries:0,nextAttempt:0,lastRun:0,started:Math.max(Date.now(),(old?.job?.started??0)+1),processed:0,initial:true,capDropped:false}};
+  const c:Connection={lensGeneration:crypto.randomUUID(),grant,ownerEmail:old?.ownerEmail??null,status:'syncing',range,watermark:null,lastSync:old?.lastSync??0,nextSync:0,lastReconcile:old?.lastReconcile??0,error:'',job:{phase:'folders',pending:[],maxUpdated:'',retries:0,nextAttempt:0,lastRun:0,started:Math.max(Date.now(),(old?.job?.started??0)+1),processed:0,initial:true,capDropped:false}};
   this.ctx.storage.transactionSync(()=>{this.write(c);this.upsertFolders(first.folders,Date.now());});
+  await this.hooks.ownerContextChanged?.(true);
   return this.status();
  }
  private upsertFolders(folders:{id:string;name:string;parentFolderId:string|null}[],now:number){for(const f of folders)this.ctx.storage.sql.exec('INSERT INTO granola_folders (id,name,parent_id,excluded,seen_at) VALUES (?,?,?,0,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id,seen_at=excluded.seen_at',f.id,f.name.slice(0,200),f.parentFolderId,now);}
@@ -102,8 +106,10 @@ export class GranolaSync {
    this.ctx.storage.sql.exec('UPDATE granola_folders SET excluded=0');
    for(const id of excluded)this.ctx.storage.sql.exec('UPDATE granola_folders SET excluded=1 WHERE id=?',id);
    this.recomputeHidden(excluded);
+   this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id IN (SELECT id FROM granola_notes WHERE hidden=1)');
    for(const row of this.ctx.storage.sql.exec<{id:string;folder_ids:string}>("SELECT id,folder_ids FROM granola_notes WHERE extraction_status='skipped'").toArray())if(!GranolaSync.hiddenFor(JSON.parse(row.folder_ids),excluded)){this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='refetch' WHERE id=?",row.id);refetched=true;}
   });
+  await this.hooks.ownerContextChanged?.(true);
   if(refetched){const c=this.read();if(c&&c.status==='connected'){c.nextSync=Date.now();this.write(c);}}
   await this.applyHiddenSignals();
   await this.hooks.invalidateGraph();
@@ -116,12 +122,61 @@ export class GranolaSync {
  syncNow():GranolaStatus{const c=this.read();if(c&&c.status!=='syncing'&&c.status!=='reconnect_required'){c.status='connected';c.error='';c.nextSync=Date.now();this.write(c);}return this.status();}
 
  async disconnect():Promise<void>{
-  this.ctx.storage.transactionSync(()=>{for(const t of ['granola_identity','granola_edges','granola_attendees','granola_notes','granola_folders','granola_connection'])this.ctx.storage.sql.exec(`DELETE FROM ${t}`);});
+  this.ctx.storage.transactionSync(()=>{for(const t of ['granola_owner_context','granola_identity','granola_edges','granola_attendees','granola_notes','granola_folders','granola_connection'])this.ctx.storage.sql.exec(`DELETE FROM ${t}`);});
+  await this.hooks.ownerContextChanged?.(true);
   await this.hooks.store().removeAccountData(GRANOLA_ACCOUNT);
   await this.hooks.invalidateGraph();
  }
 
  nextDue(now=Date.now()):number|undefined{const c=this.read();if(!c)return undefined;if(c.status==='syncing')return Math.max(now+1500,c.job?.nextAttempt??0);if(c.status==='connected')return Math.max(now+1000,c.nextSync);return undefined;}
+
+ /** Only locally imported, visible recent notes are eligible for private owner learning. */
+ ownerLensVersions():Map<string,string>{
+  const c=this.read();if(!c||!['connected','syncing'].includes(c.status))return new Map();
+  return new Map(this.ctx.storage.sql.exec<{id:string;content_hash:string;updated_at:string}>("SELECT id,content_hash,updated_at FROM granola_notes WHERE hidden=0 AND extraction_status<>'refetch' AND meeting_at>=? AND meeting_at<=? ORDER BY meeting_at DESC LIMIT 1000",new Date(Date.now()-90*DAY).toISOString(),new Date().toISOString()).toArray().map(r=>[r.id,(c.lensGeneration??'legacy')+':'+r.content_hash+':'+r.updated_at]));
+ }
+
+ /** Legacy flattened transcripts lost speaker identity. Rehydrate a bounded number of
+  * pages instead of guessing from their labels, then cache by the imported note version. */
+ async ownerLensNote(id:string,version:string,ownerEmails:string[],valid:()=>boolean):Promise<GranolaOwnerNote|null>{
+  const c=this.read();if(!c||!valid()||this.ownerLensVersions().get(id)!==version)return null;
+  const current=()=>valid()&&this.read()?.grant===c.grant&&this.ownerLensVersions().get(id)===version;
+  const cached=this.ctx.storage.sql.exec<{version:string;data:string}>('SELECT version,data FROM granola_owner_context WHERE note_id=?',id).toArray()[0];
+  let detail:NoteDetail,ownerTranscript='';
+  if(cached?.version===version){const data=JSON.parse(cached.data) as {detail:NoteDetail;ownerTranscript:string};detail=data.detail;ownerTranscript=data.ownerTranscript;}
+  else {
+   const key=await unseal(c.grant,this.env.MAIL_TOKEN_KEY!);if(!current())return null;
+   try{detail=await getGranolaNote(key,id);}catch(error){
+    if(error instanceof GranolaClientError&&['http_4xx'].includes(error.diagnostic)){
+     if(current()){this.ctx.storage.sql.exec('UPDATE granola_notes SET hidden=1 WHERE id=?',id);await this.hooks.ownerContextChanged?.();}return null;
+    }throw error;
+   }
+   if(!current())return null;
+   const row=this.ctx.storage.sql.exec<{updated_at:string}>('SELECT updated_at FROM granola_notes WHERE id=?',id).toArray()[0];
+   if(detail.updatedAt!==row?.updated_at||GranolaSync.hiddenFor(detail.folderIds,this.excludedIds())){
+    this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='refetch',hidden=? WHERE id=?",GranolaSync.hiddenFor(detail.folderIds,this.excludedIds()),id);
+    this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=?',id);this.syncNow();await this.hooks.ownerContextChanged?.();return null;
+   }
+   if(detail.ownerEmail&&ownerEmails.includes(detail.ownerEmail)){
+    let cursor:string|undefined;
+    for(let i=0;i<3;i++){
+     const page=await getGranolaTranscript(key,id,cursor);if(!current())return null;
+     ownerTranscript+=(ownerTranscript?'\n':'')+page.ownerText;
+     if(ownerTranscript.length>=16000||!page.hasMore||!page.cursor)break;cursor=page.cursor;
+    }
+    ownerTranscript=wholeExcerpt(ownerTranscript,16000);
+   }
+   if(!current())return null;
+   // Store only bounded source material used by the private learner.
+   detail={...detail,summary:wholeExcerpt(detail.summary,16000),privateNotes:wholeExcerpt(detail.privateNotes,8000)};
+   this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_owner_context VALUES (?,?,?)',id,version,JSON.stringify({detail,ownerTranscript}));
+  }
+  const own=new Set(ownerEmails),ownerNames=detail.attendees.filter(a=>own.has(a.email)).map(a=>a.name);
+  if(detail.ownerEmail&&own.has(detail.ownerEmail)&&detail.ownerName)ownerNames.push(detail.ownerName);
+  // A first name is useful in notes only when no other attendee shares it.
+  for(const name of [...ownerNames]){const first=name.split(/\s+/)[0];if(first.length>=3&&!detail.attendees.some(a=>!own.has(a.email)&&a.name.split(/\s+/)[0].toLowerCase()===first.toLowerCase()))ownerNames.push(first);}
+  return {id,version,observedAt:detail.meetingAt,title:detail.title,url:detail.webUrl,ownerNames:[...new Set(ownerNames)],summary:detail.summary,privateNotes:detail.privateNotes,ownerTranscript:detail.ownerEmail&&own.has(detail.ownerEmail)?ownerTranscript:''};
+ }
 
  async tick(now=Date.now()):Promise<void>{
   let c=this.read();if(!c)return;
@@ -156,6 +211,7 @@ export class GranolaSync {
   for(let i=0;i<20;i++){const page=await listGranolaFolders(apiKey,cursor);this.checkRun(started);this.ctx.storage.transactionSync(()=>this.upsertFolders(page.folders,now));if(!page.hasMore||!page.cursor)break;cursor=page.cursor;}
   this.ctx.storage.sql.exec('DELETE FROM granola_folders WHERE seen_at<?',now-7*DAY);
   this.recomputeHidden(this.excludedIds());
+  await this.hooks.ownerContextChanged?.();
   this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='pending',extraction=NULL WHERE extraction_status='done' AND extractor_version<>?",extractorVersion(this.env));
   // A failed note is retried a week after its last attempt (its sync time for rows written
   // before that column existed): one bad model day must not drop a meeting for good.
@@ -258,6 +314,8 @@ export class GranolaSync {
      for(let x=0;x<emails.length;x++)for(let y=x+1;y<emails.length;y++)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_edges VALUES (?,?,?)',item.id,emails[x],emails[y]);
     }
    });
+   this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=? AND version<>?',item.id,(c.lensGeneration??'legacy')+':'+contentHash+':'+detail.updatedAt);
+   await this.hooks.ownerContextChanged?.();
    if(status!=='done')await this.removeNoteSignals(item.id);
    if(detail.ownerEmail&&!c.ownerEmail)c.ownerEmail=detail.ownerEmail;
    job.pending.shift();job.processed++;this.commit(c,started);
@@ -595,7 +653,7 @@ export class GranolaSync {
   const gone=this.ctx.storage.sql.exec<{id:string}>('SELECT id FROM granola_notes').toArray().map(r=>r.id).filter(id=>!seen.has(id));
   for(const id of gone){this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM granola_edges WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_attendees WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_notes WHERE id=?',id);});await this.removeNoteSignals(id);}
   const fresh=this.checkRun(started);fresh.lastReconcile=now;fresh.job!.seenIds=[];fresh.job!.phase='folders';fresh.job!.cursor=undefined;this.write(fresh);
-  if(gone.length)await this.hooks.invalidateGraph();
+  if(gone.length){this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id NOT IN (SELECT id FROM granola_notes)');await this.hooks.ownerContextChanged?.();await this.hooks.invalidateGraph();}
  }
 
  protected async removeNoteSignals(noteId:string){await this.hooks.store().removeSignalsByEvidencePrefix(GRANOLA_ACCOUNT,`granola-note:${noteId}#`);}

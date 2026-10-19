@@ -1,4 +1,5 @@
 import {OwnerLensStore,OWNER_LENS_WINDOW,ownerLensDiagnostic,type OwnerLensDiagnosticStage,type OwnerLensFields,type OwnerLensCollectionResult} from './owner-lens';
+import {collectGranolaOwnerPassages} from './granola-owner-context';
 import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
@@ -35,16 +36,17 @@ export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
  private ownerLens(){return this.ownerLensStore??=new OwnerLensStore(this.ctx,this.env,()=>this.ctx.storage.get<string>('owner'));}
- async getOwnerLens(){const value=this.ownerLens().get();await this.scheduleNextAlarm();return value;}
+ async getOwnerLens(){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().get();await this.scheduleNextAlarm();return value;}
  async updateOwnerLens(input:{revision:string;fields:OwnerLensFields}){const value=this.ownerLens().update(input);await this.scheduleNextAlarm();return value;}
  async setOwnerLensEnabled(input:{revision:string;enabled:boolean}){const value=await this.ownerLens().setEnabled(input);await this.scheduleNextAlarm();return value;}
- async refreshOwnerLens(input:{revision:string;note?:string}){const value=await this.ownerLens().refresh(input,valid=>this.collectOwnerLens(valid));await this.scheduleNextAlarm();return value;}
- async acceptOwnerLensSuggestion(input:{revision:string;id:string}){const value=this.ownerLens().decide(input,true);await this.scheduleNextAlarm();return value;}
+ async setOwnerLensGranolaEnabled(input:{revision:string;enabled:boolean}){const value=await this.ownerLens().setGranolaEnabled(input);await this.scheduleNextAlarm();return value;}
+ async refreshOwnerLens(input:{revision:string;note?:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=await this.ownerLens().refresh(input,valid=>this.collectOwnerLens(valid));await this.scheduleNextAlarm();return value;}
+ async acceptOwnerLensSuggestion(input:{revision:string;id:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().decide(input,true);await this.scheduleNextAlarm();return value;}
  async dismissOwnerLensSuggestion(input:{revision:string;id:string}){const value=this.ownerLens().decide(input,false);await this.scheduleNextAlarm();return value;}
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
- private granola(){return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email)});}
+ private granola():GranolaSync{return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),ownerContextChanged:(force=false)=>this.ownerLens().reconcileGranola(this.granola().ownerLensVersions(),force),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email)});}
  /**
   * Gmail contacts for identity matching: one row per address with its most common display name
   * and up to five canonical subject theme names. Raw subject lines never leave this object.
@@ -83,7 +85,7 @@ export class MailSync extends DurableObject<MailEnv>{
   a.job={contextVersion:a.contextEnabled?GMAIL_CONTEXT_VERSION:undefined,calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending,hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};
   a.range=selected;a.status='syncing';a.error='';a.contextError='';this.put(a);if(schedule)await this.scheduleNextAlarm();
  }
- async remove(email:string){this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
+ async remove(email:string){this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.ownerLens().reconcileGranola(new Map(),true);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
  async granolaConnect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{const status=await this.granola().connect(apiKey,range);await this.scheduleNextAlarm();return status;}
  granolaStatus():GranolaStatus{return this.granola().status();}
  async granolaExcluded(ids:string[]):Promise<GranolaStatus>{const status=await this.granola().setExcluded(ids);await this.scheduleNextAlarm();return status;}
@@ -171,6 +173,28 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
 
  /** Bounded owner learning uses only recent messages already attributed as sent. */
  private async collectOwnerLens(valid:()=>boolean):Promise<OwnerLensCollectionResult|void>{
+  let granolaFailed=0,granolaDeferred=0;
+  if(this.ownerLens().get().granolaEnabled){
+   const owner=await this.ctx.storage.get<string>('owner'),ownerEmails=[...new Set([...(owner?[owner]:[]),...this.rows().map(a=>a.email)])];
+   const eligible=[...this.granola().ownerLensVersions()].filter(([id,version])=>!this.ownerLens().hasGranolaNote(id,version));
+   granolaDeferred=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)>Date.now()).length;
+   const selected=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)<=Date.now()).sort((a,b)=>Number(this.ownerLens().granolaRetryAfter(...a)>0)-Number(this.ownerLens().granolaRetryAfter(...b)>0)).slice(0,3);
+   if(!this.granola().status().connected)granolaFailed++;
+   for(const [id,version] of selected){
+    const current=()=>valid()&&this.ownerLens().get().granolaEnabled&&this.granola().ownerLensVersions().get(id)===version;
+    if(!current())break;
+    try{
+     const note=await this.granola().ownerLensNote(id,version,ownerEmails,current);if(!current())break;if(!note){granolaFailed++;continue;}
+     const passages=await collectGranolaOwnerPassages(this.env,{...note,ownerEmails});if(!current())break;
+     await this.ownerLens().recordGranola({...note,passages},current);
+    }catch(error){granolaFailed++;this.ownerLens().deferGranola(id,version,current);ownerLensDiagnostic('note-extraction',error);}
+   }
+  }
+  if(!valid())return;
+  try{const result=await this.collectOwnerMail(valid);return {failed:granolaFailed+(result?.failed??0),deferred:granolaDeferred+(result?.deferred??0)};}
+  catch(error){if(this.ownerLens().get().granolaEnabled)return {failed:granolaFailed+1,deferred:granolaDeferred};throw error;}
+ }
+ private async collectOwnerMail(valid:()=>boolean):Promise<OwnerLensCollectionResult|void>{
   const started=Date.now();let stage:OwnerLensDiagnosticStage='selection',selectedCount=0,attempted=0,failed=0,httpStatus:number|undefined;
   try{
    const accounts=new Map(this.rows().filter(a=>['connected','syncing'].includes(a.status)).map(a=>[a.email,a]));
