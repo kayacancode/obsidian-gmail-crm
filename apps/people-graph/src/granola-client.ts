@@ -23,7 +23,7 @@ export async function listGranolaFolders(apiKey:string,cursor?:string):Promise<F
 }
 
 export type NoteListOptions={folderId?:string;createdAfter?:string;updatedAfter?:string;cursor?:string};
-export type NoteDetail={id:string;title:string;webUrl:string|null;createdAt:string;updatedAt:string;meetingAt:string;dateBasis:'scheduled'|'created';ownerEmail:string|null;ownerName?:string;folderIds:string[];attendees:{email:string;name:string}[];summary:string;privateNotes:string};
+export type NoteDetail={id:string;title:string;webUrl:string|null;createdAt:string;updatedAt:string;meetingAt:string;dateBasis:'scheduled'|'created';ownerEmail:string|null;ownerName?:string;ownedByKey:boolean;folderIds:string[];attendees:{email:string;name:string}[];summary:string;privateNotes:string};
 export type TranscriptPage={text:string;ownerText:string;hasMore:boolean;cursor:string|null};
 const MAX_ATTENDEES=50;
 const MAX_TEXT=400*1024;
@@ -59,7 +59,10 @@ export async function getGranolaNote(apiKey:string,noteId:string):Promise<NoteDe
  const scheduled=event&&validDate(event.scheduled_start_time)?event.scheduled_start_time:null;
  const owner=record(raw.owner)&&typeof raw.owner.email==='string'?raw.owner.email.trim().toLowerCase():null;
  const webUrl=typeof raw.web_url==='string'?safeGranolaUrl(raw.web_url):null;
- return {...base,webUrl,meetingAt:scheduled??base.createdAt,dateBasis:scheduled?'scheduled':'created',ownerEmail:owner&&EMAIL.test(owner)?owner:null,ownerName:record(raw.owner)&&typeof raw.owner.name==='string'?raw.owner.name.trim().slice(0,160):'',folderIds,attendees,summary:text(raw.summary_text),privateNotes:text(raw.private_notes_text)};
+ // Granola returns these fields only for the note creator's own API key;
+ // shared notes and workspace keys return null. Preserve empty strings as proof.
+ const ownedByKey=typeof raw.private_notes_text==='string'||typeof raw.private_notes_markdown==='string';
+ return {...base,webUrl,meetingAt:scheduled??base.createdAt,dateBasis:scheduled?'scheduled':'created',ownerEmail:owner&&EMAIL.test(owner)?owner:null,ownerName:record(raw.owner)&&typeof raw.owner.name==='string'?raw.owner.name.trim().slice(0,160):'',ownedByKey,folderIds,attendees,summary:text(raw.summary_text),privateNotes:text(raw.private_notes_text)};
 }
 
 export async function getGranolaTranscript(apiKey:string,noteId:string,cursor?:string):Promise<TranscriptPage>{

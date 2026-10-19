@@ -191,7 +191,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
     if(!current())break;
     try{
      const note=await this.granola().ownerLensNote(id,version,ownerEmails,current);if(!current())break;if(!note){granolaFailed++;continue;}
-     const passages=await collectGranolaOwnerPassages(this.env,{...note,ownerEmails});if(!current())break;
+     const passages=await collectGranolaOwnerPassages(this.env,note);if(!current())break;
      const meetingPassages=!passages.length&&note.attended?await collectGranolaMeetingTopics(this.env,{summary:note.summary}):[];if(!current())break;
      console.info(JSON.stringify({event:'owner_lens_granola_selection',attended:note.attended,summaryChars:note.summary.length,ownerNameCount:note.ownerNames.length,ownerTranscriptChars:note.ownerTranscript.length,statements:passages.length,meetingPassages:meetingPassages.length}));
      await this.ownerLens().recordGranola({...note,passages,meetingPassages},current);

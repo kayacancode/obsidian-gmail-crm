@@ -23,8 +23,25 @@ test('getGranolaNote normalises attendees, folders, dates and drops transcript f
   folder_membership:[{id:'fol_1234567890abcd',object:'folder',name:'Pilot',parent_folder_id:null}],
   summary_text:'Ada asked for an intro.',summary_markdown:'## x',private_notes_text:'my note',private_notes_markdown:'my note',transcript:[{text:'SECRET'}]};
  const note=await withFetch((async()=>Response.json(raw)) as typeof fetch,()=>getGranolaNote(KEY,NOTE));
- assert.deepEqual(note,{id:NOTE,title:'Pilot sync',webUrl:'https://notes.granola.ai/d/abc',createdAt:'2026-08-14T12:00:00Z',updatedAt:'2026-08-15T12:00:00Z',meetingAt:'2026-08-14T11:00:00Z',dateBasis:'scheduled',ownerEmail:'me@example.test',ownerName:'Me',folderIds:['fol_1234567890abcd'],attendees:[{email:'ada@example.test',name:'Ada Lovelace'},{email:'bob@example.test',name:'bob'}],summary:'Ada asked for an intro.',privateNotes:'my note'});
+ assert.deepEqual(note,{id:NOTE,title:'Pilot sync',webUrl:'https://notes.granola.ai/d/abc',createdAt:'2026-08-14T12:00:00Z',updatedAt:'2026-08-15T12:00:00Z',meetingAt:'2026-08-14T11:00:00Z',dateBasis:'scheduled',ownerEmail:'me@example.test',ownerName:'Me',ownedByKey:true,folderIds:['fol_1234567890abcd'],attendees:[{email:'ada@example.test',name:'Ada Lovelace'},{email:'bob@example.test',name:'bob'}],summary:'Ada asked for an intro.',privateNotes:'my note'});
  assert.ok(!JSON.stringify(note).includes('SECRET'));
+});
+
+for(const {label,fields,owned,privateNotes} of [
+ {label:'owner private text',fields:{private_notes_text:'My project notes.',private_notes_markdown:null},owned:true,privateNotes:'My project notes.'},
+ {label:'empty owner private text',fields:{private_notes_text:'',private_notes_markdown:null},owned:true,privateNotes:''},
+ {label:'owner private markdown only',fields:{private_notes_text:null,private_notes_markdown:'My project notes.'},owned:true,privateNotes:''},
+ {label:'empty owner private markdown',fields:{private_notes_text:null,private_notes_markdown:''},owned:true,privateNotes:''},
+ {label:'shared note with null private fields',fields:{private_notes_text:null,private_notes_markdown:null},owned:false,privateNotes:''},
+ {label:'workspace note with null private fields',fields:{private_notes_text:null,private_notes_markdown:null},owned:false,privateNotes:''},
+ {label:'missing private fields',fields:{},owned:false,privateNotes:''},
+ {label:'malformed private fields',fields:{private_notes_text:123,private_notes_markdown:{}},owned:false,privateNotes:''},
+])test(`getGranolaNote key ownership uses raw private-field presence: ${label}`,async()=>{
+ const raw={id:NOTE,object:'note',title:'Project discussion',owner:{name:'Different Account',email:'different-account@example.test'},created_at:'2026-08-14T12:00:00Z',updated_at:'2026-08-15T12:00:00Z',web_url:null,calendar_event:null,attendees:[],folder_membership:[],summary_text:'Project discussion.',summary_markdown:null,...fields};
+ const note=await withFetch((async()=>Response.json(raw)) as typeof fetch,()=>getGranolaNote(KEY,NOTE));
+ assert.equal(note.ownedByKey,owned);
+ assert.equal(note.ownerEmail,'different-account@example.test');
+ assert.equal(note.privateNotes,privateNotes);
 });
 
 test('getGranolaNote falls back to created_at and rejects non-granola web urls',async()=>{

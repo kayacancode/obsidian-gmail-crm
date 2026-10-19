@@ -16,7 +16,7 @@ export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus
 /** One Gmail contact, with the name and the canonical subject themes Jev may see. Never raw subjects. */
 export interface GranolaGmailContact {email:string;name:string;subjects:string[]}
 export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
-export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerNames:string[];attended:boolean;summary:string;privateNotes:string;ownerTranscript:string}
+export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerEmails:string[];ownerNames:string[];attended:boolean;summary:string;privateNotes:string;ownerTranscript:string}
 /** One attendee/contact pair queued for a single Jev judgment, carried in the job across ticks. */
 interface IdentityPair {attendeeEmail:string;attendeeName:string;contactEmail:string;contactName:string;meetings:string[];recentSubjects:string[]}
 export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'identity'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];identityPairs?:IdentityPair[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean;capDropped?:boolean}
@@ -133,7 +133,7 @@ export class GranolaSync {
  /** Only locally imported, visible recent notes are eligible for private owner learning. */
  ownerLensVersions():Map<string,string>{
   const c=this.read();if(!c||!['connected','syncing'].includes(c.status))return new Map();
-  return new Map(this.ctx.storage.sql.exec<{id:string;content_hash:string;updated_at:string}>("SELECT id,content_hash,updated_at FROM granola_notes WHERE hidden=0 AND extraction_status<>'refetch' AND meeting_at>=? AND meeting_at<=? ORDER BY meeting_at DESC LIMIT 1000",new Date(Date.now()-90*DAY).toISOString(),new Date().toISOString()).toArray().map(r=>[r.id,'lens-v2:'+(c.lensGeneration??'legacy')+':'+r.content_hash+':'+r.updated_at]));
+  return new Map(this.ctx.storage.sql.exec<{id:string;content_hash:string;updated_at:string}>("SELECT id,content_hash,updated_at FROM granola_notes WHERE hidden=0 AND extraction_status<>'refetch' AND meeting_at>=? AND meeting_at<=? ORDER BY meeting_at DESC LIMIT 1000",new Date(Date.now()-90*DAY).toISOString(),new Date().toISOString()).toArray().map(r=>[r.id,'lens-v3:'+(c.lensGeneration??'legacy')+':'+r.content_hash+':'+r.updated_at]));
  }
 
  /** Legacy flattened transcripts lost speaker identity. Rehydrate a bounded number of
@@ -157,7 +157,7 @@ export class GranolaSync {
     this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='refetch',hidden=? WHERE id=?",GranolaSync.hiddenFor(detail.folderIds,this.excludedIds()),id);
     this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=?',id);this.syncNow();await this.hooks.ownerContextChanged?.();return null;
    }
-   if(detail.ownerEmail&&ownerEmails.includes(detail.ownerEmail)){
+   if(detail.ownedByKey===true||detail.ownerEmail&&ownerEmails.includes(detail.ownerEmail)){
     let cursor:string|undefined;
     for(let i=0;i<3;i++){
      const page=await getGranolaTranscript(key,id,cursor);if(!current())return null;
@@ -171,11 +171,14 @@ export class GranolaSync {
    detail={...detail,summary:wholeExcerpt(detail.summary,16000),privateNotes:wholeExcerpt(detail.privateNotes,8000)};
    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_owner_context VALUES (?,?,?)',id,version,JSON.stringify({detail,ownerTranscript}));
   }
-  const own=new Set(ownerEmails),ownerNames=detail.attendees.filter(a=>own.has(a.email)).map(a=>a.name);
-  if(detail.ownerEmail&&own.has(detail.ownerEmail)&&detail.ownerName)ownerNames.push(detail.ownerName);
+  // Private-note availability verifies this note's creator, never a global identity.
+  const owned=detail.ownedByKey===true||Boolean(detail.ownerEmail&&ownerEmails.includes(detail.ownerEmail));
+  const noteOwnerEmails=[...new Set([...ownerEmails,...(detail.ownedByKey===true&&detail.ownerEmail?[detail.ownerEmail]:[])])];
+  const own=new Set(noteOwnerEmails),ownerNames=detail.attendees.filter(a=>own.has(a.email)).map(a=>a.name);
+  if(owned&&detail.ownerName)ownerNames.push(detail.ownerName);
   // A first name is useful in notes only when no other attendee shares it.
   for(const name of [...ownerNames]){const first=name.split(/\s+/)[0];if(first.length>=3&&!detail.attendees.some(a=>!own.has(a.email)&&a.name.split(/\s+/)[0].toLowerCase()===first.toLowerCase()))ownerNames.push(first);}
-  return {id,version,observedAt:detail.meetingAt,title:detail.title,url:detail.webUrl,ownerNames:[...new Set(ownerNames)],attended:Boolean(detail.ownerEmail&&own.has(detail.ownerEmail)||detail.attendees.some(a=>own.has(a.email))),summary:detail.summary,privateNotes:detail.privateNotes,ownerTranscript:detail.ownerEmail&&own.has(detail.ownerEmail)?ownerTranscript:''};
+  return {id,version,observedAt:detail.meetingAt,title:detail.title,url:detail.webUrl,ownerEmails:noteOwnerEmails,ownerNames:[...new Set(ownerNames)],attended:owned||detail.attendees.some(a=>own.has(a.email)),summary:detail.summary,privateNotes:detail.privateNotes,ownerTranscript:owned?ownerTranscript:''};
  }
 
  async tick(now=Date.now()):Promise<void>{
@@ -314,7 +317,7 @@ export class GranolaSync {
      for(let x=0;x<emails.length;x++)for(let y=x+1;y<emails.length;y++)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_edges VALUES (?,?,?)',item.id,emails[x],emails[y]);
     }
    });
-   this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=? AND version<>?',item.id,'lens-v2:'+(c.lensGeneration??'legacy')+':'+contentHash+':'+detail.updatedAt);
+   this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=? AND version<>?',item.id,'lens-v3:'+(c.lensGeneration??'legacy')+':'+contentHash+':'+detail.updatedAt);
    await this.hooks.ownerContextChanged?.();
    if(status!=='done')await this.removeNoteSignals(item.id);
    if(detail.ownerEmail&&!c.ownerEmail)c.ownerEmail=detail.ownerEmail;
