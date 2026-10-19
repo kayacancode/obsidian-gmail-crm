@@ -1,4 +1,5 @@
 import {repairLegacyGmailContext} from './gmail-context-graph';
+import {ownerLensRoute} from './owner-lens-routes';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
@@ -47,6 +48,11 @@ export default {
 		const { pathname } = url;
 
 		try {
+			if(pathname==='/api/lens'||pathname==='/api/lens/matches'){
+				const user=await requireGoogleUser(request,env);
+				if('error' in user)return json({error:user.error},401);
+				return await ownerLensRoute(request,env,user.email);
+			}
 			if (pathname === "/api/granola" || pathname.startsWith("/api/granola/")) {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({error:user.error,message:"Sign in to use Granola."},401);

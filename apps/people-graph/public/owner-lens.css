@@ -1,0 +1,37 @@
+.app-header .owner-lens-launch{flex:none;border:1px solid #ced5c9;border-radius:999px;background:#f5f7f0;color:#354531;padding:9px 15px;font-family:inherit;font-size:13px;line-height:1.2;font-weight:500;cursor:pointer;white-space:nowrap}
+.owner-lens-dialog{box-sizing:border-box;position:fixed;inset:16px 16px 16px auto;margin:0;width:min(480px,calc(100vw - 32px));max-width:none;height:calc(100dvh - 32px);max-height:none;border:1px solid #dfe3d9;border-radius:20px;padding:0;color:#273024;background:#fcfcf9;box-shadow:0 16px 70px #23321b26;font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:auto;overscroll-behavior:contain}
+.owner-lens-dialog::backdrop{background:#1e2e2438;backdrop-filter:blur(2px)}
+.owner-lens-dialog *{box-sizing:border-box}
+.owner-lens-heading{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;padding:23px 26px 17px;background:#fcfcf9;border-bottom:1px solid #e7e9e0}
+.owner-lens-heading h2{margin:3px 0 0;font-size:26px;letter-spacing:-.7px;font-weight:600}
+.owner-lens-eyebrow{margin:0;color:#6c7963;font-size:10px;letter-spacing:1.2px}
+.owner-lens-dialog button{border:1px solid #d4dbce;border-radius:9px;background:#fff;color:#344b2c;padding:9px 13px;font-family:inherit;font-size:13px;line-height:1.4;font-weight:500;cursor:pointer}
+.owner-lens-dialog .owner-lens-close{width:34px;height:34px;padding:0;background:transparent;border-color:transparent;color:#63705d;font-size:25px;line-height:1}
+.owner-lens-content{padding:20px 26px 28px}
+.owner-lens-intro{font-size:16px;margin:0 0 6px}
+.owner-lens-muted{font-size:12px;line-height:1.5;color:#6b7565;margin:7px 0 14px}
+.owner-lens-field{display:flex;flex-direction:column;gap:7px;margin:17px 0;font-size:13px;font-weight:600;color:#384932}
+.owner-lens-dialog textarea{display:block;width:100%;min-width:0;resize:vertical;min-height:70px;border:1px solid #d9ded3;border-radius:10px;padding:11px 12px;background:#fff;color:#263222;font-family:inherit;font-size:14px;line-height:1.5;font-weight:400}
+.owner-lens-dialog textarea::placeholder{color:#899180}
+.owner-lens-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.owner-lens-dialog .owner-lens-primary{background:#3d5137;border-color:#3d5137;color:#fff}
+.owner-lens-dialog .owner-lens-quiet{border-color:transparent;background:transparent;color:#6b7565}
+.owner-lens-dialog button:disabled{opacity:.5;cursor:default}
+.owner-lens-dialog :is(button,input,textarea,summary):focus-visible,.owner-lens-launch:focus-visible{outline:2px solid #729067;outline-offset:3px}
+.owner-lens-status{margin:8px 0;color:#4c6541;font-size:13px;line-height:1.5}
+.owner-lens-status:empty{display:none}
+.owner-lens-dialog h3{font-size:15px;font-weight:600;margin:0 0 8px}
+.owner-lens-suggestions:not(:empty),.owner-lens-learning{margin-top:24px;padding-top:22px;border-top:1px solid #e3e7dc}
+.owner-lens-suggestion,.owner-lens-match{padding:17px 16px;margin-top:12px;border:1px solid #e1e6d9;border-radius:12px;background:#f6f8f1;overflow-wrap:anywhere}
+.owner-lens-suggestion p,.owner-lens-match p{margin:8px 0}
+.owner-lens-category{font-size:10px;color:#6b7e5e;text-transform:uppercase;letter-spacing:.6px}
+.owner-lens-dialog summary{color:#64765a;cursor:pointer;font-size:12px;padding:7px 0}
+.owner-lens-source{border-left:2px solid #dbe2d2;margin:10px 0;padding-left:11px;overflow-wrap:anywhere}
+.owner-lens-source small{color:#798370;font-size:11px}
+.owner-lens-source p{font-size:12px;line-height:1.6;margin:3px 0 10px}
+.owner-lens-learning-toggle{display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600}
+.owner-lens-learning-toggle input{width:17px;height:17px;accent-color:#4f6842;flex:none}
+.owner-lens-match .owner-lens-question{font-style:italic;color:#66765b;font-size:13px}
+.owner-lens-match>button{margin-top:9px}
+.owner-lens-sources{margin-top:23px;border-top:1px solid #e3e7dc;padding-top:12px}
+@media(max-width:600px){.app-header .owner-lens-launch{font-size:12px;padding:8px 12px}.owner-lens-dialog{inset:10px;width:calc(100vw - 20px);height:calc(100dvh - 20px);border-radius:17px}.owner-lens-heading{padding:19px 20px 15px}.owner-lens-content{padding:17px 20px 25px}.owner-lens-dialog textarea{font-size:16px}.owner-lens-actions>button{flex:1}.owner-lens-dialog button{min-height:40px}}
