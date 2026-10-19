@@ -28,7 +28,7 @@ test('Jev ranks existing introductions only and a failure preserves evidence-bas
 test('helper brief ranks complementary evidence without a keyword gate and never exports private shared context',async()=>{
  const {rankHelperBrief}=await import('../src/helper-brief');const {choiceA}=await import('./granola-jev-extractor.test');
  const now=new Date().toISOString();const g:any={source:'workspace',nodes:[{id:'a',name:'Angelica'},{id:'b',name:'Max'},{id:'c',name:'Hidden'}],themeSignals:[{id:'s',personId:'b',summary:'Ran moderated usability interviews with hospital nurses',sourceType:'granola',visibility:'firm',observedAt:now},{id:'private',personId:'c',summary:'SECRET',sourceType:'granola',visibility:'private',observedAt:now}]};
- const original=globalThis.fetch;try{globalThis.fetch=jevServer((id:string,_q:any,state:any)=>{assert.equal(state.candidates.length,1);assert.ok(!JSON.stringify(state).includes('SECRET'));return id.startsWith('fit')?scoreA(3):choiceA('experience',.9);}).fake;
+ const original=globalThis.fetch;try{globalThis.fetch=jevServer((id:string,_q:any,state:any)=>{assert.ok(!JSON.stringify({state,_q}).includes('SECRET'));assert.equal(_q.instructions.candidate.length,1);return id.startsWith('fit')?scoreA(3):choiceA('experience',.9);}).fake;
  const result=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','Needs feedback on a clinical scheduling prototype');assert.equal(result.results[0].personId,'b');assert.equal(result.results[0].evidence[0].ref,'s');assert.equal(result.checked,true);
  globalThis.fetch=async()=>new Response('',{status:503});const failed=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','Needs prototype feedback');assert.equal(failed.status,'unavailable');assert.deepEqual(failed.results,[]);
  }finally{globalThis.fetch=original;}
@@ -50,5 +50,55 @@ test('automatic helper suggestions use dated context without a manual brief',asy
  const now=new Date().toISOString(),g:any={nodes:[{id:'a'},{id:'b'}],themeSignals:[{id:'a1',personId:'a',summary:'We are building scheduling tools for clinics.',sourceType:'gmail_body_derived',visibility:'private',observedAt:now,evidenceRef:'gmail-context:a1'},{id:'b1',personId:'b',summary:'I have led usability studies with hospital nurses.',sourceType:'gmail_body_derived',visibility:'private',observedAt:now,evidenceRef:'gmail-context:b1'}]};
  try{globalThis.fetch=jevServer((id:string,_q:any,state:any)=>{assert.match(state.brief,/clinics/);return id.startsWith('fit')?scoreA(3):choiceA('experience',.9);}).fake;
  const result=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','');assert.equal(result.results.length,1);assert.equal(result.automatic,true);assert.equal(result.anchorEvidence[0].ref,'a1');
+ }finally{globalThis.fetch=original;}
+});
+
+test('helper route ranks the current graph outside the long-running sync object',async()=>{
+ const {helperRoute}=await import('../src/mail-routes');const {choiceA}=await import('./granola-jev-extractor.test');
+ const now=new Date().toISOString(),graph={nodes:[{id:'a'},{id:'b'}],themeSignals:[{personId:'b',summary:'I built clinic scheduling tools.',sourceType:'gmail_body_derived',observedAt:now}]};
+ const original=globalThis.fetch;
+ try{globalThis.fetch=jevServer((id:string)=>id.startsWith('fit')?scoreA(3):choiceA('experience',.9)).fake;
+ const env:any={TYPESAFE_API_KEY:'test',MAIL:{getByName:()=>({bindOwner:async()=>{},graph:async()=>graph})}};
+ const response=await helperRoute(new Request('https://example.com/api/people/helpers',{method:'POST',headers:{origin:'https://example.com','content-type':'application/json'},body:JSON.stringify({personId:'a',brief:'Clinic scheduling feedback'})}),env,'owner');
+ assert.equal(response.status,200);assert.equal((await response.json() as any).results[0].personId,'b');
+ }finally{globalThis.fetch=original;}
+});
+
+test('automatic helper suggestions allow a supported peer conversation without an explicit ask',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const {choiceA}=await import('./granola-jev-extractor.test');
+ const observedAt=new Date().toISOString(),g={nodes:[{id:'a'},{id:'b'}],themeSignals:[{personId:'a',summary:'We are building decision models for coding agents.',sourceType:'gmail_body_derived',observedAt},{personId:'b',summary:'We built an evaluation harness for coding agents.',sourceType:'gmail_body_derived',observedAt}]};
+ const original=globalThis.fetch;
+ try{globalThis.fetch=jevServer((id:string)=>id.startsWith('fit')?{...scoreA(2.5),probabilities:{'2':.5,'3':.5}}:choiceA('peer',.9)).fake;
+ const result=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','');
+ assert.equal(result.results.length,1);assert.equal(result.results[0].personId,'b');assert.match(result.results[0].reason,/compar|notes/i);
+ globalThis.fetch=jevServer((id:string)=>id.startsWith('fit')?scoreA(.8):choiceA('none',.95)).fake;
+ assert.equal((await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','')).results.length,0);
+ }finally{globalThis.fetch=original;}
+});
+
+
+test('automatic helpers retain concrete relevance with an averaged score below two',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const {choiceA}=await import('./granola-jev-extractor.test');
+ const observedAt=new Date().toISOString(),g={nodes:[{id:'a'},{id:'b'}],themeSignals:[{personId:'a',summary:'We build coding agent decision models.',sourceType:'gmail_body_derived',observedAt},{personId:'b',summary:'We evaluate coding agent decisions.',sourceType:'gmail_body_derived',observedAt}]};
+ const original=globalThis.fetch;
+ try{globalThis.fetch=jevServer((id:string)=>id.startsWith('fit')?{...scoreA(1.83),probabilities:{'0':.22,'1':.11,'2':.28,'3':.39}}:choiceA('peer',.59)).fake;
+ assert.equal((await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','')).results.length,1);
+ globalThis.fetch=jevServer((id:string)=>id.startsWith('fit')?{...scoreA(1.3),probabilities:{'0':.2,'1':.5,'2':.1,'3':.2}}:choiceA('peer',.59)).fake;
+ assert.equal((await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','')).results.length,0);
+ }finally{globalThis.fetch=original;}
+});
+
+
+test('helper decisions scope each candidate to its own excerpts and exclude social greetings',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const {choiceA}=await import('./granola-jev-extractor.test');
+ const observedAt=new Date().toISOString(),g={nodes:[{id:'a'},{id:'b'},{id:'c'},{id:'d'}],themeSignals:[{personId:'a',summary:'We build coding agent decision models.',sourceType:'gmail_body_derived',observedAt},{personId:'b',summary:'We evaluate coding agent decisions.',sourceType:'gmail_body_derived',observedAt},{personId:'c',summary:'I hope you had a great time at the launch!',sourceType:'gmail_body_derived',observedAt},{personId:'d',summary:'We build clinical scheduling tools.',sourceType:'gmail_body_derived',observedAt}]};
+ const original=globalThis.fetch;
+ try{globalThis.fetch=jevServer((id:string,q:any,state:any)=>{
+ assert.equal(state.candidates,undefined);
+ assert.equal(q.instructions.candidate.length,1);
+ const relevant=q.instructions.candidate[0].summary.includes('coding');
+ return id.startsWith('fit')?scoreA(relevant?3:0):choiceA(relevant?'peer':'none',.9);
+ }).fake;
+ const result=await rankHelperBrief({TYPESAFE_API_KEY:'test'},g,'a','');assert.equal(result.considered,2);assert.deepEqual(result.results.map((r:any)=>r.personId),['b']);
  }finally{globalThis.fetch=original;}
 });

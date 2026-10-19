@@ -1,3 +1,4 @@
+import {rankHelperBrief} from './helper-brief';
 import {b64,bytes,digest,opaque} from './mail-model';
 import type {MailEnv} from './mail-sync';
 import {boundedJSON} from './bounded-json';
@@ -95,5 +96,5 @@ export async function helperRoute(request:Request,env:MailEnv,owner:string){
  let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),8000);}catch{return json({error:'invalid_request'},400);}
  if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||body.brief.length>1000)return json({error:'invalid_request'},400);
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
- try{return json(await stub.helperPeople(body.personId,body.brief));}catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
+ try{return json(await rankHelperBrief(env,await stub.graph(),body.personId,body.brief));}catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
 }
