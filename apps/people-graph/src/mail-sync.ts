@@ -1,4 +1,4 @@
-import {extractMailContext,type MailFact} from './gmail-context';
+import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
@@ -24,14 +24,14 @@ export interface RetrievalScope {account:string;personId:string;themeId?:string;
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string}
 type Range='recent'|'all';
-interface Job {calendarDone?:boolean;calendarPage?:string;calendarPages?:number;photoSource?:'saved'|'other';photoPage?:string;photosDone?:boolean;generation:string;range:Range;query:string;pageToken?:string;pending:string[];hasMore:boolean;processed:number;started:number;retries:number;lastRun:number;nextAttempt:number}
+interface Job {contextVersion?:number;calendarDone?:boolean;calendarPage?:string;calendarPages?:number;photoSource?:'saved'|'other';photoPage?:string;photosDone?:boolean;generation:string;range:Range;query:string;pageToken?:string;pending:string[];hasMore:boolean;processed:number;started:number;retries:number;lastRun:number;nextAttempt:number}
 interface Account {contextEnabled?:boolean;contextVersion?:number;contextError?:string;emailEdgeVersion?:number;calendarEnabled?:boolean;calendarStatus?:string;calendarLastSync?:number;revision?:string;otherPhotosEnabled?:boolean;photosEnabled?:boolean;photoStatus?:string;email:string;grant:string;status:string;job:Job|null;lastSync:number;nextSync:number;error:string;range:Range}
 interface Pending {verifier:string;cookie:string;expires:number;range:Range;owner:string;redirect:string}
 interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[];titles:string[]}
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
 interface GraphPersonNode {directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
- constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');this.store();this.granola();}
+ constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
@@ -61,7 +61,19 @@ export class MailSync extends DurableObject<MailEnv>{
  async consume(nonce:string,cookie:string){const p=await this.ctx.storage.get<Pending>('pending:'+nonce);if(!p||p.cookie!==cookie||p.expires<Date.now())return null;await this.ctx.storage.delete('pending:'+nonce);return p;}
  async attachAccount(email:string,refresh:string,range:Range,photosEnabled=false,otherPhotosEnabled=false,calendarEnabled=false){if(!this.env.MAIL_TOKEN_KEY)throw Error('mail_not_configured');if(this.rows().length>=10&&!this.get(email))throw Error('account_limit');const old=this.get(email);const grant=refresh?await seal(refresh,this.env.MAIL_TOKEN_KEY):old?.grant;if(!grant)throw Error('offline_access_missing');const a:Account={contextEnabled:old?.contextEnabled,contextVersion:old?.contextVersion,email,grant,photosEnabled,otherPhotosEnabled,calendarEnabled,calendarStatus:calendarEnabled?'pending':'permission_required',photoStatus:photosEnabled?'pending':'permission_required',status:'connected',job:null,lastSync:old?.lastSync||0,nextSync:0,error:'',range};await this.invalidateRetrieval(email);this.put(a);if(!photosEnabled)this.ctx.storage.sql.exec("DELETE FROM contact_photos WHERE account=? AND source='saved'",email);if(!otherPhotosEnabled)this.ctx.storage.sql.exec("DELETE FROM contact_photos WHERE account=? AND source='other'",email);if(!calendarEnabled)this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);await this.start(email,range);}
  list(){return this.rows().map(({contextEnabled,contextError,email,status,job,lastSync,error,range,photosEnabled,otherPhotosEnabled,photoStatus,calendarEnabled,calendarStatus,calendarLastSync})=>({contextEnabled:!!contextEnabled,contextError,contextCount:this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM gmail_context WHERE account=? AND facts<>?",email,'[]').toArray()[0].n,email,status,calendarEnabled:!!calendarEnabled,calendarStatus,calendarLastSync,calendarCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM calendar_events WHERE account=?',email).toArray()[0].n,photosEnabled,otherPhotosEnabled,photoStatus,photoCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM contact_photos WHERE account=?',email).toArray()[0].n,matchedPhotoCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM contact_photos p WHERE p.account=? AND EXISTS (SELECT 1 FROM contributions c WHERE c.email=p.email) AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.email=p.email)',email).toArray()[0].n,processed:job?.processed||0,lastSync,error,range}));}
- async start(email:string,range?:Range,schedule=true){const a=this.get(email);if(!a)throw Error('account_not_found');if(a.job&&a.status==='syncing')return;if(a.emailEdgeVersion!==2){this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);}const selected=range||a.range,initial=!a.lastSync||Boolean(range)||a.emailEdgeVersion!==2;const query=a.emailEdgeVersion===2&&a.contextEnabled&&a.contextVersion!==1?'newer_than:90d':initial?(selected==='recent'?'newer_than:90d':''):`after:${Math.floor(a.lastSync/1000)-172800}`;a.job={calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending:[],hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};a.range=selected;a.status='syncing';a.error='';a.contextError='';this.put(a);if(schedule)await this.scheduleNextAlarm();}
+ async start(email:string,range?:Range,schedule=true){
+  const a=this.get(email);if(!a)throw Error('account_not_found');
+  // An old incremental scan cannot certify that the new extractor revisited the 90-day window.
+  if(a.job&&a.status==='syncing'&&(!a.contextEnabled||a.job.contextVersion===GMAIL_CONTEXT_VERSION))return;
+  if(a.emailEdgeVersion!==2){this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);}
+  const selected=range||a.range,initial=!a.lastSync||Boolean(range)||a.emailEdgeVersion!==2;
+  const upgrading=a.contextEnabled&&a.contextVersion!==GMAIL_CONTEXT_VERSION;
+  const query=a.emailEdgeVersion===2&&upgrading?'newer_than:90d':initial?(selected==='recent'?'newer_than:90d':''):`after:${Math.floor(a.lastSync/1000)-172800}`;
+  // Known useful messages come first; the paginated scan then upgrades all other recent messages.
+  const pending=upgrading?this.ctx.storage.sql.exec<{message:string}>('SELECT message FROM gmail_context WHERE account=? AND version<? AND facts<>? AND observed>=? ORDER BY observed DESC LIMIT 300',email,GMAIL_CONTEXT_VERSION,'[]',Date.now()-90*86400000).toArray().map(r=>r.message):[];
+  a.job={contextVersion:a.contextEnabled?GMAIL_CONTEXT_VERSION:undefined,calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending,hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};
+  a.range=selected;a.status='syncing';a.error='';a.contextError='';this.put(a);if(schedule)await this.scheduleNextAlarm();
+ }
  async remove(email:string){this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
  async granolaConnect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{const status=await this.granola().connect(apiKey,range);await this.scheduleNextAlarm();return status;}
  granolaStatus():GranolaStatus{return this.granola().status();}
@@ -143,7 +155,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!this.active(a))return;job.pending.shift();job.processed++;job.retries=0;job.nextAttempt=0;a.error='';this.put(a);
   }
   await this.ctx.storage.delete('graph');
-  if(!job.pending.length&&!job.hasMore&&((!a.photosEnabled&&!a.otherPhotosEnabled)||job.photosDone)){a.status='connected';a.emailEdgeVersion=2;if(a.contextEnabled&&!a.contextError)a.contextVersion=1;a.lastSync=job.started;a.nextSync=Date.now()+3600000;this.put(a);await this.rebuildMetadataRelevance(a);}
+  if(!job.pending.length&&!job.hasMore&&((!a.photosEnabled&&!a.otherPhotosEnabled)||job.photosDone)){a.status='connected';a.emailEdgeVersion=2;if(a.contextEnabled&&!a.contextError&&job.contextVersion===GMAIL_CONTEXT_VERSION)a.contextVersion=GMAIL_CONTEXT_VERSION;a.lastSync=job.started;a.nextSync=Date.now()+3600000;this.put(a);await this.rebuildMetadataRelevance(a);}
  }
 
  async setAutomaticContext(email:string,enabled:boolean){
@@ -158,42 +170,85 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   return {ok:true};
  }
  private async automaticMessageContext(a:Account,id:string,access:string){
-  if(!this.active(a)||!this.get(a.email)?.contextEnabled)return;
+  if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
   const cutoff=Date.now()-90*86400000;
   this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE observed<?',cutoff);
-  if(this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=?',a.email,id).toArray().length)return;
+  if(this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length)return;
   // Existing metadata restricts body retrieval to recent inbound messages from a contact.
-  const row=this.ctx.storage.sql.exec<{email:string}>('SELECT c.email FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.received>0 AND c.date>=? LIMIT 1',a.email,id,cutoff).toArray()[0];
+  const row=this.ctx.storage.sql.exec<{email:string;date:number}>('SELECT c.email,c.date FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.received>0 AND c.date>=? LIMIT 1',a.email,id,cutoff).toArray()[0];
   if(!row)return;
   try{
    const owner=await this.ctx.storage.get<string>('owner');if(!owner)return;
+   const person=await opaque(owner,row.email,this.env.TOKEN_SECRET);
+   const storeFacts=(facts:MailFact[],observed=row.date)=>{
+    if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
+    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)',a.email,id,person,observed,JSON.stringify(facts),GMAIL_CONTEXT_VERSION);
+   };
    const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','full');url.searchParams.set('fields','id,internalDate,payload');
    const response=await fetch(url.href,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});
-   if(response.status===404){await response.body?.cancel();return;}
+   if(response.status===404){await response.body?.cancel();storeFacts([]);return;}
    if(!response.ok){await response.body?.cancel();throw Error('gmail_context_unavailable');}
    const raw=await readBoundedJSON(response,2_000_000) as GmailMessage;
-   if(!this.active(a)||!this.get(a.email)?.contextEnabled)return;
+   if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
    const parsed=parseMessage(raw,a.email),senders=parsed?.participants.filter(p=>p.received&&p.email!==a.email)||[];
-   if(raw.id!==id||!parsed||parsed.date<cutoff||parsed.date>Date.now()||senders.length!==1||senders[0].email!==row.email)return;
+   if(raw.id!==id||!parsed||parsed.date<cutoff||parsed.date>Date.now()||senders.length!==1||senders[0].email!==row.email){storeFacts([]);return;}
    const headers=raw.payload?.headers||[];
-   if(headers.some(h=>['list-id','list-unsubscribe'].includes(h.name.toLowerCase()))||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(row.email))return;
+   if(headers.some(h=>['list-id','list-unsubscribe'].includes(h.name.toLowerCase()))||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(row.email)){storeFacts([]);return;}
    const body=decodeGmailMessage(raw,24000);
    const facts=await extractMailContext(this.env.AI,body.text);body.text='';
-   const person=await opaque(owner,row.email,this.env.TOKEN_SECRET);
-   if(!this.active(a)||!this.get(a.email)?.contextEnabled)return;
-   this.ctx.storage.sql.exec('INSERT OR REPLACE INTO gmail_context VALUES (?,?,?,?,?)',a.email,id,person,parsed.date,JSON.stringify(facts));
+   storeFacts(facts,parsed.date);
   }catch{if(this.active(a)){a.contextVersion=0;a.contextError='Some email context could not be analysed. It will retry on the next sync.';}}
  }
- private attachAutomaticContext<T extends {themes:Array<Omit<Theme,'owner'>>;themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T):T{
+ /** Full private passages for recommendations; never part of workspace exports or graph summaries. */
+ async helperContext(){return this.automaticContextSignals(true);}
+ /** Refresh only this known contact, with existing opt-in, before a foreground recommendation. */
+ async refreshHelperContext(personId:string){
+  const email=await this.emailForPerson(personId);if(!email)return {refreshed:0,pending:false};
+  let refreshed=0,budget=4,pending=false;
+  for(const original of this.rows().filter(a=>a.contextEnabled&&['connected','syncing'].includes(a.status))){
+   if(original.contextVersion!==GMAIL_CONTEXT_VERSION)await this.start(original.email);
+   const a=this.get(original.email)!;
+   const ids=this.ctx.storage.sql.exec<{id:string}>(`SELECT m.id FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical LEFT JOIN gmail_context g ON g.account=m.account AND g.message=m.id WHERE c.account=? AND c.email=? AND c.received>0 AND c.date>=? AND (g.version IS NULL OR g.version<?) GROUP BY m.id ORDER BY CASE WHEN g.facts IS NOT NULL AND g.facts<>'[]' THEN 0 ELSE 1 END,c.date DESC LIMIT 5`,a.email,email,Date.now()-90*86400000,GMAIL_CONTEXT_VERSION).toArray().map(r=>r.id);
+   if(ids.length>budget)pending=true;
+   if(!ids.length||!budget)continue;
+   const selected=ids.slice(0,budget);budget-=selected.length;
+   try{
+    if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('mail_not_configured');
+    const refresh=await unseal(a.grant,this.env.MAIL_TOKEN_KEY);
+    const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});
+    const token=await readBoundedJSON(response,32_768) as {access_token?:string};
+    if(!response.ok||!token.access_token)throw Error('gmail_context_unavailable');
+    for(let i=0;i<selected.length;i+=2){
+     await Promise.all(selected.slice(i,i+2).map(id=>this.automaticMessageContext(a,id,token.access_token!)));
+     if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)break;
+    }
+    for(const id of selected)if(this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length)refreshed++;
+    if(a.contextError)pending=true;
+   }catch{pending=true;}
+  }
+  if(refreshed)await this.ctx.storage.delete('graph');
+  return {refreshed,pending};
+ }
+ private automaticContextSignals(full=false):Array<Omit<ThemeSignal,'owner'>>{
   const active=new Set(this.rows().filter(a=>a.contextEnabled&&['connected','syncing'].includes(a.status)).map(a=>a.email));
-  const rows=this.ctx.storage.sql.exec<{account:string;person:string;observed:number;facts:string}>('SELECT account,person,observed,facts FROM gmail_context WHERE observed>=? ORDER BY observed DESC LIMIT 3000',Date.now()-90*86400000).toArray();
-  const counts=new Map<string,number>();
-  for(const row of rows){if(!active.has(row.account)||(counts.get(row.person)||0)>=6)continue;
-   for(const fact of JSON.parse(row.facts) as MailFact[]){const count=counts.get(row.person)||0;if(count>=6)break;counts.set(row.person,count+1);
+  const rows=this.ctx.storage.sql.exec<{account:string;person:string;observed:number;facts:string;version:number}>("SELECT account,person,observed,facts,version FROM gmail_context WHERE observed>=? AND facts<>'[]' ORDER BY observed DESC LIMIT 3000",Date.now()-90*86400000).toArray();
+  const counts=new Map<string,number>(),emitted=new Map<string,number>(),signals:Array<Omit<ThemeSignal,'owner'>>=[];
+  for(const row of rows){if(!active.has(row.account)||(emitted.get(row.person)||0)>=6)continue;
+   let facts:MailFact[];try{facts=JSON.parse(row.facts);if(!Array.isArray(facts))continue;}catch{continue;}
+   for(const fact of facts){const count=counts.get(row.person)||0;if((emitted.get(row.person)||0)>=6)break;
+    if(!fact||typeof fact.quote!=='string'||!['building','need','experience'].includes(fact.kind))continue;
+    counts.set(row.person,count+1);
+    // Use the same IDs as the graph preview even while different extraction versions coexist.
+    if((full&&row.version<GMAIL_CONTEXT_VERSION)||isOnlyMailLogistics(fact.quote))continue;
+    emitted.set(row.person,(emitted.get(row.person)||0)+1);
     const id='gmail-context:'+row.person+':'+row.observed+':'+count;
-    graph.themeSignals.push({id,personId:row.person,themeId:'gmail-conversation-context',sourceType:'gmail_body_derived',visibility:'private',observedAt:new Date(row.observed).toISOString(),ingestedAt:new Date(row.observed).toISOString(),confidence:1,summary:fact.quote.slice(0,240),evidenceRef:id,contentHash:id,extractorVersion:'gmail-context-v1',provenance:{title:'Email sender’s own words · '+fact.kind,canonicalUrl:'https://mail.google.com/',publisherHost:'mail.google.com',observedAt:new Date(row.observed).toISOString(),retrievedAt:new Date(row.observed).toISOString(),timeBasis:'observed'}});
+    signals.push({id,personId:row.person,themeId:'gmail-conversation-context',sourceType:'gmail_body_derived',visibility:'private',observedAt:new Date(row.observed).toISOString(),ingestedAt:new Date(row.observed).toISOString(),confidence:1,summary:fact.quote.slice(0,full?1200:240),evidenceRef:id,contentHash:id,extractorVersion:'gmail-context-v'+row.version,provenance:{title:'Email sender’s own words · '+fact.kind,canonicalUrl:'https://mail.google.com/',publisherHost:'mail.google.com',observedAt:new Date(row.observed).toISOString(),retrievedAt:new Date(row.observed).toISOString(),timeBasis:'observed'}});
    }
   }
+  return signals;
+ }
+ private attachAutomaticContext<T extends {themes:Array<Omit<Theme,'owner'>>;themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T):T{
+  graph.themeSignals.push(...this.automaticContextSignals());
   if(graph.themeSignals.length){const stamp=new Date().toISOString();graph.themes.push({id:'gmail-conversation-context',canonicalName:'Gmail conversation context',aliases:[],description:'Private work context from recent incoming emails',status:'active',createdAt:stamp,updatedAt:stamp});}
   return graph;
  }

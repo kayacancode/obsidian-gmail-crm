@@ -96,5 +96,11 @@ export async function helperRoute(request:Request,env:MailEnv,owner:string){
  let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),8000);}catch{return json({error:'invalid_request'},400);}
  if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||body.brief.length>1000)return json({error:'invalid_request'},400);
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
- try{return json(await rankHelperBrief(env,await stub.graph(),body.personId,body.brief));}catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
+ try{
+  const graph=await stub.graph();if(!graph?.nodes.some(node=>node.id===body.personId))return json({error:'invalid_request'},400);
+  // Refresh the selected person's context first; all full passages remain private to this request.
+  await stub.refreshHelperContext(body.personId);
+  const helperContext=await stub.helperContext();
+  return json(await rankHelperBrief(env,{...graph,helperContext},body.personId,body.brief));
+ }catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
 }
