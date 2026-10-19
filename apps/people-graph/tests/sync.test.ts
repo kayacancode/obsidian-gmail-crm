@@ -805,6 +805,11 @@ test('automatic Gmail context backfills existing mail, attributes only sender, n
   await service.setAutomaticContext('me@example.com',true);await service.alarm();
   const graph:any=await service.graph(),ada=graph.nodes.find((n:any)=>n.name==='Ada');const signals=graph.themeSignals.filter((s:any)=>s.evidenceRef.startsWith('gmail-context:'));
   assert.equal(signals.length,1);assert.equal(signals[0].personId,ada.id);assert.equal(signals[0].summary,quote);assert.equal(signals[0].visibility,'private');
+  const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+  assert.doesNotThrow(()=>normalizeGraph(graph));
+  db.prepare('INSERT INTO gmail_context VALUES (?,?,?,?,?)').run('me@example.com','long',ada.id,Date.now(),JSON.stringify([{kind:'building',quote:'I am building '+ 'useful scheduling software '.repeat(15)}]));
+  db.prepare('INSERT INTO gmail_context VALUES (?,?,?,?,?)').run('me@example.com','missing','missing-person',Date.now(),JSON.stringify([{kind:'need',quote:'We need feedback on the prototype.'}]));
+  const extended:any=await service.graph();assert.doesNotThrow(()=>normalizeGraph(extended));assert.ok(extended.themeSignals.every((s:any)=>s.personId!=='missing-person'&&s.summary.length<=240));
   assert.ok(!storageText(db,kv).includes('SECRET SIGNATURE'));
   const shared=await service.exportSlice({kind:'all'},'statements');assert.ok(!JSON.stringify(shared).includes(quote));
   await service.start('me@example.com');await service.alarm();assert.equal(calls.filter(u=>u.includes('format=full')).length,1);

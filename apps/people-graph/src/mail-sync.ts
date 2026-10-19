@@ -184,16 +184,17 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO gmail_context VALUES (?,?,?,?,?)',a.email,id,person,parsed.date,JSON.stringify(facts));
   }catch{if(this.active(a)){a.contextVersion=0;a.contextError='Some email context could not be analysed. It will retry on the next sync.';}}
  }
- private attachAutomaticContext<T extends {themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T):T{
+ private attachAutomaticContext<T extends {themes:Array<Omit<Theme,'owner'>>;themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T):T{
   const active=new Set(this.rows().filter(a=>a.contextEnabled&&['connected','syncing'].includes(a.status)).map(a=>a.email));
   const rows=this.ctx.storage.sql.exec<{account:string;person:string;observed:number;facts:string}>('SELECT account,person,observed,facts FROM gmail_context WHERE observed>=? ORDER BY observed DESC LIMIT 3000',Date.now()-90*86400000).toArray();
   const counts=new Map<string,number>();
   for(const row of rows){if(!active.has(row.account)||(counts.get(row.person)||0)>=6)continue;
    for(const fact of JSON.parse(row.facts) as MailFact[]){const count=counts.get(row.person)||0;if(count>=6)break;counts.set(row.person,count+1);
     const id='gmail-context:'+row.person+':'+row.observed+':'+count;
-    graph.themeSignals.push({id,personId:row.person,themeId:'gmail-conversation-context',sourceType:'gmail_body_derived',visibility:'private',observedAt:new Date(row.observed).toISOString(),ingestedAt:new Date(row.observed).toISOString(),confidence:1,summary:fact.quote,evidenceRef:id,contentHash:id,extractorVersion:'gmail-context-v1',provenance:{title:'Email sender’s own words · '+fact.kind,canonicalUrl:'https://mail.google.com/',publisherHost:'mail.google.com',observedAt:new Date(row.observed).toISOString(),retrievedAt:new Date(row.observed).toISOString(),timeBasis:'observed'}});
+    graph.themeSignals.push({id,personId:row.person,themeId:'gmail-conversation-context',sourceType:'gmail_body_derived',visibility:'private',observedAt:new Date(row.observed).toISOString(),ingestedAt:new Date(row.observed).toISOString(),confidence:1,summary:fact.quote.slice(0,240),evidenceRef:id,contentHash:id,extractorVersion:'gmail-context-v1',provenance:{title:'Email sender’s own words · '+fact.kind,canonicalUrl:'https://mail.google.com/',publisherHost:'mail.google.com',observedAt:new Date(row.observed).toISOString(),retrievedAt:new Date(row.observed).toISOString(),timeBasis:'observed'}});
    }
   }
+  if(graph.themeSignals.length){const stamp=new Date().toISOString();graph.themes.push({id:'gmail-conversation-context',canonicalName:'Gmail conversation context',aliases:[],description:'Private work context from recent incoming emails',status:'active',createdAt:stamp,updatedAt:stamp});}
   return graph;
  }
  private async rebuildMetadataRelevance(a:Account){const owner=await this.ctx.storage.get<string>('owner');if(!owner||!this.active(a))return;const cutoff=Date.now()-90*86400000;const rows=this.ctx.storage.sql.exec<{email:string;canonical:string;date:number;subject:string}>('SELECT email,canonical,date,subject FROM contributions WHERE account=? AND date>=? ORDER BY date DESC LIMIT 5000',a.email,cutoff).toArray();const inputs:MetadataInput[]=[];for(const row of rows){const personId=await opaque(owner,row.email,this.env.TOKEN_SECRET);const contentHash=await opaque(owner,`${a.email}\u0000${row.canonical}\u0000${row.email}\u0000${row.date}\u0000${row.subject}`,this.env.TOKEN_SECRET);if(!this.active(a))return;inputs.push({personId,subject:row.subject,observedAt:new Date(row.date).toISOString(),contentHash});}if(!this.active(a))return;await this.store().ingestMetadata(a.email,inputs,Date.now(),()=>this.active(a));}
@@ -827,7 +828,8 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.
   const value={personFeedback,activity,activityCoverage:'Up to 1,000 email messages, 500 Granola meetings, and primary-calendar events from the past year through the next 30 days (up to 10,000 per inbox). Calendar events link existing contacts; RSVPs do not establish attendance.',pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Relationship scores use metadata and meeting attendees. Optional Gmail conversation context keeps selected private work-related excerpts from the last 90 days. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
-  return this.attachAutomaticContext(this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my'))));
+  const context=this.attachAutomaticContext({themes:[] as Array<Omit<Theme,'owner'>>,themeSignals:[] as Array<Omit<ThemeSignal,'owner'>>});
+  return this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my',Date.now(),context)));
  }
  /**
   * The meeting title that rode along with a shared signal, turned back into provenance. The
