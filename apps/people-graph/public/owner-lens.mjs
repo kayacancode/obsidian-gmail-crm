@@ -30,6 +30,7 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   const url=granolaLink(source.url);
   if(url){const link=el('a','owner-lens-source-title',source.title||'Open Granola meeting');link.href=url;link.target='_blank';link.rel='noopener noreferrer';block.append(link);}
   else if(source.title)block.append(el('strong','owner-lens-source-title',source.title));
+  if(source.attribution==='meeting')block.append(el('p','owner-lens-muted','Inferred focus from meeting context, not a statement by you.'));
   block.append(el('p','',source.text||source.summary||''));
   return block;
  }
@@ -44,6 +45,10 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   view.updated.textContent=value.updatedAt?'Last saved '+dateLabel(value.updatedAt):'Add what matters to you right now.';
   view.learning.checked=value.enabled===true;
   view.granola.checked=value.granolaEnabled===true;
+  const progress=value.granolaProgress;
+  const showProgress=value.enabled===true&&value.granolaEnabled===true&&progress&&['available','checked','excerpts'].every(key=>Number.isInteger(progress[key])&&progress[key]>=0);
+  view.granolaProgress.hidden=!showProgress;
+  view.granolaProgress.textContent=showProgress?`Granola: ${progress.checked} of ${progress.available} recent meetings checked · ${progress.excerpts} useful excerpts`:'';
   view.learningHint.hidden=value.enabled===true;
   view.cleanup.hidden=value.enabled!==false||value.honcho?.status!=='unavailable';
   view.learningStatus.textContent=learningStatus(value.honcho)+(value.honcho?.lastSync?' Last checked '+dateLabel(value.honcho.lastSync)+'.':'');
@@ -127,13 +132,13 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   const learningSection=el('section','owner-lens-learning'),learningLabel=el('label','owner-lens-learning-toggle'),learning=el('input');learning.type='checkbox';learning.setAttribute('aria-label','Learn from my work context');learning.onchange=()=>void mutate({action:'learning',enabled:learning.checked},learning.checked?'Learning enabled. Refresh to look for updates.':'Learning turned off.');
   learningLabel.append(learning,doc.createTextNode('Learn from my work context'));
   const granolaLabel=el('label','owner-lens-learning-toggle'),granola=el('input');granola.type='checkbox';granola.setAttribute('aria-label','Include my Granola notes');granola.onchange=()=>void mutate({action:'granola',enabled:granola.checked},granola.checked?'Granola notes included. Refresh to look for updates.':'Granola notes excluded.');granolaLabel.append(granola,doc.createTextNode('Include my Granola notes'));
-  const learningState=el('p','owner-lens-muted'),learningHint=el('p','owner-lens-muted','Turn on learning to add a note or refresh suggestions.');
+  const learningState=el('p','owner-lens-muted'),learningHint=el('p','owner-lens-muted','Turn on learning to add a note or refresh suggestions.'),granolaProgress=el('p','owner-lens-muted owner-lens-granola-progress');granolaProgress.hidden=true;
   const cleanup=action('Retry clearing learned context',()=>mutate({action:'learning',enabled:false},'Learned context cleared. Learning is off.'),'owner-lens-cleanup');cleanup.hidden=true;
-  learningSection.append(learningLabel,el('p','owner-lens-muted','When enabled, selected work excerpts from your sent emails and any notes you add go to Honcho to suggest updates. Your lens stays private, and you choose which updates to use.'),granolaLabel,el('p','owner-lens-muted','Granola notes go to Honcho only when included. Suggestions use work attributed to you, not other attendees’ work.'),learningState,cleanup,learningHint);
+  learningSection.append(learningLabel,el('p','owner-lens-muted','When enabled, selected work excerpts from your sent emails and any notes you add go to Honcho to suggest updates. Your lens stays private, and you choose which updates to use.'),granolaLabel,el('p','owner-lens-muted','Granola excerpts go to Honcho only when included. Recurring meeting topics can suggest your focus; needs and offers use your own statements.'),granolaProgress,learningState,cleanup,learningHint);
   const noteLabel=el('label','owner-lens-field','Tell it what you’re working on'),noteInput=el('textarea');noteInput.rows=3;noteInput.maxLength=3000;noteInput.value=note;noteInput.setAttribute('aria-label','Tell it what you’re working on');noteInput.placeholder='An optional note about your current work, needs or experience';noteInput.oninput=()=>{note=noteInput.value;};noteLabel.append(noteInput);
   const refresh=action('Refresh suggestions',()=>mutate({action:'refresh',...(note.trim()?{note:note.trim()}:{})},''));learningSection.append(noteLabel,el('p','owner-lens-muted','Refresh sends this note to Honcho to propose updates.'),refresh);
   const sources=el('details','owner-lens-sources');sources.hidden=true;content.append(learningSection,sources);dialog.append(heading,content);
-  view={content,inputs,updated,save,find,status,matches,suggestions,learning,granola,learningHint,cleanup,learningStatus:learningState,note:noteInput,refresh,sources};
+  view={content,inputs,updated,save,find,status,matches,suggestions,learning,granola,granolaProgress,learningHint,cleanup,learningStatus:learningState,note:noteInput,refresh,sources};
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
   dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)close();}});
   doc.body.append(dialog);button.setAttribute('aria-expanded','true');dialog.showModal();setBusy(true);message('Loading your lens…');

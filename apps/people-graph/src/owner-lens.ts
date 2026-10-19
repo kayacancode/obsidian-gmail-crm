@@ -7,16 +7,17 @@ export type OwnerLensKind='focus'|'need'|'offer';
 export interface OwnerLensFields {focus:string;needs:string;offers:string}
 export interface OwnerLensCollectionResult {failed:number;deferred:number}
 export interface OwnerLensSuggestion {id:string;kind:OwnerLensKind;text:string;sourceIds:string[]}
-export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'|'Your Granola meeting';title?:string;url?:string|null}
-export interface OwnerGranolaInput {id:string;version:string;observedAt:string;title:string;url:string|null;passages:string[]}
+export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'|'Your Granola meeting'|'Meeting you attended';title?:string;url?:string|null;attribution?:'statement'|'meeting'}
+export interface OwnerGranolaInput {id:string;version:string;observedAt:string;title:string;url:string|null;passages:string[];meetingPassages?:string[]}
 export interface OwnerLens {
  revision:string;enabled:boolean;granolaEnabled:boolean;fields:OwnerLensFields;updatedAt:string|null;
+ granolaProgress?:{available:number;checked:number;excerpts:number};
  suggestions:OwnerLensSuggestion[];sources:OwnerLensSource[];
  honcho:{configured:boolean;status:'disabled'|'unconfigured'|'pending'|'ready'|'unavailable'|'invalid';lastSync:string|null;cleanupPending:boolean;retryAt:string|null};
 }
-interface StoredSource extends OwnerLensSource {account:string|null;message:string;version?:string}
+interface StoredSource extends OwnerLensSource {account:string|null;message:string;version?:string;meetingId?:string}
 interface Accepted {text:string;sourceIds:string[];acceptedAt:string}
-interface State extends Omit<OwnerLens,'sources'|'honcho'> {
+interface State extends Omit<OwnerLens,'sources'|'honcho'|'granolaProgress'> {
  generation:string;sources:StoredSource[];dismissed:string[];
  accepted:Partial<Record<keyof OwnerLensFields,Accepted>>;
  status:OwnerLens['honcho']['status'];lastSync:string|null;pendingDelete:string|null;remotePossible?:boolean;syncedSources?:string;cleanupAttempts?:number;nextCleanup?:number;pendingSnapshot?:{fingerprint:string;attempts:number;since:number};
@@ -63,7 +64,7 @@ export class OwnerLensStore {
  private touch(state:State,invalidate=true){state.revision=crypto.randomUUID();state.updatedAt=stamp();if(invalidate){state.generation=crypto.randomUUID();this.controller?.abort();}}
  private check(state:State,revision:string){if(typeof revision!=='string'||revision!==state.revision)throw Error('owner_lens_conflict');}
  private result(state:State):OwnerLens{
-  return {revision:state.revision,enabled:state.enabled,granolaEnabled:state.granolaEnabled,fields:{...state.fields},updatedAt:state.updatedAt,suggestions:state.suggestions.map(s=>({...s,sourceIds:[...s.sourceIds]})),sources:state.sources.map(({id,text,observedAt,label,title,url})=>({id,text,observedAt,label,...(title!==undefined?{title}:{}),...(url!==undefined?{url}:{})})),honcho:{configured:honchoConfigured(this.env),status:state.pendingDelete?'unavailable':!state.enabled?'disabled':!honchoConfigured(this.env)?'unconfigured':state.status,lastSync:state.lastSync,cleanupPending:!!state.pendingDelete,retryAt:state.pendingDelete&&state.nextCleanup?new Date(state.nextCleanup).toISOString():null}};
+  return {revision:state.revision,enabled:state.enabled,granolaEnabled:state.granolaEnabled,fields:{...state.fields},updatedAt:state.updatedAt,suggestions:state.suggestions.map(s=>({...s,sourceIds:[...s.sourceIds]})),sources:state.sources.map(({id,text,observedAt,label,title,url,attribution})=>({id,text,observedAt,label,...(title!==undefined?{title}:{}),...(url!==undefined?{url}:{}),...(attribution?{attribution}:{})})),honcho:{configured:honchoConfigured(this.env),status:state.pendingDelete?'unavailable':!state.enabled?'disabled':!honchoConfigured(this.env)?'unconfigured':state.status,lastSync:state.lastSync,cleanupPending:!!state.pendingDelete,retryAt:state.pendingDelete&&state.nextCleanup?new Date(state.nextCleanup).toISOString():null}};
  }
  private requestCleanup(state:State){state.pendingDelete=crypto.randomUUID();state.cleanupAttempts=0;state.nextCleanup=Date.now();state.lastSync=null;state.syncedSources=undefined;state.pendingSnapshot=undefined;}
  private withdraw(state:State,keep:StoredSource[],invalidate=true){
@@ -74,11 +75,12 @@ export class OwnerLensStore {
  private retained(sources:StoredSource[]){
   const keep:StoredSource[]=[];let bytes=0;
   for(const source of sources.filter(s=>Date.parse(s.observedAt)>=Date.now()-OWNER_LENS_WINDOW).sort((a,b)=>b.observedAt.localeCompare(a.observedAt))){
-   const size=new TextEncoder().encode(JSON.stringify({id:source.id,text:source.text,observedAt:source.observedAt})).byteLength;
+   const size=new TextEncoder().encode(JSON.stringify(this.providerSources([source])[0])).byteLength;
    if(keep.length>=30||bytes+size>44000)continue;keep.push(source);bytes+=size;
   }
   return keep;
  }
+ private providerSources(sources:StoredSource[]){return sources.map(({id,text,observedAt,attribution,meetingId})=>({id,text,observedAt,...(attribution?{attribution}:{}),...(meetingId?{meetingId}:{})}));}
  private current():State{
   const state=this.read(),keep=this.retained(state.sources);
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_messages WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
@@ -156,10 +158,11 @@ export class OwnerLensStore {
  /** Passages have already been attributed and selected by the Granola collector. */
  async recordGranola(input:OwnerGranolaInput,valid:()=>boolean):Promise<void>{
   if(!valid()||!this.read().granolaEnabled)return;
-  if(!input||typeof input.id!=='string'||!input.id||input.id.length>512||typeof input.version!=='string'||!input.version||input.version.length>512||typeof input.observedAt!=='string'||typeof input.title!=='string'||input.url!==null&&typeof input.url!=='string'||!Array.isArray(input.passages)||input.passages.length>8||input.passages.some(text=>typeof text!=='string'||!text.trim()||text.length>2000))throw Error('invalid_owner_lens');
+  if(!input||typeof input.id!=='string'||!input.id||input.id.length>512||typeof input.version!=='string'||!input.version||input.version.length>512||typeof input.observedAt!=='string'||typeof input.title!=='string'||input.url!==null&&typeof input.url!=='string'||!Array.isArray(input.passages)||input.passages.length>8||input.passages.some(text=>typeof text!=='string'||!text.trim()||text.length>2000)||input.meetingPassages!==undefined&&(!Array.isArray(input.meetingPassages)||input.meetingPassages.length>3||input.meetingPassages.some(text=>typeof text!=='string'||!text.trim()||text.length>1200)))throw Error('invalid_owner_lens');
   const observed=Date.parse(input.observedAt);if(!Number.isFinite(observed))throw Error('invalid_owner_lens');if(observed<Date.now()-OWNER_LENS_WINDOW||observed>Date.now()||this.hasGranolaNote(input.id,input.version))return;
   let url:string|null=null;try{const parsed=input.url&&input.url.length<=2048?new URL(input.url):null;if(parsed?.protocol==='https:'&&!parsed.username&&!parsed.password)url=parsed.href;}catch{}
-  const sources=await Promise.all(input.passages.map(async(text,index):Promise<StoredSource>=>({id:'owner-granola:'+await digest(JSON.stringify([input.id,input.version,index,text])),text,observedAt:new Date(observed).toISOString(),label:'Your Granola meeting',account:'granola',message:input.id,version:input.version,title:input.title.trim().slice(0,300),url})));
+  const passages=[...input.passages.map((text,index)=>({text,index,attribution:'statement' as const})),...(input.meetingPassages??[]).map((text,index)=>({text,index,attribution:'meeting' as const}))];
+  const sources=await Promise.all(passages.map(async({text,index,attribution}):Promise<StoredSource>=>({id:'owner-granola:'+await digest(JSON.stringify([input.id,input.version,attribution,index,text])),text,observedAt:new Date(observed).toISOString(),label:attribution==='meeting'?'Meeting you attended':'Your Granola meeting',attribution,...(attribution==='meeting'?{meetingId:input.id}:{}),account:'granola',message:input.id,version:input.version,title:input.title.trim().slice(0,300),url})));
   if(!valid())return;
   this.ctx.storage.transactionSync(()=>{
    const state=this.read();if(!state.enabled||!state.granolaEnabled||!valid()||this.hasGranolaNote(input.id,input.version))return;
@@ -226,7 +229,7 @@ export class OwnerLensStore {
     stage='cleanup';if(!await this.cleanup()||!valid())return this.get();
     const snapshot=this.read(),owner=await this.owner();if(!owner||!valid()||this.read().revision!==snapshot.revision)return this.get();
     if(!snapshot.sources.length){snapshot.status=collectionFailed?'unavailable':honchoConfigured(this.env)?'ready':'unconfigured';this.touch(snapshot,false);this.write(snapshot);return this.get();}
-    const fingerprint=await digest(JSON.stringify(snapshot.sources.map(({id,text,observedAt})=>({id,text,observedAt}))));
+    const providerSources=this.providerSources(snapshot.sources),fingerprint=await digest(JSON.stringify(providerSources));
     if(!valid()||this.read().revision!==snapshot.revision)return this.get();
     if(snapshot.lastSync&&snapshot.syncedSources===fingerprint){snapshot.status='ready';this.touch(snapshot,false);this.write(snapshot);return this.get();}
     const controller=new AbortController();this.controller=controller;
@@ -234,7 +237,7 @@ export class OwnerLensStore {
      snapshot.remotePossible=true;const previous=snapshot.pendingSnapshot;
      snapshot.pendingSnapshot=previous?.fingerprint===fingerprint?{...previous,attempts:previous.attempts+1}:{fingerprint,attempts:1,since:Date.now()};this.write(snapshot);
     }
-    stage='honcho';const response=await syncHonchoLens(this.env,owner,snapshot.sources.map(({id,text,observedAt})=>({id,text,observedAt})),{signal:controller.signal});
+    stage='honcho';const response=await syncHonchoLens(this.env,owner,providerSources,{signal:controller.signal});
     if(this.controller===controller)this.controller=undefined;
     const latest=this.read();if(!valid()||latest.revision!==snapshot.revision)return this.get();
     latest.status=response.status;if(response.status==='unavailable')ownerLensDiagnostic('honcho',Error('owner_lens_unavailable'),{elapsedMs:Date.now()-started,sources:snapshot.sources.length});stage='suggestion-store';

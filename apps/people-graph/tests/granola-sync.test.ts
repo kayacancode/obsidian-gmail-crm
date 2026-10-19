@@ -930,10 +930,10 @@ test('owner Granola learning rehydrates legacy notes, verifies identity and cach
  await withFetch(fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,fake);});
  const version=f.sync.ownerLensVersions().get(NOTE_A)!;assert.ok(version);
  const note=await withFetch(fake,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));
- assert.equal(note?.ownerTranscript,'I am building an introduction tool.');assert.deepEqual(note?.ownerNames,['Kaya Jones','Kaya']);assert.equal(note?.title,'Owner work');
+ assert.equal(note?.ownerTranscript,'I am building an introduction tool.');assert.deepEqual(note?.ownerNames,['Kaya Jones','Kaya']);assert.equal(note?.title,'Owner work');assert.equal(note?.attended,true);
  const calls=transcriptCalls;
  await withFetch((async()=>{throw Error('must use cache');}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));assert.equal(transcriptCalls,calls);
- const other=await f.sync.ownerLensNote(NOTE_A,version,['someone@example.test'],()=>true);assert.equal(other?.ownerTranscript,'');assert.deepEqual(other?.ownerNames,[]);
+ const other=await f.sync.ownerLensNote(NOTE_A,version,['someone@example.test'],()=>true);assert.equal(other?.ownerTranscript,'');assert.deepEqual(other?.ownerNames,[]);assert.equal(other?.attended,false);
  f.db.prepare('UPDATE granola_notes SET content_hash=? WHERE id=?').run('changed',NOTE_A);
  assert.notEqual(f.sync.ownerLensVersions().get(NOTE_A),version);assert.equal(await f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true),null);
  await f.sync.setExcluded(['fol_1234567890abcd']);assert.equal(f.sync.ownerLensVersions().size,0);
@@ -946,7 +946,7 @@ test('owner Granola learning never infers ownership from the connector global ow
  const net=network({notes:[raw]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
  const version=f.sync.ownerLensVersions().get(NOTE_A)!;
  const note=await withFetch((async(input:any,init:any)=>{assert.ok(!String(input).includes('/transcript'));return net.fake(input,init);}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));
- assert.equal(note?.ownerTranscript,'');assert.deepEqual(note?.ownerNames,['Kaya Jones']);
+ assert.equal(note?.ownerTranscript,'');assert.deepEqual(note?.ownerNames,['Kaya Jones']);assert.equal(note?.attended,true);
 });
 
 test('owner Granola learning cannot persist a late fetch after disconnect',async()=>{

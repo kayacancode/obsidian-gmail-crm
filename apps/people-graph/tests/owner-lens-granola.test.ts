@@ -18,9 +18,9 @@ function fixture(){
  db.prepare('INSERT INTO granola_folders VALUES (?,?,NULL,0,?)').run(FOLDER,'Work meetings',Date.now());
  return {db,kv,ai,env,service,lens};
 }
-function cachedNote(f:ReturnType<typeof fixture>,id=NOTE,options:{hidden?:boolean;observed?:number;status?:string;hash?:string;summary?:string;ownerEmail?:string;ownerTranscript?:string}={}){
- const date=new Date(options.observed??Date.now()-1000).toISOString(),hash=options.hash??id,version='legacy:'+hash+':'+date,summary=options.summary??WORK;
- const detail={id,title:'Climate research meeting',webUrl:'https://notes.granola.ai/d/'+id,createdAt:date,updatedAt:date,meetingAt:date,dateBasis:'scheduled',ownerEmail:options.ownerEmail??OWNER,ownerName:'Kaya Jones',folderIds:[FOLDER],attendees:[{email:OWNER,name:'Kaya Jones'},{email:'friend@example.test',name:'Alex Friend'}],summary,privateNotes:''};
+function cachedNote(f:ReturnType<typeof fixture>,id=NOTE,options:{hidden?:boolean;observed?:number;status?:string;hash?:string;summary?:string;ownerEmail?:string;ownerTranscript?:string;attendees?:{email:string;name:string}[]}={}){
+ const date=new Date(options.observed??Date.now()-1000).toISOString(),hash=options.hash??id,version='lens-v2:legacy:'+hash+':'+date,summary=options.summary??WORK;
+ const detail={id,title:'Climate research meeting',webUrl:'https://notes.granola.ai/d/'+id,createdAt:date,updatedAt:date,meetingAt:date,dateBasis:'scheduled',ownerEmail:options.ownerEmail??OWNER,ownerName:'Kaya Jones',folderIds:[FOLDER],attendees:options.attendees??[{email:OWNER,name:'Kaya Jones'},{email:'friend@example.test',name:'Alex Friend'}],summary,privateNotes:''};
  f.db.prepare('INSERT OR REPLACE INTO granola_notes (id,title,web_url,meeting_at,date_basis,created_at,updated_at,folder_ids,summary,private_notes,transcript,content_hash,bytes,extraction_status,extraction,extractor_version,extraction_attempts,synced_at,hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,detail.title,detail.webUrl,date,'scheduled',date,date,JSON.stringify([FOLDER]),summary,'','',hash,summary.length,options.status??'done',null,'granola-v2',0,Date.now(),options.hidden?1:0);
  f.db.prepare('INSERT OR REPLACE INTO granola_owner_context VALUES (?,?,?)').run(id,version,JSON.stringify({detail,ownerTranscript:options.ownerTranscript??''}));
  return version;
@@ -78,7 +78,7 @@ test('MailSync rechecks Granola opt-in and current note version after asynchrono
 
 test('MailSync empty Granola extraction advances its version without inventing owner context',async()=>withoutNetwork(async()=>{
  const f=fixture();try{
-  const version=cachedNote(f,NOTE,{summary:'Alex Friend needs an introduction to a robotics recruiter.'});let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.deepEqual(state.sources,[]);assert.equal(f.lens.hasGranolaNote(NOTE,version),true);
+  const version=cachedNote(f,NOTE,{summary:'Alex Friend needs an introduction to a robotics recruiter.',ownerEmail:'friend@example.test',attendees:[{email:'friend@example.test',name:'Alex Friend'}]});let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.deepEqual(state.sources,[]);assert.equal(f.lens.hasGranolaNote(NOTE,version),true);
   state=await f.service.refreshOwnerLens({revision:state.revision});assert.deepEqual(state.sources,[]);assert.equal(f.ai.calls.length,1);
  }finally{f.db.close();}
 }));
@@ -122,5 +122,38 @@ test('MailSync all-deferred Granola failures stay unavailable without retrying e
   (f.env as any).HONCHO_API_KEY='unused-key';cachedNote(f);f.ai.response={response:{passages:'invalid'}};
   let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.deepEqual(state.sources,[]);assert.equal(f.ai.calls.length,1);
   state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.deepEqual(state.sources,[]);assert.equal(f.ai.calls.length,1);assert.equal(f.db.prepare('SELECT attempts FROM owner_lens_granola_retries').get()!.attempts,1);
+ }finally{f.db.close();}
+}));
+
+
+test('MailSync infers meeting topics only with verified owner attendance and reports checked progress',async()=>withoutNetwork(async()=>{
+ const f=fixture();try{
+  cachedNote(f,'attended',{ownerEmail:'friend@example.test',summary:'The team explored evaluating language models for scientific research.'});
+  cachedNote(f,'not-attended',{ownerEmail:'friend@example.test',attendees:[{email:'friend@example.test',name:'Alex Friend'}],summary:'The team explored evaluating language models for scientific research.'});
+  f.ai.run=async(model,input)=>{f.ai.calls.push({model,input});return {response:{passages:JSON.stringify(input).includes('ownerIdentities')?[]:[{start:0,end:0}]}};};
+  let state=await enabled(f);assert.deepEqual(state.granolaProgress,{available:2,checked:0,excerpts:0});
+  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.sources.length,1);assert.equal(state.sources[0].attribution,'meeting');assert.equal(state.sources[0].label,'Meeting you attended');assert.equal(f.ai.calls.length,3);assert.deepEqual(state.granolaProgress,{available:2,checked:2,excerpts:1});
+  assert.ok(!JSON.stringify(state).includes('meetingId'));
+ }finally{f.db.close();}
+}));
+
+test('MailSync new Gmail address invalidates Granola attribution while preserving manual fields and sent-mail evidence',async()=>withoutNetwork(async()=>{
+ const f=fixture();try{
+  const version=cachedNote(f);let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(f.lens.hasGranolaNote(NOTE,version),true);
+  const mailText='I am building research tools that help climate scientists compare experimental results.';
+  f.ai.response={response:{facts:[{start:0,end:0,anchor:0,kind:'building'}]}};
+  await f.lens.recordMail(OWNER,'sent-mail',Date.now()-1000,{id:'sent-mail',internalDate:String(Date.now()-1000),payload:{mimeType:'text/plain',headers:[{name:'From',value:OWNER},{name:'To',value:'friend@example.test'},{name:'Message-ID',value:'sent-mail'}],body:{data:Buffer.from(mailText).toString('base64url')}}},f.lens.guard());
+  state=await f.service.updateOwnerLens({revision:f.lens.get().revision,fields:{focus:'My manual priority',needs:'Research partners',offers:''}});const valid=f.lens.guard();
+  await f.service.attachAccount('new-owner-alias@example.test','new-refresh-token','recent');state=await f.service.getOwnerLens();
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM granola_owner_context').get()!.n,0);assert.equal(f.lens.hasGranolaNote(NOTE,version),false);assert.equal(valid(),false);
+  assert.equal(state.sources.length,1);assert.equal(state.sources[0].label,'Your sent email');assert.equal(state.sources[0].text,mailText);assert.equal(f.lens.hasMessage(OWNER,'sent-mail'),true);assert.equal(state.fields.focus,'My manual priority');assert.equal(state.fields.needs,'Research partners');assert.equal(state.honcho.cleanupPending,true);
+ }finally{f.db.close();}
+}));
+
+test('MailSync reconnecting an existing Gmail address preserves Granola attribution cache and completed markers',async()=>withoutNetwork(async()=>{
+ const f=fixture();try{
+  await f.service.attachAccount('existing-owner-alias@example.test','first-refresh-token','recent');const version=cachedNote(f);let state=await enabled(f);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.sources.length,1);const sources=state.sources,revision=state.revision,valid=f.lens.guard();
+  await f.service.attachAccount('existing-owner-alias@example.test','renewed-refresh-token','recent');state=await f.service.getOwnerLens();
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM granola_owner_context').get()!.n,1);assert.equal(f.lens.hasGranolaNote(NOTE,version),true);assert.equal(valid(),true);assert.equal(state.revision,revision);assert.deepEqual(state.sources,sources);
  }finally{f.db.close();}
 }));

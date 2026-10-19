@@ -16,7 +16,7 @@ export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus
 /** One Gmail contact, with the name and the canonical subject themes Jev may see. Never raw subjects. */
 export interface GranolaGmailContact {email:string;name:string;subjects:string[]}
 export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
-export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerNames:string[];summary:string;privateNotes:string;ownerTranscript:string}
+export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerNames:string[];attended:boolean;summary:string;privateNotes:string;ownerTranscript:string}
 /** One attendee/contact pair queued for a single Jev judgment, carried in the job across ticks. */
 interface IdentityPair {attendeeEmail:string;attendeeName:string;contactEmail:string;contactName:string;meetings:string[];recentSubjects:string[]}
 export interface GranolaJob {phase:'folders'|'list'|'fetch'|'extract'|'identity'|'reconcile';cursor?:string;pending:{id:string;updatedAt:string}[];seenIds?:string[];identityPairs?:IdentityPair[];maxUpdated:string;retries:number;nextAttempt:number;lastRun:number;started:number;processed:number;initial:boolean;capDropped?:boolean}
@@ -133,7 +133,7 @@ export class GranolaSync {
  /** Only locally imported, visible recent notes are eligible for private owner learning. */
  ownerLensVersions():Map<string,string>{
   const c=this.read();if(!c||!['connected','syncing'].includes(c.status))return new Map();
-  return new Map(this.ctx.storage.sql.exec<{id:string;content_hash:string;updated_at:string}>("SELECT id,content_hash,updated_at FROM granola_notes WHERE hidden=0 AND extraction_status<>'refetch' AND meeting_at>=? AND meeting_at<=? ORDER BY meeting_at DESC LIMIT 1000",new Date(Date.now()-90*DAY).toISOString(),new Date().toISOString()).toArray().map(r=>[r.id,(c.lensGeneration??'legacy')+':'+r.content_hash+':'+r.updated_at]));
+  return new Map(this.ctx.storage.sql.exec<{id:string;content_hash:string;updated_at:string}>("SELECT id,content_hash,updated_at FROM granola_notes WHERE hidden=0 AND extraction_status<>'refetch' AND meeting_at>=? AND meeting_at<=? ORDER BY meeting_at DESC LIMIT 1000",new Date(Date.now()-90*DAY).toISOString(),new Date().toISOString()).toArray().map(r=>[r.id,'lens-v2:'+(c.lensGeneration??'legacy')+':'+r.content_hash+':'+r.updated_at]));
  }
 
  /** Legacy flattened transcripts lost speaker identity. Rehydrate a bounded number of
@@ -175,7 +175,7 @@ export class GranolaSync {
   if(detail.ownerEmail&&own.has(detail.ownerEmail)&&detail.ownerName)ownerNames.push(detail.ownerName);
   // A first name is useful in notes only when no other attendee shares it.
   for(const name of [...ownerNames]){const first=name.split(/\s+/)[0];if(first.length>=3&&!detail.attendees.some(a=>!own.has(a.email)&&a.name.split(/\s+/)[0].toLowerCase()===first.toLowerCase()))ownerNames.push(first);}
-  return {id,version,observedAt:detail.meetingAt,title:detail.title,url:detail.webUrl,ownerNames:[...new Set(ownerNames)],summary:detail.summary,privateNotes:detail.privateNotes,ownerTranscript:detail.ownerEmail&&own.has(detail.ownerEmail)?ownerTranscript:''};
+  return {id,version,observedAt:detail.meetingAt,title:detail.title,url:detail.webUrl,ownerNames:[...new Set(ownerNames)],attended:Boolean(detail.ownerEmail&&own.has(detail.ownerEmail)||detail.attendees.some(a=>own.has(a.email))),summary:detail.summary,privateNotes:detail.privateNotes,ownerTranscript:detail.ownerEmail&&own.has(detail.ownerEmail)?ownerTranscript:''};
  }
 
  async tick(now=Date.now()):Promise<void>{
@@ -314,7 +314,7 @@ export class GranolaSync {
      for(let x=0;x<emails.length;x++)for(let y=x+1;y<emails.length;y++)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO granola_edges VALUES (?,?,?)',item.id,emails[x],emails[y]);
     }
    });
-   this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=? AND version<>?',item.id,(c.lensGeneration??'legacy')+':'+contentHash+':'+detail.updatedAt);
+   this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=? AND version<>?',item.id,'lens-v2:'+(c.lensGeneration??'legacy')+':'+contentHash+':'+detail.updatedAt);
    await this.hooks.ownerContextChanged?.();
    if(status!=='done')await this.removeNoteSignals(item.id);
    if(detail.ownerEmail&&!c.ownerEmail)c.ownerEmail=detail.ownerEmail;

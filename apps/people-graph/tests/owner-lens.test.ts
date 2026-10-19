@@ -460,3 +460,29 @@ test('owner lens late provider response cannot restore Granola evidence after it
   assert.deepEqual(f.store.get().suggestions,[]);assert.equal(f.store.get().sources.length,1);assert.equal(f.store.get().sources[0].label,'Your sent email');assert.equal(f.store.hasGranolaNote('meeting','version-1'),false);
  }finally{release?.();net.restore();f.db.close();}
 });
+
+test('owner lens separates attributed Granola statements from attended-meeting evidence without exposing meeting IDs',async()=>{
+ const f=fixture();try{
+  await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});
+  await f.store.recordGranola({...granolaNote(),meetingPassages:[WORK]},f.store.guard());const state=f.store.get();assert.equal(state.sources.length,2);assert.notEqual(state.sources[0].id,state.sources[1].id);
+  assert.deepEqual(state.sources.map(source=>source.attribution).sort(),['meeting','statement']);assert.equal(state.sources.find(source=>source.attribution==='meeting')!.label,'Meeting you attended');assert.ok(state.sources.every(source=>!('meetingId' in source)));
+  const internal=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);assert.equal(internal.sources.find((source:any)=>source.attribution==='meeting').meetingId,'meeting');
+  await assert.rejects(f.store.recordGranola({...granolaNote('too-many'),meetingPassages:Array(4).fill(WORK)},f.store.guard()),/invalid_owner_lens/);
+  await assert.rejects(f.store.recordGranola({...granolaNote('too-long'),meetingPassages:['x'.repeat(1201)]},f.store.guard()),/invalid_owner_lens/);
+ }finally{f.db.close();}
+});
+
+test('owner lens sends attended-meeting attribution to Honcho and withdraws accepted conversation focus when a meeting disappears',async()=>{
+ const f=fixture(true),net=honchoNetwork(),network=globalThis.fetch;try{
+  globalThis.fetch=async(input:any,init:any)=>{const response=await network(input,init);if(!String(input).endsWith('/chat'))return response;
+   const messages=net.calls.filter(call=>call.path.endsWith('/messages')).at(-1)!.body.messages;
+   return Response.json({content:JSON.stringify({entries:[{kind:'focus',text:'Exploring conversations about climate research tools',sources:messages.map((message:any)=>{const content=JSON.parse(message.content);return {sourceId:content.sourceId,quote:content.text};})}]})});
+  };
+  await enabled(f.store);await f.store.setGranolaEnabled({revision:f.store.get().revision,enabled:true});
+  for(const id of ['private-meeting-alpha','private-meeting-beta'])await f.store.recordGranola({...granolaNote(id,'v2',[]),meetingPassages:['The meeting discussed climate research tools and experimental comparisons.']},f.store.guard());
+  let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});assert.equal(state.honcho.status,'ready');assert.equal(state.suggestions.length,1);assert.equal(state.fields.focus,'');
+  const messages=net.calls.find(call=>call.path.endsWith('/messages'))!.body.messages;assert.ok(messages.every((message:any)=>JSON.parse(message.content).attribution==='OWNER_MEETING_ACTIVITY'));assert.ok(!JSON.stringify(net.calls).includes('private-meeting-alpha'));
+  state=f.store.decide({revision:state.revision,id:state.suggestions[0].id},true);assert.match(state.fields.focus,/^Exploring conversations/);
+  await f.store.reconcileGranola(new Map([['private-meeting-beta','v2']]));state=f.store.get();assert.equal(state.fields.focus,'');assert.equal(state.sources.length,1);assert.deepEqual(state.suggestions,[]);assert.equal(state.honcho.cleanupPending,true);
+ }finally{net.restore();f.db.close();}
+});

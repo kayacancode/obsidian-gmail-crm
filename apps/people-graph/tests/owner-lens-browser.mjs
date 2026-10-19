@@ -18,7 +18,7 @@ try{
  page.on('pageerror',e=>errors.push(e.message));
  await page.route('https://accounts.google.com/**',route=>route.abort());
  const stamp='2026-10-17T12:00:00Z';
- let state={revision:'r1',enabled:false,granolaEnabled:false,fields:{focus:'Agent interfaces',needs:'',offers:'Product feedback'},updatedAt:stamp,suggestions:[{id:'s1',kind:'need',text:'Talk to design partners',sourceIds:['n1','g1','g2','g3']},{id:'s2',kind:'offer',text:'A second suggestion',sourceIds:['n1']}],sources:[{id:'n1',text:'I am looking for design partners.',observedAt:stamp,label:'Your note'},{id:'g1',text:'Kaya is researching agent interfaces.',observedAt:stamp,label:'Your Granola meeting',title:'Design research meeting',url:'https://notes.granola.ai/d/research'},{id:'g2',text:'Kaya would like design feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Untrusted destination',url:'https://granola.ai.evil.test/d/research'},{id:'g3',text:'Kaya can share product feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Unsafe scheme',url:'javascript:alert(1)'}],honcho:{configured:false,status:'unconfigured',lastSync:null}},conflict=false,failSave=false,cleanupPending=true,slow=false,release;
+ let state={revision:'r1',enabled:false,granolaEnabled:false,fields:{focus:'Agent interfaces',needs:'',offers:'Product feedback'},updatedAt:stamp,suggestions:[{id:'s1',kind:'need',text:'Talk to design partners',sourceIds:['n1','g1','g2','g3']},{id:'s2',kind:'offer',text:'A second suggestion',sourceIds:['n1']}],sources:[{id:'n1',text:'I am looking for design partners.',observedAt:stamp,label:'Your note'},{id:'g1',text:'Kaya is researching agent interfaces.',observedAt:stamp,label:'Your Granola meeting',title:'Design research meeting',url:'https://notes.granola.ai/d/research'},{id:'g2',text:'Kaya would like design feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Untrusted destination',url:'https://granola.ai.evil.test/d/research'},{id:'g3',text:'Kaya can share product feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Unsafe scheme',url:'javascript:alert(1)'},{id:'m1',text:'The group discussed practical evaluation methods for agent interfaces.',observedAt:stamp,label:'Meeting you attended',attribution:'meeting',title:'Interface evaluation roundtable',url:'https://granola.ai/d/roundtable'}],honcho:{configured:false,status:'unconfigured',lastSync:null}},conflict=false,failSave=false,cleanupPending=true,slow=false,release;
  const graph={source:'email_accounts',nodes:[{id:'p',name:'Jordan Rivera',type:'person',strength:50,momentum:50,combined:50,directRelationship:true}],edges:[],themes:[],themeSignals:[]};
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname;
@@ -35,6 +35,7 @@ try{
    if(body.action==='save')state={...state,fields:body.fields};
    if(body.action==='learning'){state={...state,enabled:body.enabled};if(!body.enabled){state.granolaEnabled=false;state.honcho={...state.honcho,status:cleanupPending?'unavailable':'disabled'};cleanupPending=false;}}
    if(body.action==='granola')state={...state,granolaEnabled:body.enabled};
+   if(body.action==='refresh')state={...state,granolaProgress:{available:12,checked:3,excerpts:5}};
    if(body.action==='accept'){const suggestion=state.suggestions.find(s=>s.id===body.id);state={...state,fields:{...state.fields,[{focus:'focus',need:'needs',offer:'offers'}[suggestion.kind]]:suggestion.text}};}
    if(['accept','dismiss'].includes(body.action))state={...state,suggestions:state.suggestions.filter(s=>s.id!==body.id)};
    state={...state,revision:'r'+calls.length,updatedAt:stamp};return reply(state);
@@ -71,6 +72,12 @@ try{
  await panel.getByRole('button',{name:'Dismiss',exact:true}).click();
  await page.waitForFunction(()=>!document.body.textContent.includes('A second suggestion'));
  assert.equal(calls.at(-1).action,'dismiss');
+ await panel.getByText('Your sources (5)',{exact:true}).click();
+ const meetingSource=panel.locator('.owner-lens-sources .owner-lens-source').filter({hasText:'Interface evaluation roundtable'});
+ assert.match(await meetingSource.innerText(),/Meeting you attended/);
+ assert.match(await meetingSource.innerText(),/Inferred focus from meeting context/);
+ assert.match(await meetingSource.innerText(),/not a statement by you/);
+ assert.equal(await panel.locator('.owner-lens-granola-progress:visible').count(),0,'legacy responses show no progress');
  await panel.getByRole('checkbox',{name:'Learn from my work context'}).check();
  await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Learning enabled'));
  assert.equal(calls.at(-1).enabled,true);
@@ -79,14 +86,18 @@ try{
  assert.equal(calls.at(-1).action,'granola');
  assert.equal(calls.at(-1).enabled,true);
  assert.equal(typeof calls.at(-1).revision,'string');
+ assert.equal(await panel.locator('.owner-lens-granola-progress:visible').count(),0,'progress remains absent until the server provides it');
  await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).fill('I am exploring agent interfaces with design partners.');
  await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
  await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Honcho is not configured'));
  assert.equal(calls.at(-1).note,'I am exploring agent interfaces with design partners.');
+ assert.equal(await panel.locator('.owner-lens-granola-progress').innerText(),'Granola: 3 of 12 recent meetings checked · 5 useful excerpts');
+ assert.equal(await panel.locator('.owner-lens-granola-progress').isVisible(),true);
  assert.equal(await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).inputValue(),'I am exploring agent interfaces with design partners.');
  await panel.getByRole('checkbox',{name:'Learn from my work context'}).uncheck();
  await panel.getByRole('button',{name:'Retry clearing learned context',exact:true}).waitFor();
  assert.match(await panel.innerText(),/Clearing learned context is still pending/);
+ assert.equal(await panel.locator('.owner-lens-granola-progress').isVisible(),false,'turning learning off hides existing progress');
  assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isChecked(),false,'master off resets Granola consent');
  assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isDisabled(),true);
  await panel.getByRole('button',{name:'Retry clearing learned context',exact:true}).click();

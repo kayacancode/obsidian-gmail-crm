@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {collectGranolaOwnerPassages,type GranolaOwnerContextInput} from '../src/granola-owner-context';
+import {collectGranolaMeetingTopics,collectGranolaOwnerPassages,type GranolaOwnerContextInput} from '../src/granola-owner-context';
 
 const base:GranolaOwnerContextInput={ownerEmails:['kaya@example.test'],ownerNames:['Kaya Jones','Kaya'],summary:'',privateNotes:'',ownerTranscript:''};
 const work='Kaya is building research tools that help climate scientists compare experimental results.';
@@ -102,4 +102,70 @@ test('Granola owner context handles structured/string envelopes and fails closed
  for(const output of [{response:'not JSON'},{response:{passages:'wrong'}},{response:{passages:[],prose:work}}])await assert.rejects(collectGranolaOwnerPassages({AI:{run:async()=>output} as any},{...base,summary:work}),/invalid_extraction/);
  await assert.rejects(collectGranolaOwnerPassages({},{...base,summary:work}),/ai_unavailable/);
  await assert.rejects(collectGranolaOwnerPassages({AI:{run:async()=>{throw Error('secret provider detail');}} as any},{...base,summary:work}),/^Error: ai_unavailable$/);
+});
+
+test('Granola meeting topics preserve a specific discussion about another participant without owner attribution',async()=>{
+ const summary='Alex demonstrated a retrieval tool for law firms.  It finds contradictory clauses across client contracts.';
+ const f=fake([{start:0,end:1}]);
+ assert.deepEqual(await collectGranolaMeetingTopics({AI:f.ai},{summary}),[summary]);assert.equal(f.calls.length,1);
+ assert.match(f.calls[0].messages[0].content,/meeting activity/i);assert.match(f.calls[0].messages[0].content,/not.*owner/i);
+ const sent=JSON.parse(f.calls[0].messages[1].content);assert.deepEqual(sent.sentences,summary.split('  '));
+ assert.ok(!Object.hasOwn(sent,'ownerIdentities'));
+});
+
+test('Granola meeting topics never send or select private notes',async()=>{
+ const summary='The team compared experimental data workflows used by climate laboratories.';
+ const privateNotes='Private: Alex needs confidential advice about a personal medical diagnosis.';
+ const f=fake([{start:0,end:0}]);
+ assert.deepEqual(await collectGranolaMeetingTopics({AI:f.ai},{summary,privateNotes}),[summary]);
+ assert.ok(!JSON.stringify(f.calls).includes(privateNotes));
+ const empty=fake([{start:0,end:0}]);assert.deepEqual(await collectGranolaMeetingTopics({AI:empty.ai},{summary:'',privateNotes}),[]);assert.equal(empty.calls.length,0);
+});
+
+test('Granola meeting topics reject malformed indexes and preserve independently valid exact ranges',async()=>{
+ const summary='Alex demonstrated a retrieval tool that finds contradictory clauses in legal contracts.';
+ for(const bad of [null,{start:'0',end:0},{start:-1,end:0},{start:1,end:0},{start:0,end:1},{start:0,end:0,quote:'generated'}]){
+  const f=fake([bad,{start:0,end:0}]);assert.deepEqual(await collectGranolaMeetingTopics({AI:f.ai},{summary}),[summary]);
+  await assert.rejects(collectGranolaMeetingTopics({AI:fake([bad]).ai},{summary}),/invalid_extraction/);
+ }
+});
+
+test('Granola meeting topics enforce three passages, four sentences, 1200 characters and paragraph boundaries',async()=>{
+ const summary=Array.from({length:5},(_,i)=>`Project ${i} helps climate laboratories compare experiment results.`).join(' ');
+ const three=fake([{start:0,end:0},{start:1,end:1},{start:2,end:2}]);assert.equal((await collectGranolaMeetingTopics({AI:three.ai},{summary})).length,3);
+ await assert.rejects(collectGranolaMeetingTopics({AI:fake(Array.from({length:4},(_,i)=>({start:i,end:i}))).ai},{summary}),/invalid_extraction/);
+ await assert.rejects(collectGranolaMeetingTopics({AI:fake([{start:0,end:4}]).ai},{summary}),/invalid_extraction/);
+ const long='The project compares '+'climate laboratory experiments '.repeat(50)+'.';
+ assert.deepEqual(await collectGranolaMeetingTopics({AI:fake([{start:0,end:0}]).ai},{summary:long}),[]);
+ const separate='Alex demonstrated a contract retrieval tool.\nThe group compared robotics hiring projects.';
+ assert.deepEqual(await collectGranolaMeetingTopics({AI:fake([{start:0,end:1}]).ai},{summary:separate}),[]);
+});
+
+test('Granola meeting topics omit generic logistics and deduplicate repeated exact discussion',async()=>{
+ const summary='We are in beta for iOS. Alex demonstrated a contract retrieval tool for law firms. Alex demonstrated a contract retrieval tool for law firms.';
+ assert.deepEqual(await collectGranolaMeetingTopics({AI:fake([{start:0,end:0},{start:1,end:1},{start:2,end:2}]).ai},{summary}),['Alex demonstrated a contract retrieval tool for law firms.']);
+ const prompt=fake([]);await collectGranolaMeetingTopics({AI:prompt.ai},{summary});
+ assert.match(prompt.calls[0].messages[0].content,/untrusted/i);assert.match(prompt.calls[0].messages[0].content,/credentials/i);assert.match(prompt.calls[0].messages[0].content,/personal health/i);assert.match(prompt.calls[0].messages[0].content,/financial/i);assert.match(prompt.calls[0].messages[0].content,/scheduling/i);
+});
+
+test('Granola meeting topics cap the sent source and exclude its clipped final sentence',async()=>{
+ const f=fake([{start:0,end:0}]),first='Alex demonstrated a retrieval tool for legal contracts.';
+ const summary=first+' '+'A'.repeat(30_000)+'.';
+ assert.deepEqual(await collectGranolaMeetingTopics({AI:f.ai},{summary}),[first]);
+ assert.deepEqual(JSON.parse(f.calls[0].messages[1].content).sentences,[first]);
+});
+
+test('Granola meeting topics accept structured JSON and string envelopes while failing closed on bad output',async()=>{
+ const summary='The group discussed retrieval evaluation for legal contract comparison.';
+ for(const output of [{passages:[{start:0,end:0}]},{response:JSON.stringify({passages:[{start:0,end:0}]})}])assert.deepEqual(await collectGranolaMeetingTopics({AI:{run:async()=>output} as any},{summary}),[summary]);
+ for(const output of [{response:'not JSON'},{response:{passages:'wrong'}},{response:{passages:[],extra:'generated prose'}}])await assert.rejects(collectGranolaMeetingTopics({AI:{run:async()=>output} as any},{summary}),/invalid_extraction/);
+ await assert.rejects(collectGranolaMeetingTopics({},{summary}),/ai_unavailable/);
+ await assert.rejects(collectGranolaMeetingTopics({AI:{run:async()=>{throw Error('secret provider detail');}} as any},{summary}),/^Error: ai_unavailable$/);
+});
+
+test('Granola meeting topics stop one stalled AI call at the 20-second deadline',async(t)=>{
+ t.mock.timers.enable({apis:['setTimeout']});let calls=0,signal:AbortSignal|undefined;
+ const ai={run(_model:string,_input:unknown,options:{signal:AbortSignal}){calls++;signal=options.signal;return new Promise(()=>{});}};
+ const pending=collectGranolaMeetingTopics({AI:ai as any},{summary:'The group discussed retrieval evaluation for legal contract comparison.'});
+ const rejected=assert.rejects(pending,/ai_unavailable/);t.mock.timers.tick(20_000);await rejected;assert.equal(calls,1);assert.equal(signal?.aborted,true);
 });

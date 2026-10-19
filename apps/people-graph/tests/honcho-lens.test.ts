@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {syncHonchoLens,deleteHonchoLens,honchoConfigured} from '../src/honcho-lens';
+import {syncHonchoLens,deleteHonchoLens,honchoConfigured,type HonchoLensSource} from '../src/honcho-lens';
 
 const env={HONCHO_API_KEY:'test-key',TOKEN_SECRET:'test-secret'};
 const sources=[{id:'note-1',text:'I am building agent memory tools.',observedAt:'2026-10-18T12:00:00.000Z'}];
 type Call={url:URL;init:RequestInit;body:any};
 const quotedSource=(message:any)=>({sourceId:message.metadata.source_ref,quote:JSON.parse(message.content).text});
+const meetingSources:HonchoLensSource[]=[
+ {id:'meeting-source-a',text:'Discussed retrieval evaluation methods for legal research tools.',observedAt:sources[0].observedAt,attribution:'meeting',meetingId:'private-meeting-alpha'},
+ {id:'meeting-source-b',text:'Reviewed retrieval evaluation practices for document search teams.',observedAt:sources[0].observedAt,attribution:'meeting',meetingId:'private-meeting-beta'},
+];
 function fakeHoncho(){
  const calls:Call[]=[],sessions=new Map<string,any[]>(),sessionMetadata=new Map<string,any>();let answer:((messages:any[])=>any)|undefined;
  const fetcher=async(input:any,init:RequestInit={})=>{
@@ -192,6 +196,64 @@ test('invalid or excessive input fails before any private data leaves the servic
   for(const input of [[{...sources[0],observedAt:'yesterday'}],[{...sources[0],text:'x'.repeat(4001)}],Array.from({length:41},(_,i)=>({...sources[0],id:String(i)})),[sources[0],sources[0]]])
    assert.equal((await syncHonchoLens(env,'owner',input)).status,'invalid');
   assert.equal((await syncHonchoLens(env,'',sources)).status,'invalid');
+ });
+});
+
+test('meeting activity supports only recurring conversation focus with two distinct opaque meeting groups',async()=>{
+ const fake=fakeHoncho();fake.setAnswer(messages=>({entries:[{kind:'focus',text:'Exploring conversations about retrieval evaluation',sources:messages.map(quotedSource)}]}));
+ await withFetch(fake.fetcher,async()=>{
+  assert.deepEqual(await syncHonchoLens(env,'owner',meetingSources),{status:'ready',entries:[{kind:'focus',text:'Exploring conversations about retrieval evaluation',sourceIds:meetingSources.map(source=>source.id)}]});
+  const sent=fake.calls.find(call=>call.body?.messages)!.body.messages,content=sent.map((message:any)=>JSON.parse(message.content));
+  assert.ok(content.every((message:any)=>message.attribution==='OWNER_MEETING_ACTIVITY'));assert.ok(sent.every((message:any)=>message.metadata.attribution==='OWNER_MEETING_ACTIVITY'));assert.equal(new Set(content.map((message:any)=>message.meetingGroup)).size,2);
+  for(const source of meetingSources)assert.ok(!JSON.stringify(fake.calls).includes(source.meetingId!));
+  const query=fake.calls.find(call=>call.url.pathname.endsWith('/chat'))!.body.query;assert.match(query,/attendance does not establish project ownership/);assert.match(query,/at least two distinct meetingGroup/);
+ });
+});
+
+test('multiple passages and repeated citations from one meeting do not establish recurring focus',async()=>{
+ for(const sameMeeting of [[meetingSources[0]],[meetingSources[0],{...meetingSources[1],meetingId:meetingSources[0].meetingId}]]){
+  const fake=fakeHoncho();fake.setAnswer(messages=>({entries:[{kind:'focus',text:'Exploring conversations about retrieval evaluation',sources:[...messages.map(quotedSource),quotedSource(messages[0])]}]}));
+  await withFetch(fake.fetcher,async()=>assert.deepEqual(await syncHonchoLens(env,'owner',sameMeeting),{status:'invalid',entries:[]}));
+ }
+});
+
+test('meeting references cannot establish needs, offers, ownership claims, or mixed-source capabilities',async()=>{
+ for(const [kind,text] of [
+  ['need','Needs design partners for retrieval evaluation'],['offer','Can help with retrieval evaluation'],['focus','Building retrieval evaluation tools'],
+  ['focus','Exploring conversations about my retrieval product'],['focus','Exploring conversations about retrieval. I build tools'],
+ ]){
+  const fake=fakeHoncho();fake.setAnswer(messages=>({entries:[{kind,text,sources:messages.map(quotedSource)}]}));
+  await withFetch(fake.fetcher,async()=>assert.deepEqual(await syncHonchoLens(env,'owner',[...meetingSources,...sources]),{status:'invalid',entries:[]}));
+ }
+ const fake=fakeHoncho();fake.setAnswer(messages=>({entries:[
+  {kind:'need',text:'Needs evaluation partners',sources:messages.map(quotedSource)},
+  {kind:'focus',text:'Building agent memory tools',sources:messages.filter((message:any)=>JSON.parse(message.content).attribution==='OWNER').map(quotedSource)},
+ ]}));
+ await withFetch(fake.fetcher,async()=>assert.deepEqual(await syncHonchoLens(env,'owner',[...meetingSources,...sources]),{status:'ready',entries:[{kind:'focus',text:'Building agent memory tools',sourceIds:['note-1']}]}));
+});
+
+test('meeting activity still requires complete exact quotes and accepts the alternate constrained focus wording',async()=>{
+ const fake=fakeHoncho();fake.setAnswer(messages=>({entries:[{kind:'focus',text:'Spending time on conversations about document search',sources:messages.map(quotedSource)}]}));
+ await withFetch(fake.fetcher,async()=>{
+  assert.equal((await syncHonchoLens(env,'owner',meetingSources)).status,'ready');
+  fake.setAnswer(messages=>({entries:[{kind:'focus',text:'Exploring conversations about document search',sources:messages.map((message:any)=>({...quotedSource(message),quote:quotedSource(message).quote.slice(1)}))}]}));
+  assert.deepEqual(await syncHonchoLens(env,'owner',meetingSources),{status:'invalid',entries:[]});
+ });
+});
+
+test('meeting attribution and owner identity isolate source snapshots and meeting group identifiers',async()=>{
+ const fake=fakeHoncho();fake.setAnswer(()=>({entries:[]}));
+ await withFetch(fake.fetcher,async()=>{
+  await syncHonchoLens(env,'owner',[sources[0]]);await syncHonchoLens(env,'owner',[{...sources[0],attribution:'meeting',meetingId:'private-meeting-alpha'}]);
+  await syncHonchoLens(env,'other-owner',[{...sources[0],attribution:'meeting',meetingId:'private-meeting-alpha'}]);
+  const chats=fake.calls.filter(call=>call.url.pathname.endsWith('/chat'));assert.notEqual(chats[0].body.session_id,chats[1].body.session_id);
+  const created=fake.calls.filter(call=>call.body?.messages).map(call=>JSON.parse(call.body.messages[0].content));assert.equal(created[0].attribution,'OWNER');assert.ok(!('meetingGroup' in created[0]));assert.notEqual(created[1].meetingGroup,created[2].meetingGroup);
+ });
+});
+
+test('invalid meeting attribution fails before sending private context',async()=>{
+ await withFetch(()=>assert.fail('Invalid attribution must not send data'),async()=>{
+  for(const source of [{...sources[0],attribution:'meeting'},{...meetingSources[0],meetingId:''},{...sources[0],attribution:'statement',meetingId:'not-a-statement'},{...sources[0],attribution:'guest'}])assert.equal((await syncHonchoLens(env,'owner',[source as any])).status,'invalid');
  });
 });
 
