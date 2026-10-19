@@ -829,7 +829,8 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const value={personFeedback,activity,activityCoverage:'Up to 1,000 email messages, 500 Granola meetings, and primary-calendar events from the past year through the next 30 days (up to 10,000 per inbox). Calendar events link existing contacts; RSVPs do not establish attendance.',pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Relationship scores use metadata and meeting attendees. Optional Gmail conversation context keeps selected private work-related excerpts from the last 90 days. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
   const context=this.attachAutomaticContext({themes:[] as Array<Omit<Theme,'owner'>>,themeSignals:[] as Array<Omit<ThemeSignal,'owner'>>});
-  return this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my',Date.now(),context)));
+  const assembled=this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my',Date.now(),context)));
+  return assembled;
  }
  /**
   * The meeting title that rode along with a shared signal, turned back into provenance. The

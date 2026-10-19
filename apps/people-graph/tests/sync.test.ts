@@ -807,6 +807,11 @@ test('automatic Gmail context backfills existing mail, attributes only sender, n
   assert.equal(signals.length,1);assert.equal(signals[0].personId,ada.id);assert.equal(signals[0].summary,quote);assert.equal(signals[0].visibility,'private');
   const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
   assert.doesNotThrow(()=>normalizeGraph(graph));
+  const {repairLegacyGmailContext}=await import('../src/gmail-context-graph');
+  const legacy={...graph,themes:graph.themes.filter((t:any)=>t.id!=='gmail-conversation-context'),relevance:{...graph.relevance,themes:graph.relevance.themes.filter((t:any)=>t.themeId!=='gmail-conversation-context')}};
+  while(legacy.themes.length<200)legacy.themes.push({id:'legacy-'+legacy.themes.length,canonicalName:'Legacy topic',status:'active'});
+  const repaired=repairLegacyGmailContext(legacy);assert.equal(repaired.themes.length,200);assert.doesNotThrow(()=>normalizeGraph(repaired));assert.deepEqual(repairLegacyGmailContext(repaired),repaired);
+  assert.ok(repaired.themeSignals.some((s:any)=>s.evidenceRef.startsWith('gmail-context:')));
   db.prepare('INSERT INTO gmail_context VALUES (?,?,?,?,?)').run('me@example.com','long',ada.id,Date.now(),JSON.stringify([{kind:'building',quote:'I am building '+ 'useful scheduling software '.repeat(15)}]));
   db.prepare('INSERT INTO gmail_context VALUES (?,?,?,?,?)').run('me@example.com','missing','missing-person',Date.now(),JSON.stringify([{kind:'need',quote:'We need feedback on the prototype.'}]));
   const extended:any=await service.graph();assert.doesNotThrow(()=>normalizeGraph(extended));assert.ok(extended.themeSignals.every((s:any)=>s.personId!=='missing-person'&&s.summary.length<=240));

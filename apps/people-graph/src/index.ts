@@ -1,3 +1,4 @@
+import {repairLegacyGmailContext} from './gmail-context-graph';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
@@ -186,7 +187,8 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 		// Shared people come from other owners' objects, so the viewer's cached copy is brought
 		// up to date here, before the graph is read. It never throws and never blocks for long.
 		await refreshShares(env, auth.email);
-		const graph = await env.MAIL.getByName(auth.email).graph();
+		const snapshot = await env.MAIL.getByName(auth.email).graph();
+        const graph=snapshot?repairLegacyGmailContext(snapshot):null;
 		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
 		if(new URL(request.url).searchParams.get("source")==="web")return json({account:auth.email,graph:null});
 	}
