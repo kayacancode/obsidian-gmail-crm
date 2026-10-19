@@ -137,7 +137,7 @@ test('Granola meeting topics enforce three passages, four sentences, 1200 charac
  await assert.rejects(collectGranolaMeetingTopics({AI:fake([{start:0,end:4}]).ai},{summary}),/invalid_extraction/);
  const long='The project compares '+'climate laboratory experiments '.repeat(50)+'.';
  assert.deepEqual(await collectGranolaMeetingTopics({AI:fake([{start:0,end:0}]).ai},{summary:long}),[]);
- const separate='Alex demonstrated a contract retrieval tool.\nThe group compared robotics hiring projects.';
+ const separate='Alex demonstrated a contract retrieval tool.\n\nThe group compared robotics hiring projects.';
  assert.deepEqual(await collectGranolaMeetingTopics({AI:fake([{start:0,end:1}]).ai},{summary:separate}),[]);
 });
 
@@ -168,4 +168,36 @@ test('Granola meeting topics stop one stalled AI call at the 20-second deadline'
  const ai={run(_model:string,_input:unknown,options:{signal:AbortSignal}){calls++;signal=options.signal;return new Promise(()=>{});}};
  const pending=collectGranolaMeetingTopics({AI:ai as any},{summary:'The group discussed retrieval evaluation for legal contract comparison.'});
  const rejected=assert.rejects(pending,/ai_unavailable/);t.mock.timers.tick(20_000);await rejected;assert.equal(calls,1);assert.equal(signal?.aborted,true);
+});
+
+test('Granola meeting topics retain exact heading and bullet context across single line breaks',async()=>{
+ const summary='Contract retrieval evaluation\n  - Alex demonstrated a tool for law firms.\n  - It finds contradictory clauses across client contracts.';
+ const f=fake([{start:0,end:2}]);assert.deepEqual(await collectGranolaMeetingTopics({AI:f.ai},{summary}),[summary]);
+ const sent=JSON.parse(f.calls[0].messages[1].content);assert.deepEqual(sent.paragraphIds,[0,0,0]);
+ assert.match(f.calls[0].messages[0].content,/paragraphIds/);assert.match(f.calls[0].messages[0].content,/single line/i);
+});
+
+test('Granola meeting topics recognize blank lines containing spaces or CRLF as paragraph boundaries',async()=>{
+ for(const gap of ['\n\n','\n  \n','\r\n\r\n','\r\n \t\r\n']){
+  const summary='Contract retrieval evaluation\n- Alex demonstrated a tool for law firms.'+gap+'Hiring research scientists\n- The group discussed interviews for climate scientists.';
+  const f=fake([{start:0,end:2},{start:0,end:1}]);
+  assert.deepEqual(await collectGranolaMeetingTopics({AI:f.ai},{summary}),['Contract retrieval evaluation\n- Alex demonstrated a tool for law firms.']);
+  assert.deepEqual(JSON.parse(f.calls[0].messages[1].content).paragraphIds,[0,0,1,1]);
+ }
+});
+
+test('Granola meeting diagnostics contain only static labels and numeric counts, never source or provider contents',async()=>{
+ const original=console.info,logs:string[]=[];console.info=(value:unknown)=>{logs.push(String(value));};
+ const secret='PRIVATE_SOURCE_SENTINEL';
+ try{
+  const first='Alex demonstrated a contract retrieval tool for law firms.';
+  const summary=first+'\n\n'+secret+' is a medical detail that must never appear in logs.';
+  assert.deepEqual(await collectGranolaMeetingTopics({AI:fake([{start:0,end:1},{start:0,end:0},{start:0,end:0}]).ai},{summary}),[first]);
+  await assert.rejects(collectGranolaMeetingTopics({AI:{run:async()=>({response:'SECRET_PROVIDER_SENTINEL'})} as any},{summary}),/invalid_extraction/);
+  assert.deepEqual(await collectGranolaMeetingTopics({},{summary:''}),[]);
+  assert.equal(logs.length,3);assert.ok(!logs.join('').includes(secret));assert.ok(!logs.join('').includes('SECRET_PROVIDER_SENTINEL'));assert.ok(!logs.join('').includes(first));
+  const success=JSON.parse(logs[0]);assert.equal(success.event,'granola_meeting_selection');assert.equal(success.summaryChars,summary.length);assert.equal(success.sentenceCount,2);assert.equal(success.modelSelected,3);assert.equal(success.accepted,1);assert.equal(success.rejectedParagraph,1);assert.equal(success.rejectedDuplicate,1);
+  const empty=JSON.parse(logs[2]);assert.equal(empty.summaryChars,0);assert.equal(empty.sentenceCount,0);assert.equal(empty.modelSelected,0);assert.equal(empty.accepted,0);
+  for(const log of logs){const data=JSON.parse(log);for(const [key,value] of Object.entries(data))if(key!=='event')assert.ok(Number.isInteger(value)&&Number(value)>=0,key);}
+ }finally{console.info=original;}
 });
