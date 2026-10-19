@@ -22,25 +22,27 @@ async function addMail(store:OwnerLensStore,id='sent',account=OWN,text=WORK,obse
 async function account(f:ReturnType<typeof fixture>,email=OWN){f.db.prepare('INSERT INTO accounts VALUES (?,?)').run(email,JSON.stringify({email,grant:await seal('refresh-token',f.env.MAIL_TOKEN_KEY),revision:'account-revision',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+3600000}));}
 function indexed(f:ReturnType<typeof fixture>,id:string,sent=1,observed=Date.now()-1000){f.db.prepare('INSERT INTO messages VALUES (?,?,?)').run(OWN,id,id);f.db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(OWN,id,'friend@example.com','Friend',observed,'Research',sent,sent?0:1);}
 function honchoNetwork(options:{chat?:()=>Promise<void>;deleteFailure?:boolean}={}){
- const original=globalThis.fetch,calls:{path:string;body:any;method:string}[]=[],messages=new Map<string,any[]>(),metadata=new Map<string,any>();
+ const original=globalThis.fetch,calls:{path:string;body:any;method:string}[]=[],messages=new Map<string,any[]>(),metadata=new Map<string,any>();let workspacePresent=false;
  globalThis.fetch=async(input:any,init:any={})=>{
   const url=new URL(String(input)),body=init.body?JSON.parse(init.body):{},path=url.pathname,method=init.method||'GET';calls.push({path,body,method});
   const workspace=path.match(/\/workspaces\/([^/]+)/)?.[1],session=path.match(/\/sessions\/([^/]+)/)?.[1];
-  if(path.endsWith('/sessions/list'))return new Response(null,{status:options.deleteFailure?503:404});
-  if(path==='/v3/workspaces')return Response.json({id:body.id});
+  if(path==='/v3/workspaces/list')return options.deleteFailure?new Response(null,{status:503}):Response.json({items:workspacePresent?[{id:body.filters.id,metadata:{purpose:'private-owner-lens-v1'}}]:[],total:workspacePresent?1:0});
+  if(path.endsWith('/sessions/list')){const items=[...new Set([...messages.keys(),...metadata.keys()])].map(id=>({id,workspace_id:workspace}));return Response.json({items,total:items.length});}
+  if(method==='DELETE'){if(session){messages.delete(session);metadata.delete(session);}else workspacePresent=false;return new Response(null,{status:202});}
+  if(path==='/v3/workspaces'){workspacePresent=true;return Response.json({id:body.id});}
   if(path.endsWith('/peers'))return Response.json({id:body.id,workspace_id:workspace});
   if(path.endsWith('/sessions')){if(body.metadata)metadata.set(body.id,body.metadata);return Response.json({id:body.id,workspace_id:workspace,metadata:metadata.get(body.id)??{}});}
   if(path.endsWith('/messages/list')){const items=messages.get(session!)??[];return Response.json({items,total:items.length});}
   if(path.endsWith('/messages')){const items=body.messages.map((m:any,i:number)=>({...m,id:'m'+i,workspace_id:workspace,session_id:session}));messages.set(session!,items);return Response.json(items);}
   if(path.endsWith('/chat')){
-   await options.chat?.();const stored=messages.get(body.session_id)??[],ref=JSON.parse(stored[0].content).sourceId;
-   return Response.json({content:JSON.stringify({entries:[{kind:'focus',text:'Building research tools for climate scientists.',sourceIds:[ref]}]}),evidence:{messages:stored.map(m=>({id:m.id,peer_id:m.peer_id,session_id:m.session_id}))}});
+   await options.chat?.();const stored=messages.get(body.session_id)??[],source=JSON.parse(stored[0].content);
+   return Response.json({content:JSON.stringify({entries:[{kind:'focus',text:'Building research tools for climate scientists.',sources:[{sourceId:source.sourceId,quote:source.text}]}]})});
   }
   // Session metadata marker update/get used to avoid replaying uncertain writes.
   if(session){if(body.metadata)metadata.set(session,body.metadata);return Response.json({id:session,workspace_id:workspace,metadata:metadata.get(session)??{}});}
   throw Error('Unexpected test URL '+path);
  };
- return {calls,clear:()=>{messages.clear();metadata.clear();},restore:()=>{globalThis.fetch=original;}};
+ return {calls,clear:()=>{messages.clear();metadata.clear();workspacePresent=false;},restore:()=>{globalThis.fetch=original;}};
 }
 
 test('owner lens manual fields require fresh revisions and never trigger learning',async()=>{
@@ -192,7 +194,8 @@ test('owner lens retries asynchronous remote cleanup through the DO alarm while 
  try{
   Date.now=()=>clock;await enabled(f.store);await addMail(f.store);await f.store.refresh({revision:f.store.get().revision},async()=>{});
   const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{
-   const url=new URL(String(input));if(url.pathname.endsWith('/sessions/list')){cleanupCalls++;return confirm?new Response(null,{status:404}):Response.json({items:[],total:0});}
+   const url=new URL(String(input));if(url.pathname==='/v3/workspaces/list'){cleanupCalls++;const request=JSON.parse(init.body);return Response.json({items:confirm?[]:[{id:request.filters.id,metadata:{purpose:'private-owner-lens-v1'}}],total:confirm?0:1});}
+   if(url.pathname.endsWith('/sessions/list'))return Response.json({items:[],total:0});
    if(init?.method==='DELETE')return new Response(null,{status:202});return network(input,init);
   };
   let state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:false});
@@ -222,6 +225,7 @@ test('owner lens recovers an interrupted marked upload only after confirmed dele
   const network=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>{
    const path=new URL(String(input)).pathname;
    if(path.endsWith('/messages'))batches++;
+   if(path==='/v3/workspaces/list'){const request=JSON.parse(init.body);if(confirmed)net.clear();return Response.json({items:confirmed?[]:[{id:request.filters.id,metadata:{purpose:'private-owner-lens-v1'}}],total:confirmed?0:1});}
    if(path.endsWith('/sessions/list')){deletions++;if(confirmed){net.clear();return new Response(null,{status:404});}return Response.json({items:[],total:0});}
    if(init?.method==='DELETE')return new Response(null,{status:202});
    const response=await network(input,init);

@@ -16,14 +16,14 @@ Owner state lives in the existing per-owner Durable Object, outside graph/export
 
 Recent sent-message metadata selects a bounded batch. Full bodies must independently verify the owner as sender. Quoted text is stripped, exact work passages retained, and raw bodies discarded. Sources expire after 90 days. Background mail sync can collect new passages; Refresh suggestions asks Honcho for proposed profile updates.
 
-Honcho uses an opaque dedicated workspace per owner and an immutable source snapshot session. Recall is restricted to that session, global peer cards are disabled, and returned entries must reference known current sources backed by Honcho evidence. This checks source provenance; user review decides whether an inference is accurate. Writes/deletes are serialized, bounded, and abortable. Disabling removes local learned context and requests deletion of remote memory; asynchronous deletion remains pending until confirmed.
+Honcho uses an opaque dedicated workspace per owner and an immutable source snapshot session. Recall is restricted to that session, global peer cards are disabled, and returned entries must cite known current sources with complete, exact source quotations validated locally. The output contract is also included in the query because deployed Honcho versions may omit trace evidence and ignore the response-format option. This checks source provenance; user review decides whether an inference is accurate. Writes/deletes are serialized, bounded, and abortable. Disabling removes local learned context and requests deletion of remote memory; asynchronous deletion remains pending until an exact, read-only workspace listing confirms absence. An empty session list alone does not confirm deletion.
 
 Matching treats the confirmed lens as an explicit search request. It never creates a synthetic graph person or treats the profile as verified personal history. Existing candidate retrieval, specific-fit scoring, source attribution, and independent claim audits remain in force. Results address the owner as you/your and cite the candidate's actual context. No messages are sent.
 
 ## Delivery and verification
 
 1. Implement and test owner storage, extraction, retention, cancellation and source withdrawal.
-2. Implement the Honcho v3 adapter with replay protection, evidence validation and deletion lifecycle tests.
+2. Implement the Honcho v3 adapter with replay protection, exact-source citation validation and deletion lifecycle tests.
 3. Add authenticated same-origin lens actions and matching routes; reject client-supplied match profiles.
 4. Add drawer, confirmed-profile search, conflict handling and source/account isolation tests.
 5. Run typecheck, complete automated suite, desktop/mobile browser flows and code review. Deploy and verify live endpoints. Live learning additionally requires the user-supplied `HONCHO_API_KEY` Worker secret.
