@@ -6,6 +6,22 @@ const opaqueMessageId=/^[A-Za-z0-9_-]{1,200}$/;
 const emailPattern=/^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
 const noAddress=(s:string)=>s.replace(/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email]');
 const escaped=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+function unambiguousMailboxHeader(value:string){
+ const tokens=/[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+ return (value.match(/(?:"[^"\\]*(?:\\.[^"\\]*)*"|[^,])+/g)||[]).every(part=>{
+  const addresses=new Set((part.match(tokens)||[]).map(address=>address.toLowerCase()));
+  if(!addresses.size)return true;
+  if(addresses.size!==1)return false;
+  const expected=[...addresses][0],unquoted=part.replace(/"[^"\\]*(?:\\.[^"\\]*)*"/g,'').trim();
+  if(unquoted.includes('"'))return false;
+  if(/[<>]/.test(unquoted)){
+   const actual=unquoted.match(/^[^<>]*<([^<>]*)>\s*$/)?.[1].trim();
+   return !!actual&&emailPattern.test(actual)&&actual.toLowerCase()===expected;
+  }
+  const actual=unquoted.match(tokens)||[];
+  return actual.length===1&&actual[0].toLowerCase()===expected;
+ });
+}
 function nameForms(names:string[]):string[]{
  const values=new Set<string>();
  for(const raw of names){
@@ -24,6 +40,9 @@ export function extractConnectionOrigin(message:GmailMessage,viewerEmails:string
   if(!viewers.size||!emailPattern.test(targetEmail)||viewers.has(targetEmail)||!Number.isFinite(at)||at<=0||at>Date.now())return null;
   const headers=message.payload?.headers||[];
   if(!Array.isArray(headers)||headers.some(h=>typeof h?.name!=='string'||typeof h?.value!=='string'||h.value.length>8000))return null;
+  // The existing parser chooses the first email token. Never let a display-name
+  // address disagree with the actual mailbox before trusting sender/recipient roles.
+  if(headers.some(h=>['from','to','cc'].includes(h.name.toLowerCase())&&!unambiguousMailboxHeader(h.value)))return null;
   const from=headers.filter(h=>h.name.toLowerCase()==='from');
   if(from.length!==1||headers.some(h=>['list-id','list-unsubscribe','resent-from'].includes(h.name.toLowerCase())))return null;
   // Reuse the mailbox parser's address handling without confusing sender and recipients.
@@ -107,6 +126,7 @@ export function extractDirectConnectionContext(message:GmailMessage,viewerEmails
   if(!viewers.size||!emailPattern.test(targetEmail)||viewers.has(targetEmail)||!Number.isFinite(at)||at<=0||at>Date.now())return null;
   const headers=message.payload?.headers||[];
   if(!Array.isArray(headers)||headers.some(h=>typeof h?.name!=='string'||typeof h?.value!=='string'||h.value.length>8000))return null;
+  if(headers.some(h=>['from','to','cc'].includes(h.name.toLowerCase())&&!unambiguousMailboxHeader(h.value)))return null;
   const from=headers.filter(h=>h.name.toLowerCase()==='from');
   if(from.length!==1||headers.some(h=>['list-id','list-unsubscribe','resent-from'].includes(h.name.toLowerCase())||h.name.toLowerCase()==='auto-submitted'&&h.value.trim().toLowerCase()!=='no'||h.name.toLowerCase()==='precedence'&&/^(?:bulk|list|junk)$/i.test(h.value.trim())))return null;
   const senders=parseMessage({...message,payload:{headers:from}},'')?.participants||[];

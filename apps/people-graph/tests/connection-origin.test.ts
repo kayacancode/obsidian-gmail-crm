@@ -147,6 +147,34 @@ test('direct connection context identifies target replies and viewer aliases fro
  ])assert.equal(extractDirectConnectionContext(directMessage(text,headers),directViewers,directTarget),null,JSON.stringify(headers));
 });
 
+test('connection context rejects mailbox identities disguised by display-name email addresses',()=>{
+ const text='We are designing a repair program for local libraries.';
+ for(const headers of [
+  {From:'"Alex alex@example.com" <sender@external.example>',To:'Sam <sam@example.com>',Cc:'Alex <alex@example.com>'},
+  {To:'"Sam sam@example.com" <someone@external.example>'},
+  {From:'Sam <sam@example.com>',To:'"Alex alex@example.com" <someone@external.example>'},
+  {From:'"Alex, alex@example.com" <sender@external.example>'},
+  {From:'"alex@example.com" <invalid-mailbox>'},
+  {To:'"sam@example.com"'}
+ ])assert.equal(extractDirectConnectionContext(directMessage(text,headers),directViewers,directTarget),null,JSON.stringify(headers));
+ const introHeaders={From:'Jordan <jordan@example.com>',To:'Alex <alex@example.com>',Cc:'Sam <sam@example.com>'};
+ for(const headers of [
+  {...introHeaders,From:'"Jordan jordan@example.com" <alex@example.com>'},
+  {...introHeaders,To:'"Alex alex@example.com" <someone@external.example>'},
+  {...introHeaders,Cc:'"Sam sam@example.com" <someone@external.example>'}
+ ])assert.equal(extractConnectionOrigin(directMessage('Introducing you two.',headers),directViewers,directTarget),null,JSON.stringify(headers));
+});
+
+test('connection context permits normal quoted names and repeated identical display addresses',()=>{
+ const text='We are designing a repair program for local libraries.';
+ for(const headers of [
+  {From:'"River, Alex" <alex@example.com>',To:'"Park, Sam" <sam@example.com>'},
+  {From:'"Alex alex@example.com" <alex@example.com>',To:'"Sam sam@example.com" <sam@example.com>'},
+  {From:'Alex <alex@example.com>',To:'Sam <sam@example.com>, "Lee, Jordan" <jordan@example.com>'}
+ ])assert.equal(extractDirectConnectionContext(directMessage(text,headers),directViewers,directTarget)?.direction,'sent',JSON.stringify(headers));
+ assert.equal(extractConnectionOrigin(directMessage('Introducing you two.',{From:'"Jordan jordan@example.com" <jordan@example.com>',To:'"River, Alex" <alex@example.com>',Cc:'"Park, Sam" <sam@example.com>'}),directViewers,directTarget)?.introducerName,'Jordan');
+});
+
 test('direct connection context skips greetings acknowledgments scheduling and quoted bodies',()=>{
  for(const text of [
   'Hey Sam!',

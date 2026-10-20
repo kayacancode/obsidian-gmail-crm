@@ -56,7 +56,7 @@ export class MailSync extends DurableObject<MailEnv>{
   const snapshot=()=>JSON.stringify(this.rows().map(a=>[a.email,a.revision,a.grant,!!a.contextEnabled,['connected','syncing'].includes(a.status)]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
   const initial=snapshot(),current=()=>snapshot()===initial;
   const stopped=():ConnectionOriginResult=>({status:this.rows().some(usable)?'unavailable':'disabled',reason:'account_changed'});
-  stage('scope');const scope=await opaque(owner,'connection-origin-v4:'+initial+':'+target.email,this.env.TOKEN_SECRET);if(!current())return stopped();
+  stage('scope');const scope=await opaque(owner,'connection-origin-v5:'+initial+':'+target.email,this.env.TOKEN_SECRET);if(!current())return stopped();
   stage('cache');this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins WHERE checked_at<?',Date.now()-7*86400000);
   const cached=this.ctx.storage.sql.exec<{scope:string;checked_at:number;data:string}>('SELECT scope,checked_at,data FROM connection_origins WHERE person_id=?',personId).toArray()[0];
   if(cached?.scope===scope){const result=JSON.parse(cached.data) as ConnectionOriginResult;if(['found','not_found'].includes(result.status)&&cached.checked_at>Date.now()-(result.status==='found'?3600000:300000))return result;}
