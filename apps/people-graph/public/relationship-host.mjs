@@ -1,4 +1,5 @@
 import {mountTraversal} from './relationship-graph/traversal.mjs';
+import {mountOwnerLens} from './owner-lens.mjs';
 const PRIVATE_STATE = { lens: 'my', relevance: null, relevanceEnvelope: null, evidence: null, retrievalPreview: null, publicPreview: null, retrievalJob: null, publicJob: null, workflowMessage: '' };
 const EMPTY_STATE = Object.freeze({ phase: 'idle', account: null, graph: null, source: 'best', message: '', ...PRIVATE_STATE });
 // An address safe to place inside a mailto: link without opening header injection
@@ -148,6 +149,21 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
   /** "Who can help with…" over the owner's own graph; the server decides the ranking. */
   async function helperPeople(personId,brief){return request(workspacePath()?workspacePath()+'/helpers':'/api/people/helpers',{body:{personId,brief}},context());}
+  async function connectionOrigin(personId,signal){
+    if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to find your introductions.');
+    if(!state.graph.nodes?.some(node=>node.id===personId&&(node.type===undefined||node.type==='person')))throw Error('Select a person in your network.');
+    const ctx=context(),requestSignal=signal?AbortSignal.any([ctx.signal,signal]):ctx.signal;
+    requestSignal.throwIfAborted();
+    const value=await request('/api/people/connection-origin',{body:{personId},signal:requestSignal},ctx);
+    requestSignal.throwIfAborted();return value;
+  }
+  function ownerLensContext(){
+    if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to use your private lens.');
+    return context();
+  }
+  async function loadOwnerLens(){return request('/api/lens',{},ownerLensContext());}
+  async function updateOwnerLens(body){return request('/api/lens',{body},ownerLensContext());}
+  async function findOwnerMatches(){return request('/api/lens/matches',{body:{}},ownerLensContext());}
   async function searchNetwork(query,onEvent) {
     const ctx = context();
     if(workspacePath()&&onEvent){
@@ -389,7 +405,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signOut,
     requestPushToken,
     async personFeedback(personId,action){const ctx=context();await request('/api/people/feedback',{body:{personId,action}},ctx);const data=await request('/api/graph',{},ctx);if(data.graph){publish({graph:data.graph});}return data.graph;},
-    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople,
+    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, connectionOrigin, loadOwnerLens, updateOwnerLens, findOwnerMatches,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
     pollRetrieval: id => pollJob(id, 'retrieval'),
@@ -416,6 +432,7 @@ async function startBrowserApp() {
   let signInSetup = null;
   let renderedEnvelope = null;
   let activeDialog = null;
+  let ownerLens = null, ownerLensAccount = null;
   const sessionTrails = new Map();
   const networkSearch = $('#network-search');
   const networkQuery = $('#network-query');
@@ -776,6 +793,7 @@ async function startBrowserApp() {
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onConnectionOrigin:state.graph.source==='email_accounts'?(personId,signal)=>controller.connectionOrigin(personId,signal):undefined,
       onFindHelpers:(personId,brief)=>controller.helperPeople(personId,brief),
       onMergePeople:(sourceId,targetId)=>controller.mergePeople(sourceId,targetId),
       onConfirmRelationship:(personId,confirmed)=>controller.confirmRelationship(personId,confirmed),
@@ -793,6 +811,12 @@ async function startBrowserApp() {
   }
 
   function render(state) {
+    const personalLens=state.phase==='ready'&&state.graph?.source==='email_accounts'&&state.source!=='obsidian'&&!state.source.startsWith('workspace:');
+    if(!personalLens||ownerLensAccount!==state.account){ownerLens?.destroy();ownerLens=null;ownerLensAccount=null;}
+    if(personalLens&&!ownerLens){
+      ownerLensAccount=state.account;
+      ownerLens=mountOwnerLens({button:$('#owner-lens-launch'),load:()=>controller.loadOwnerLens(),update:body=>controller.updateOwnerLens(body),findMatches:()=>controller.findOwnerMatches(),getGraph:()=>mountedGraph,onExplore:id=>graphInstance?.select(id)});
+    }
     if(state.phase!=='ready'){closeDialog();clearNetworkSearch();renderedEnvelope=null;}
     source.value = state.source;
     if(state.account)void loadNetworkOptions(state.account);

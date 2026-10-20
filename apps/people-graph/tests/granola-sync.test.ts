@@ -87,7 +87,7 @@ test('syncNow brings nextSync forward only when connected and idle',async()=>{
 });
 
 const NOTE_A='not_1234567890abcd',NOTE_B='not_2234567890abcd';
-function noteRaw(id:string,title:string,folder='fol_1234567890abcd',updated='2026-08-15T12:00:00Z'){return {id,object:'note',title,owner:{name:'Me',email:'me@example.test'},created_at:'2026-08-14T12:00:00Z',updated_at:updated,web_url:'https://notes.granola.ai/d/'+id,calendar_event:{scheduled_start_time:'2026-08-14T11:00:00Z'},attendees:[{name:'Me',email:'me@example.test'},{name:'Ada',email:'ada@example.test'},{name:'Bob',email:'bob@example.test'}],folder_membership:folder?[{id:folder,name:'x',parent_folder_id:null}]:[],summary_text:'Ada asked for an intro to a fintech founder.',private_notes_text:'remember to send deck',transcript:null};}
+function noteRaw(id:string,title:string,folder='fol_1234567890abcd',updated='2026-08-15T12:00:00Z'){return {id,object:'note',title,owner:{name:'Me',email:'me@example.test'},created_at:'2026-08-14T12:00:00Z',updated_at:updated,web_url:'https://notes.granola.ai/d/'+id,calendar_event:{scheduled_start_time:'2026-08-14T11:00:00Z'},attendees:[{name:'Me',email:'me@example.test'},{name:'Ada',email:'ada@example.test'},{name:'Bob',email:'bob@example.test'}],folder_membership:folder?[{id:folder,name:'x',parent_folder_id:null}]:[],summary_text:'Ada asked for an intro to a fintech founder.',private_notes_text:'remember to send deck' as string|null,private_notes_markdown:null as string|null,transcript:null};}
 function network(opts:{notes?:any[];transcript?:string;fail?:(url:string)=>Response|null}={}){
  const calls:string[]=[];const notes=opts.notes??[noteRaw(NOTE_A,'Alpha'),noteRaw(NOTE_B,'Beta','fol_2234567890abcd')];
  const fake=(async(input:any)=>{const url=String(input);calls.push(url);const hit=opts.fail?.(url);if(hit)return hit;
@@ -919,4 +919,67 @@ test('a meeting with both an aliased address and its contact counts once',async(
  assert.deepEqual(edges.map(e=>[e.a,e.b,e.weight]),[['ada.lovelace@work.test','bob@example.test',1]],
   'one meeting is one point of weight, however many of its addresses fold into the same person');
  assert.deepEqual(edges[0].titles,['Alpha']);
+});
+
+test('owner Granola learning rehydrates legacy notes, verifies identity and caches by note version',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Owner work');
+ const now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;
+ raw.owner={name:'Kaya Jones',email:'owner@example.test'};raw.attendees=[{name:'Kaya Jones',email:'owner@example.test'},{name:'Max Wells',email:'max@example.test'}];
+ raw.private_notes_text=null;raw.private_notes_markdown=null;
+ const net=network({notes:[raw]});let transcriptCalls=0;
+ const fake=(async(input:any,init:any)=>String(input).includes('/transcript')?(transcriptCalls++,Response.json({transcript:[{speaker:{name:'Kaya',attribution:'me'},text:'I am building an introduction tool.'},{speaker:{name:'Max',attribution:'them'},text:'I need funding.'}],hasMore:false,cursor:null})):net.fake(input,init)) as typeof fetch;
+ await withFetch(fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;assert.ok(version);
+ const note=await withFetch(fake,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));
+ assert.equal(note?.ownerTranscript,'I am building an introduction tool.');assert.deepEqual(note?.ownerNames,['Kaya Jones','Kaya']);assert.equal(note?.title,'Owner work');assert.equal(note?.attended,true);
+ const calls=transcriptCalls;
+ await withFetch((async()=>{throw Error('must use cache');}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));assert.equal(transcriptCalls,calls);
+ const other=await f.sync.ownerLensNote(NOTE_A,version,['someone@example.test'],()=>true);assert.equal(other?.ownerTranscript,'');assert.deepEqual(other?.ownerNames,[]);assert.equal(other?.attended,false);
+ f.db.prepare('UPDATE granola_notes SET content_hash=? WHERE id=?').run('changed',NOTE_A);
+ assert.notEqual(f.sync.ownerLensVersions().get(NOTE_A),version);assert.equal(await f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true),null);
+ await f.sync.setExcluded(['fol_1234567890abcd']);assert.equal(f.sync.ownerLensVersions().size,0);
+ await f.sync.disconnect();assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_owner_context').get()!.n,0);
+});
+
+test('owner Granola learning never infers ownership from the connector global owner or microphone alone',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Shared meeting');const now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;
+ raw.owner={name:'Another Person',email:'other@example.test'};raw.attendees=[{name:'Kaya Jones',email:'owner@example.test'},{name:'Kaya Smith',email:'other@example.test'}];
+ raw.private_notes_text=null;raw.private_notes_markdown=null;
+ const net=network({notes:[raw]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;
+ const note=await withFetch((async(input:any,init:any)=>{assert.ok(!String(input).includes('/transcript'));return net.fake(input,init);}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));
+ assert.equal(note?.ownerTranscript,'');assert.deepEqual(note?.ownerNames,['Kaya Jones']);assert.equal(note?.attended,true);
+});
+
+test('owner Granola learning cannot persist a late fetch after disconnect',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Owner work');const now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;
+ const net=network({notes:[raw]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;const held=heldNoteFetch(net);
+ await withFetch(held.fake,async()=>{const pending=f.sync.ownerLensNote(NOTE_A,version,['me@example.test'],()=>true);await held.ready;await f.sync.disconnect();held.release(Response.json(raw));assert.equal(await pending,null);});
+ assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM granola_owner_context').get()!.n,0);
+});
+
+test('owner Granola learning trusts personal-key ownership for one note without promoting its email globally',async()=>{
+ const f=granolaFixture(),owned=noteRaw(NOTE_A,'Personally owned'),shared=noteRaw(NOTE_B,'Shared with the same owner'),now=new Date().toISOString();
+ for(const raw of [owned,shared]){raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;raw.owner={name:'Kaya Jones',email:'granola-only@example.test'};raw.attendees=[{name:'Kaya Jones',email:'granola-only@example.test'},{name:'Alex Friend',email:'alex@example.test'}];}
+ owned.private_notes_text='';shared.private_notes_text=null;shared.private_notes_markdown=null;
+ const net=network({notes:[owned,shared]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
+ const before=f.db.prepare('SELECT data FROM granola_connection').get()!.data,emails=['owner@example.test'];let transcriptCalls=0;
+ const fake=(async(input:any,init:any)=>String(input).includes('/transcript')?(transcriptCalls++,Response.json({transcript:[{speaker:{attribution:'me'},text:'I am building research tools for climate scientists.'},{speaker:{attribution:'them'},text:'I need an introduction to an investor.'}],hasMore:false,cursor:null})):net.fake(input,init)) as typeof fetch;
+ const note=await withFetch(fake,()=>f.sync.ownerLensNote(NOTE_A,f.sync.ownerLensVersions().get(NOTE_A)!,emails,()=>true));
+ assert.equal(transcriptCalls,1);assert.equal(note?.attended,true);assert.equal(note?.ownerTranscript,'I am building research tools for climate scientists.');assert.deepEqual(note?.ownerNames,['Kaya Jones','Kaya']);assert.deepEqual(note?.ownerEmails,['owner@example.test','granola-only@example.test']);
+ const other=await withFetch((async(input:any,init:any)=>{assert.ok(!String(input).includes('/transcript'));return net.fake(input,init);}) as typeof fetch,()=>f.sync.ownerLensNote(NOTE_B,f.sync.ownerLensVersions().get(NOTE_B)!,emails,()=>true));
+ assert.equal(other?.attended,false);assert.equal(other?.ownerTranscript,'');assert.deepEqual(other?.ownerNames,[]);assert.deepEqual(other?.ownerEmails,['owner@example.test']);assert.deepEqual(emails,['owner@example.test']);assert.deepEqual(f.accounts,[]);assert.equal(f.kv.get('owner'),'owner@example.test');assert.equal(f.db.prepare('SELECT data FROM granola_connection').get()!.data,before);
+});
+
+test('owner Granola learning rehydrates lens-v2 caches before using key-owned evidence',async()=>{
+ const f=granolaFixture(),raw=noteRaw(NOTE_A,'Owner work'),now=new Date().toISOString();raw.created_at=now;raw.updated_at=now;raw.calendar_event.scheduled_start_time=now;raw.owner={name:'Kaya Jones',email:'granola-only@example.test'};raw.attendees=[];raw.private_notes_text='';
+ const net=network({notes:[raw]});await withFetch(net.fake,async()=>{await f.sync.connect(KEY,'recent');await runToIdle(f,net.fake);});
+ const version=f.sync.ownerLensVersions().get(NOTE_A)!;assert.match(version,/^lens-v3:/);const oldVersion=version.replace(/^lens-v3:/,'lens-v2:');
+ f.db.prepare('INSERT INTO granola_owner_context VALUES (?,?,?)').run(NOTE_A,oldVersion,JSON.stringify({detail:{ownerEmail:'other@example.test',ownerName:'Stale Name',attendees:[],summary:'Stale owner evidence',privateNotes:''},ownerTranscript:'Stale transcript'}));
+ let noteReads=0,transcriptReads=0;const fake=(async(input:any,init:any)=>{if(String(input).includes('/transcript')){transcriptReads++;return Response.json({transcript:[{speaker:{attribution:'me'},text:'I can help teams evaluate climate research tools.'}],hasMore:false,cursor:null});}noteReads++;return net.fake(input,init);}) as typeof fetch;
+ assert.equal(await f.sync.ownerLensNote(NOTE_A,oldVersion,['owner@example.test'],()=>true),null);
+ const note=await withFetch(fake,()=>f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true));assert.equal(noteReads,1);assert.equal(transcriptReads,1);assert.equal(note?.ownerTranscript,'I can help teams evaluate climate research tools.');assert.deepEqual(note?.ownerNames,['Kaya Jones','Kaya']);assert.equal(note?.attended,true);
+ assert.equal(f.db.prepare('SELECT version FROM granola_owner_context WHERE note_id=?').get(NOTE_A)!.version,version);
+ await withFetch((async()=>{throw Error('fresh ownership cache should be reused');}) as typeof fetch,async()=>{const cached=await f.sync.ownerLensNote(NOTE_A,version,['owner@example.test'],()=>true);assert.equal(cached?.attended,true);assert.deepEqual(cached?.ownerEmails,['owner@example.test','granola-only@example.test']);});
 });

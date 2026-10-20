@@ -75,6 +75,29 @@ test('draft route is session-gated, same-origin, body-checked and maps durable o
  assert.equal((await signedRequest('/api/people/draft',env,{method:'GET'})).status,405);
 });
 
+test('connection origin route is private, validates its bounded input, and preserves lookup outcomes',async()=>{
+ const {env}=workerFixture(),calls:string[]=[];
+ let result:any={status:'found',origin:{introducerName:'Analisa',observedAt:'2026-09-14T11:00:00.000Z',subject:'Introduction',quote:'I would like to introduce you to Marie.',url:'https://mail.google.com/mail/u/0/#all/test'}};
+ env.MAIL.getByName=(owner:string)=>{calls.push('select:'+owner);return {bindOwner:async(bound:string)=>{calls.push('bind:'+bound);},connectionOrigin:async(personId:string)=>{calls.push('origin:'+personId);if(result instanceof Error)throw result;return result;}};};
+ const path='/api/people/connection-origin',post=(body:string,origin='https://people.test')=>({method:'POST',headers:{origin,'content-type':'application/json'},body});
+ assert.equal((await worker.fetch(new Request('https://people.test'+path,post('{"personId":"person-marie"}')),env)).status,401);
+ assert.equal((await signedRequest(path,env,{method:'GET'})).status,405);
+ assert.equal((await signedRequest(path,env,{method:'PUT'})).status,405);
+ assert.equal((await signedRequest(path,env,post('{"personId":"person-marie"}','https://evil.test'))).status,403);
+ assert.equal((await signedRequest(path,env,{method:'POST',body:'{"personId":"person-marie"}'})).status,403);
+ for(const body of ['{}','null','[]','not json','{"personId":42}','{"personId":""}','{"personId":"  "}','{"personId":"raw@example.test"}','{"personId":"../foreign"}',JSON.stringify({personId:'x'.repeat(201)}),JSON.stringify({personId:'person-marie',owner:'other@example.test'}),JSON.stringify({personId:'person-marie',padding:'x'.repeat(2100)})]){
+  const response=await signedRequest(path,env,post(body));assert.equal(response.status,400);assert.deepEqual(await response.json(),{error:'invalid_request'});
+ }
+ assert.deepEqual(calls,[]);
+ const found=await signedRequest(path+'?owner=other@example.test',env,post('{"personId":"person-marie"}'));
+ assert.equal(found.status,200);assert.equal(found.headers.get('cache-control'),'no-store');assert.deepEqual(await found.json(),result);
+ assert.deepEqual(calls,['select:owner@example.test','bind:owner@example.test','origin:person-marie']);
+ for(const status of ['not_found','disabled','unavailable']){result={status};const response=await signedRequest(path,env,post('{"personId":"person-marie"}'));assert.equal(response.status,200);assert.deepEqual(await response.json(),result);}
+ for(const [message,status,code] of [['unknown_person',404,'unknown_person'],['invalid_request',400,'invalid_request'],['PRIVATE provider body and access token',500,'server_error']] as const){
+  result=Error(message);const response=await signedRequest(path,env,post('{"personId":"person-marie"}'));assert.equal(response.status,status);assert.deepEqual(await response.json(),{error:code});
+ }
+});
+
 test('network search route is session-gated, same-origin, body-checked and never returns emails',async()=>{
  const {env}=workerFixture();const calls:string[]=[];
  let result:any={query:'fintech',checked:true,results:[{personId:'ada',name:'Ada Rivera',company:'fintech.example',lastContact:'2026-09-10T00:00:00.000Z',

@@ -1,3 +1,7 @@
+import {OwnerLensStore,OWNER_LENS_WINDOW,ownerLensDiagnostic,type OwnerLensDiagnosticStage,type OwnerLens,type OwnerLensFields,type OwnerLensCollectionResult} from './owner-lens';
+import {extractConnectionOrigin,extractDirectConnectionContext} from './connection-origin';
+import {collectGranolaOwnerPassages,collectGranolaMeetingTopics} from './granola-owner-context';
+import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
@@ -21,20 +25,122 @@ import {keywordRank,keywordScores,jevScores,topResults,MAX_QUERY_LENGTH,type Sea
 import {SHARE_CAPS,carriesQuote,levelOfSlice,normalizeShareLevel,normalizeShareScope,normalizeSlice,shareableSourceType,sharedDisplayName,type SharedSlice,type ShareLevel,type ShareScope} from './network-share';
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
-export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string}
+export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string;HONCHO_API_KEY?:string}
 type Range='recent'|'all';
-interface Job {calendarDone?:boolean;calendarPage?:string;calendarPages?:number;photoSource?:'saved'|'other';photoPage?:string;photosDone?:boolean;generation:string;range:Range;query:string;pageToken?:string;pending:string[];hasMore:boolean;processed:number;started:number;retries:number;lastRun:number;nextAttempt:number}
-interface Account {emailEdgeVersion?:number;calendarEnabled?:boolean;calendarStatus?:string;calendarLastSync?:number;revision?:string;otherPhotosEnabled?:boolean;photosEnabled?:boolean;photoStatus?:string;email:string;grant:string;status:string;job:Job|null;lastSync:number;nextSync:number;error:string;range:Range}
+interface Job {contextVersion?:number;calendarDone?:boolean;calendarPage?:string;calendarPages?:number;photoSource?:'saved'|'other';photoPage?:string;photosDone?:boolean;generation:string;range:Range;query:string;pageToken?:string;pending:string[];hasMore:boolean;processed:number;started:number;retries:number;lastRun:number;nextAttempt:number}
+interface Account {contextEnabled?:boolean;contextVersion?:number;contextError?:string;emailEdgeVersion?:number;calendarEnabled?:boolean;calendarStatus?:string;calendarLastSync?:number;revision?:string;otherPhotosEnabled?:boolean;photosEnabled?:boolean;photoStatus?:string;email:string;grant:string;status:string;job:Job|null;lastSync:number;nextSync:number;error:string;range:Range}
 interface Pending {verifier:string;cookie:string;expires:number;range:Range;owner:string;redirect:string}
 interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[];titles:string[]}
+interface ConnectionOriginResult {status:'found'|'not_found'|'disabled'|'unavailable';reason?:string;origin?:{introducerName:string;observedAt:string;subject:string;quote:string;url:string};connection?:{direction:'sent'|'received';observedAt:string;subject:string;quote:string;url:string}}
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
-interface GraphPersonNode {directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
+interface GraphPersonNode {directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
- constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.store();this.granola();}
+ constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
+ private ownerLensStore?:OwnerLensStore;
+ private originRequests=new Map<string,Promise<ConnectionOriginResult>>();
+ private originTable(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS connection_origins (person_id TEXT PRIMARY KEY,scope TEXT NOT NULL,checked_at INTEGER NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS messages_account_canonical ON messages(account,canonical)');}
+ private clearConnectionOrigins(){this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins');}
+ async connectionOrigin(personId:string):Promise<ConnectionOriginResult>{
+  if(typeof personId!=='string'||!/^[A-Za-z0-9:_-]{1,200}$/.test(personId))throw Error('invalid_request');
+  const pending=this.originRequests.get(personId);if(pending)return pending;
+  let stage='owner';const task=this.findConnectionOrigin(personId,value=>{stage=value;});this.originRequests.set(personId,task);
+  try{return await task;}catch(error){console.warn('connection_origin_failed',{stage,kind:error instanceof Error?error.name:'unknown'});throw error;}finally{if(this.originRequests.get(personId)===task)this.originRequests.delete(personId);}
+ }
+ private async findConnectionOrigin(personId:string,stage:(value:string)=>void=()=>{}):Promise<ConnectionOriginResult>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('unknown_person');
+  stage('resolve-person');let target:ReturnType<MailSync['graphContacts']>[number]|undefined;
+  for(const row of this.graphContacts())if(await opaque(owner,row.email,this.env.TOKEN_SECRET)===personId){target=row;break;}
+  if(!target)throw Error('unknown_person');
+  stage('consent');const usable=(a:Account)=>a.contextEnabled&&['connected','syncing'].includes(a.status);
+  const accounts=this.rows().filter(usable);if(!accounts.length)return {status:'disabled'};
+  const snapshot=()=>JSON.stringify(this.rows().map(a=>[a.email,a.revision,a.grant,!!a.contextEnabled,['connected','syncing'].includes(a.status)]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
+  const initial=snapshot(),current=()=>snapshot()===initial;
+  const stopped=():ConnectionOriginResult=>({status:this.rows().some(usable)?'unavailable':'disabled',reason:'account_changed'});
+  stage('scope');const scope=await opaque(owner,'connection-origin-v5:'+initial+':'+target.email,this.env.TOKEN_SECRET);if(!current())return stopped();
+  stage('cache');this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins WHERE checked_at<?',Date.now()-7*86400000);
+  const cached=this.ctx.storage.sql.exec<{scope:string;checked_at:number;data:string}>('SELECT scope,checked_at,data FROM connection_origins WHERE person_id=?',personId).toArray()[0];
+  if(cached?.scope===scope){const result=JSON.parse(cached.data) as ConnectionOriginResult;if(['found','not_found'].includes(result.status)&&cached.checked_at>Date.now()-(result.status==='found'?3600000:300000))return result;}
+  const save=(result:ConnectionOriginResult)=>{if(!current())return stopped();this.ctx.storage.sql.exec('INSERT OR REPLACE INTO connection_origins VALUES (?,?,?,?)',personId,scope,Date.now(),JSON.stringify(result));return result;};
+  // Start with this person's contributions; the account/canonical index avoids scanning an entire inbox.
+  const candidates=accounts.flatMap(account=>this.ctx.storage.sql.exec<{id:string;date:number}>('SELECT m.id,c.date FROM contributions c INDEXED BY contributions_email CROSS JOIN messages m INDEXED BY messages_account_canonical WHERE c.account=? AND c.email=? AND m.account=c.account AND m.canonical=c.canonical AND (c.sent>0 OR c.received>0) ORDER BY c.date ASC,m.id ASC LIMIT 3',account.email,target.email).toArray().map(row=>({...row,account:account.email}))).sort((a,b)=>a.date-b.date||a.account.localeCompare(b.account)||a.id.localeCompare(b.id)).slice(0,6);
+  const introLimit=24-candidates.length,tokens=new Map<string,string>();
+  const mailUrl=(account:string,evidence:{messageId:string;threadId?:string})=>{const url=new URL('https://mail.google.com/mail/u/');url.searchParams.set('authuser',account);url.hash='all/'+(evidence.threadId||evidence.messageId);return url.href;};
+  stage('gmail');const viewerEmails=[...new Set(this.rows().map(a=>a.email).concat(owner))],signal=AbortSignal.timeout(45000);
+  let scanned=0,failed=false,failureReason='unknown';
+  const json=async(url:string,init:RequestInit={},limit=32768)=>{
+   // Workers supports manual redirects; reject non-2xx below before credentials can follow a redirect.
+   const response=await fetch(url,{...init,redirect:'manual',signal:AbortSignal.any([signal,AbortSignal.timeout(10000)])});
+   if(!response.ok){failureReason=(url.includes('oauth2.googleapis.com')?'token':new URL(url).pathname.endsWith('/messages')?'list':'message')+'_http_'+response.status;console.warn('connection_origin_http',{operation:url.includes('oauth2.googleapis.com')?'token':new URL(url).pathname.endsWith('/messages')?'list':'message',status:response.status});await response.body?.cancel();throw Error('origin_read_failed');}
+   return readBoundedJSON(response,limit);
+  };
+  for(const [accountIndex,account] of accounts.entries()){
+   if(!current())return stopped();if(scanned>=introLimit){failed=true;failureReason='message_budget';break;}
+   const accountLimit=scanned+Math.ceil((introLimit-scanned)/(accounts.length-accountIndex));
+   let operation='decrypt';try{
+    if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('origin_read_failed');
+    const refresh=await unseal(account.grant,this.env.MAIL_TOKEN_KEY);if(!current())return stopped();
+    operation='token';const token=await json('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'})}) as {access_token?:string};
+    if(!token||typeof token.access_token!=='string'||!token.access_token||token.access_token.length>8192)throw Error('origin_read_failed');
+    if(!current())return stopped();
+    tokens.set(account.email,token.access_token);
+    const headers={authorization:'Bearer '+token.access_token};let pageToken:string|undefined;
+    for(let page=0;page<2&&scanned<accountLimit;page++){
+     const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+     url.searchParams.set('maxResults',String(Math.min(12,accountLimit-scanned)));
+     url.searchParams.set('q',`{to:"${target.email}" cc:"${target.email}"} -from:"${target.email}" ${viewerEmails.map(email=>'-from:"'+email+'"').join(' ')} {introduce introducing introduction intro connect connecting meet}`);
+     if(pageToken)url.searchParams.set('pageToken',pageToken);
+     operation='list';const listing=await json(url.href,{headers}) as {messages?:Array<{id:string}>;nextPageToken?:string};if(!current())return stopped();
+     if(!listing||listing.messages!==undefined&&!Array.isArray(listing.messages))throw Error('origin_read_failed');
+     const ids=[...new Set((listing.messages||[]).map(m=>m?.id))].slice(0,accountLimit-scanned);
+     if(ids.some(id=>typeof id!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(id)))throw Error('origin_read_failed');
+     for(let i=0;i<ids.length;i+=2){
+      const batch=ids.slice(i,i+2);scanned+=batch.length;
+      operation='message';const results=await Promise.allSettled(batch.map(id=>json('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id)+'?format=full&fields=id,threadId,internalDate,payload',{headers},1000000)));
+      if(!current())return stopped();
+      for(let j=0;j<results.length;j++){
+       const response=results[j];if(response.status==='rejected'){if(failureReason==='unknown')failureReason='message_'+(response.reason instanceof Error?response.reason.name:'unknown');console.warn('connection_origin_read_failed',{operation:'message',kind:response.reason instanceof Error?response.reason.name:'unknown'});failed=true;continue;}
+       const raw=response.value as GmailMessage;if(raw?.id!==batch[j]){failureReason='message_id_'+(raw?.id===undefined?'missing':typeof raw.id)+'_expected_'+typeof batch[j];failed=true;continue;}
+       const evidence=extractConnectionOrigin(raw,viewerEmails,{email:target.email,name:target.name});if(!evidence)continue;
+       return save({status:'found',origin:{introducerName:evidence.introducerName,observedAt:evidence.observedAt,subject:evidence.subject,quote:evidence.quote,url:mailUrl(account.email,evidence)}});
+      }
+     }
+     if(typeof listing.nextPageToken!=='string'||!listing.nextPageToken||listing.nextPageToken.length>1024)break;pageToken=listing.nextPageToken;
+    }
+   }catch(error){if(failureReason==='unknown')failureReason=operation+'_'+(error instanceof Error?error.name:'unknown');console.warn('connection_origin_read_failed',{operation,kind:error instanceof Error?error.name:'unknown'});failed=true;if(signal.aborted)break;}
+  }
+  if(!current())return stopped();
+  if(failed)return {status:'unavailable',reason:failureReason};
+  for(const candidate of candidates){
+   if(!current())return stopped();if(scanned>=24)break;
+   const token=tokens.get(candidate.account);if(!token)return {status:'unavailable',reason:'account_unsearched'};
+   try{
+    if(!/^[A-Za-z0-9_-]{1,128}$/.test(candidate.id))throw Error('origin_read_failed');
+    scanned++;
+    const raw=await json('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(candidate.id)+'?format=full&fields=id,threadId,internalDate,payload',{headers:{authorization:'Bearer '+token}},1000000) as GmailMessage;
+    if(!current())return stopped();if(raw?.id!==candidate.id)throw Error('origin_read_failed');
+    const evidence=extractDirectConnectionContext(raw,viewerEmails,{email:target.email,name:target.name});if(!evidence)continue;
+    return save({status:'not_found',connection:{direction:evidence.direction,observedAt:evidence.observedAt,subject:evidence.subject,quote:evidence.quote,url:mailUrl(candidate.account,evidence)}});
+   }catch(error){console.warn('connection_origin_read_failed',{operation:'direct-message',kind:error instanceof Error?error.name:'unknown'});if(!current())return stopped();return {status:'unavailable',reason:failureReason==='unknown'?'direct_message_'+(error instanceof Error?error.name:'unknown'):failureReason};}
+  }
+  return save({status:'not_found'});
+ }
+ private ownerLens(){return this.ownerLensStore??=new OwnerLensStore(this.ctx,this.env,()=>this.ctx.storage.get<string>('owner'));}
+ private ownerLensResult(value:OwnerLens){
+  if(!value.enabled||!value.granolaEnabled)return value;
+  const versions=this.granola().ownerLensVersions(),checked=this.ctx.storage.sql.exec<{id:string;version:string}>('SELECT id,version FROM owner_lens_granola').toArray().filter(row=>versions.get(row.id)===row.version).length;
+  return {...value,granolaProgress:{available:versions.size,checked,excerpts:value.sources.filter(source=>source.id.startsWith('owner-granola:')).length}};
+ }
+ async getOwnerLens(){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().get();await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async updateOwnerLens(input:{revision:string;fields:OwnerLensFields}){const value=this.ownerLens().update(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async setOwnerLensEnabled(input:{revision:string;enabled:boolean}){const value=await this.ownerLens().setEnabled(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async setOwnerLensGranolaEnabled(input:{revision:string;enabled:boolean}){const value=await this.ownerLens().setGranolaEnabled(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async refreshOwnerLens(input:{revision:string;note?:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=await this.ownerLens().refresh(input,valid=>this.collectOwnerLens(valid));await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async acceptOwnerLensSuggestion(input:{revision:string;id:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().decide(input,true);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async dismissOwnerLensSuggestion(input:{revision:string;id:string}){const value=this.ownerLens().decide(input,false);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
- private granola(){return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email)});}
+ private granola():GranolaSync{return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),ownerContextChanged:(force=false)=>this.ownerLens().reconcileGranola(this.granola().ownerLensVersions(),force),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email)});}
  /**
   * Gmail contacts for identity matching: one row per address with its most common display name
   * and up to five canonical subject theme names. Raw subject lines never leave this object.
@@ -58,10 +164,22 @@ export class MailSync extends DurableObject<MailEnv>{
  async begin(nonce:string,pending:Pending){await this.ctx.storage.put('pending:'+nonce,pending);await this.ctx.storage.put('owner',pending.owner);}
  async bindOwner(owner:string){if(typeof owner!=='string'||owner!==owner.trim().toLowerCase()||owner.length>320||!owner.includes('@'))throw Error('missing_owner');const current=await this.ctx.storage.get<string>('owner');if(current&&current!==owner)throw Error('missing_owner');if(!current)await this.ctx.storage.put('owner',owner);}
  async consume(nonce:string,cookie:string){const p=await this.ctx.storage.get<Pending>('pending:'+nonce);if(!p||p.cookie!==cookie||p.expires<Date.now())return null;await this.ctx.storage.delete('pending:'+nonce);return p;}
- async attachAccount(email:string,refresh:string,range:Range,photosEnabled=false,otherPhotosEnabled=false,calendarEnabled=false){if(!this.env.MAIL_TOKEN_KEY)throw Error('mail_not_configured');if(this.rows().length>=10&&!this.get(email))throw Error('account_limit');const old=this.get(email);const grant=refresh?await seal(refresh,this.env.MAIL_TOKEN_KEY):old?.grant;if(!grant)throw Error('offline_access_missing');const a:Account={email,grant,photosEnabled,otherPhotosEnabled,calendarEnabled,calendarStatus:calendarEnabled?'pending':'permission_required',photoStatus:photosEnabled?'pending':'permission_required',status:'connected',job:null,lastSync:old?.lastSync||0,nextSync:0,error:'',range};await this.invalidateRetrieval(email);this.put(a);if(!photosEnabled)this.ctx.storage.sql.exec("DELETE FROM contact_photos WHERE account=? AND source='saved'",email);if(!otherPhotosEnabled)this.ctx.storage.sql.exec("DELETE FROM contact_photos WHERE account=? AND source='other'",email);if(!calendarEnabled)this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);await this.start(email,range);}
- list(){return this.rows().map(({email,status,job,lastSync,error,range,photosEnabled,otherPhotosEnabled,photoStatus,calendarEnabled,calendarStatus,calendarLastSync})=>({email,status,calendarEnabled:!!calendarEnabled,calendarStatus,calendarLastSync,calendarCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM calendar_events WHERE account=?',email).toArray()[0].n,photosEnabled,otherPhotosEnabled,photoStatus,photoCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM contact_photos WHERE account=?',email).toArray()[0].n,matchedPhotoCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM contact_photos p WHERE p.account=? AND EXISTS (SELECT 1 FROM contributions c WHERE c.email=p.email) AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.email=p.email)',email).toArray()[0].n,processed:job?.processed||0,lastSync,error,range}));}
- async start(email:string,range?:Range,schedule=true){const a=this.get(email);if(!a)throw Error('account_not_found');if(a.job&&a.status==='syncing')return;if(a.emailEdgeVersion!==2){this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);}const selected=range||a.range,initial=!a.lastSync||Boolean(range)||a.emailEdgeVersion!==2;const query=initial?(selected==='recent'?'newer_than:90d':''):`after:${Math.floor(a.lastSync/1000)-172800}`;a.job={calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending:[],hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};a.range=selected;a.status='syncing';a.error='';this.put(a);if(schedule)await this.scheduleNextAlarm();}
- async remove(email:string){await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
+ async attachAccount(email:string,refresh:string,range:Range,photosEnabled=false,otherPhotosEnabled=false,calendarEnabled=false){if(!this.env.MAIL_TOKEN_KEY)throw Error('mail_not_configured');if(this.rows().length>=10&&!this.get(email))throw Error('account_limit');const old=this.get(email);const grant=refresh?await seal(refresh,this.env.MAIL_TOKEN_KEY):old?.grant;if(!grant)throw Error('offline_access_missing');const a:Account={contextEnabled:old?.contextEnabled,contextVersion:old?.contextVersion,email,grant,photosEnabled,otherPhotosEnabled,calendarEnabled,calendarStatus:calendarEnabled?'pending':'permission_required',photoStatus:photosEnabled?'pending':'permission_required',status:'connected',job:null,lastSync:old?.lastSync||0,nextSync:0,error:'',range};await this.invalidateRetrieval(email);this.put(a);if(!old){this.ctx.storage.sql.exec('DELETE FROM granola_owner_context');await this.ownerLens().reconcileGranola(new Map(),true);}if(!photosEnabled)this.ctx.storage.sql.exec("DELETE FROM contact_photos WHERE account=? AND source='saved'",email);if(!otherPhotosEnabled)this.ctx.storage.sql.exec("DELETE FROM contact_photos WHERE account=? AND source='other'",email);if(!calendarEnabled)this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);await this.start(email,range);}
+ list(){return this.rows().map(({contextEnabled,contextError,email,status,job,lastSync,error,range,photosEnabled,otherPhotosEnabled,photoStatus,calendarEnabled,calendarStatus,calendarLastSync})=>({contextEnabled:!!contextEnabled,contextError,contextCount:this.ctx.storage.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM gmail_context WHERE account=? AND facts<>?",email,'[]').toArray()[0].n,email,status,calendarEnabled:!!calendarEnabled,calendarStatus,calendarLastSync,calendarCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM calendar_events WHERE account=?',email).toArray()[0].n,photosEnabled,otherPhotosEnabled,photoStatus,photoCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM contact_photos WHERE account=?',email).toArray()[0].n,matchedPhotoCount:this.ctx.storage.sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM contact_photos p WHERE p.account=? AND EXISTS (SELECT 1 FROM contributions c WHERE c.email=p.email) AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.email=p.email)',email).toArray()[0].n,processed:job?.processed||0,lastSync,error,range}));}
+ async start(email:string,range?:Range,schedule=true){
+  const a=this.get(email);if(!a)throw Error('account_not_found');
+  // An old incremental scan cannot certify that the new extractor revisited the 90-day window.
+  if(a.job&&a.status==='syncing'&&(!a.contextEnabled||a.job.contextVersion===GMAIL_CONTEXT_VERSION))return;
+  if(a.emailEdgeVersion!==2){this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);}
+  const selected=range||a.range,initial=!a.lastSync||Boolean(range)||a.emailEdgeVersion!==2;
+  const upgrading=a.contextEnabled&&a.contextVersion!==GMAIL_CONTEXT_VERSION;
+  const query=a.emailEdgeVersion===2&&upgrading?'newer_than:90d':initial?(selected==='recent'?'newer_than:90d':''):`after:${Math.floor(a.lastSync/1000)-172800}`;
+  // Known useful messages come first; the paginated scan then upgrades all other recent messages.
+  const pending=upgrading?this.ctx.storage.sql.exec<{message:string}>('SELECT message FROM gmail_context WHERE account=? AND version<? AND facts<>? AND observed>=? ORDER BY observed DESC LIMIT 300',email,GMAIL_CONTEXT_VERSION,'[]',Date.now()-90*86400000).toArray().map(r=>r.message):[];
+  a.job={contextVersion:a.contextEnabled?GMAIL_CONTEXT_VERSION:undefined,calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending,hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};
+  a.range=selected;a.status='syncing';a.error='';a.contextError='';this.put(a);if(schedule)await this.scheduleNextAlarm();
+ }
+ async remove(email:string){const revoking=this.get(email);if(revoking){revoking.contextEnabled=false;revoking.revision=crypto.randomUUID();this.put(revoking);}this.clearConnectionOrigins();this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.ownerLens().reconcileGranola(new Map(),true);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
  async granolaConnect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{const status=await this.granola().connect(apiKey,range);await this.scheduleNextAlarm();return status;}
  granolaStatus():GranolaStatus{return this.granola().status();}
  async granolaExcluded(ids:string[]):Promise<GranolaStatus>{const status=await this.granola().setExcluded(ids);await this.scheduleNextAlarm();return status;}
@@ -72,7 +190,7 @@ export class MailSync extends DurableObject<MailEnv>{
  private active(a:Account){return this.get(a.email)?.job?.generation===a.job?.generation;}
  private async google(url:string,access:string){const r=await fetch(url,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});if(!r.ok){await r.body?.cancel();const e=new Error(r.status===401?'reconnect_required':r.status===403?'gmail_access_denied':`gmail_${r.status}`);throw e;}return readBoundedJSON(r,2_000_000);}
  async alarm(){
-  const now=Date.now();for(const a of this.rows()){if(a.status==='connected'&&a.nextSync<=now)await this.start(a.email,undefined,false);}
+  const now=Date.now();if(await this.ownerLens().retryCleanup(now)){await this.scheduleNextAlarm();return;}for(const a of this.rows()){if(a.status==='connected'&&a.nextSync<=now)await this.start(a.email,undefined,false);}
   const a=this.rows().filter(a=>a.status==='syncing'&&(a.job?.nextAttempt||0)<=now).sort((a,b)=>(a.job?.lastRun||0)-(b.job?.lastRun||0))[0];
   if(a?.job){a.job.lastRun=now;this.put(a);try{await this.batch(a);}catch(e){if(this.active(a)){const current=this.get(a.email)!;current.job!.retries++;current.job!.nextAttempt=Date.now()+Math.min(300000,5000*2**current.job!.retries);const message=e instanceof Error?e.message:'sync_failed';current.error=message;current.status=message==='reconnect_required'?'reconnect':current.job!.retries>=6?'error':'syncing';this.put(current);}}}
   // One source per alarm: a Gmail batch and a Granola tick share no state, and running both
@@ -83,7 +201,7 @@ export class MailSync extends DurableObject<MailEnv>{
   await this.publicSourceBatch();
   await this.scheduleNextAlarm();
  }
- private async scheduleNextAlarm(){const now=Date.now(),pending=this.rows().filter(a=>a.status==='syncing'),idle=this.rows().filter(a=>a.status==='connected');const pendingDue=pending.length?Math.max(now+1500,Math.min(...pending.map(a=>a.job?.nextAttempt||0))):undefined;const idleDue=idle.length?Math.max(now+1000,Math.min(...idle.map(a=>a.nextSync))):undefined;const mailDue0=pendingDue===undefined?idleDue:idleDue===undefined?pendingDue:Math.min(pendingDue,idleDue);const granolaDue=this.granola().nextDue(now);const mailDue=mailDue0===undefined?granolaDue:granolaDue===undefined?mailDue0:Math.min(mailDue0,granolaDue);const due=await this.store().nextAlarmAt(mailDue,this.retrievalClaim?.deadline,this.publicClaim?.deadline);if(due!==undefined)await this.ctx.storage.setAlarm(due);else {const storage=this.ctx.storage as unknown as {deleteAlarm?:()=>Promise<void>};if(storage.deleteAlarm)await storage.deleteAlarm();}}
+ private async scheduleNextAlarm(){const now=Date.now(),pending=this.rows().filter(a=>a.status==='syncing'),idle=this.rows().filter(a=>a.status==='connected');const pendingDue=pending.length?Math.max(now+1500,Math.min(...pending.map(a=>a.job?.nextAttempt||0))):undefined;const idleDue=idle.length?Math.max(now+1000,Math.min(...idle.map(a=>a.nextSync))):undefined;const mailDue0=pendingDue===undefined?idleDue:idleDue===undefined?pendingDue:Math.min(pendingDue,idleDue);const granolaDue=this.granola().nextDue(now);const mailDue=mailDue0===undefined?granolaDue:granolaDue===undefined?mailDue0:Math.min(mailDue0,granolaDue);const ownerDue=this.ownerLens().nextDue(now),sourceDue=ownerDue===undefined?mailDue:mailDue===undefined?ownerDue:Math.min(mailDue,ownerDue);const due=await this.store().nextAlarmAt(sourceDue,this.retrievalClaim?.deadline,this.publicClaim?.deadline);if(due!==undefined)await this.ctx.storage.setAlarm(due);else {const storage=this.ctx.storage as unknown as {deleteAlarm?:()=>Promise<void>};if(storage.deleteAlarm)await storage.deleteAlarm();}}
  private async calendarBatch(a:Account,access:string){
   const job=a.job!;if(!a.calendarEnabled||job.calendarDone)return;
   try {
@@ -130,7 +248,8 @@ export class MailSync extends DurableObject<MailEnv>{
   if(a.calendarEnabled&&!job.calendarDone){await this.calendarBatch(a,tokens.access_token);return;}
   await this.photoBatch(a,tokens.access_token);if(!this.active(a))return;
   if(!job.pending.length&&job.hasMore){const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');url.searchParams.set('maxResults','25');url.searchParams.set('q',job.query);if(job.pageToken)url.searchParams.set('pageToken',job.pageToken);const listing=await this.google(url.href,tokens.access_token) as {messages?:{id:string}[];nextPageToken?:string};if(!this.active(a))return;job.pending=(listing.messages||[]).map(m=>m.id);job.pageToken=listing.nextPageToken;job.hasMore=Boolean(listing.nextPageToken);this.put(a);}
-  const ids=job.pending.slice(0,10);for(const id of ids){const seen=this.ctx.storage.sql.exec('SELECT id FROM mail_edge_messages WHERE account=? AND id=?',a.email,id).toArray().length;if(!seen){const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','metadata');for(const header of ['From','To','Cc','Date','Subject','Message-ID'])url.searchParams.append('metadataHeaders',header);let raw:Metadata;try{raw=await this.google(url.href,tokens.access_token) as Metadata;}catch(e){if(e instanceof Error&&e.message==='gmail_404'){job.pending.shift();job.processed++;if(this.active(a))this.put(a);continue;}throw e;}if(!this.active(a))return;const parsed=parseMessage(raw,a.email);this.ctx.storage.transactionSync(()=>{if(parsed){for(const p of parsed.participants){if(p.email===a.email||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(p.email)||(!p.sent&&!p.received))continue;this.ctx.storage.sql.exec('INSERT OR REPLACE INTO contributions VALUES (?,?,?,?,?,?,?,?)',a.email,parsed.key,p.email,p.name,parsed.date,parsed.subject,p.sent,p.received);}const contacts=parsed.participants.filter(p=>p.email!==a.email&&!/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(p.email)).slice(0,50);
+  const ownerLearning=this.ownerLens().enabled(),ownerValid=this.ownerLens().guard();let ownerBudget=4;
+  const ids=job.pending.slice(0,a.contextEnabled?2:10);for(const id of ids){const seen=this.ctx.storage.sql.exec('SELECT id FROM mail_edge_messages WHERE account=? AND id=?',a.email,id).toArray().length;if(!seen){const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','metadata');for(const header of ['From','To','Cc','Date','Subject','Message-ID'])url.searchParams.append('metadataHeaders',header);let raw:Metadata;try{raw=await this.google(url.href,tokens.access_token) as Metadata;}catch(e){if(e instanceof Error&&e.message==='gmail_404'){job.pending.shift();job.processed++;if(this.active(a))this.put(a);continue;}throw e;}if(!this.active(a))return;const parsed=parseMessage(raw,a.email);this.ctx.storage.transactionSync(()=>{if(parsed){for(const p of parsed.participants){if(p.email===a.email||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(p.email)||(!p.sent&&!p.received))continue;this.ctx.storage.sql.exec('INSERT OR REPLACE INTO contributions VALUES (?,?,?,?,?,?,?,?)',a.email,parsed.key,p.email,p.name,parsed.date,parsed.subject,p.sent,p.received);}const contacts=parsed.participants.filter(p=>p.email!==a.email&&!/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(p.email)).slice(0,50);
 const thread=raw.threadId||parsed.key;
 for(const p of contacts)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO mail_thread_people VALUES (?,?,?,?)',a.email,thread,p.email,parsed.subject);
 const participants=this.ctx.storage.sql.exec<{email:string}>('SELECT email FROM mail_thread_people WHERE account=? AND thread=? ORDER BY email LIMIT 50',a.email,thread).toArray();
@@ -138,10 +257,176 @@ const participants=this.ctx.storage.sql.exec<{email:string}>('SELECT email FROM 
 if(participants.length<=20)for(let i=0;i<participants.length;i++)for(let j=i+1;j<participants.length;j++)this.ctx.storage.sql.exec('INSERT OR IGNORE INTO mail_edges VALUES (?,?,?,?,?)',a.email,'thread:'+thread,participants[i].email,participants[j].email,parsed.subject);
 this.ctx.storage.sql.exec('INSERT OR IGNORE INTO mail_edge_messages VALUES (?,?)',a.email,id);
 this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.email,id,parsed?.key||id);}else this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.email,id,id);});}
+  if(a.contextEnabled)await this.automaticMessageContext(a,id,tokens.access_token);
+  if(ownerLearning&&ownerBudget>0&&this.active(a)&&ownerValid()){const attempted=await this.collectOwnerMessage(a,id,tokens.access_token,()=>ownerValid()&&this.active(a));if(attempted!==undefined)ownerBudget--;}
   if(!this.active(a))return;job.pending.shift();job.processed++;job.retries=0;job.nextAttempt=0;a.error='';this.put(a);
   }
   await this.ctx.storage.delete('graph');
-  if(!job.pending.length&&!job.hasMore&&((!a.photosEnabled&&!a.otherPhotosEnabled)||job.photosDone)){a.status='connected';a.emailEdgeVersion=2;a.lastSync=job.started;a.nextSync=Date.now()+3600000;this.put(a);await this.rebuildMetadataRelevance(a);}
+  if(!job.pending.length&&!job.hasMore&&((!a.photosEnabled&&!a.otherPhotosEnabled)||job.photosDone)){a.status='connected';a.emailEdgeVersion=2;if(a.contextEnabled&&!a.contextError&&job.contextVersion===GMAIL_CONTEXT_VERSION)a.contextVersion=GMAIL_CONTEXT_VERSION;a.lastSync=job.started;a.nextSync=Date.now()+3600000;this.put(a);await this.rebuildMetadataRelevance(a);}
+ }
+
+ /** Bounded owner learning uses only recent messages already attributed as sent. */
+ private async collectOwnerLens(valid:()=>boolean):Promise<OwnerLensCollectionResult|void>{
+  let granolaFailed=0,granolaDeferred=0;
+  if(this.ownerLens().get().granolaEnabled){
+   const owner=await this.ctx.storage.get<string>('owner'),ownerEmails=[...new Set([...(owner?[owner]:[]),...this.rows().map(a=>a.email)])];
+   const eligible=[...this.granola().ownerLensVersions()].filter(([id,version])=>!this.ownerLens().hasGranolaNote(id,version));
+   const attended=new Set(ownerEmails.length&&eligible.length?this.ctx.storage.sql.exec<{id:string}>(`SELECT j.value AS id FROM json_each(?) j WHERE EXISTS (SELECT 1 FROM granola_attendees a WHERE a.note_id=j.value AND a.email IN (${ownerEmails.map(()=>'?').join(',')})) LIMIT 1000`,JSON.stringify(eligible.map(([id])=>id)),...ownerEmails).toArray().map(row=>row.id):[]);
+   granolaDeferred=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)>Date.now()).length;
+   const selected=eligible.filter(([id,version])=>this.ownerLens().granolaRetryAfter(id,version)<=Date.now()).sort((a,b)=>Number(this.ownerLens().granolaRetryAfter(...a)>0)-Number(this.ownerLens().granolaRetryAfter(...b)>0)||Number(attended.has(b[0]))-Number(attended.has(a[0]))).slice(0,3);
+   if(!this.granola().status().connected)granolaFailed++;
+   for(const [id,version] of selected){
+    const current=()=>valid()&&this.ownerLens().get().granolaEnabled&&this.granola().ownerLensVersions().get(id)===version;
+    if(!current())break;
+    try{
+     const note=await this.granola().ownerLensNote(id,version,ownerEmails,current);if(!current())break;if(!note){granolaFailed++;continue;}
+     const passages=await collectGranolaOwnerPassages(this.env,note);if(!current())break;
+     const meetingPassages=!passages.length&&note.attended?await collectGranolaMeetingTopics(this.env,{summary:note.summary}):[];if(!current())break;
+     console.info(JSON.stringify({event:'owner_lens_granola_selection',attended:note.attended,summaryChars:note.summary.length,ownerNameCount:note.ownerNames.length,ownerTranscriptChars:note.ownerTranscript.length,statements:passages.length,meetingPassages:meetingPassages.length}));
+     await this.ownerLens().recordGranola({...note,passages,meetingPassages},current);
+    }catch(error){granolaFailed++;this.ownerLens().deferGranola(id,version,current);ownerLensDiagnostic('note-extraction',error);}
+   }
+  }
+  if(!valid())return;
+  try{const result=await this.collectOwnerMail(valid);return {failed:granolaFailed+(result?.failed??0),deferred:granolaDeferred+(result?.deferred??0)};}
+  catch(error){if(this.ownerLens().get().granolaEnabled)return {failed:granolaFailed+1,deferred:granolaDeferred};throw error;}
+ }
+ private async collectOwnerMail(valid:()=>boolean):Promise<OwnerLensCollectionResult|void>{
+  const started=Date.now();let stage:OwnerLensDiagnosticStage='selection',selectedCount=0,attempted=0,failed=0,httpStatus:number|undefined;
+  try{
+   const accounts=new Map(this.rows().filter(a=>['connected','syncing'].includes(a.status)).map(a=>[a.email,a]));
+   const selected=this.ctx.storage.sql.exec<{account:string;id:string}>(`SELECT m.account,m.id,MAX(c.date) AS observed FROM messages m JOIN contributions c ON c.account=m.account AND c.canonical=m.canonical LEFT JOIN owner_lens_messages o ON o.account=m.account AND o.message=m.id LEFT JOIN owner_lens_retries r ON r.account=m.account AND r.message=m.id WHERE (r.next_attempt IS NULL OR r.next_attempt<=?) AND c.sent>0 AND c.received=0 AND c.date>=? AND c.date<=? AND o.message IS NULL GROUP BY m.account,m.id ORDER BY CASE WHEN r.message IS NULL THEN 0 ELSE 1 END,observed DESC LIMIT 40`,Date.now(),Date.now()-OWNER_LENS_WINDOW,Date.now()).toArray().filter(r=>accounts.has(r.account)).slice(0,4);selectedCount=selected.length;
+   const accessByAccount=new Map<string,string>();
+   for(const item of selected){
+    if(!valid())return;const account=accounts.get(item.account)!;
+    if(this.get(account.email)?.revision!==account.revision)continue;
+    let access=accessByAccount.get(account.email);
+    if(!access){
+     stage='token-unseal';httpStatus=undefined;
+     if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('mail_not_configured');
+     const refresh=await unseal(account.grant,this.env.MAIL_TOKEN_KEY);if(!valid())return;
+     stage='token-refresh';const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});httpStatus=response.status;
+     const token=await readBoundedJSON(response,32_768) as {access_token?:string};if(!response.ok||!token.access_token)throw Error('owner_lens_unavailable');access=token.access_token;accessByAccount.set(account.email,access);
+    }
+    stage='collection';httpStatus=undefined;
+    const result=await this.collectOwnerMessage(account,item.id,access,valid);if(result!==undefined)attempted++;
+    if(result===false)throw Error('owner_lens_unavailable');if(result==='invalid_extraction')failed++;
+   }
+   if(failed)ownerLensDiagnostic('collection',Error('invalid_extraction'),{elapsedMs:Date.now()-started,selected:selectedCount,attempted});
+   return {failed,deferred:this.ownerLens().deferredCount(new Set(accounts.keys()))};
+  }catch(error){ownerLensDiagnostic(stage,error,{elapsedMs:Date.now()-started,selected:selectedCount,attempted,httpStatus});throw error;}
+ }
+ private async collectOwnerMessage(account:Account,id:string,access:string,valid:()=>boolean):Promise<boolean|'invalid_extraction'|undefined>{
+  const lens=this.ownerLens(),current=()=>valid()&&this.get(account.email)?.revision===account.revision;
+  if(!current()||lens.hasMessage(account.email,id)||lens.retryAfter(account.email,id)>Date.now())return;
+  const row=this.ctx.storage.sql.exec<{date:number}>('SELECT c.date FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.sent>0 AND c.received=0 AND c.date>=? AND c.date<=? LIMIT 1',account.email,id,Date.now()-OWNER_LENS_WINDOW,Date.now()).toArray()[0];
+  if(!row)return;
+  const started=Date.now();let stage:OwnerLensDiagnosticStage='gmail-read',httpStatus:number|undefined;
+  try{
+   const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','full');url.searchParams.set('fields','id,internalDate,payload');
+   const response=await fetch(url.href,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});httpStatus=response.status;
+   if(!current()) {await response.body?.cancel();return true;}
+   if(response.status===404){await response.body?.cancel();stage='source-store';await lens.recordMail(account.email,id,row.date,null,current);return true;}
+   if(!response.ok){await response.body?.cancel();throw Error('owner_lens_unavailable');}
+   const raw=await readBoundedJSON(response,2_000_000) as GmailMessage;
+   stage='mail-processing';if(current())await lens.recordMail(account.email,id,row.date,raw,current);return true;
+  }catch(error){ownerLensDiagnostic(stage,error,{elapsedMs:Date.now()-started,httpStatus});
+   if(error instanceof Error&&error.message==='invalid_extraction'&&current()){lens.deferExtraction(account.email,id,row.date,current);return 'invalid_extraction';}
+   return false;} // Foreground refresh reports failure; background contact sync continues.
+ }
+ async setAutomaticContext(email:string,enabled:boolean){
+  const a=this.get(email);if(!a||typeof enabled!=='boolean')throw Error('invalid_account');
+  if(a.contextEnabled===enabled)return {ok:true};
+  this.clearConnectionOrigins();a.contextEnabled=enabled;a.contextVersion=0;a.contextError='';a.revision=crypto.randomUUID();
+  // Stop the previous generation; a late body/AI response cannot restore disabled context.
+  a.job=null;a.status='connected';this.put(a);
+  this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);
+  await this.ctx.storage.delete('graph');
+  if(enabled)await this.start(email);else await this.scheduleNextAlarm();
+  return {ok:true};
+ }
+ private async automaticMessageContext(a:Account,id:string,access:string){
+  if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
+  const cutoff=Date.now()-90*86400000;
+  this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE observed<?',cutoff);
+  if(this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length)return;
+  // Existing metadata restricts body retrieval to recent inbound messages from a contact.
+  const row=this.ctx.storage.sql.exec<{email:string;date:number}>('SELECT c.email,c.date FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.received>0 AND c.date>=? LIMIT 1',a.email,id,cutoff).toArray()[0];
+  if(!row)return;
+  try{
+   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return;
+   const person=await opaque(owner,row.email,this.env.TOKEN_SECRET);
+   const storeFacts=(facts:MailFact[],observed=row.date)=>{
+    if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
+    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)',a.email,id,person,observed,JSON.stringify(facts),GMAIL_CONTEXT_VERSION);
+   };
+   const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','full');url.searchParams.set('fields','id,internalDate,payload');
+   const response=await fetch(url.href,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});
+   if(response.status===404){await response.body?.cancel();storeFacts([]);return;}
+   if(!response.ok){await response.body?.cancel();throw Error('gmail_context_unavailable');}
+   const raw=await readBoundedJSON(response,2_000_000) as GmailMessage;
+   if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
+   const parsed=parseMessage(raw,a.email),senders=parsed?.participants.filter(p=>p.received&&p.email!==a.email)||[];
+   if(raw.id!==id||!parsed||parsed.date<cutoff||parsed.date>Date.now()||senders.length!==1||senders[0].email!==row.email){storeFacts([]);return;}
+   const headers=raw.payload?.headers||[];
+   if(headers.some(h=>['list-id','list-unsubscribe'].includes(h.name.toLowerCase()))||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(row.email)){storeFacts([]);return;}
+   const body=decodeGmailMessage(raw,24000);
+   const facts=await extractMailContext(this.env.AI,body.text);body.text='';
+   storeFacts(facts,parsed.date);
+  }catch{if(this.active(a)){a.contextVersion=0;a.contextError='Some email context could not be analysed. It will retry on the next sync.';}}
+ }
+ /** Full private passages for recommendations; never part of workspace exports or graph summaries. */
+ async helperContext(){return this.automaticContextSignals(true);}
+ /** Refresh only this known contact, with existing opt-in, before a foreground recommendation. */
+ async refreshHelperContext(personId:string){
+  const email=await this.emailForPerson(personId);if(!email)return {refreshed:0,pending:false};
+  let refreshed=0,budget=4,pending=false;
+  for(const original of this.rows().filter(a=>a.contextEnabled&&['connected','syncing'].includes(a.status))){
+   if(original.contextVersion!==GMAIL_CONTEXT_VERSION)await this.start(original.email);
+   const a=this.get(original.email)!;
+   const ids=this.ctx.storage.sql.exec<{id:string}>(`SELECT m.id FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical LEFT JOIN gmail_context g ON g.account=m.account AND g.message=m.id WHERE c.account=? AND c.email=? AND c.received>0 AND c.date>=? AND (g.version IS NULL OR g.version<?) GROUP BY m.id ORDER BY CASE WHEN g.facts IS NOT NULL AND g.facts<>'[]' THEN 0 ELSE 1 END,c.date DESC LIMIT 5`,a.email,email,Date.now()-90*86400000,GMAIL_CONTEXT_VERSION).toArray().map(r=>r.id);
+   if(ids.length>budget)pending=true;
+   if(!ids.length||!budget)continue;
+   const selected=ids.slice(0,budget);budget-=selected.length;
+   try{
+    if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('mail_not_configured');
+    const refresh=await unseal(a.grant,this.env.MAIL_TOKEN_KEY);
+    const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});
+    const token=await readBoundedJSON(response,32_768) as {access_token?:string};
+    if(!response.ok||!token.access_token)throw Error('gmail_context_unavailable');
+    for(let i=0;i<selected.length;i+=2){
+     await Promise.all(selected.slice(i,i+2).map(id=>this.automaticMessageContext(a,id,token.access_token!)));
+     if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)break;
+    }
+    for(const id of selected)if(this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length)refreshed++;
+    if(a.contextError)pending=true;
+   }catch{pending=true;}
+  }
+  if(refreshed)await this.ctx.storage.delete('graph');
+  return {refreshed,pending};
+ }
+ private automaticContextSignals(full=false):Array<Omit<ThemeSignal,'owner'>>{
+  const active=new Set(this.rows().filter(a=>a.contextEnabled&&['connected','syncing'].includes(a.status)).map(a=>a.email));
+  const rows=this.ctx.storage.sql.exec<{account:string;person:string;observed:number;facts:string;version:number}>("SELECT account,person,observed,facts,version FROM gmail_context WHERE observed>=? AND facts<>'[]' ORDER BY observed DESC LIMIT 3000",Date.now()-90*86400000).toArray();
+  const counts=new Map<string,number>(),emitted=new Map<string,number>(),signals:Array<Omit<ThemeSignal,'owner'>>=[];
+  for(const row of rows){if(!active.has(row.account)||(emitted.get(row.person)||0)>=6)continue;
+   let facts:MailFact[];try{facts=JSON.parse(row.facts);if(!Array.isArray(facts))continue;}catch{continue;}
+   for(const fact of facts){const count=counts.get(row.person)||0;if((emitted.get(row.person)||0)>=6)break;
+    if(!fact||typeof fact.quote!=='string'||!['building','need','experience'].includes(fact.kind))continue;
+    counts.set(row.person,count+1);
+    // Use the same IDs as the graph preview even while different extraction versions coexist.
+    if((full&&row.version<GMAIL_CONTEXT_VERSION)||isOnlyMailLogistics(fact.quote))continue;
+    emitted.set(row.person,(emitted.get(row.person)||0)+1);
+    const id='gmail-context:'+row.person+':'+row.observed+':'+count;
+    signals.push({id,personId:row.person,themeId:'gmail-conversation-context',sourceType:'gmail_body_derived',visibility:'private',observedAt:new Date(row.observed).toISOString(),ingestedAt:new Date(row.observed).toISOString(),confidence:1,summary:fact.quote.slice(0,full?1200:240),evidenceRef:id,contentHash:id,extractorVersion:'gmail-context-v'+row.version,provenance:{title:'Email sender’s own words · '+fact.kind,canonicalUrl:'https://mail.google.com/',publisherHost:'mail.google.com',observedAt:new Date(row.observed).toISOString(),retrievedAt:new Date(row.observed).toISOString(),timeBasis:'observed'}});
+   }
+  }
+  return signals;
+ }
+ private attachAutomaticContext<T extends {themes:Array<Omit<Theme,'owner'>>;themeSignals:Array<Omit<ThemeSignal,'owner'>>}>(graph:T):T{
+  graph.themeSignals.push(...this.automaticContextSignals());
+  if(graph.themeSignals.length){const stamp=new Date().toISOString();graph.themes.push({id:'gmail-conversation-context',canonicalName:'Gmail conversation context',aliases:[],description:'Private work context from recent incoming emails',status:'active',createdAt:stamp,updatedAt:stamp});}
+  return graph;
  }
  private async rebuildMetadataRelevance(a:Account){const owner=await this.ctx.storage.get<string>('owner');if(!owner||!this.active(a))return;const cutoff=Date.now()-90*86400000;const rows=this.ctx.storage.sql.exec<{email:string;canonical:string;date:number;subject:string}>('SELECT email,canonical,date,subject FROM contributions WHERE account=? AND date>=? ORDER BY date DESC LIMIT 5000',a.email,cutoff).toArray();const inputs:MetadataInput[]=[];for(const row of rows){const personId=await opaque(owner,row.email,this.env.TOKEN_SECRET);const contentHash=await opaque(owner,`${a.email}\u0000${row.canonical}\u0000${row.email}\u0000${row.date}\u0000${row.subject}`,this.env.TOKEN_SECRET);if(!this.active(a))return;inputs.push({personId,subject:row.subject,observedAt:new Date(row.date).toISOString(),contentHash});}if(!this.active(a))return;await this.store().ingestMetadata(a.email,inputs,Date.now(),()=>this.active(a));}
  private async invalidateRetrieval(account:string){
@@ -734,7 +1019,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!accounts.length&&!this.granola().status().connected&&!shared.size)return null;
   const rows=this.graphContacts();
   const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));
-  const nodes:GraphPersonNode[]=await Promise.all(rows.map(async r=>({directRelationship:true,directLastContact:new Date(r.last).toISOString(),id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
+  const nodes:GraphPersonNode[]=await Promise.all(rows.map(async r=>({directRelationship:true,directLastContact:new Date(r.last).toISOString(),id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,contactActivity:{sent:Math.max(0,r.sent-r.meetings),received:Math.max(0,r.received-r.meetings),meetings:r.meetings},...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
   const idMap=new Map(rows.map((r,i)=>[r.email,nodes[i].id]));
   // Shared people are looked up by id below; at the caps that is 1500 × 1500 with `find`.
   const nodeById=new Map(nodes.map(node=>[node.id,node]));
@@ -772,9 +1057,11 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const activity=[...activityMap.values(),...calendar].sort((a,b)=>Date.parse(b.at)-Date.parse(a.at));
   const stamps=[...accounts.map(a=>Math.max(a.lastSync,a.job?.lastRun||0)),this.granola().status().lastSync,this.sharedMeta().refreshedAt];
   // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.
-  const value={personFeedback,activity,activityCoverage:'Up to 1,000 email messages, 500 Granola meetings, and primary-calendar events from the past year through the next 30 days (up to 10,000 per inbox). Calendar events link existing contacts; RSVPs do not establish attendance.',pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Message metadata and meeting attendee lists only; no message bodies. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
+  const value={personFeedback,activity,activityCoverage:'Up to 1,000 email messages, 500 Granola meetings, and primary-calendar events from the past year through the next 30 days (up to 10,000 per inbox). Calendar events link existing contacts; RSVPs do not establish attendance.',pushedAt:new Date(Math.max(...stamps)||Date.now()).toISOString(),nodes,edges,source:'email_accounts',scoreModel:'email-meeting-frequency-reciprocity-recency-v2',note:'Company labels are email domains. Relationship scores use metadata and meeting attendees. Optional Gmail conversation context keeps selected private work-related excerpts from the last 90 days. Mailbox deletions are not reconciled automatically; Granola deletions reconcile weekly.'};
   // Never cache after an await: a disconnect or another batch may have changed the data.
-  return this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my')));
+  const context=this.attachAutomaticContext({themes:[] as Array<Omit<Theme,'owner'>>,themeSignals:[] as Array<Omit<ThemeSignal,'owner'>>});
+  const assembled=this.sharedProvenance(this.granolaProvenance(await this.store().attachToGraph(value,'my',Date.now(),context)));
+  return assembled;
  }
  /**
   * The meeting title that rode along with a shared signal, turned back into provenance. The

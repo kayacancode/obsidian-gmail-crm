@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {MailSync,__setSearchDeadlineForTests} from '../src/mail-sync';
 import {FakeAI} from './worker-stub';
-import {opaque} from '../src/mail-model';
+import {opaque,seal} from '../src/mail-model';
 import {jevServer,noulA,scoreA} from './granola-jev-extractor.test';
 
 const JEV_KEY='ts_fictional_key_123456';
@@ -38,6 +38,159 @@ test('final wave retrieval resolves ranked visible contacts across selected acco
 });
 function fixture(){const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>();const ctx={storage:{sql:{exec(sql:string,...args:any[]){if(sql.includes('CREATE TABLE')){db.exec(sql);return {toArray:()=>[]};}const stmt=db.prepare(sql);const rows=sql.startsWith('SELECT')?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},get:async(k:string)=>kv.get(k),put:async(k:string,v:unknown)=>{kv.set(k,v);},delete:async(k:string)=>kv.delete(k),setAlarm:async(n:number)=>{kv.set('alarm',n);},transactionSync<T>(fn:()=>T){db.exec('BEGIN');try{const result=fn();db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}}}};const env={MAIL_TOKEN_KEY:'encrypt-key',GOOGLE_CLIENT_SECRET:'client-secret',GOOGLE_CLIENT_ID:'client-id',TOKEN_SECRET:'identity-key'};return {service:new MailSync(ctx as any,env as any),db,kv};}
 const originalFetch=globalThis.fetch;
+async function originFixture(){
+ const f=fixture();f.kv.set('owner','owner');
+ const email='me@example.com',grant=await seal('test-refresh','encrypt-key');
+ f.db.prepare('INSERT INTO accounts VALUES (?,?)').run(email,JSON.stringify({email,grant,revision:'origin-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ f.db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(email,'contact','marie@example.com','Marie Green',Date.now(),'Followup',1,1);
+ const personId=await opaque('owner','marie@example.com','identity-key');
+ const message={id:'abc123',threadId:'def456',internalDate:String(Date.parse('2026-09-01')),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Alex Rivera <alex@example.com>'},{name:'To',value:'Me <me@example.com>, Marie Green <marie@example.com>'},{name:'Subject',value:'Me <> Marie'}],body:{data:Buffer.from('Connecting you two. Marie is building tools for independent artists.').toString('base64url')}}};
+ return {...f,personId,message};
+}
+test('connection origin finds a third-party introduction and privately caches only the evidence',async()=>{
+ const {service,db,kv,personId,message}=await originFixture();let reads=0;
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));
+  if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages')){assert.ok(url.searchParams.get('q')?.includes('marie@example.com'));return Response.json({messages:[{id:message.id}]});}
+  reads++;assert.equal(url.pathname.split('/').at(-1),message.id);return Response.json(message);
+ },async()=>{
+  const result=await service.connectionOrigin(personId);assert.equal(result.status,'found');assert.equal(result.origin?.introducerName,'Alex Rivera');assert.match(result.origin?.quote||'',/Connecting you two/);assert.match(result.origin?.url||'',/^https:\/\/mail.google.com\//);
+  assert.deepEqual(await service.connectionOrigin(personId),result);assert.equal(reads,1);
+  const shared=await service.exportSlice({kind:'all'},'statements');assert.ok(!JSON.stringify(shared).includes('Connecting you two'));
+  assert.ok(!JSON.stringify(await service.graph()).includes('Connecting you two'),'origin excerpt stays outside graph exports');
+  await service.setAutomaticContext('me@example.com',false);assert.equal((await service.connectionOrigin(personId)).status,'disabled');assert.ok(!storageText(db,kv).includes('Connecting you two'));
+ });}finally{db.close();}
+});
+test('connection origin rejects other owners and consent changes during Gmail reads',async()=>{
+ const {service,db,personId,message}=await originFixture();let reads=0;
+ try{
+  await assert.rejects(service.connectionOrigin(await opaque('someone-else','marie@example.com','identity-key')),/unknown_person/);
+  await withFetch(async(input:any)=>{
+   const url=new URL(String(input));
+   if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+   if(url.pathname.endsWith('/messages'))return Response.json({messages:[{id:message.id}]});
+   reads++;await service.setAutomaticContext('me@example.com',false);return Response.json(message);
+  },async()=>{assert.equal((await service.connectionOrigin(personId)).status,'disabled');assert.equal(reads,1);});
+ }finally{db.close();}
+});
+test('connection origin stops before account removal yields and cannot restore its cache',async()=>{
+ const {service,db,personId,message}=await originFixture();
+ let release!:()=>void,removed:Promise<void>|undefined;
+ const paused=new Promise<void>(resolve=>{release=resolve;});
+ const invalidate=(service as any).invalidateRetrieval.bind(service);
+ (service as any).invalidateRetrieval=async(email:string)=>{await paused;return invalidate(email);};
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));
+  if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[{id:message.id}]});
+  removed=service.remove('me@example.com');return Response.json(message);
+ },async()=>{
+  assert.equal((await service.connectionOrigin(personId)).status,'disabled');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
+  release();await removed;
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
+ });}finally{release();await removed;db.close();}
+});
+test('connection origin distinguishes absence from a failed Gmail search',async()=>{
+ const {service,db,personId}=await originFixture();
+ try{
+  await withFetch(async()=>new Response('private failure',{status:503}),async()=>assert.equal((await service.connectionOrigin(personId)).status,'unavailable'));
+  await withFetch(async(input:any)=>String(input).includes('oauth2.googleapis')?Response.json({access_token:'test-access'}):Response.json({messages:[]}),async()=>assert.equal((await service.connectionOrigin(personId)).status,'not_found'));
+ }finally{db.close();}
+});
+test('connection origin rejects redirects without following them or caching a miss',async()=>{
+ const {service,db,personId}=await originFixture();let calls=0;
+ try{await withFetch(async(_input:any,init?:RequestInit)=>{
+  calls++;assert.equal(init?.redirect,'manual');
+  return new Response(null,{status:302,headers:{Location:'https://other.example/token'}});
+ },async()=>{
+  assert.equal((await service.connectionOrigin(personId)).status,'unavailable');
+  assert.equal(calls,1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
+ });}finally{db.close();}
+});
+function directOriginMessage(id:string,date:number,text:string,account='me@example.com',direction:'sent'|'received'='sent'){
+ return {id,threadId:'thread-'+id,internalDate:String(date),payload:{mimeType:'text/plain',headers:[{name:'From',value:direction==='sent'?`Me <${account}>`:'Marie Green <marie@example.com>'},{name:'To',value:direction==='sent'?'Marie Green <marie@example.com>':`Me <${account}>`},{name:'Subject',value:'Research collaboration'}],body:{data:Buffer.from(text).toString('base64url')}}};
+}
+function storeOriginMessage(db:DatabaseSync,id:string,date:number,account='me@example.com'){
+ db.prepare('INSERT INTO messages VALUES (?,?,?)').run(account,id,'canonical-'+id);
+ db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(account,'canonical-'+id,'marie@example.com','Marie Green',date,'Research collaboration',1,0);
+}
+test('connection origin fallback quotes earliest meaningful stored email and stays private and cached',async()=>{
+ const {service,db,kv,personId}=await originFixture(),date=Date.parse('2026-08-01'),text='I am researching scheduling tools for independent artists and would love to compare notes.';
+ const messages=[directOriginMessage('early-empty',date,'Thanks!'),directOriginMessage('early-useful',date+1000,text),directOriginMessage('later',date+2000,'I am now researching a different project with local studios.')];
+ messages.forEach(m=>storeOriginMessage(db,m.id,Number(m.internalDate)));let reads:string[]=[];
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+  const id=url.pathname.split('/').at(-1)!;reads.push(id);return Response.json(messages.find(m=>m.id===id));
+ },async()=>{
+  const result=await service.connectionOrigin(personId);assert.equal(result.status,'not_found');assert.equal(result.origin,undefined);
+  assert.equal(result.connection?.direction,'sent');assert.equal(result.connection?.observedAt,new Date(date+1000).toISOString());assert.ok(result.connection?.quote&&text.includes(result.connection.quote));
+  assert.equal(new URL(result.connection!.url).searchParams.get('authuser'),'me@example.com');assert.deepEqual(reads,['early-empty','early-useful']);
+  assert.deepEqual(await service.connectionOrigin(personId),result);assert.equal(reads.length,2);
+  assert.ok(!JSON.stringify(await service.graph()).includes(text));assert.ok(!JSON.stringify(await service.exportSlice({kind:'all'},'statements')).includes(text));
+  await service.setAutomaticContext('me@example.com',false);assert.ok(!storageText(db,kv).includes(text));
+ });}finally{db.close();}
+});
+test('connection origin fallback gives introductions in another account priority',async()=>{
+ const {service,db,personId,message}=await originFixture();const other='other@example.com';let directReads=0;
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run(other,JSON.stringify({email:other,grant:await seal('other-refresh','encrypt-key'),revision:'other-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ storeOriginMessage(db,'direct',Date.parse('2026-08-01'));
+ const introduced={...message,payload:{...message.payload,headers:message.payload.headers.map(h=>h.name==='To'?{name:'To',value:`Me <${other}>, Marie Green <marie@example.com>`}:h)}};
+ try{await withFetch(async(input:any,init?:RequestInit)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:String(init?.body).includes('other-refresh')?'other-access':'first-access'});
+  const token=new Headers(init?.headers).get('authorization');
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:token==='Bearer other-access'?[{id:message.id}]:[]});
+  if(url.pathname.endsWith('/direct')){directReads++;return Response.json(directOriginMessage('direct',Date.parse('2026-08-01'),'I am researching scheduling tools for local artists.'));}
+  assert.equal(token,'Bearer other-access');return Response.json(introduced);
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'found');assert.equal(result.connection,undefined);assert.equal(directReads,0);});}finally{db.close();}
+});
+test('connection origin fallback uses the source account token and actual received direction',async()=>{
+ const {service,db,personId}=await originFixture(),other='other@example.com',date=Date.parse('2026-08-01');
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run(other,JSON.stringify({email:other,grant:await seal('other-refresh','encrypt-key'),revision:'other-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ storeOriginMessage(db,'old-received',date,other);storeOriginMessage(db,'new-sent',date+1000);let reads=0;
+ try{await withFetch(async(input:any,init?:RequestInit)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:String(init?.body).includes('other-refresh')?'other-access':'first-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+  reads++;assert.equal(new Headers(init?.headers).get('authorization'),'Bearer other-access');assert.ok(url.pathname.endsWith('/old-received'));
+  return Response.json(directOriginMessage('old-received',date,'I am building scheduling tools for independent artists and would value your feedback.',other,'received'));
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.connection?.direction,'received');assert.equal(new URL(result.connection!.url).searchParams.get('authuser'),other);assert.equal(reads,1);});}finally{db.close();}
+});
+test('connection origin fallback remains unavailable after failed intro search and cannot survive consent withdrawal',async()=>{
+ const {service,db,personId}=await originFixture(),date=Date.parse('2026-08-01');storeOriginMessage(db,'direct',date);let reads=0;
+ try{
+  await withFetch(async(input:any)=>String(input).includes('oauth2.googleapis')?Response.json({access_token:'test-access'}):new Response(null,{status:503}),async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'unavailable');assert.equal(result.connection,undefined);});
+  await withFetch(async(input:any)=>{
+   const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+   if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+   reads++;await service.setAutomaticContext('me@example.com',false);return Response.json(directOriginMessage('direct',date,'I am researching scheduling tools for local artists.'));
+  },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'disabled');assert.equal(result.connection,undefined);assert.equal(reads,1);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);});
+ }finally{db.close();}
+});
+test('connection origin fallback rejects a different message response without caching it',async()=>{
+ const {service,db,personId}=await originFixture(),date=Date.parse('2026-08-01');storeOriginMessage(db,'expected',date);
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+  return Response.json(directOriginMessage('different',date,'I am researching scheduling tools for independent artists.'));
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'unavailable');assert.equal(result.connection,undefined);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);});}finally{db.close();}
+});
+test('connection origin fallback reserves at most six account-scoped reads within the total body budget',async()=>{
+ const {service,db,personId,message}=await originFixture(),other='other@example.com',date=Date.parse('2026-08-01');
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run(other,JSON.stringify({email:other,grant:await seal('other-refresh','encrypt-key'),revision:'other-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ const sourceAccount=new Map<string,string>();for(const account of ['me@example.com',other])for(let i=0;i<4;i++){const id=(account===other?'other':'first')+'-'+i;storeOriginMessage(db,id,date+i,account);sourceAccount.set(id,account);}
+ let introReads=0,directReads=0;
+ try{await withFetch(async(input:any,init?:RequestInit)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:String(init?.body).includes('other-refresh')?'other-access':'first-access'});
+  const token=new Headers(init?.headers).get('authorization');
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:Array.from({length:12},(_,i)=>({id:'intro-'+(token==='Bearer other-access'?'other':'first')+'-'+i})),nextPageToken:'next'});
+  const id=url.pathname.split('/').at(-1)!;
+  if(sourceAccount.has(id)){directReads++;assert.equal(token,sourceAccount.get(id)===other?'Bearer other-access':'Bearer first-access');assert.ok(!id.endsWith('-3'));return Response.json(directOriginMessage(id,date,'Thanks!',sourceAccount.get(id)));}
+  introReads++;return Response.json({...message,id,payload:{...message.payload,body:{data:Buffer.from('Thanks for sending the agenda.').toString('base64url')}}});
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'not_found');assert.equal(result.connection,undefined);assert.equal(directReads,6);assert.equal(introReads+directReads,24);});}finally{db.close();}
+});
 function storageText(db:DatabaseSync,kv:Map<string,unknown>){return JSON.stringify([Array.from(kv),db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r:any)=>db.prepare(`SELECT * FROM "${r.name}"`).all())]);}
 async function retrievalFixture(){
  const f=fixture();network();f.kv.set('owner','owner');
@@ -778,4 +931,225 @@ test('thread rebuild revisits old metadata and connects participants across sepa
  db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','two','<two>');
  let query='';globalThis.fetch=async(input:any)=>{const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});if(url.pathname.endsWith('/messages')){query=url.searchParams.get('q')||'';return Response.json({messages:[{id:'one'},{id:'two'}]});}const one=url.pathname.endsWith('/one');return Response.json({id:one?'one':'two',threadId:'same-thread',internalDate:String(Date.now()-10000),payload:{headers:[{name:'From',value:one?'Ada <ada@example.com>':'Bo <bo@example.com>'},{name:'To',value:'me@example.com'},{name:'Message-ID',value:one?'<one>':'<two>'}]}});};
  try{await service.start('me@example.com');await service.alarm();assert.equal(query,'');assert.equal((await service.graph())!.edges.length,1);assert.equal(JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string).emailEdgeVersion,2);await service.start('me@example.com');await service.alarm();assert.match(query,/after:/);assert.equal((await service.graph())!.edges.length,1);}finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('Gmail extraction diagnostics identify malformed structure without exposing private content',async()=>{
+ const {extractMailContext}=await import('../src/gmail-context');
+ const warn=console.warn,logs:string[]=[];console.warn=(message:any)=>logs.push(String(message));
+ try{
+  const text='I am building PRIVATE_PRODUCT for PRIVATE_AUDIENCE.';
+  for(const output of [{response:'PRIVATE_SECRET invalid JSON'},{response:{other:'PRIVATE_SECRET'}},{response:{facts:[{start:99,end:99,anchor:99,kind:'building'}]}}]){
+   await assert.rejects(()=>extractMailContext(new FakeAI(output) as any,text),/invalid_extraction/);
+  }
+  const events=logs.map(value=>JSON.parse(value));
+  assert.deepEqual(events.map(event=>event.reason),['json','shape','range']);
+  assert.ok(events.every(event=>event.event==='gmail_context_failure'&&event.sentenceCount===1));
+  assert.ok(!logs.join('').includes('PRIVATE_'));
+ }finally{console.warn=warn;}
+});
+
+test('Gmail extraction keeps valid exact passages when another model range is invalid',async()=>{
+ const {extractMailContext}=await import('../src/gmail-context');
+ const text='I am building scheduling software for clinics. We need feedback from nurses leading emergency departments.';
+ const valid={start:0,end:0,anchor:0,kind:'building'};
+ for(const invalid of [null,{start:99,end:99,anchor:99,kind:'need'},{start:0,end:1,anchor:2,kind:'need'},{start:1,end:0,anchor:0,kind:'need'},{start:'0',end:0,anchor:0,kind:'building'}]){
+  const facts=await extractMailContext(new FakeAI({response:{facts:[invalid,valid]}}) as any,text);
+  assert.deepEqual(facts,[{kind:'building',quote:'I am building scheduling software for clinics.'}]);
+ }
+});
+
+test('automatic Gmail context stores only grounded sender statements and clears them when disabled',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  const {extractMailContext}=await import('../src/gmail-context');
+  const text='I am building a scheduling tool for clinics. Alice needs funding. We need feedback from hospital nurses.';
+  const ai=new FakeAI({response:{facts:[{start:0,end:0,anchor:0,kind:'building'},{start:1,end:1,anchor:1,kind:'need'}]}});
+  const facts=await extractMailContext(ai as any,text);assert.deepEqual(facts,[{kind:'building',quote:'I am building a scheduling tool for clinics.'}]);
+  await assert.rejects(()=>extractMailContext(new FakeAI({response:{facts:[{start:99,end:99,anchor:99,kind:'building'}]}}) as any,text),/invalid_extraction/);
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',status:'connected',job:null,emailEdgeVersion:2,lastSync:Date.now(),range:'recent'}));
+  await service.setAutomaticContext('me@example.com',true);assert.equal(service.list()[0].contextEnabled,true);
+  db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts) VALUES (?,?,?,?,?)').run('me@example.com','m','person',Date.now(),JSON.stringify(facts));
+  await service.setAutomaticContext('me@example.com',false);assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);
+ }finally{db.close();}
+});
+
+test('automatic Gmail context retains coherent source passages and rejects isolated logistics or other people',async()=>{
+ const {extractMailContext}=await import('../src/gmail-context');
+ const text='I am building Atlas for clinical teams. It helps nurses coordinate shift handoffs without another inbox. We need feedback from nurses who lead emergency departments. Alice needs funding for her company.';
+ const select=(facts:any[])=>extractMailContext(new FakeAI({response:{facts}}) as any,text);
+ assert.deepEqual(await select([{start:0,end:2,anchor:0,kind:'building'}]),[{kind:'building',quote:text.slice(0,text.indexOf(' Alice'))}]);
+ assert.deepEqual(await select([{start:3,end:3,anchor:3,kind:'need'}]),[]);
+ assert.deepEqual(await extractMailContext(new FakeAI({response:{facts:[{start:0,end:0,anchor:0,kind:'building'}]}}) as any,"We've been trying to meet with 1 person/day to show them our new onboarding"),[]);
+ await assert.rejects(()=>select([{start:0,end:9,anchor:0,kind:'building'}]),/invalid_extraction/);
+});
+
+test('automatic Gmail context rejects combined beta and link-sharing boilerplate but retains product-first passages',async()=>{
+ const {extractMailContext}=await import('../src/gmail-context');
+ const boilerplate='We are currently in beta for iOS, iterating daily improvements. I’ll link the TestFlight link below, feel free to share with friends.';
+ const select=(text:string,start:number,end:number,anchor:number)=>extractMailContext(new FakeAI({response:{facts:[{start,end,anchor,kind:'building'}]}}) as any,text);
+ assert.deepEqual(await select(boilerplate,0,1,0),[]);
+ const product='Atlas coordinates nursing shift handoffs across emergency departments. '+boilerplate;
+ assert.deepEqual(await select(product,0,2,1),[{kind:'building',quote:product}]);
+ const specific='We are in beta for iOS with a tool that helps charge nurses coordinate emergency department handoffs.';
+ assert.deepEqual(await select(specific,0,0,0),[{kind:'building',quote:specific}]);
+ assert.deepEqual(await select('Atlas coordinates nursing shift handoffs across emergency departments.',0,0,0),[],'A product mention alone does not establish sender ownership');
+});
+
+test('automatic Gmail context backfills existing mail, attributes only sender, never exports quotes, and resumes without duplicate reads',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');const calls:string[]=[];
+ const quote='I am building scheduling software for clinics.';
+ try{
+  Object.assign((service as any).env,{AI:new FakeAI({response:{facts:[{start:0,end:0,anchor:0,kind:'building'}]}}),THEME_MODEL});
+  globalThis.fetch=async(input:any)=>{const url=String(input);calls.push(url);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(url.includes('/messages?'))return Response.json({messages:[{id:'inbound'}]});return Response.json({id:'inbound',internalDate:String(Date.now()-10000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Ada <ada@example.com>'},{name:'To',value:'Me <me@example.com>, Bo <bo@example.com>'},{name:'Message-ID',value:'<inbound>'}],body:{data:Buffer.from(quote+'\n--\nSECRET SIGNATURE').toString('base64url')}}});};
+  await service.attachAccount('me@example.com','refresh','recent');await service.alarm();assert.equal(calls.some(u=>u.includes('format=full')),false);
+  await service.setAutomaticContext('me@example.com',true);await service.alarm();
+  const graph:any=await service.graph(),ada=graph.nodes.find((n:any)=>n.name==='Ada');const signals=graph.themeSignals.filter((s:any)=>s.evidenceRef.startsWith('gmail-context:'));
+  assert.equal(signals.length,1);assert.equal(signals[0].personId,ada.id);assert.equal(signals[0].summary,quote);assert.equal(signals[0].visibility,'private');
+  const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+  assert.doesNotThrow(()=>normalizeGraph(graph));
+  const {repairLegacyGmailContext}=await import('../src/gmail-context-graph');
+  const legacy={...graph,themes:graph.themes.filter((t:any)=>t.id!=='gmail-conversation-context'),relevance:{...graph.relevance,themes:graph.relevance.themes.filter((t:any)=>t.themeId!=='gmail-conversation-context')}};
+  while(legacy.themes.length<200)legacy.themes.push({id:'legacy-'+legacy.themes.length,canonicalName:'Legacy topic',status:'active'});
+  const repaired=repairLegacyGmailContext(legacy);assert.equal(repaired.themes.length,200);assert.doesNotThrow(()=>normalizeGraph(repaired));assert.deepEqual(repairLegacyGmailContext(repaired),repaired);
+  assert.ok(repaired.themeSignals.some((s:any)=>s.evidenceRef.startsWith('gmail-context:')));
+  db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts) VALUES (?,?,?,?,?)').run('me@example.com','long',ada.id,Date.now(),JSON.stringify([{kind:'building',quote:'I am building '+ 'useful scheduling software '.repeat(15)}]));
+  db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts) VALUES (?,?,?,?,?)').run('me@example.com','missing','missing-person',Date.now(),JSON.stringify([{kind:'need',quote:'We need feedback on the prototype.'}]));
+  const extended:any=await service.graph();assert.doesNotThrow(()=>normalizeGraph(extended));assert.ok(extended.themeSignals.every((s:any)=>s.personId!=='missing-person'&&s.summary.length<=240));
+  assert.ok(!storageText(db,kv).includes('SECRET SIGNATURE'));
+  const shared=await service.exportSlice({kind:'all'},'statements');assert.ok(!JSON.stringify(shared).includes(quote));
+  await service.start('me@example.com');await service.alarm();assert.equal(calls.filter(u=>u.includes('format=full')).length,1);
+  await service.remove('me@example.com');assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('disabling automatic Gmail context during analysis prevents late storage',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');let release!:(value:any)=>void,entered!:()=>void;const started=new Promise<void>(r=>entered=r);
+ try{
+  Object.assign((service as any).env,{AI:{run:()=>{entered();return new Promise(r=>release=r);}},THEME_MODEL});
+  globalThis.fetch=async(input:any)=>{const url=String(input);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(url.includes('/messages?'))return Response.json({messages:[{id:'in'}]});return Response.json({id:'in',internalDate:String(Date.now()-1000),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Ada <ada@example.com>'},{name:'To',value:'Me <me@example.com>'}],body:{data:Buffer.from('I am building a clinical scheduling tool.').toString('base64url')}}});};
+  await service.attachAccount('me@example.com','refresh','recent');await service.setAutomaticContext('me@example.com',true);
+  const running=service.alarm();await started;await service.setAutomaticContext('me@example.com',false);release({response:{facts:[{start:0,end:0,anchor:0,kind:'building'}]}});await running;
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);assert.equal(service.list()[0].contextEnabled,false);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('Gmail context revision upgrades existing nonempty rows first and preserves full private helper evidence',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');const calls:string[]=[];
+ const passage='I am building Atlas for clinical teams who coordinate emergency department shifts. It replaces manual handoff spreadsheets with a shared scheduling timeline and records which nurse is responsible for each patient handoff. We need feedback from experienced charge nurses who have rolled out scheduling software across multiple hospital departments.';
+ try{
+  const person=await opaque('owner','ada@example.com','identity-key'),observed=Date.now()-1000;
+  Object.assign((service as any).env,{AI:new FakeAI({response:{facts:[{start:0,end:2,anchor:0,kind:'building'}]}})});
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:await (await import('../src/mail-model')).seal('refresh','encrypt-key'),revision:'v1',status:'connected',job:null,emailEdgeVersion:2,contextEnabled:true,contextVersion:1,lastSync:Date.now(),range:'recent'}));
+  db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','old','<old>');
+  db.prepare('INSERT INTO mail_edge_messages VALUES (?,?)').run('me@example.com','old');
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','<old>','ada@example.com','Ada',observed,'Atlas',0,1);
+  db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts) VALUES (?,?,?,?,?)').run('me@example.com','old',person,observed,JSON.stringify([{kind:'building',quote:'We are in beta for iOS.'}]));
+  globalThis.fetch=async(input:any)=>{const url=String(input);calls.push(url);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});if(url.includes('/messages?'))return Response.json({messages:[]});return Response.json({id:'old',internalDate:String(observed),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Ada <ada@example.com>'},{name:'To',value:'Me <me@example.com>'}],body:{data:Buffer.from(passage).toString('base64url')}}});};
+  await service.start('me@example.com');
+  const job=JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string).job;
+  assert.equal(job.contextVersion,2);assert.equal(job.query,'newer_than:90d');assert.deepEqual(job.pending,['old']);
+  await service.alarm();assert.equal(calls.some(u=>u.includes('/messages?')),false,'Reanalyse known work context before scanning the inbox');
+  const row=db.prepare('SELECT version,facts FROM gmail_context').get()!;assert.equal(row.version,2);assert.equal(JSON.parse(row.facts as string)[0].quote,passage);
+  const full=await service.helperContext();assert.equal(full.length,1);assert.equal(full[0].summary,passage);assert.equal(full[0].visibility,'private');
+  const graph=await service.graph();const preview=graph!.themeSignals.find(s=>s.id===full[0].id)!;assert.equal(preview.summary,passage.slice(0,240));
+  assert.ok(!JSON.stringify(await service.exportSlice({kind:'all'},'statements')).includes(passage));
+  await service.alarm();assert.equal(JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string).contextVersion,2);
+  await service.start('me@example.com');await service.alarm();assert.equal(calls.filter(u=>u.includes('format=full')).length,1);
+  await service.setAutomaticContext('me@example.com',false);assert.deepEqual(await service.helperContext(),[]);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('Gmail context upgrade replaces an old in-flight job instead of promoting an incremental scan',async()=>{
+ const {service,db}=fixture();
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',status:'syncing',contextEnabled:true,contextVersion:1,emailEdgeVersion:2,lastSync:Date.now(),range:'recent',job:{generation:'old',query:'after:123',pending:[],hasMore:true}}));
+  await service.start('me@example.com');
+  const a=JSON.parse(db.prepare('SELECT data FROM accounts').get()!.data as string);
+  assert.notEqual(a.job.generation,'old');assert.equal(a.job.contextVersion,2);assert.equal(a.job.query,'newer_than:90d');assert.equal(a.contextVersion,1);
+ }finally{db.close();}
+});
+
+test('foreground Gmail helper refresh upgrades at most four known incoming messages and skips current rows',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');let fullReads=0,active=0,maxActive=0;
+ try{
+  const person=await opaque('owner','ada@example.com','identity-key'),observed=Date.now()-10000;
+  Object.assign((service as any).env,{AI:new FakeAI({response:{facts:[{start:0,end:1,anchor:0,kind:'building'}]}})});
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:await (await import('../src/mail-model')).seal('refresh','encrypt-key'),revision:'v1',status:'connected',job:null,emailEdgeVersion:2,contextEnabled:true,contextVersion:1,lastSync:Date.now(),range:'recent'}));
+  for(let i=0;i<5;i++){
+   db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','old'+i,'<old'+i+'>');
+   db.prepare('INSERT INTO mail_edge_messages VALUES (?,?)').run('me@example.com','old'+i);
+   db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','<old'+i+'>','ada@example.com','Ada',observed+i,'Atlas',0,1);
+  }
+  globalThis.fetch=async(input:any)=>{const url=String(input);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});fullReads++;active++;maxActive=Math.max(active,maxActive);await new Promise(r=>setTimeout(r,1));active--;const id=new URL(url).pathname.split('/').at(-1);return Response.json({id,internalDate:String(observed),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Ada <ada@example.com>'},{name:'To',value:'Me <me@example.com>'}],body:{data:Buffer.from('I am building Atlas for emergency departments. It coordinates nursing shift handoffs across hospitals.').toString('base64url')}}});};
+  assert.deepEqual(await service.refreshHelperContext(person),{refreshed:4,pending:true});assert.equal(fullReads,4);assert.ok(maxActive<=2);
+  assert.deepEqual(await service.refreshHelperContext(person),{refreshed:1,pending:false});assert.equal(fullReads,5);
+  assert.deepEqual(await service.refreshHelperContext(person),{refreshed:0,pending:false});assert.equal(fullReads,5);
+  await service.setAutomaticContext('me@example.com',false);assert.deepEqual(await service.refreshHelperContext(person),{refreshed:0,pending:false});assert.equal(fullReads,5);
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('older upgraded Gmail helper context is not crowded out by newer legacy snippets',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',contextEnabled:true,status:'connected'}));
+  for(let i=0;i<7;i++)db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)').run('me@example.com','old'+i,'ada',Date.now()-i*1000,JSON.stringify([{kind:'building',quote:'We are building a scheduling tool for hospital nurses.'}]),i===6?2:1);
+  const full=await service.helperContext();assert.equal(full.length,1);assert.equal(full[0].extractorVersion,'gmail-context-v2');
+ }finally{db.close();}
+});
+
+test('already stored Gmail context made only of status and sharing boilerplate is excluded on read',async()=>{
+ const {service,db}=fixture();
+ try{
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',contextEnabled:true,status:'connected'}));
+  db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)').run('me@example.com','old','ada',Date.now(),JSON.stringify([{kind:'building',quote:'We are currently in beta for iOS, iterating daily improvements. I’ll link the TestFlight link below, feel free to share with friends.'}]),2);
+  assert.deepEqual(await service.helperContext(),[]);
+ }finally{db.close();}
+});
+
+test('empty Gmail extractions do not crowd older useful context out of the bounded reader',async()=>{
+ const {service,db}=fixture();
+ try{
+  const observed=Date.now();
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',contextEnabled:true,status:'connected'}));
+  const insert=db.prepare('INSERT INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)');
+  for(let i=0;i<3000;i++)insert.run('me@example.com','empty'+i,'ada',observed-i,'[]',2);
+  insert.run('me@example.com','useful','ada',observed-10000,JSON.stringify([{kind:'building',quote:'We are building a scheduling tool for hospital nurses.'}]),2);
+  const full=await service.helperContext();assert.equal(full.length,1);assert.equal(full[0].summary,'We are building a scheduling tool for hospital nurses.');
+ }finally{db.close();}
+});
+
+test('terminal Gmail messages are marked empty so foreground refresh can reach older useful mail',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');let reads=0;
+ try{
+  const person=await opaque('owner','ada@example.com','identity-key'),observed=Date.now()-10000;
+  Object.assign((service as any).env,{AI:new FakeAI({response:{facts:[{start:0,end:0,anchor:0,kind:'building'}]}})});
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:await (await import('../src/mail-model')).seal('refresh','encrypt-key'),revision:'v2',status:'connected',job:null,emailEdgeVersion:2,contextEnabled:true,contextVersion:2,lastSync:Date.now(),range:'recent'}));
+  for(let i=0;i<5;i++){
+   db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','m'+i,'<m'+i+'>');
+   db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','<m'+i+'>','ada@example.com','Ada',observed-i,'Atlas',0,1);
+  }
+  globalThis.fetch=async(input:any)=>{
+   const url=String(input);if(url.includes('oauth2.googleapis'))return Response.json({access_token:'access'});reads++;
+   const id=new URL(url).pathname.split('/').at(-1)!;
+   if(id==='m0'||id==='m1')return new Response('',{status:404});
+   return Response.json({id,internalDate:String(observed),payload:{mimeType:'text/plain',headers:[{name:'From',value:id==='m3'?'Someone Else <else@example.com>':'Ada <ada@example.com>'},{name:'To',value:'me@example.com'},...(id==='m2'?[{name:'List-ID',value:'newsletter'}]:[])],body:{data:Buffer.from(id==='m3'?'I am building SOMEBODY ELSE PRIVATE PRODUCT.':'I am building a scheduling tool for hospital nurses.').toString('base64url')}}});
+  };
+  assert.deepEqual(await service.refreshHelperContext(person),{refreshed:4,pending:true});
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM gmail_context WHERE version=2 AND facts='[]'").get()!.n,4);
+  assert.deepEqual(await service.refreshHelperContext(person),{refreshed:1,pending:false});assert.equal(reads,5);
+  const full=await service.helperContext();assert.equal(full.length,1);assert.equal(full[0].personId,person);
+  assert.ok(!storageText(db,kv).includes('SOMEBODY ELSE'));
+ }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test('late terminal Gmail response cannot recreate context after opt-out',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','owner');
+ try{
+  const person=await opaque('owner','ada@example.com','identity-key');
+  db.prepare('INSERT INTO accounts VALUES (?,?)').run('me@example.com',JSON.stringify({email:'me@example.com',grant:await (await import('../src/mail-model')).seal('refresh','encrypt-key'),revision:'v2',status:'connected',job:null,emailEdgeVersion:2,contextEnabled:true,contextVersion:2,lastSync:Date.now(),range:'recent'}));
+  db.prepare('INSERT INTO messages VALUES (?,?,?)').run('me@example.com','m','<m>');
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('me@example.com','<m>','ada@example.com','Ada',Date.now()-1000,'Atlas',0,1);
+  globalThis.fetch=async(input:any)=>{if(String(input).includes('oauth2.googleapis'))return Response.json({access_token:'access'});await service.setAutomaticContext('me@example.com',false);return new Response('',{status:404});};
+  await service.refreshHelperContext(person);assert.equal(db.prepare('SELECT COUNT(*) n FROM gmail_context').get()!.n,0);
+ }finally{globalThis.fetch=originalFetch;db.close();}
 });

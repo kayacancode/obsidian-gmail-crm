@@ -1,6 +1,8 @@
+import {repairLegacyGmailContext} from './gmail-context-graph';
+import {ownerLensRoute} from './owner-lens-routes';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
-import {mailRoute,mailCallback,draftRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
+import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
 import type {MailEnv} from "./mail-sync";
 import {isRelevancePath,normalizePushedGraph,relevanceRoute} from "./relevance-routes";
 import type {PushedGraphPayload} from "./relevance-routes";
@@ -46,6 +48,11 @@ export default {
 		const { pathname } = url;
 
 		try {
+			if(pathname==='/api/lens'||pathname==='/api/lens/matches'){
+				const user=await requireGoogleUser(request,env);
+				if('error' in user)return json({error:user.error},401);
+				return await ownerLensRoute(request,env,user.email);
+			}
 			if (pathname === "/api/granola" || pathname.startsWith("/api/granola/")) {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({error:user.error,message:"Sign in to use Granola."},401);
@@ -76,6 +83,11 @@ export default {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
 				return await draftRoute(request, env, user.email);
+			}
+			if (pathname === "/api/people/connection-origin") {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await connectionOriginRoute(request, env, user.email);
 			}
 			if(pathname==="/api/people/helpers"){const user=await requireGoogleUser(request,env);if("error" in user)return json({error:user.error},401);return await helperRoute(request,env,user.email);}
             if (pathname === "/api/people/search") {
@@ -186,7 +198,8 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 		// Shared people come from other owners' objects, so the viewer's cached copy is brought
 		// up to date here, before the graph is read. It never throws and never blocks for long.
 		await refreshShares(env, auth.email);
-		const graph = await env.MAIL.getByName(auth.email).graph();
+		const snapshot = await env.MAIL.getByName(auth.email).graph();
+        const graph=snapshot?repairLegacyGmailContext(snapshot):null;
 		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
 		if(new URL(request.url).searchParams.get("source")==="web")return json({account:auth.email,graph:null});
 	}

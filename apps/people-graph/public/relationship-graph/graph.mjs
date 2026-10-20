@@ -17,7 +17,7 @@ import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
 import { parseMeetingBatch, meetingPreviewState, withMeetingPreview } from './meeting-preview.mjs';
-import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, isTopicLabel, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals } from './intelligence.mjs';
+import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, isTopicLabel, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals, howYouKnow } from './intelligence.mjs';
 
 const DIRECTORY_PAGE_SIZE = 50;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -116,8 +116,12 @@ export function mountGraph(element, options = {}) {
     onDraftNote: options.onDraftNote,
     onWander:options.onWander,
     onPersonFeedback:options.onPersonFeedback,
+    onConnectionOrigin:options.onConnectionOrigin,
   };
   let graph = normalizeGraph(options.graph ?? { nodes: [], edges: [] });
+  // The normalized graph keeps only workspace source identity. Private lookups
+  // need the original source explicitly, never an inference from missing data.
+  let connectionOriginEnabled=options.graph?.source==='email_accounts';
   const demoEnabled = () => options.demo === true && graph.meta.fictional === true;
   let pathGraph;
   let byId;
@@ -166,6 +170,11 @@ export function mountGraph(element, options = {}) {
   let pathState = null;
   let pathRequest = 0;
   let destroyed = false;
+  const connectionOrigins=new Map();
+  function clearConnectionOrigins(){
+    for(const result of connectionOrigins.values())result.controller?.abort();
+    connectionOrigins.clear();
+  }
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
   let cameraFrame=null,cameraScene=null,cameraCanvas=null,cameraLayout=null;
@@ -739,6 +748,86 @@ export function mountGraph(element, options = {}) {
     return nav;
   }
 
+  function requestConnectionOrigin(personId){
+    if(connectionOrigins.has(personId)||typeof callbacks.onConnectionOrigin!=='function')return;
+    const record={status:'loading',controller:new AbortController()};
+    connectionOrigins.set(personId,record);
+    const current=()=>!destroyed&&connectionOriginEnabled&&connectionOrigins.get(personId)===record&&!record.controller.signal.aborted;
+    const display=()=>{
+      if(!current()||selectedId!==personId||panelMode!=='node')return;
+      const node=byId.get(personId),previous=root.querySelector('.rg-how-you-know');
+      if(node&&previous)previous.replaceWith(renderConnectionOrigin(node));
+    };
+    Promise.resolve().then(()=>{
+      if(!current())return;
+      return callbacks.onConnectionOrigin(personId,record.controller.signal);
+    }).then(result=>{
+      if(!current())return;
+      const origin=result?.origin;
+      const validOrigin=validEmailEvidence(origin)&&typeof origin.introducerName==='string'&&origin.introducerName.trim();
+      record.status=['not_found','disabled','unavailable'].includes(result?.status)?result.status:result?.status==='found'&&validOrigin?'found':'unavailable';
+      if(record.status==='found')record.origin={introducerName:origin.introducerName,subject:origin.subject,quote:origin.quote,observedAt:origin.observedAt,url:origin.url};
+      const connection=result?.connection;
+      if(record.status==='not_found'&&validEmailEvidence(connection)&&['sent','received'].includes(connection.direction)){
+        record.connection={direction:connection.direction,subject:connection.subject,quote:connection.quote,observedAt:connection.observedAt,url:connection.url};
+      }
+      display();
+    }).catch(()=>{
+      if(!current())return;
+      record.status='unavailable';display();
+    });
+  }
+
+  function validEmailEvidence(source){
+    return source&&typeof source.quote==='string'&&source.quote.trim()&&typeof source.subject==='string'&&typeof source.observedAt==='string'&&Number.isFinite(Date.parse(source.observedAt));
+  }
+
+  function renderEmailEvidence(label,evidence){
+    const source=make('details','rg-connection-evidence rg-introduction-evidence');
+    source.append(make('summary','',label),make('p','rg-source',new Date(evidence.observedAt).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})),make('p','rg-introduction-subject',evidence.subject.trim()?evidence.subject:'(No subject)'),make('blockquote','rg-introduction-quote',evidence.quote));
+    try{
+      const url=new URL(evidence.url);
+      if(url.protocol==='https:'&&url.hostname==='mail.google.com'&&!url.username&&!url.password&&!url.port){
+        const link=make('a','','Open in Gmail');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';source.append(link);
+      }
+    }catch{}
+    return source;
+  }
+
+  function renderConnectionOrigin(node){
+    const connection=howYouKnow(graph,node),section=make('div','rg-how-you-know');
+    const personal=connectionOriginEnabled;
+    if(personal)requestConnectionOrigin(node.id);
+    const result=connectionOrigins.get(node.id);
+    const direct=result?.status==='not_found'?result.connection:null;
+    const directSummary=direct?.subject.trim()?`${direct.direction==='sent'?'You emailed about':'They emailed you about'} ${direct.subject}`:connection.text;
+    const text=!personal?connection.text:result?.status==='found'?`Introduced by ${result.origin.introducerName}`:({
+      loading:'Looking for your introduction…',
+      not_found:directSummary,
+      disabled:'Connect Gmail conversation context to find introductions',
+      unavailable:'Could not check your introduction',
+    })[result?.status]||'Introduction lookup is unavailable here.';
+    const line=make('p','rg-connection-line',text);line.setAttribute('aria-live','polite');section.append(line);
+    if(personal&&result?.status==='found')section.append(renderEmailEvidence('Introduction email',result.origin));
+    else if(personal&&direct)section.append(renderEmailEvidence('Email context',direct));
+    if(personal&&result?.status==='disabled'){
+      const settings=make('a','rg-connection-settings','Manage Gmail context');settings.href='/accounts.html';section.append(settings);
+    }
+    if(personal&&result?.status==='unavailable'){
+      const retry=make('button','rg-text-button rg-connection-retry','Retry introduction lookup');retry.type='button';
+      retry.onclick=()=>{
+        if(destroyed||!connectionOriginEnabled||selectedId!==node.id)return;
+        connectionOrigins.get(node.id)?.controller?.abort();connectionOrigins.delete(node.id);
+        section.replaceWith(renderConnectionOrigin(node));
+      };section.append(retry);
+    }
+    const evidence=make('details','rg-connection-evidence');
+    evidence.append(make('summary','','Connection details'),make('p','rg-source',connection.detail));
+    if(personal&&result?.status==='not_found')evidence.append(make('p','rg-source','No introduction email found in the messages checked.'));
+    section.append(evidence);
+    return section;
+  }
+
   function renderNodePanel() {
     const node = byId.get(selectedId);
     if (!node) return null;
@@ -749,6 +838,9 @@ export function mountGraph(element, options = {}) {
     const portrait = make('div','rg-profile-portrait');
     portrait.append(renderPortrait(node,nodeIndex.get(node.id)));
     panel.append(portrait, make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
+    if(node.type==='person'){
+      panel.append(renderConnectionOrigin(node));
+    }
     const walkStart=button('Explore from here','walk-person','rg-text-button');walkStart.dataset.nodeId=node.id;panel.append(walkStart);
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
     const profile = [node.role, node.company].filter(Boolean).join(' · ');
@@ -783,7 +875,7 @@ export function mountGraph(element, options = {}) {
         for(const reason of result.reasons??[]) match.append(make('p','rg-copy',[reason.summary,reason.title,reason.observedAt?.slice(0,10)].filter(Boolean).join(' · ')));
         panel.append(match);
       }
-      const intros=introductionCandidates(node.id,graph.nodes,graph.edges);
+      const intros=graph.source!=='workspace'&&node.directRelationship===true?[]:introductionCandidates(node.id,graph.nodes,graph.edges);
       if(intros.length) {
         const routes=make('section','rg-profile-section'); routes.append(make('h3','','Possible introductions'));
         for(const {person,edge} of intros) {
@@ -792,7 +884,7 @@ export function mountGraph(element, options = {}) {
         }
         panel.append(routes);
       }
-      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[])},node.id);
+      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[]).filter(signal=>signal.sourceType!=='gmail_subject')},node.id);
       if(context.length){const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent context'));for(const e of context.slice(0,3))notes.append(contextBlock(document,e));notes.append(make('p','rg-source','Note context is separate from contact activity; a mention does not confirm attendance.'));panel.insertBefore(notes,scores.parentNode===panel?scores:null);}
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
@@ -1927,6 +2019,8 @@ export function mountGraph(element, options = {}) {
     },
     setGraph(nextGraph, {preserveFocus=false}={}) {
       if (destroyed) return;
+      clearConnectionOrigins();
+      connectionOriginEnabled=nextGraph.source==='email_accounts';
       const previousFocus=preserveFocus?contactFocus:null;
       clearContact();
       meetingBatch = null;meetingFeedback = Object.create(null);
@@ -2008,6 +2102,7 @@ export function mountGraph(element, options = {}) {
       clearContact();
       if (destroyed) return;
       destroyed = true;
+      clearConnectionOrigins();
       meetingBatch = null;meetingFeedback = Object.create(null);meetingPreview = null;
       invalidateRelevance();
       pathRequest += 1;

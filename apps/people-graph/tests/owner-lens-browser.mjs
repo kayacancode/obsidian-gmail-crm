@@ -1,0 +1,186 @@
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {resolve,extname,sep} from 'node:path';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const root=fileURLToPath(new URL('../public/',import.meta.url));
+const server=createServer(async(req,res)=>{
+ const path=resolve(root,'.'+new URL(req.url,'http://local').pathname.replace(/\/$/,'/index.html'));
+ if(!path.startsWith(root.endsWith(sep)?root:root+sep)){res.writeHead(403).end();return;}
+ try{res.setHeader('content-type',({'.mjs':'text/javascript','.css':'text/css','.html':'text/html'})[extname(path)]||'application/octet-stream');res.end(await readFile(path));}catch{res.writeHead(404).end();}
+});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+try{
+ const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],calls=[];
+ page.setDefaultTimeout(5000);
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.route('https://accounts.google.com/**',route=>route.abort());
+ const stamp='2026-10-17T12:00:00Z';
+ let refreshGate=null,refreshResult=null,slowReady;
+ let state={revision:'r1',enabled:false,granolaEnabled:false,fields:{focus:'Agent interfaces',needs:'',offers:'Product feedback'},updatedAt:stamp,suggestions:[{id:'s1',kind:'need',text:'Talk to design partners',sourceIds:['n1','g1','g2','g3']},{id:'s2',kind:'offer',text:'A second suggestion',sourceIds:['n1']}],sources:[{id:'n1',text:'I am looking for design partners.',observedAt:stamp,label:'Your note'},{id:'g1',text:'Kaya is researching agent interfaces.',observedAt:stamp,label:'Your Granola meeting',title:'Design research meeting',url:'https://notes.granola.ai/d/research'},{id:'g2',text:'Kaya would like design feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Untrusted destination',url:'https://granola.ai.evil.test/d/research'},{id:'g3',text:'Kaya can share product feedback.',observedAt:stamp,label:'Your Granola meeting',title:'Unsafe scheme',url:'javascript:alert(1)'},{id:'m1',text:'The group discussed practical evaluation methods for agent interfaces.',observedAt:stamp,label:'Meeting you attended',attribution:'meeting',title:'Interface evaluation roundtable',url:'https://granola.ai/d/roundtable'}],honcho:{configured:false,status:'unconfigured',lastSync:null}},conflict=false,failSave=false,cleanupPending=true,slow=false,release;
+ const graph={source:'email_accounts',nodes:[{id:'p',name:'Jordan Rivera',type:'person',strength:50,momentum:50,combined:50,directRelationship:true}],edges:[],themes:[],themeSignals:[]};
+ await page.route('**/api/**',async route=>{
+  const req=route.request(),url=new URL(req.url()),path=url.pathname;
+  const reply=(value,status=200)=>route.fulfill({status,json:value});
+  if(path==='/api/accounts')return reply({account:'kaya@example.test',accounts:[{email:'kaya@example.test'}]});
+  if(path==='/api/graph')return reply({account:'kaya@example.test',graph:{...graph,source:url.searchParams.get('source')==='obsidian'?'obsidian':'email_accounts'}});
+  if(path==='/api/workspaces')return reply({workspaces:[]});
+  if(path==='/api/lens/matches')return reply({checked:true,status:'ready',results:[{personId:'p',reason:'Your interface research connects to Jordan’s design partner interviews.',conversation:'Which interview questions reveal useful interface feedback?',anchorEvidence:[{summary:'Agent interfaces',date:stamp,sourceLabel:'Your lens'}],evidence:[{summary:'Interviewing design partners for interface research.',date:stamp,sourceLabel:'Gmail conversation'}]}]});
+  if(path==='/api/lens'){
+   if(req.method()==='GET'){if(slow)await new Promise(resolve=>{release=resolve;slowReady?.();});return reply(state);}
+   const body=req.postDataJSON();calls.push(body);
+   if(failSave&&body.action==='save'){failSave=false;return reply({error:'temporarily_unavailable'},503);}
+   if(conflict){conflict=false;state={...state,revision:'r-conflict',fields:{...state.fields,focus:'Changed elsewhere'}};return reply({error:'revision_conflict'},409);}
+   if(body.action==='save')state={...state,fields:body.fields};
+   if(body.action==='learning'){state={...state,enabled:body.enabled};if(!body.enabled){state.granolaEnabled=false;state.honcho={...state.honcho,status:cleanupPending?'unavailable':'disabled'};cleanupPending=false;}}
+   if(body.action==='granola')state={...state,granolaEnabled:body.enabled};
+   if(body.action==='refresh'){if(refreshGate)await refreshGate;state={...state,granolaProgress:{available:12,checked:3,excerpts:5},...refreshResult};}
+   if(body.action==='accept'){const suggestion=state.suggestions.find(s=>s.id===body.id);state={...state,fields:{...state.fields,[{focus:'focus',need:'needs',offer:'offers'}[suggestion.kind]]:suggestion.text}};}
+   if(['accept','dismiss'].includes(body.action))state={...state,suggestions:state.suggestions.filter(s=>s.id!==body.id)};
+   state={...state,revision:'r'+calls.length,updatedAt:stamp};return reply(state);
+  }
+  if(path==='/api/session')return reply({ok:true});
+  return reply({themes:[],signals:[]});
+ });
+ await page.goto('http://127.0.0.1:'+server.address().port+'/');
+ const launch=page.getByRole('button',{name:'Your lens',exact:true});
+ await launch.waitFor({timeout:5000});
+ assert.equal(await page.getByRole('dialog',{name:'Your lens',exact:true}).count(),0,'private panel starts collapsed');
+ await launch.click();
+ const panel=page.getByRole('dialog',{name:'Your lens',exact:true});
+ await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
+ assert.doesNotMatch(await panel.locator('textarea').first().evaluate(node=>getComputedStyle(node).fontFamily),/monospace/i,'the editor must inherit readable app typography');
+ assert.equal(await panel.getByRole('checkbox',{name:'Learn from my work context'}).isChecked(),false);
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isChecked(),false);
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isDisabled(),true);
+ assert.equal(await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).isDisabled(),true,'learning must be enabled before generating suggestions');
+ assert.equal(await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).isDisabled(),true);
+ assert.match(await panel.innerText(),/Honcho.*not configured/i);
+ await panel.getByRole('textbox',{name:'Focused on',exact:true}).fill('Researching useful agent interfaces');
+ await panel.getByRole('button',{name:'Save lens',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Saved'));
+ assert.equal(calls[0].fields.focus,'Researching useful agent interfaces');
+ await panel.getByText('Based on your work context',{exact:true}).first().click();
+ const suggestion=panel.locator('.owner-lens-suggestion').first();
+ assert.equal(await suggestion.getByRole('link',{name:'Design research meeting'}).getAttribute('href'),'https://notes.granola.ai/d/research');
+ assert.equal(await suggestion.locator('a').count(),1,'only approved HTTPS Granola destinations become links');
+ assert.match(await suggestion.innerText(),/Your Granola meeting/);
+ assert.match(await suggestion.innerText(),/Kaya is researching agent interfaces/);
+ await panel.getByRole('button',{name:'Use update',exact:true}).first().click();
+ await page.waitForFunction(()=>document.querySelector('[aria-label="Looking for"]')?.value==='Talk to design partners');
+ await panel.getByRole('button',{name:'Dismiss',exact:true}).click();
+ await page.waitForFunction(()=>!document.body.textContent.includes('A second suggestion'));
+ assert.equal(calls.at(-1).action,'dismiss');
+ await panel.getByText('Your sources (5)',{exact:true}).click();
+ const meetingSource=panel.locator('.owner-lens-sources .owner-lens-source').filter({hasText:'Interface evaluation roundtable'});
+ assert.match(await meetingSource.innerText(),/Meeting you attended/);
+ assert.match(await meetingSource.innerText(),/Inferred focus from meeting context/);
+ assert.match(await meetingSource.innerText(),/not a statement by you/);
+ assert.equal(await panel.locator('.owner-lens-granola-progress:visible').count(),0,'legacy responses show no progress');
+ await panel.getByRole('checkbox',{name:'Learn from my work context'}).check();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Learning enabled'));
+ assert.equal(calls.at(-1).enabled,true);
+ await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).check();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Granola notes included'));
+ assert.equal(calls.at(-1).action,'granola');
+ assert.equal(calls.at(-1).enabled,true);
+ assert.equal(typeof calls.at(-1).revision,'string');
+ assert.equal(await panel.locator('.owner-lens-granola-progress:visible').count(),0,'progress remains absent until the server provides it');
+ await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).fill('I am exploring agent interfaces with design partners.');
+ await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Honcho is not configured'));
+ assert.equal(calls.at(-1).note,'I am exploring agent interfaces with design partners.');
+ assert.equal(await panel.locator('.owner-lens-granola-progress').innerText(),'Granola: 3 of 12 recent meetings checked · 5 useful excerpts');
+ assert.equal(await panel.locator('.owner-lens-granola-progress').isVisible(),true);
+ assert.equal(await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).inputValue(),'I am exploring agent interfaces with design partners.');
+ await panel.getByRole('checkbox',{name:'Learn from my work context'}).uncheck();
+ await panel.getByRole('button',{name:'Retry clearing learned context',exact:true}).waitFor();
+ assert.match(await panel.innerText(),/Clearing learned context is still pending/);
+ assert.equal(await panel.locator('.owner-lens-granola-progress').isVisible(),false,'turning learning off hides existing progress');
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isChecked(),false,'master off resets Granola consent');
+ assert.equal(await panel.getByRole('checkbox',{name:'Include my Granola notes',exact:true}).isDisabled(),true);
+ await panel.getByRole('button',{name:'Retry clearing learned context',exact:true}).click();
+ await page.waitForFunction(()=>!document.querySelector('.owner-lens-cleanup')||document.querySelector('.owner-lens-cleanup').hidden);
+ assert.equal(calls.at(-1).enabled,false);
+ failSave=true;
+ await panel.getByRole('textbox',{name:'Focused on',exact:true}).fill('Retained after a failed save');
+ await panel.getByRole('button',{name:'Save lens',exact:true}).click();
+ await panel.getByText(/Could not save your lens/).waitFor();
+ assert.equal(await panel.getByRole('textbox',{name:'Focused on',exact:true}).inputValue(),'Retained after a failed save');
+ conflict=true;
+ await panel.getByRole('textbox',{name:'Focused on',exact:true}).fill('My unsaved work');
+ await panel.getByRole('button',{name:'Save lens',exact:true}).click();
+ await panel.getByText(/changed elsewhere/i).waitFor();
+ assert.equal(await panel.getByRole('textbox',{name:'Focused on',exact:true}).inputValue(),'My unsaved work','conflicts retain draft text');
+ await panel.getByRole('button',{name:'Save lens',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Saved'));
+ assert.equal(calls.at(-1).revision,'r-conflict');
+ await panel.getByRole('button',{name:'Find people for me',exact:true}).click();
+ await panel.getByRole('button',{name:'Explore Jordan Rivera',exact:true}).waitFor();
+ await panel.getByText('Why this match?',{exact:true}).click();
+ assert.match(await panel.innerText(),/Interviewing design partners/);
+ await page.screenshot({path:'/tmp/owner-lens-desktop.png'});
+ await page.setViewportSize({width:390,height:844});
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await panel.getByRole('textbox',{name:'Focused on',exact:true}).scrollIntoViewIfNeeded();
+ await page.screenshot({path:'/tmp/owner-lens-mobile.png'});
+ await panel.getByRole('button',{name:'Explore Jordan Rivera',exact:true}).click();
+ assert.equal(await panel.count(),0,'exploring a person closes the private panel');
+
+ // A blank profile needs an explicit review workflow; refreshing must never accept updates.
+ state={...state,enabled:true,fields:{focus:'',needs:'',offers:''},suggestions:[],honcho:{configured:true,status:'ready',lastSync:stamp}};
+ await launch.click();await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
+ assert.match(await panel.locator('.owner-lens-learning > .owner-lens-muted').allTextContents().then(parts=>parts.join(' ')),/No profile updates found yet/);
+ assert.doesNotMatch(await panel.innerText(),/Your saved lens is unchanged/);
+ await panel.getByRole('textbox',{name:'Can help with',exact:true}).fill('My unsaved offer');
+ await panel.getByRole('textbox',{name:'Tell it what you’re working on',exact:true}).fill('I am exploring tools for design research.');
+ let releaseRefresh;refreshGate=new Promise(resolve=>releaseRefresh=resolve);
+ refreshResult={suggestions:[{id:'review-focus',kind:'focus',text:'Exploring design research tools',sourceIds:['n1']},{id:'review-need',kind:'need',text:'Meet design research partners',sourceIds:['n1']}]};
+ await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
+ await panel.getByRole('button',{name:'Reading context…',exact:true}).waitFor();
+ assert.equal(await panel.getByRole('button',{name:'Reading context…',exact:true}).isDisabled(),true);
+ assert.match(await panel.locator('.owner-lens-status').innerText(),/Reading your work context.*preparing profile updates/);
+ assert.doesNotMatch(await panel.locator('.owner-lens-status').innerText(),/Saving/);
+ releaseRefresh();refreshGate=null;
+ await panel.getByRole('heading',{name:'Proposed updates (2)',exact:true}).waitFor();
+ assert.match(await panel.locator('.owner-lens-status').innerText(),/2 proposed updates.*review/i);
+ assert.equal(await panel.getByRole('textbox',{name:'Focused on',exact:true}).inputValue(),'','proposals are not automatically accepted');
+ assert.equal(await panel.getByRole('textbox',{name:'Can help with',exact:true}).inputValue(),'My unsaved offer','refresh preserves unsaved fields');
+ assert.equal(await panel.getByRole('button',{name:'Find people for me',exact:true}).isDisabled(),true);
+ assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'Proposed updates (2)','completion brings proposed updates into focus');
+ await panel.getByRole('button',{name:'Use update',exact:true}).first().click();
+ await page.waitForFunction(()=>document.querySelector('[aria-label="Focused on"]')?.value==='Exploring design research tools');
+ assert.equal(await panel.getByRole('textbox',{name:'Can help with',exact:true}).inputValue(),'My unsaved offer','accepting a proposal preserves unrelated drafts');
+ await panel.getByRole('heading',{name:'Proposed updates (1)',exact:true}).waitFor();
+ await panel.getByRole('textbox',{name:'Looking for',exact:true}).fill('A draft I choose to replace');
+ await panel.getByRole('button',{name:'Use update',exact:true}).click();
+ await page.waitForFunction(()=>!document.querySelector('.owner-lens-suggestion'));
+ assert.equal(await panel.getByRole('textbox',{name:'Looking for',exact:true}).inputValue(),'Meet design research partners','explicit acceptance replaces the accepted field draft');
+ refreshResult={suggestions:[]};
+ await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
+ await panel.getByText('No new updates. Your saved lens is unchanged.',{exact:true}).first().waitFor();
+ assert.equal(await panel.getByRole('textbox',{name:'Can help with',exact:true}).inputValue(),'My unsaved offer');
+ await panel.getByRole('button',{name:'Save lens',exact:true}).click();
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Saved'));
+ assert.equal(await panel.getByRole('button',{name:'Find people for me',exact:true}).isDisabled(),false,'accepted and manually saved fields enable matching');
+ conflict=true;
+ await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
+ await panel.getByText(/changed elsewhere/i).waitFor();
+ assert.equal(await panel.getByRole('textbox',{name:'Focused on',exact:true}).inputValue(),'Changed elsewhere','conflict recovery reloads untouched fields');
+ assert.equal(await panel.getByRole('button',{name:'Find people for me',exact:true}).isDisabled(),false,'a clean conflict does not invent unsaved edits');
+ await panel.getByRole('button',{name:'Close your lens',exact:true}).click();
+
+ await launch.click();await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
+ await panel.getByRole('button',{name:'Close your lens',exact:true}).click();
+ const slowStarted=new Promise(resolve=>slowReady=resolve);slow=true;await launch.click();await slowStarted;
+ await page.waitForFunction(()=>document.querySelector('.owner-lens-status')?.textContent.includes('Loading'));
+ await page.evaluate(()=>{const source=document.querySelector('#source');source.value='obsidian';source.dispatchEvent(new Event('change'));});
+ release?.();
+ await page.waitForFunction(()=>!document.querySelector('.owner-lens-dialog'));
+ assert.equal(await launch.isVisible(),false,'private owner lens is hidden for Obsidian');
+ assert.doesNotMatch(await page.locator('body').innerText(),/My unsaved work/);
+ assert.deepEqual(errors,[]);
+ console.log('PASS owner lens: editing, reviewed updates, revision conflicts, matches, mobile layout and private context disposal');
+}catch(error){console.error(error);throw error;}finally{await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

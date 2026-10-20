@@ -28,6 +28,15 @@
 .rg-profile-portrait { width:110px; height:125px; margin-bottom:20px; }
 .rg-profile-section { border-top:1px solid var(--rg-line); margin:18px 0; padding-top:14px; }
 .rg-profile-score { font:32px/1.2 Georgia,serif; margin:8px 0; }
+.rg-how-you-know { margin:0 0 18px; overflow-wrap:anywhere; }
+.rg-connection-line { margin:0 0 5px; font-size:14px; line-height:1.5; color:var(--rg-foreground); }
+.rg-connection-evidence { font-size:11px; color:var(--rg-muted); }
+.rg-connection-evidence summary { cursor:pointer; }
+.rg-connection-evidence p { margin:8px 0; }
+.rg-connection-evidence + .rg-connection-evidence { margin-top:8px; }
+.rg-introduction-subject { font-weight:500; }
+.rg-introduction-quote { margin:8px 0 10px; padding-left:10px; border-left:2px solid var(--rg-line); white-space:pre-wrap; line-height:1.5; }
+.rg-connection-settings, .rg-connection-retry { display:inline-block; margin:4px 0 10px; font-size:11px; }
 .rg-digest { display:flex; flex-wrap:wrap; gap:16px; padding:18px 24px; border-top:1px solid var(--rg-line); }
 .rg-digest-heading { flex:1 0 180px; }.rg-digest-heading h2 {font-size:14px;font-weight:500;margin:0;}
 .rg-digest-person { display:flex; gap:9px; flex:1 1 170px; max-width:260px; min-width:0; padding:0; border:0; background:none; text-align:left; }
@@ -1010,3 +1019,17 @@
 .rg-helper-section{margin:20px 0;border-top:1px solid #e2e5dd;padding-top:16px}.rg-helper-section summary{cursor:pointer;font-weight:600}.rg-helper-card{padding:16px 0;border-bottom:1px solid #e2e5dd}.rg-helper-card h3{margin:0 0 8px}.rg-helper-card p{line-height:1.5}.rg-helper-card details{margin:12px 0}.rg-helper-draft textarea{display:block;box-sizing:border-box;width:100%;min-height:220px;margin-top:8px;padding:12px;border:1px solid #ced4c8;border-radius:8px;font:inherit;resize:vertical}.rg-helper-draft label{display:block;margin-top:16px}.rg-helper-section .nc-memory{overflow-wrap:anywhere}
 
 .rg-helper-form label{display:block;font-weight:500}.rg-helper-form textarea{display:block;box-sizing:border-box;width:100%;margin:10px 0;padding:12px;border:1px solid #ced4c8;border-radius:8px;font:inherit;resize:vertical}.rg-helper-form button{width:100%;padding:12px;border:0;border-radius:8px;background:#303f31;color:white;font:inherit;cursor:pointer}.rg-helper-form button:disabled{opacity:.6}
+
+/* Connection ideas: lead with the reason, keep source detail secondary. */
+.rg-helper-reason{margin:8px 0 16px;font-size:15px;line-height:1.65}
+.rg-helper-conversation{padding:14px 16px;background:#f2f4ee;border-radius:10px;margin:12px 0 18px}
+.rg-helper-conversation small{display:block;font-size:11px;font-weight:650;letter-spacing:.07em;text-transform:uppercase;color:#56624f}
+.rg-helper-conversation p{margin:6px 0 0;font-size:15px;line-height:1.5}
+.rg-helper-source{margin:8px 0 18px;padding:0;overflow-wrap:anywhere}
+.rg-helper-source small{display:block;font-size:12px}
+.rg-helper-source blockquote{margin:7px 0 0;padding:0 0 0 12px;border-left:2px solid #cfd7c7;font-size:14px;line-height:1.65;color:#4a5146}
+.rg-helper-person{display:block;margin-top:16px;font-size:13px}
+.rg-helper-refine{margin:18px 0 8px;padding-top:14px;border-top:1px solid #e2e5dd}
+.rg-helper-refine>summary{font-size:13px;font-weight:500;color:#56624f}
+.rg-helper-refine form{margin-top:12px}
+.rg-helper-card>details>summary{font-size:13px;color:#56624f}

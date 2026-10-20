@@ -1,3 +1,4 @@
+import {rankHelperBrief} from './helper-brief';
 import {b64,bytes,digest,opaque} from './mail-model';
 import type {MailEnv} from './mail-sync';
 import {boundedJSON} from './bounded-json';
@@ -20,7 +21,7 @@ export async function mailRoute(request:Request,env:MailEnv,owner:string){
  if(!configured(env))return json({error:'mail_not_configured',message:'Email connections are not enabled on this server yet.'},503);
  if(request.method!=='POST')return json({error:'method_not_allowed'},405);
  if(request.headers.get('origin')!==url.origin)return json({error:'invalid_origin'},403);
- const raw=await request.text();if(raw.length>2000)return json({error:'request_too_large'},413);let body:{email?:string;range?:string};try{body=JSON.parse(raw);}catch{return json({error:'invalid_json'},400);}
+ const raw=await request.text();if(raw.length>2000)return json({error:'request_too_large'},413);let body:{email?:string;range?:string;enabled?:boolean};try{body=JSON.parse(raw);}catch{return json({error:'invalid_json'},400);}
  const range=body.range==='all'?'all':'recent';
  if(path==='/api/accounts/connect'){
   const nonce=crypto.randomUUID(),verifier=b64(crypto.getRandomValues(new Uint8Array(32))),browser=b64(crypto.getRandomValues(new Uint8Array(32))),redirect=env.APP_ORIGIN+'/api/accounts/callback';
@@ -30,6 +31,7 @@ export async function mailRoute(request:Request,env:MailEnv,owner:string){
   return Response.json({url:google.href},{headers:{'cache-control':'no-store','set-cookie':`__Host-people-connect=${browser}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`}});
  }
  if(typeof body.email!=='string'||body.email.length>320)return json({error:'invalid_account'},400);
+ if(path==='/api/accounts/context'){if(typeof body.enabled!=='boolean')return json({error:'invalid_request'},400);await stub.bindOwner(owner);return json(await stub.setAutomaticContext(body.email,body.enabled));}
  if(path==='/api/accounts/sync'){await stub.start(body.email,body.range==='all'||body.range==='recent'?body.range:undefined);return json({ok:true});}
  if(path==='/api/accounts/disconnect'){await stub.remove(body.email);return json({ok:true});}
  return json({error:'not_found'},404);
@@ -55,6 +57,21 @@ export async function draftRoute(request:Request,env:MailEnv,owner:string){
   if(code==='ai_unavailable')return json({error:'ai_unavailable',message:'The drafting model is unavailable. Try again shortly.'},503);
   if(code==='invalid_draft')return json({error:'invalid_draft',message:'The draft did not pass safety checks. Try again.'},502);
   throw error;
+ }
+}
+
+/** Private lookup in the signed-in owner's mail; shared contacts never select another owner. */
+export async function connectionOriginRoute(request:Request,env:MailEnv,owner:string){
+ if(request.method!=='POST')return json({error:'method_not_allowed'},405);
+ if(request.headers.get('origin')!==new URL(request.url).origin)return json({error:'invalid_origin'},403);
+ let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),2000);}catch{return json({error:'invalid_request'},400);}
+ if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof body.personId!=='string'||!/^[A-Za-z0-9:_-]{1,200}$/.test(body.personId))return json({error:'invalid_request'},400);
+ const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+ try{const result=await stub.connectionOrigin(body.personId);if(result.status==='unavailable')console.warn('connection_origin_unavailable',{reason:result.reason||'unknown'});return json(result);}
+ catch(error){
+  if(error instanceof Error&&error.message==='unknown_person')return json({error:'unknown_person'},404);
+  if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);
+  console.warn('connection_origin_route_failed',{kind:error instanceof Error?error.name:'unknown'});throw error;
  }
 }
 /**
@@ -92,7 +109,13 @@ export async function helperRoute(request:Request,env:MailEnv,owner:string){
  if(request.method!=='POST')return json({error:'method_not_allowed'},405);
  if(request.headers.get('origin')!==new URL(request.url).origin)return json({error:'invalid_origin'},403);
  let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),8000);}catch{return json({error:'invalid_request'},400);}
- if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||!body.brief.trim()||body.brief.length>1000)return json({error:'invalid_request'},400);
+ if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||body.brief.length>1000)return json({error:'invalid_request'},400);
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
- try{return json(await stub.helperPeople(body.personId,body.brief));}catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
+ try{
+  const graph=await stub.graph();if(!graph?.nodes.some(node=>node.id===body.personId))return json({error:'invalid_request'},400);
+  // Refresh the selected person's context first; all full passages remain private to this request.
+  await stub.refreshHelperContext(body.personId);
+  const helperContext=await stub.helperContext();
+  return json(await rankHelperBrief(env,{...graph,helperContext},body.personId,body.brief));
+ }catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
 }

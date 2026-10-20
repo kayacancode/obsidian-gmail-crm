@@ -22,3 +22,9 @@ test('what-if helpers need recent specific evidence on both sides and show at mo
  assert.deepEqual(helperSuggestions({...g,themeSignals:g.themeSignals.map(s=>({...s,observedAt:'2020-01-01'}))},'k',now),[]);
  assert.deepEqual(helperSuggestions({...g,source:'workspace',themeSignals:g.themeSignals.map(s=>({...s,visibility:'private'}))},'k',now),[]);
 });
+
+test('grounded helper drafts lead with the specific reason and conversation without copying private excerpts',async()=>{
+ const {helperDraft}=await import('../public/relationship-graph/helper-suggestions.mjs');
+ const item={person:{name:'Max'},reason:'Max has researched nurse handoffs and could help test Angelica’s clinic workflow.',conversation:'Which handoff assumptions should the prototype test first?',anchorEvidence:{summary:'PRIVATE ORIGINAL EMAIL'},evidence:{summary:'PRIVATE CANDIDATE EMAIL'}};
+ const draft=helperDraft('Angelica',item);assert.match(draft,/researched nurse handoffs/);assert.match(draft,/Which handoff assumptions/);assert.doesNotMatch(draft,/PRIVATE/);
+});

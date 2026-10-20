@@ -185,6 +185,7 @@ function normalizeNode(raw, index) {
     scoreModel: optionalString(raw.scoreModel),
     lastContact: optionalString(raw.lastContact),
     directRelationship: typeof raw.directRelationship === 'boolean' ? raw.directRelationship : null,
+    contactActivity:raw.contactActivity&&['sent','received','meetings'].every(k=>Number.isSafeInteger(raw.contactActivity[k])&&raw.contactActivity[k]>=0)?{sent:raw.contactActivity.sent,received:raw.contactActivity.received,meetings:raw.contactActivity.meetings}:null,
     directLastContact: Object.hasOwn(raw, 'directLastContact') ? optionalString(raw.directLastContact) : raw.via?.length ? null : optionalString(raw.lastContact),
     lastMeeting: optionalString(raw.lastMeeting),
     meetings: optionalScore(raw.meetings, `Node ${index} meetings`),
