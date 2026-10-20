@@ -1,4 +1,24 @@
 // Pure presentation helpers. Recency is activity evidence, never a claim about thoughts.
+export function howYouKnow(graph,person) {
+  const self=graph.members?.find(m=>m.isMe),relationship=self&&(person.relationships||[]).find(r=>r.memberId===self.id);
+  const activity=graph.source==='workspace'?relationship?.activity:person.directRelationship===true?person.contactActivity:null;
+  if(activity&&['sent','received','meetings'].every(k=>Number.isSafeInteger(activity[k])&&activity[k]>=0)&&activity.sent+activity.received+activity.meetings>0){
+    const {sent,received,meetings}=activity;
+    const text=sent&&received?'You’ve exchanged emails':sent?'You’ve emailed them':received?'They’ve emailed you':'Appears in your meeting notes';
+    const detail=[`${sent} sent · ${received} received`,...(meetings?[`${meetings} meeting ${meetings===1?'record':'records'}`]:[])].join(' · ')+'. From your imported history.';
+    return {text,detail};
+  }
+  if(relationship?.confirmedAt)return {text:'You’ve confirmed you know them',detail:'You confirmed this relationship on '+relationship.confirmedAt.slice(0,10)+'.'};
+  const shared=graph.source==='workspace'
+    ?(graph.members||[]).filter(m=>!m.isMe&&(person.relationships||[]).some(r=>r.memberId===m.id)).map(m=>m.name).filter(Boolean)
+    :person.directRelationship!==true?person.via||[]:[];
+  if(shared.length)return {text:'Shared by '+shared.slice(0,2).join(' and ')+(shared.length>2?' and '+(shared.length-2)+' others':''),detail:'This person was shared into your network. A share does not record an introduction.'};
+  const signals=graph.source==='workspace'?[]:ownSignals(graph.themeSignals||[]).filter(s=>s.personId===person.id);
+  if(signals.some(s=>['gmail_subject','gmail_body_derived'].includes(s.sourceType)))return {text:'Email in your imported history',detail:'Email context is linked to this person; it does not establish how you first met.'};
+  if(signals.some(s=>s.sourceType==='granola')||(person.directRelationship===true&&person.meetings>0))return {text:'Appears in your meeting notes',detail:'Meeting notes mention or list this person; your attendance is not confirmed here.'};
+  return {text:'In your network',detail:'The imported records don’t say how you first connected.'};
+}
+
 export function directContact(node) {
   if (Object.hasOwn(node, 'directLastContact')) return node.directLastContact;
   return node.via?.length ? null : node.lastContact ?? null;

@@ -143,6 +143,30 @@ const slice=(over:Partial<SharedSlice>={}):SharedSlice=>({owner:'owner@share.tes
  signals:[{email:'stranger@vc.test',themeId:'theme-pilot',summary:'Ask: “looking for a design partner”',observedAt:'2026-09-12T11:00:00.000Z',sourceType:'granola',confidence:.8,title:'Pilot sync'}],
  ...over});
 
+test('personal graph contact activity separates email directions from meetings and excludes shared-only counts',async()=>{
+ const {service,db,kv}=fixture();kv.set('owner','viewer');
+ try{
+  account(db,'me@example.com');account(db,'work@example.com');
+  contribution(db,'sent1','ada@work.test','Ada','2026-09-01T00:00:00Z','Hello',1,0);
+  contribution(db,'sent2','ada@work.test','Ada','2026-09-02T00:00:00Z','Hello',1,0);
+  contribution(db,'received','ada@work.test','Ada','2026-09-03T00:00:00Z','Hello',0,1);
+  db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run('work@example.com','sent1','ada@work.test','Ada',Date.parse('2026-09-01T00:00:00Z'),'Hello',1,0);
+  contribution(db,'incoming','bob@work.test','Bob','2026-09-03T00:00:00Z','Hello',0,1);
+  granolaConnection(db);
+  for(const id of ['not_1234567890abcd','not_abcdef01234567']){
+   granolaNote(db,id,[]);attendee(db,id,'ada@work.test','Ada');attendee(db,id,'cia@meet.test','Cia');
+  }
+  await service.importShares([slice({people:[{email:'ada@work.test',name:'Ada',lastContact:null,meetings:9},{email:'stranger@vc.test',name:'Stranger',lastContact:null,meetings:3}],edges:[],themes:[],signals:[]})]);
+  const graph=(await service.graph())!;
+  const ids=new Map(await Promise.all(['ada@work.test','bob@work.test','cia@meet.test','stranger@vc.test'].map(async email=>[email,await opaque('viewer',email,'identity-key')] as const)));
+  const find=(email:string)=>graph.nodes.find(node=>node.id===ids.get(email))!;
+  assert.deepEqual(find('ada@work.test').contactActivity,{sent:2,received:1,meetings:2});
+  assert.deepEqual(find('bob@work.test').contactActivity,{sent:0,received:1,meetings:0});
+  assert.deepEqual(find('cia@meet.test').contactActivity,{sent:0,received:0,meetings:2});
+  const stranger=find('stranger@vc.test');assert.equal(stranger.meetings,3);assert.equal(stranger.directRelationship,false);assert.ok(!('contactActivity' in stranger));
+ }finally{db.close();}
+});
+
 test('importing a slice merges shared people into the graph and keeps the evidence in the firm lens',async()=>{
  const {service,db,ids}=await viewerFixture();
  try{

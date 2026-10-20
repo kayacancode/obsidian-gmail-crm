@@ -150,3 +150,49 @@ test('headline comparison uses People score including recency and feedback',()=>
  const person={id:'p',strength:45,combined:60};
  assert.deepEqual(connectionSummary(person,[person,{id:'a',strength:80,combined:50},{id:'b',strength:20,combined:70}]),{score:60,lower:1,total:2});
 });
+test('how-you-know labels distinguish reciprocal email, one-way mail, and co-recipients',async()=>{
+ const {howYouKnow}=await import('../public/relationship-graph/intelligence.mjs');
+ const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+ const rows=[['both',4,7,'You’ve exchanged emails'],['incoming',0,7,'They’ve emailed you'],['outgoing',4,0,'You’ve emailed them'],['copied',0,0,'In your network']];
+ const g=normalizeGraph({nodes:rows.map(([id,sent,received])=>({id,name:id,directRelationship:true,contactActivity:{sent,received,meetings:0}})),edges:[]});
+ for(const [id,,,text]of rows)assert.equal(howYouKnow(g,g.nodes.find(n=>n.id===id)).text,text);
+ assert.match(howYouKnow(g,g.nodes[0]).detail,/4 sent · 7 received/);
+});
+test('meeting records do not claim the viewer attended or was introduced',async()=>{
+ const {howYouKnow}=await import('../public/relationship-graph/intelligence.mjs');
+ const person={id:'p',directRelationship:true,contactActivity:{sent:0,received:0,meetings:2}};
+ assert.equal(howYouKnow({nodes:[person],edges:[]},person).text,'Appears in your meeting notes');
+ assert.doesNotMatch(howYouKnow({edges:[{source:'p',target:'j',types:['introduced_by'],contexts:['via John']}]},person).text,/introduced|you met/i);
+});
+test('shared contact summaries never borrow someone else’s activity or intro count',async()=>{
+ const {howYouKnow}=await import('../public/relationship-graph/intelligence.mjs');
+ const person={id:'p',directRelationship:false,contactActivity:{sent:10,received:8,meetings:2},via:['John'],relationships:[{memberId:'john',activity:{sent:10,received:8,meetings:2},completedIntroductions:3}]};
+ assert.equal(howYouKnow({source:'workspace',members:[{id:'me',isMe:true},{id:'john',name:'John'}]},person).text,'Shared by John');
+ assert.equal(howYouKnow({},person).text,'Shared by John');
+ person.relationships.push({memberId:'me',activity:{sent:0,received:2,meetings:0}});
+ assert.equal(howYouKnow({source:'workspace',members:[{id:'me',isMe:true},{id:'john',name:'John'}]},person).text,'They’ve emailed you');
+});
+test('legacy scores, public mentions and undirected introduction edges do not invent relationship history',async()=>{
+ const {howYouKnow}=await import('../public/relationship-graph/intelligence.mjs');
+ const person={id:'p',combined:90,lastContact:'2026-10-01'};
+ const graph={themeSignals:[{personId:'p',visibility:'public',sourceType:'gmail_subject',summary:'Intro to someone else'}],edges:[{source:'p',target:'j',types:['introduced_by']}]};
+ assert.equal(howYouKnow(graph,person).text,'In your network');
+ assert.equal(howYouKnow({themeSignals:[{personId:'p',visibility:'private',sourceType:'gmail_subject',evidenceRef:'share:john:1'}]},person).text,'In your network');
+ assert.equal(howYouKnow({themeSignals:[{personId:'p',visibility:'private',sourceType:'gmail_subject',evidenceRef:'account:1'}]},person).text,'Email in your imported history');
+});
+test('malformed personal activity is ignored before rendering relationship claims',async()=>{
+ const {howYouKnow}=await import('../public/relationship-graph/intelligence.mjs');
+ const {normalizeGraph}=await import('../public/relationship-graph/model.mjs');
+ for(const activity of [{sent:-1,received:3,meetings:0},{sent:'2',received:3,meetings:0},{sent:1.5,received:3,meetings:0}]){
+  const g=normalizeGraph({nodes:[{id:'p',name:'Person',directRelationship:true,contactActivity:activity}],edges:[]});
+  assert.equal(howYouKnow(g,g.nodes[0]).text,'In your network');
+ }
+});
+test('empty shared activity does not claim an email thread',async()=>{
+ const {howYouKnow}=await import('../public/relationship-graph/intelligence.mjs');
+ const graph={source:'workspace',members:[{id:'me',isMe:true}]};
+ const person={id:'p',relationships:[{memberId:'me',activity:{sent:0,received:0,meetings:0}}]};
+ assert.equal(howYouKnow(graph,person).text,'In your network');
+ person.relationships[0].confirmedAt='2026-10-20';
+ assert.equal(howYouKnow(graph,person).text,'You’ve confirmed you know them');
+});

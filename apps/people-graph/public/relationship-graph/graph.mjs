@@ -17,7 +17,7 @@ import { findPaths } from './paths.mjs';
 import { filterRelevance, themeFields } from './relevance.mjs';
 import { rankSerendipity } from './discoveries.mjs';
 import { parseMeetingBatch, meetingPreviewState, withMeetingPreview } from './meeting-preview.mjs';
-import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, isTopicLabel, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals } from './intelligence.mjs';
+import { attentionDigest, recentlyInTouch, activityTimeline, conversationThemes, isTopicLabel, directContact, inWindow, dailyDigest, connectionSummary, introductionCandidates, ownSignals, howYouKnow } from './intelligence.mjs';
 
 const DIRECTORY_PAGE_SIZE = 50;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -749,6 +749,11 @@ export function mountGraph(element, options = {}) {
     const portrait = make('div','rg-profile-portrait');
     portrait.append(renderPortrait(node,nodeIndex.get(node.id)));
     panel.append(portrait, make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
+    if(node.type==='person'){
+      const connection=howYouKnow(graph,node),origin=make('div','rg-how-you-know');
+      origin.append(make('p','rg-connection-line',connection.text));
+      const evidence=make('details','rg-connection-evidence');evidence.append(make('summary','','Connection details'),make('p','rg-source',connection.detail));origin.append(evidence);panel.append(origin);
+    }
     const walkStart=button('Explore from here','walk-person','rg-text-button');walkStart.dataset.nodeId=node.id;panel.append(walkStart);
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
     const profile = [node.role, node.company].filter(Boolean).join(' · ');

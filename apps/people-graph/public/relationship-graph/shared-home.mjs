@@ -1,4 +1,5 @@
 import {helperSection} from './helper-suggestions.mjs';
+import {howYouKnow} from './intelligence.mjs';
 import {weeklyContext} from './weekly-context.mjs';
 import {supportsIntroduction} from './relationship-support.mjs';
 import {element,action,portrait,contactCard,personContext} from './contact-sheet.mjs';
@@ -36,9 +37,9 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
  if(selected){
   root.append(action(doc,compact?'Close details':'← Back to people',onBack,'sh-back'));
   const head=element(doc,'div','sh-person-heading');head.append(portrait(doc,selected),element(doc,compact?'h2':'h1','',selected.name));root.append(head);
+  const connection=howYouKnow(graph,selected);root.append(element(doc,'p','sh-connection',connection.text));
   if(selected.company)root.append(element(doc,'p','sh-subtitle',selected.company));
-  const card=contactCard(graph,selected.id,answer),ties=(selected.relationships||[]).filter(supportsIntroduction);
-  root.append(element(doc,'p','sh-connection',ties.length?'In '+ties.map(r=>{const m=graph.members.find(m=>m.id===r.memberId);return m?.isMe?'your contacts':name(m)+'’s contacts';}).join(' and ')+'.':'Shared in this network.'));
+  const card=contactCard(graph,selected.id,answer);
   const why=sharedHomeRows(graph,answer).rows.find(row=>row.person.id===selected.id);
   if(why)root.append(element(doc,'p','sh-why',why.reason));
   for(const relationship of card.relationships){
