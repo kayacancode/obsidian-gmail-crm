@@ -38,11 +38,19 @@ export function extractConnectionOrigin(message:GmailMessage,viewerEmails:string
   if(/^(?:fwd?|fw)\s*:/i.test(subject))return null;
   const decoded=decodeGmailMessage(message,24000);
   const parts=decoded.text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
-  // Never match a trailing fragment whose qualifying words could be outside the byte cap.
-  if(decoded.bytes>=24000)parts.pop();
-  const pieces=parts.slice(0,80);
-  let offset=0;
-  const starts=pieces.map(piece=>{const start=decoded.text.indexOf(piece,offset);offset=start+piece.length;return start;});
+  const sentences:{text:string;start:number;end:number}[]=[];let offset=0;
+  for(const part of parts.slice(0,80)){
+   const start=decoded.text.indexOf(part,offset),end=start+part.length;offset=end;
+   const previous=sentences.at(-1);
+   // Plain-text hard wraps and closing inline HTML tags are not sentence endings.
+   // Keep greetings and attribution/example labels separate from the next sentence.
+   if(previous&&!/[.!?:]$/.test(previous.text)&&!/^(?:hi|hey|hello)\s+[^.!?:]{1,120},$/i.test(previous.text)){
+    previous.text+=' '+part;previous.end=end;
+   }else sentences.push({text:part,start,end});
+  }
+  // Never match a sentence whose qualifying words could be beyond either input cap.
+  if(decoded.bytes>=24000||parts.length>80)sentences.pop();
+  const pieces=sentences.map(s=>s.text);
   const viewerNames=nameForms(viewerRecipients.map(r=>r.name)),targetNames=nameForms([target.name,targetRecipient.name]);
   const pair=(left:string[],right:string[])=>left.length&&right.length?new RegExp(`^(?:(?:Hi|Hey|Hello)\\s+)?(?:${left.map(escaped).join('|')})\\s*[,—–:-]\\s*(?:please\\s+)?meet\\s+(?:${right.map(escaped).join('|')})(?:\\s*[,—–:-]\\s*[^!?]{1,300})?[.!]?$`,'iu'):null;
   const named=[pair(viewerNames,targetNames),pair(targetNames,viewerNames)].filter((p):p is RegExp=>!!p);
@@ -54,17 +62,17 @@ export function extractConnectionOrigin(message:GmailMessage,viewerEmails:string
   const addedRecommendation=viewerNames.length&&targetNames.length?new RegExp(`^(?:(?:${viewerNames.map(escaped).join('|')})\\s*[,—–:-]?\\s+)?you\\s+should\\s+meet\\s+(?:${targetNames.map(escaped).join('|')})(?:\\s*[,—–:-]\\s*[^!?]{1,300})?[.!]?$`,'iu'):null;
   const notAnAct=/\b(?:if|unless|once|when|tomorrow|later|eventually|someday|next\s+(?:week|month|year|time)|not|never|declined|refused|cannot|can't|won't|wouldn't|didn't|don't|doesn't|example|template|sample|quote|quoted|draft|wording)\b|\b(?:can|could|would|will) you\b|\b(?:please )?(?:write|say)\s*:/i;
   for(let i=0;i<pieces.length;i++){
-   let quote=pieces[i];if(quote.length>500||notAnAct.test(quote))continue;
+   const quote=pieces[i];let end=sentences[i].end;if(quote.length>500||notAnAct.test(quote))continue;
    // A preceding hypothetical/example label cannot become a factual introduction.
    if(i&&/(?:\bif\b|\bunless\b|\bwhen\b|\bonce\b|\bexample\b|\bsample\b|\btemplate\b|\b(?:write|wrote|say|said|draft|quoted?)\s*:)\s*[^.!?]{0,200}[.:]?$/i.test(pieces[i-1]))continue;
    if(!named.some(p=>p.test(quote))&&!sharedAct.test(quote)&&!makingAct.test(quote)){
     const next=pieces[i+1];
     if(!addingAct?.test(quote)||/\b(?:write|wrote|say|said|draft|quoted?)\s*:/i.test(quote)||!next||next.length>500||notAnAct.test(next)||!addedRecommendation?.test(next))continue;
-    quote=decoded.text.slice(starts[i],starts[i+1]+next.length);
-    if(quote.length>1200)continue;
+    end=sentences[i+1].end;
    }
+   const sourceQuote=decoded.text.slice(sentences[i].start,end);if(sourceQuote.length>1200)continue;
    const introducerName=noAddress(sender.name||sender.email.split('@')[0]).slice(0,160);
-   return {introducerName,observedAt:new Date(at).toISOString(),subject:noAddress(subject).slice(0,160),quote:noAddress(quote),messageId:message.id!,...(opaqueMessageId.test(message.threadId||'')?{threadId:message.threadId}: {})};
+   return {introducerName,observedAt:new Date(at).toISOString(),subject:noAddress(subject).slice(0,160),quote:noAddress(sourceQuote),messageId:message.id!,...(opaqueMessageId.test(message.threadId||'')?{threadId:message.threadId}: {})};
   }
   return null;
  }catch{return null;}

@@ -51,6 +51,37 @@ test('connection origin does not count adding or a recommendation without both i
  ])assert.equal(extractConnectionOrigin(message(text,headers),owner,participant),null,text);
 });
 
+test('connection origin reads wrapped introduction sentences and keeps the original source slice',()=>{
+ const participant={email:'sam@example.com',name:'Sam Park'},owner=['alex@example.com'];
+ const headers={From:'Taylor Lee <taylor@example.com>',To:'Sam Park <sam@example.com>',Cc:'Alex River <alex@example.com>',Subject:'A useful connection'};
+ const fixtures=[
+  {text:'Adding Alex here, they coordinate visits\nfor the team.\nAlex, you should meet Sam, who leads the workshop.'},
+  {text:'Adding Alex here, they coordinate visits for the team.\nAlex, you should meet\nSam, who leads the workshop.'},
+  {text:'Alex —\nmeet Sam.'},
+  {text:'<p>Adding <span>Alex</span> here, they coordinate visits for the team.</p><p>Alex, you should meet Sam, who leads the workshop.</p>',html:true,quote:'Adding Alex\n here, they coordinate visits for the team.\nAlex, you should meet Sam, who leads the workshop.'},
+  {text:'<p>Adding Alex here, they coordinate <span>visits</span> for the team.</p><p>Alex, you should meet Sam, who leads the workshop.</p>',html:true,quote:'Adding Alex here, they coordinate visits\n for the team.\nAlex, you should meet Sam, who leads the workshop.'}
+ ];
+ for(const fixture of fixtures){
+  const evidence=extractConnectionOrigin(message(fixture.text,headers,fixture.html?'text/html':'text/plain'),owner,participant);
+  assert.equal(evidence?.introducerName,'Taylor Lee',fixture.text);
+  assert.equal(evidence?.quote,fixture.quote??fixture.text);
+ }
+});
+
+test('connection origin keeps wrapped future and conditional qualifiers attached to their sentences',()=>{
+ const participant={email:'sam@example.com',name:'Sam Park'},owner=['alex@example.com'];
+ const headers={From:'Taylor Lee <taylor@example.com>',To:'Sam Park <sam@example.com>',Cc:'Alex River <alex@example.com>',Subject:'A useful connection'};
+ for(const text of [
+  'Introducing you two\nnext week.',
+  'Alex, meet Sam\nif you agree.',
+  'Adding Alex here.\nAlex, you should meet Sam\nnext week.',
+  'Adding Alex here\nif they agree.\nAlex, you should meet Sam.',
+  'For example:\nAdding Alex here, they coordinate visits\nfor the team.\nAlex, you should meet Sam.',
+  'Morgan wrote:\nAdding Alex here, they coordinate visits\nfor the team.\nAlex, you should meet Sam.'
+ ])assert.equal(extractConnectionOrigin(message(text,headers),owner,participant),null,text);
+ assert.equal(extractConnectionOrigin(message('<p>Adding Alex here.</p><p>Alex, you should meet <span>Sam</span> next week.</p>',headers,'text/html'),owner,participant),null);
+});
+
 test('connection origin does not infer introductions from subject or shared recipients',()=>{
  for(const text of ['Looking forward to the demo.','Great to meet you two.','Your onboarding looks useful.','Can you introduce me to Marie?','Would you introduce Kaya to Marie?','Thanks for introducing us.','John introduced Kaya to Marie.','I met Marie through John.'])assert.equal(extractConnectionOrigin(message(text,{Subject:'Introduction: Kaya and Marie'}),viewers,target),null,text);
 });
