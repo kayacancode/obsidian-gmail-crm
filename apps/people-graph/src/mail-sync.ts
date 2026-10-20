@@ -1,5 +1,5 @@
 import {OwnerLensStore,OWNER_LENS_WINDOW,ownerLensDiagnostic,type OwnerLensDiagnosticStage,type OwnerLens,type OwnerLensFields,type OwnerLensCollectionResult} from './owner-lens';
-import {extractConnectionOrigin} from './connection-origin';
+import {extractConnectionOrigin,extractDirectConnectionContext} from './connection-origin';
 import {collectGranolaOwnerPassages,collectGranolaMeetingTopics} from './granola-owner-context';
 import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
@@ -31,14 +31,14 @@ interface Job {contextVersion?:number;calendarDone?:boolean;calendarPage?:string
 interface Account {contextEnabled?:boolean;contextVersion?:number;contextError?:string;emailEdgeVersion?:number;calendarEnabled?:boolean;calendarStatus?:string;calendarLastSync?:number;revision?:string;otherPhotosEnabled?:boolean;photosEnabled?:boolean;photoStatus?:string;email:string;grant:string;status:string;job:Job|null;lastSync:number;nextSync:number;error:string;range:Range}
 interface Pending {verifier:string;cookie:string;expires:number;range:Range;owner:string;redirect:string}
 interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[];titles:string[]}
-interface ConnectionOriginResult {status:'found'|'not_found'|'disabled'|'unavailable';reason?:string;origin?:{introducerName:string;observedAt:string;subject:string;quote:string;url:string}}
+interface ConnectionOriginResult {status:'found'|'not_found'|'disabled'|'unavailable';reason?:string;origin?:{introducerName:string;observedAt:string;subject:string;quote:string;url:string};connection?:{direction:'sent'|'received';observedAt:string;subject:string;quote:string;url:string}}
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
 interface GraphPersonNode {directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
  private originRequests=new Map<string,Promise<ConnectionOriginResult>>();
- private originTable(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS connection_origins (person_id TEXT PRIMARY KEY,scope TEXT NOT NULL,checked_at INTEGER NOT NULL,data TEXT NOT NULL)');}
+ private originTable(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS connection_origins (person_id TEXT PRIMARY KEY,scope TEXT NOT NULL,checked_at INTEGER NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS messages_account_canonical ON messages(account,canonical)');}
  private clearConnectionOrigins(){this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins');}
  async connectionOrigin(personId:string):Promise<ConnectionOriginResult>{
   if(typeof personId!=='string'||!/^[A-Za-z0-9:_-]{1,200}$/.test(personId))throw Error('invalid_request');
@@ -56,11 +56,15 @@ export class MailSync extends DurableObject<MailEnv>{
   const snapshot=()=>JSON.stringify(this.rows().map(a=>[a.email,a.revision,a.grant,!!a.contextEnabled,['connected','syncing'].includes(a.status)]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
   const initial=snapshot(),current=()=>snapshot()===initial;
   const stopped=():ConnectionOriginResult=>({status:this.rows().some(usable)?'unavailable':'disabled',reason:'account_changed'});
-  stage('scope');const scope=await opaque(owner,'connection-origin-v3:'+initial+':'+target.email,this.env.TOKEN_SECRET);if(!current())return stopped();
+  stage('scope');const scope=await opaque(owner,'connection-origin-v4:'+initial+':'+target.email,this.env.TOKEN_SECRET);if(!current())return stopped();
   stage('cache');this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins WHERE checked_at<?',Date.now()-7*86400000);
   const cached=this.ctx.storage.sql.exec<{scope:string;checked_at:number;data:string}>('SELECT scope,checked_at,data FROM connection_origins WHERE person_id=?',personId).toArray()[0];
   if(cached?.scope===scope){const result=JSON.parse(cached.data) as ConnectionOriginResult;if(['found','not_found'].includes(result.status)&&cached.checked_at>Date.now()-(result.status==='found'?3600000:300000))return result;}
   const save=(result:ConnectionOriginResult)=>{if(!current())return stopped();this.ctx.storage.sql.exec('INSERT OR REPLACE INTO connection_origins VALUES (?,?,?,?)',personId,scope,Date.now(),JSON.stringify(result));return result;};
+  // Start with this person's contributions; the account/canonical index avoids scanning an entire inbox.
+  const candidates=accounts.flatMap(account=>this.ctx.storage.sql.exec<{id:string;date:number}>('SELECT m.id,c.date FROM contributions c INDEXED BY contributions_email CROSS JOIN messages m INDEXED BY messages_account_canonical WHERE c.account=? AND c.email=? AND m.account=c.account AND m.canonical=c.canonical AND (c.sent>0 OR c.received>0) ORDER BY c.date ASC,m.id ASC LIMIT 3',account.email,target.email).toArray().map(row=>({...row,account:account.email}))).sort((a,b)=>a.date-b.date||a.account.localeCompare(b.account)||a.id.localeCompare(b.id)).slice(0,6);
+  const introLimit=24-candidates.length,tokens=new Map<string,string>();
+  const mailUrl=(account:string,evidence:{messageId:string;threadId?:string})=>{const url=new URL('https://mail.google.com/mail/u/');url.searchParams.set('authuser',account);url.hash='all/'+(evidence.threadId||evidence.messageId);return url.href;};
   stage('gmail');const viewerEmails=[...new Set(this.rows().map(a=>a.email).concat(owner))],signal=AbortSignal.timeout(45000);
   let scanned=0,failed=false,failureReason='unknown';
   const json=async(url:string,init:RequestInit={},limit=32768)=>{
@@ -69,23 +73,25 @@ export class MailSync extends DurableObject<MailEnv>{
    if(!response.ok){failureReason=(url.includes('oauth2.googleapis.com')?'token':new URL(url).pathname.endsWith('/messages')?'list':'message')+'_http_'+response.status;console.warn('connection_origin_http',{operation:url.includes('oauth2.googleapis.com')?'token':new URL(url).pathname.endsWith('/messages')?'list':'message',status:response.status});await response.body?.cancel();throw Error('origin_read_failed');}
    return readBoundedJSON(response,limit);
   };
-  for(const account of accounts){
-   if(!current())return stopped();if(scanned>=24)break;
+  for(const [accountIndex,account] of accounts.entries()){
+   if(!current())return stopped();if(scanned>=introLimit){failed=true;failureReason='message_budget';break;}
+   const accountLimit=scanned+Math.ceil((introLimit-scanned)/(accounts.length-accountIndex));
    let operation='decrypt';try{
     if(!this.env.MAIL_TOKEN_KEY||!this.env.GOOGLE_CLIENT_SECRET)throw Error('origin_read_failed');
     const refresh=await unseal(account.grant,this.env.MAIL_TOKEN_KEY);if(!current())return stopped();
     operation='token';const token=await json('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'})}) as {access_token?:string};
-    if(typeof token.access_token!=='string'||!token.access_token||token.access_token.length>8192)throw Error('origin_read_failed');
+    if(!token||typeof token.access_token!=='string'||!token.access_token||token.access_token.length>8192)throw Error('origin_read_failed');
     if(!current())return stopped();
+    tokens.set(account.email,token.access_token);
     const headers={authorization:'Bearer '+token.access_token};let pageToken:string|undefined;
-    for(let page=0;page<2&&scanned<24;page++){
+    for(let page=0;page<2&&scanned<accountLimit;page++){
      const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
-     url.searchParams.set('maxResults',String(Math.min(12,24-scanned)));
+     url.searchParams.set('maxResults',String(Math.min(12,accountLimit-scanned)));
      url.searchParams.set('q',`{to:"${target.email}" cc:"${target.email}"} -from:"${target.email}" ${viewerEmails.map(email=>'-from:"'+email+'"').join(' ')} {introduce introducing introduction intro connect connecting meet}`);
      if(pageToken)url.searchParams.set('pageToken',pageToken);
      operation='list';const listing=await json(url.href,{headers}) as {messages?:Array<{id:string}>;nextPageToken?:string};if(!current())return stopped();
      if(!listing||listing.messages!==undefined&&!Array.isArray(listing.messages))throw Error('origin_read_failed');
-     const ids=[...new Set((listing.messages||[]).map(m=>m?.id))].slice(0,24-scanned);
+     const ids=[...new Set((listing.messages||[]).map(m=>m?.id))].slice(0,accountLimit-scanned);
      if(ids.some(id=>typeof id!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(id)))throw Error('origin_read_failed');
      for(let i=0;i<ids.length;i+=2){
       const batch=ids.slice(i,i+2);scanned+=batch.length;
@@ -95,8 +101,7 @@ export class MailSync extends DurableObject<MailEnv>{
        const response=results[j];if(response.status==='rejected'){if(failureReason==='unknown')failureReason='message_'+(response.reason instanceof Error?response.reason.name:'unknown');console.warn('connection_origin_read_failed',{operation:'message',kind:response.reason instanceof Error?response.reason.name:'unknown'});failed=true;continue;}
        const raw=response.value as GmailMessage;if(raw?.id!==batch[j]){failureReason='message_id_'+(raw?.id===undefined?'missing':typeof raw.id)+'_expected_'+typeof batch[j];failed=true;continue;}
        const evidence=extractConnectionOrigin(raw,viewerEmails,{email:target.email,name:target.name});if(!evidence)continue;
-       const mailUrl=new URL('https://mail.google.com/mail/u/');mailUrl.searchParams.set('authuser',account.email);mailUrl.hash='all/'+(evidence.threadId||evidence.messageId);
-       return save({status:'found',origin:{introducerName:evidence.introducerName,observedAt:evidence.observedAt,subject:evidence.subject,quote:evidence.quote,url:mailUrl.href}});
+       return save({status:'found',origin:{introducerName:evidence.introducerName,observedAt:evidence.observedAt,subject:evidence.subject,quote:evidence.quote,url:mailUrl(account.email,evidence)}});
       }
      }
      if(typeof listing.nextPageToken!=='string'||!listing.nextPageToken||listing.nextPageToken.length>1024)break;pageToken=listing.nextPageToken;
@@ -104,7 +109,20 @@ export class MailSync extends DurableObject<MailEnv>{
    }catch(error){if(failureReason==='unknown')failureReason=operation+'_'+(error instanceof Error?error.name:'unknown');console.warn('connection_origin_read_failed',{operation,kind:error instanceof Error?error.name:'unknown'});failed=true;if(signal.aborted)break;}
   }
   if(!current())return stopped();
-  return failed?{status:'unavailable',reason:failureReason}:save({status:'not_found'});
+  if(failed)return {status:'unavailable',reason:failureReason};
+  for(const candidate of candidates){
+   if(!current())return stopped();if(scanned>=24)break;
+   const token=tokens.get(candidate.account);if(!token)return {status:'unavailable',reason:'account_unsearched'};
+   try{
+    if(!/^[A-Za-z0-9_-]{1,128}$/.test(candidate.id))throw Error('origin_read_failed');
+    scanned++;
+    const raw=await json('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(candidate.id)+'?format=full&fields=id,threadId,internalDate,payload',{headers:{authorization:'Bearer '+token}},1000000) as GmailMessage;
+    if(!current())return stopped();if(raw?.id!==candidate.id)throw Error('origin_read_failed');
+    const evidence=extractDirectConnectionContext(raw,viewerEmails,{email:target.email,name:target.name});if(!evidence)continue;
+    return save({status:'not_found',connection:{direction:evidence.direction,observedAt:evidence.observedAt,subject:evidence.subject,quote:evidence.quote,url:mailUrl(candidate.account,evidence)}});
+   }catch(error){console.warn('connection_origin_read_failed',{operation:'direct-message',kind:error instanceof Error?error.name:'unknown'});if(!current())return stopped();return {status:'unavailable',reason:failureReason==='unknown'?'direct_message_'+(error instanceof Error?error.name:'unknown'):failureReason};}
+  }
+  return save({status:'not_found'});
  }
  private ownerLens(){return this.ownerLensStore??=new OwnerLensStore(this.ctx,this.env,()=>this.ctx.storage.get<string>('owner'));}
  private ownerLensResult(value:OwnerLens){

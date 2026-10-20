@@ -35,6 +35,9 @@ try{
   window.connectionResponses={
    reciprocal:{status:'found',origin:{introducerName:'Analisa',observedAt:'2026-10-01T12:00:00Z',subject:'Introducing Jordan and you',quote:'I’d like to introduce you to Jordan. <img src=x onerror=alert(1)>',url:'https://mail.google.com/mail/u/0/#all/123abc'}},
    incoming:{status:'not_found'},unknown:{status:'not_found'},shared:{status:'not_found'},disabled:{status:'disabled'},retry:{status:'unavailable'},
+   outreach:{status:'not_found',connection:{direction:'sent',observedAt:'2026-10-01T12:00:00Z',subject:'Product demo',quote:'I’d love to show you the demo. I’ll bring Morgan into the conversation.',url:'https://mail.google.com/mail/u/0/#all/direct123'}},
+   reply:{status:'not_found',connection:{direction:'received',observedAt:'2026-10-02T12:00:00Z',subject:'Re: <b>Product demo</b>',quote:'Thanks for reaching out. <img src=x onerror=alert(1)>',url:'https://mail.google.com.evil.test/email'}},
+   blank:{status:'not_found',connection:{direction:'sent',observedAt:'2026-10-01T12:00:00Z',subject:'',quote:'Here is the prototype we discussed.',url:'https://mail.google.com/mail/u/0/#all/blank123'}},
    unsafe:{status:'found',origin:{introducerName:'Analisa <b>Example</b>',observedAt:'2026-10-01',subject:'A long subject '+('A'.repeat(160)),quote:'An introduction to a person with a long reference '+('x'.repeat(200)),url:'https://mail.google.com.evil.test/email'}},
   };
   window.connectionFixture={source:'email_accounts',nodes:[
@@ -42,11 +45,21 @@ try{
    {id:'incoming',name:'Maya Chen',type:'person',directRelationship:true,contactActivity:{sent:0,received:3,meetings:0},strength:20,momentum:20,combined:20},
    {id:'unknown',name:'Avery Stone',type:'person',combined:90,lastContact:'2026-10-19T12:00:00Z'},
    {id:'shared',name:'Sam Patel',type:'person',directRelationship:false,via:['Morgan Lee'],contactActivity:{sent:888,received:777,meetings:66}},
+   ...['outreach','reply','blank'].map(id=>({id,name:id+' Person',directRelationship:true,contactActivity:{sent:4,received:3,meetings:1}})),
    ...['disabled','retry','unsafe','delayed'].map(id=>({id,name:id+' Person',type:'person',directRelationship:true})),
   ],edges:[
    {id:'undirected-intro',source:'unknown',target:'shared',kind:'cooccurrence',types:['introduced_by'],label:'via Morgan'},
    ...['reciprocal','incoming'].map(target=>({id:'connector-'+target,source:'unknown',target,kind:'cooccurrence',label:'Recorded together'})),
-  ],themes:[],themeSignals:[]};
+   {id:'shared-email-context',source:'outreach',target:'shared',kind:'cooccurrence',types:['shared_email'],label:'Shared email'},
+  ],themes:[{id:'context',canonicalName:'product demo',status:'active'}],themeSignals:[]};
+  const signal=(id,personId,sourceType,summary,observedAt)=>({id,personId,themeId:'context',sourceType,visibility:'private',summary,observedAt,ingestedAt:observedAt,confidence:1,evidenceRef:'account:'+id,contentHash:id,extractorVersion:'fixture'});
+  window.connectionFixture.themeSignals=[
+   ...Array.from({length:24},(_,i)=>signal('metadata-'+i,'outreach','gmail_subject','Subject metadata matched Product Demo',`2026-10-${String(i+1).padStart(2,'0')}T12:00:00Z`)),
+   signal('metadata-only','incoming','gmail_subject','Subject metadata matched Product Demo','2026-10-20T12:00:00Z'),
+   signal('real-body','outreach','gmail_body_derived','Could you send the working prototype?','2026-09-30T12:00:00Z'),
+   signal('real-meeting','outreach','granola','We discussed feedback on the prototype.','2026-09-29T12:00:00Z'),
+   signal('real-note','outreach','obsidian_note','Product research partner.','2026-09-28T12:00:00Z'),
+  ];
   window.connectionGraph=mountGraph(document.querySelector('#graph'),{graph:window.connectionFixture,onConnectionOrigin:(id,signal)=>{
    window.connectionCalls.push({id,signal});
    if(id==='delayed')return new Promise(resolve=>{window.connectionPending[id]=resolve;});
@@ -56,9 +69,12 @@ try{
  const panel=page.getByRole('region',{name:'Selected item and connections'});
  const cases=[
   {id:'reciprocal',name:'Jordan Rivera',line:'Introduced by Analisa',detail:'12 sent · 7 received · 2 meeting records. From your imported history.'},
-  {id:'incoming',name:'Maya Chen',line:'Introduction not found in checked emails',detail:'0 sent · 3 received. From your imported history.'},
-  {id:'unknown',name:'Avery Stone',line:'Introduction not found in checked emails',detail:'The imported records don’t say how you first connected.'},
-  {id:'shared',name:'Sam Patel',line:'Introduction not found in checked emails',detail:'This person was shared into your network. A share does not record an introduction.'},
+  {id:'incoming',name:'Maya Chen',line:'They’ve emailed you',detail:'0 sent · 3 received. From your imported history.'},
+  {id:'unknown',name:'Avery Stone',line:'In your network',detail:'The imported records don’t say how you first connected.'},
+  {id:'shared',name:'Sam Patel',line:'Shared by Morgan Lee',detail:'This person was shared into your network. A share does not record an introduction.'},
+  {id:'outreach',name:'outreach Person',line:'You emailed about Product demo',detail:'4 sent · 3 received · 1 meeting record. From your imported history.',emailContext:true},
+  {id:'reply',name:'reply Person',line:'They emailed you about Re: <b>Product demo</b>',detail:'4 sent · 3 received · 1 meeting record. From your imported history.',emailContext:true},
+  {id:'blank',name:'blank Person',line:'You’ve exchanged emails',detail:'4 sent · 3 received · 1 meeting record. From your imported history.',emailContext:true},
  ];
  for(const width of [1280,390,320]){
   await page.setViewportSize({width,height:900});
@@ -72,10 +88,31 @@ try{
    if(sample.id==='shared')assert.equal(await panel.getByRole('button',{name:'Request intro from Avery Stone'}).count(),1,'shared-only contacts retain introduction choices');
    assert.equal(await heading.evaluate(node=>node.nextElementSibling?.matches('.rg-how-you-know')&&node.nextElementSibling.firstElementChild?.matches('.rg-connection-line')),true,'connection summary is immediately below the person name');
    assert.equal(await details.evaluate(node=>node.open),false,'counts and caveats start collapsed');
-   assert.equal(await details.locator('p').isVisible(),false);
+   assert.equal(await details.locator('p').first().isVisible(),false);
    await details.getByText('Connection details',{exact:true}).click();
-   assert.equal(await details.locator('p').innerText(),sample.detail);
-   assert.equal(await details.locator('p').isVisible(),true,'disclosure exposes the actual counts or the evidence limitation');
+   assert.equal(await details.locator('p').first().innerText(),sample.detail);
+   assert.equal(await details.locator('p').first().isVisible(),true,'disclosure exposes the actual counts or the evidence limitation');
+   if(sample.id!=='reciprocal')assert.equal(await details.getByText('No introduction email found in the messages checked.',{exact:true}).count(),1,'bounded search outcome is kept in details, not the headline');
+   if(sample.emailContext){
+    const source=summary.locator('details').filter({has:page.getByText('Email context',{exact:true})});
+    assert.equal(await source.evaluate(node=>node.open),false);
+    await source.getByText('Email context',{exact:true}).click();
+    const expected=await page.evaluate(id=>window.connectionResponses[id].connection,sample.id);
+    assert.equal(await source.locator('blockquote').innerText(),expected.quote);
+    assert.equal(await source.locator('.rg-introduction-subject').textContent(),expected.subject||'(No subject)');
+    assert.equal(await source.locator('img,b').count(),0,'direct source fields are plain text');
+    assert.equal(await source.getByRole('link',{name:'Open in Gmail'}).count(),sample.id==='reply'?0:1,'direct source uses the same strict Gmail link policy');
+    assert.equal(await summary.getByText('Introduction email',{exact:true}).count(),0,'a direct message is not mislabeled as an introduction');
+    assert.doesNotMatch(await line.innerText(),/introduced|first|Morgan/,'shared edges and people named in the quote do not create an introduction claim');
+   }
+   if(sample.id==='outreach'){
+    const recent=panel.locator('section').filter({has:page.getByRole('heading',{name:'Recent context',exact:true})});
+    assert.equal(await recent.locator('.nc-memory').count(),3);
+    for(const text of ['Could you send the working prototype?','We discussed feedback on the prototype.','Product research partner.'])assert.equal(await recent.getByText(text,{exact:true}).count(),1,'older substantive context survives newer metadata matches');
+    assert.doesNotMatch(await recent.innerText(),/Subject metadata matched/);
+    if(width!==320)await page.screenshot({path:width===1280?'/tmp/person-email-context-desktop.png':'/tmp/person-email-context-mobile.png'});
+   }
+   if(sample.id==='incoming')assert.equal(await panel.getByRole('heading',{name:'Recent context',exact:true}).count(),0,'metadata-only context is not promoted into the recent-context panel');
    if(sample.id==='reciprocal'){
     const intro=summary.locator('details').filter({has:page.getByText('Introduction email',{exact:true})});
     assert.equal(await intro.evaluate(node=>node.open),false,'private quote starts collapsed');
@@ -115,7 +152,7 @@ try{
  await page.evaluate(()=>window.connectionGraph.select('delayed'));
  await panel.getByText('Looking for your introduction…',{exact:true}).waitFor();
  await page.evaluate(()=>{window.connectionGraph.select('incoming');window.connectionPending.delayed(window.connectionResponses.reciprocal);});
- await panel.getByText('Introduction not found in checked emails',{exact:true}).waitFor();
+ await panel.getByText('They’ve emailed you',{exact:true}).waitFor();
  assert.equal(await panel.getByRole('heading',{level:2}).innerText(),'Maya Chen','late response cannot replace the selected person');
  // Replacing the graph invalidates both cached and pending private responses.
  await page.evaluate(()=>{window.connectionGraph.setGraph(window.connectionFixture);window.connectionGraph.select('delayed');});

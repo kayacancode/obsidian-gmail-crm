@@ -110,6 +110,87 @@ test('connection origin rejects redirects without following them or caching a mi
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
  });}finally{db.close();}
 });
+function directOriginMessage(id:string,date:number,text:string,account='me@example.com',direction:'sent'|'received'='sent'){
+ return {id,threadId:'thread-'+id,internalDate:String(date),payload:{mimeType:'text/plain',headers:[{name:'From',value:direction==='sent'?`Me <${account}>`:'Marie Green <marie@example.com>'},{name:'To',value:direction==='sent'?'Marie Green <marie@example.com>':`Me <${account}>`},{name:'Subject',value:'Research collaboration'}],body:{data:Buffer.from(text).toString('base64url')}}};
+}
+function storeOriginMessage(db:DatabaseSync,id:string,date:number,account='me@example.com'){
+ db.prepare('INSERT INTO messages VALUES (?,?,?)').run(account,id,'canonical-'+id);
+ db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(account,'canonical-'+id,'marie@example.com','Marie Green',date,'Research collaboration',1,0);
+}
+test('connection origin fallback quotes earliest meaningful stored email and stays private and cached',async()=>{
+ const {service,db,kv,personId}=await originFixture(),date=Date.parse('2026-08-01'),text='I am researching scheduling tools for independent artists and would love to compare notes.';
+ const messages=[directOriginMessage('early-empty',date,'Thanks!'),directOriginMessage('early-useful',date+1000,text),directOriginMessage('later',date+2000,'I am now researching a different project with local studios.')];
+ messages.forEach(m=>storeOriginMessage(db,m.id,Number(m.internalDate)));let reads:string[]=[];
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+  const id=url.pathname.split('/').at(-1)!;reads.push(id);return Response.json(messages.find(m=>m.id===id));
+ },async()=>{
+  const result=await service.connectionOrigin(personId);assert.equal(result.status,'not_found');assert.equal(result.origin,undefined);
+  assert.equal(result.connection?.direction,'sent');assert.equal(result.connection?.observedAt,new Date(date+1000).toISOString());assert.ok(result.connection?.quote&&text.includes(result.connection.quote));
+  assert.equal(new URL(result.connection!.url).searchParams.get('authuser'),'me@example.com');assert.deepEqual(reads,['early-empty','early-useful']);
+  assert.deepEqual(await service.connectionOrigin(personId),result);assert.equal(reads.length,2);
+  assert.ok(!JSON.stringify(await service.graph()).includes(text));assert.ok(!JSON.stringify(await service.exportSlice({kind:'all'},'statements')).includes(text));
+  await service.setAutomaticContext('me@example.com',false);assert.ok(!storageText(db,kv).includes(text));
+ });}finally{db.close();}
+});
+test('connection origin fallback gives introductions in another account priority',async()=>{
+ const {service,db,personId,message}=await originFixture();const other='other@example.com';let directReads=0;
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run(other,JSON.stringify({email:other,grant:await seal('other-refresh','encrypt-key'),revision:'other-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ storeOriginMessage(db,'direct',Date.parse('2026-08-01'));
+ const introduced={...message,payload:{...message.payload,headers:message.payload.headers.map(h=>h.name==='To'?{name:'To',value:`Me <${other}>, Marie Green <marie@example.com>`}:h)}};
+ try{await withFetch(async(input:any,init?:RequestInit)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:String(init?.body).includes('other-refresh')?'other-access':'first-access'});
+  const token=new Headers(init?.headers).get('authorization');
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:token==='Bearer other-access'?[{id:message.id}]:[]});
+  if(url.pathname.endsWith('/direct')){directReads++;return Response.json(directOriginMessage('direct',Date.parse('2026-08-01'),'I am researching scheduling tools for local artists.'));}
+  assert.equal(token,'Bearer other-access');return Response.json(introduced);
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'found');assert.equal(result.connection,undefined);assert.equal(directReads,0);});}finally{db.close();}
+});
+test('connection origin fallback uses the source account token and actual received direction',async()=>{
+ const {service,db,personId}=await originFixture(),other='other@example.com',date=Date.parse('2026-08-01');
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run(other,JSON.stringify({email:other,grant:await seal('other-refresh','encrypt-key'),revision:'other-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ storeOriginMessage(db,'old-received',date,other);storeOriginMessage(db,'new-sent',date+1000);let reads=0;
+ try{await withFetch(async(input:any,init?:RequestInit)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:String(init?.body).includes('other-refresh')?'other-access':'first-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+  reads++;assert.equal(new Headers(init?.headers).get('authorization'),'Bearer other-access');assert.ok(url.pathname.endsWith('/old-received'));
+  return Response.json(directOriginMessage('old-received',date,'I am building scheduling tools for independent artists and would value your feedback.',other,'received'));
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.connection?.direction,'received');assert.equal(new URL(result.connection!.url).searchParams.get('authuser'),other);assert.equal(reads,1);});}finally{db.close();}
+});
+test('connection origin fallback remains unavailable after failed intro search and cannot survive consent withdrawal',async()=>{
+ const {service,db,personId}=await originFixture(),date=Date.parse('2026-08-01');storeOriginMessage(db,'direct',date);let reads=0;
+ try{
+  await withFetch(async(input:any)=>String(input).includes('oauth2.googleapis')?Response.json({access_token:'test-access'}):new Response(null,{status:503}),async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'unavailable');assert.equal(result.connection,undefined);});
+  await withFetch(async(input:any)=>{
+   const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+   if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+   reads++;await service.setAutomaticContext('me@example.com',false);return Response.json(directOriginMessage('direct',date,'I am researching scheduling tools for local artists.'));
+  },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'disabled');assert.equal(result.connection,undefined);assert.equal(reads,1);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);});
+ }finally{db.close();}
+});
+test('connection origin fallback rejects a different message response without caching it',async()=>{
+ const {service,db,personId}=await originFixture(),date=Date.parse('2026-08-01');storeOriginMessage(db,'expected',date);
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[]});
+  return Response.json(directOriginMessage('different',date,'I am researching scheduling tools for independent artists.'));
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'unavailable');assert.equal(result.connection,undefined);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);});}finally{db.close();}
+});
+test('connection origin fallback reserves at most six account-scoped reads within the total body budget',async()=>{
+ const {service,db,personId,message}=await originFixture(),other='other@example.com',date=Date.parse('2026-08-01');
+ db.prepare('INSERT INTO accounts VALUES (?,?)').run(other,JSON.stringify({email:other,grant:await seal('other-refresh','encrypt-key'),revision:'other-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ const sourceAccount=new Map<string,string>();for(const account of ['me@example.com',other])for(let i=0;i<4;i++){const id=(account===other?'other':'first')+'-'+i;storeOriginMessage(db,id,date+i,account);sourceAccount.set(id,account);}
+ let introReads=0,directReads=0;
+ try{await withFetch(async(input:any,init?:RequestInit)=>{
+  const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:String(init?.body).includes('other-refresh')?'other-access':'first-access'});
+  const token=new Headers(init?.headers).get('authorization');
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:Array.from({length:12},(_,i)=>({id:'intro-'+(token==='Bearer other-access'?'other':'first')+'-'+i})),nextPageToken:'next'});
+  const id=url.pathname.split('/').at(-1)!;
+  if(sourceAccount.has(id)){directReads++;assert.equal(token,sourceAccount.get(id)===other?'Bearer other-access':'Bearer first-access');assert.ok(!id.endsWith('-3'));return Response.json(directOriginMessage(id,date,'Thanks!',sourceAccount.get(id)));}
+  introReads++;return Response.json({...message,id,payload:{...message.payload,body:{data:Buffer.from('Thanks for sending the agenda.').toString('base64url')}}});
+ },async()=>{const result=await service.connectionOrigin(personId);assert.equal(result.status,'not_found');assert.equal(result.connection,undefined);assert.equal(directReads,6);assert.equal(introReads+directReads,24);});}finally{db.close();}
+});
 function storageText(db:DatabaseSync,kv:Map<string,unknown>){return JSON.stringify([Array.from(kv),db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r:any)=>db.prepare(`SELECT * FROM "${r.name}"`).all())]);}
 async function retrievalFixture(){
  const f=fixture();network();f.kv.set('owner','owner');

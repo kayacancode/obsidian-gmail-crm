@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {extractConnectionOrigin} from '../src/connection-origin';
+import {extractConnectionOrigin,extractDirectConnectionContext} from '../src/connection-origin';
 import type {GmailMessage} from '../src/mail-model';
 const target={email:'marie@example.com',name:'Marie Chen'},viewers=['kaya@example.com','kaya@work.example'];
 function message(text:string,headers:Record<string,string>={},mimeType='text/plain'):GmailMessage{
@@ -122,4 +122,72 @@ test('connection origin fails closed for malformed bodies headers and dates',()=
  const malformed=message('Kaya, meet Marie.');malformed.payload!.body!.data='%invalid';assert.equal(extractConnectionOrigin(malformed,viewers,target),null);
  const ambiguous=message('Kaya, meet Marie.');ambiguous.payload!.headers!.push({name:'From',value:'John <john@example.com>'});assert.equal(extractConnectionOrigin(ambiguous,viewers,target),null);
  const prefix='Kaya, meet Marie';assert.equal(extractConnectionOrigin(message(' '.repeat(24000-prefix.length)+prefix+' next week.'),viewers,target),null,'A body byte limit must not turn a truncated future promise into a current introduction');
+});
+
+const directTarget={email:'sam@example.com',name:'Sam Park'},directViewers=['alex@example.com','alex@work.example'];
+function directMessage(text:string,headers:Record<string,string>={},mimeType='text/plain'){
+ return message(text,{From:'Alex River <alex@example.com>',To:'Sam Park <sam@example.com>',Cc:'',Subject:'Workshop at Studio',...headers},mimeType);
+}
+
+test('direct connection context preserves a meaningful authored email without claiming an introduction',()=>{
+ const evidence=extractDirectConnectionContext(directMessage('Hey Sam! Jordan told me you were asking about the workshop on Thursday.'),directViewers,directTarget);
+ assert.deepEqual(evidence,{direction:'sent',observedAt:new Date(1700000000000).toISOString(),subject:'Workshop at Studio',quote:'Jordan told me you were asking about the workshop on Thursday.',messageId:'m1',threadId:'thread1'});
+ assert.equal('introducerName' in evidence!,false);
+});
+
+test('direct connection context identifies target replies and viewer aliases from actual headers',()=>{
+ const text='I can help your volunteers repair the broken sewing machines. We could start with the needle assemblies.';
+ assert.equal(extractDirectConnectionContext(directMessage(text,{From:'Sam Park <sam@example.com>',To:'Alex River <alex@work.example>'}),directViewers,directTarget)?.direction,'received');
+ assert.equal(extractDirectConnectionContext(directMessage(text,{From:'Alex River <alex@work.example>',To:'Team <team@example.com>',Cc:'Sam Park <sam@example.com>'}),directViewers,directTarget)?.direction,'sent');
+ for(const headers of [
+  {From:'Jordan <jordan@example.com>',To:'Sam Park <sam@example.com>',Cc:'Alex <alex@example.com>'},
+  {To:'Someone <someone@example.com>'},
+  {From:'Sam Park <sam@example.com>',To:'Someone <someone@example.com>'},
+  {To:'',Bcc:'Sam Park <sam@example.com>'}
+ ])assert.equal(extractDirectConnectionContext(directMessage(text,headers),directViewers,directTarget),null,JSON.stringify(headers));
+});
+
+test('direct connection context skips greetings acknowledgments scheduling and quoted bodies',()=>{
+ for(const text of [
+  'Hey Sam!',
+  'Thanks so much!',
+  'Sounds good, thanks!',
+  'Hope you are doing well. Looking forward to it!',
+  'Can we meet on Thursday? I will send a calendar invite.',
+  'Are you available tomorrow afternoon?',
+  'Tuesday at 3 works for me.',
+  'Please use this link to book a time: https://example.com/schedule',
+  'Thanks!\nOn Monday, Jordan wrote:\nWe are designing a repair program for local libraries.',
+  'Sounds good!\n> We are designing a repair program for local libraries.',
+  'Best,\nAlex\nWe are designing a repair program for local libraries.'
+ ])assert.equal(extractDirectConnectionContext(directMessage(text),directViewers,directTarget),null,text);
+ assert.equal(extractDirectConnectionContext(directMessage('<p>Thanks!</p><blockquote>We are designing a repair program for local libraries.</blockquote>',{},'text/html'),directViewers,directTarget),null);
+});
+
+test('direct connection context rejects forwarded automated list and malformed mail',()=>{
+ const text='We are designing a repair program for local libraries.';
+ for(const headers of [
+  {Subject:'Fwd: Workshop at Studio'},
+  {Subject:'Re: Fwd: Workshop at Studio'},
+  {'List-ID':'workshop.example.com'},
+  {'List-Unsubscribe':'https://example.com/unsubscribe'},
+  {'Auto-Submitted':'auto-generated'},
+  {Precedence:'bulk'},
+  {'Resent-From':'sender@example.com'}
+ ])assert.equal(extractDirectConnectionContext(directMessage(text,headers),directViewers,directTarget),null,JSON.stringify(headers));
+ assert.equal(extractDirectConnectionContext(directMessage(text,{From:'No Reply <noreply@example.com>',To:'Alex <alex@example.com>'}),directViewers,{email:'noreply@example.com',name:'No Reply'}),null);
+ assert.equal(extractDirectConnectionContext({...directMessage(text),id:'bad@example.com'},directViewers,directTarget),null);
+ assert.equal(extractDirectConnectionContext({...directMessage(text),internalDate:String(Date.now()+10000)},directViewers,directTarget),null);
+ const ambiguous=directMessage(text);ambiguous.payload!.headers!.push({name:'From',value:'Jordan <jordan@example.com>'});assert.equal(extractDirectConnectionContext(ambiguous,directViewers,directTarget),null);
+ const malformed=directMessage(text);malformed.payload!.body!.data='%invalid';assert.equal(extractDirectConnectionContext(malformed,directViewers,directTarget),null);
+});
+
+test('direct connection context keeps exact wrapped source bounded without raw addresses',()=>{
+ const text='The repair program is intended for local libraries.\nTheir volunteers need help with sewing machines and small appliances.';
+ const evidence=extractDirectConnectionContext(directMessage(text,{Subject:'Workshop with sam@example.com'}),directViewers,directTarget)!;
+ assert.equal(evidence.quote,text);assert.ok(!JSON.stringify(evidence).includes('@'));
+ const long=Array.from({length:60},(_,i)=>`The workshop plan includes repair session ${i} for the library volunteers.`).join(' ');
+ const bounded=extractDirectConnectionContext(directMessage(long,{Subject:'a@b.co '.repeat(30)}),directViewers,directTarget)!;
+ assert.ok(bounded.quote.length<=1200);assert.ok(long.includes(bounded.quote));assert.ok(bounded.subject.length<=160);
+ assert.equal(extractDirectConnectionContext(directMessage('x'.repeat(24000)),directViewers,directTarget),null);
 });
