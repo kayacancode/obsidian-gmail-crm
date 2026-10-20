@@ -149,6 +149,14 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
   /** "Who can help with…" over the owner's own graph; the server decides the ranking. */
   async function helperPeople(personId,brief){return request(workspacePath()?workspacePath()+'/helpers':'/api/people/helpers',{body:{personId,brief}},context());}
+  async function connectionOrigin(personId,signal){
+    if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to find your introductions.');
+    if(!state.graph.nodes?.some(node=>node.id===personId&&(node.type===undefined||node.type==='person')))throw Error('Select a person in your network.');
+    const ctx=context(),requestSignal=signal?AbortSignal.any([ctx.signal,signal]):ctx.signal;
+    requestSignal.throwIfAborted();
+    const value=await request('/api/people/connection-origin',{body:{personId},signal:requestSignal},ctx);
+    requestSignal.throwIfAborted();return value;
+  }
   function ownerLensContext(){
     if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to use your private lens.');
     return context();
@@ -397,7 +405,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signOut,
     requestPushToken,
     async personFeedback(personId,action){const ctx=context();await request('/api/people/feedback',{body:{personId,action}},ctx);const data=await request('/api/graph',{},ctx);if(data.graph){publish({graph:data.graph});}return data.graph;},
-    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, loadOwnerLens, updateOwnerLens, findOwnerMatches,
+    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, connectionOrigin, loadOwnerLens, updateOwnerLens, findOwnerMatches,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
     pollRetrieval: id => pollJob(id, 'retrieval'),
@@ -785,6 +793,7 @@ async function startBrowserApp() {
       onLensChange: state.graph.source==='workspace'?undefined:lens => controller.loadRelevance(lens), onThemeFeedback:state.graph.source==='workspace'?undefined:input => controller.submitFeedback(input),
       onRetrievePreview:state.graph.source==='workspace'?undefined:scope => openRetrieval(scope), onOpenPublicSource:state.graph.source==='workspace'?undefined:scope => openPublicSource(scope),
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
+      onConnectionOrigin:state.graph.source==='email_accounts'?(personId,signal)=>controller.connectionOrigin(personId,signal):undefined,
       onFindHelpers:(personId,brief)=>controller.helperPeople(personId,brief),
       onMergePeople:(sourceId,targetId)=>controller.mergePeople(sourceId,targetId),
       onConfirmRelationship:(personId,confirmed)=>controller.confirmRelationship(personId,confirmed),

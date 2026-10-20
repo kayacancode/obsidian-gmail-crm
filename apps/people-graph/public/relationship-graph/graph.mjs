@@ -116,8 +116,12 @@ export function mountGraph(element, options = {}) {
     onDraftNote: options.onDraftNote,
     onWander:options.onWander,
     onPersonFeedback:options.onPersonFeedback,
+    onConnectionOrigin:options.onConnectionOrigin,
   };
   let graph = normalizeGraph(options.graph ?? { nodes: [], edges: [] });
+  // The normalized graph keeps only workspace source identity. Private lookups
+  // need the original source explicitly, never an inference from missing data.
+  let connectionOriginEnabled=options.graph?.source==='email_accounts';
   const demoEnabled = () => options.demo === true && graph.meta.fictional === true;
   let pathGraph;
   let byId;
@@ -166,6 +170,11 @@ export function mountGraph(element, options = {}) {
   let pathState = null;
   let pathRequest = 0;
   let destroyed = false;
+  const connectionOrigins=new Map();
+  function clearConnectionOrigins(){
+    for(const result of connectionOrigins.values())result.controller?.abort();
+    connectionOrigins.clear();
+  }
   let drag = null;
   let camera = { x: 0, y: 0, zoom: 1 };
   let cameraFrame=null,cameraScene=null,cameraCanvas=null,cameraLayout=null;
@@ -739,6 +748,71 @@ export function mountGraph(element, options = {}) {
     return nav;
   }
 
+  function requestConnectionOrigin(personId){
+    if(connectionOrigins.has(personId)||typeof callbacks.onConnectionOrigin!=='function')return;
+    const record={status:'loading',controller:new AbortController()};
+    connectionOrigins.set(personId,record);
+    const current=()=>!destroyed&&connectionOriginEnabled&&connectionOrigins.get(personId)===record&&!record.controller.signal.aborted;
+    const display=()=>{
+      if(!current()||selectedId!==personId||panelMode!=='node')return;
+      const node=byId.get(personId),previous=root.querySelector('.rg-how-you-know');
+      if(node&&previous)previous.replaceWith(renderConnectionOrigin(node));
+    };
+    Promise.resolve().then(()=>{
+      if(!current())return;
+      return callbacks.onConnectionOrigin(personId,record.controller.signal);
+    }).then(result=>{
+      if(!current())return;
+      const origin=result?.origin;
+      const validOrigin=origin&&['introducerName','quote'].every(key=>typeof origin[key]==='string'&&origin[key].trim())&&typeof origin.subject==='string'&&typeof origin.observedAt==='string'&&Number.isFinite(Date.parse(origin.observedAt));
+      record.status=['not_found','disabled','unavailable'].includes(result?.status)?result.status:result?.status==='found'&&validOrigin?'found':'unavailable';
+      if(record.status==='found')record.origin={introducerName:origin.introducerName,subject:origin.subject,quote:origin.quote,observedAt:origin.observedAt,url:origin.url};
+      display();
+    }).catch(()=>{
+      if(!current())return;
+      record.status='unavailable';display();
+    });
+  }
+
+  function renderConnectionOrigin(node){
+    const connection=howYouKnow(graph,node),section=make('div','rg-how-you-know');
+    const personal=connectionOriginEnabled;
+    if(personal)requestConnectionOrigin(node.id);
+    const result=connectionOrigins.get(node.id);
+    const text=!personal?connection.text:result?.status==='found'?`Introduced by ${result.origin.introducerName}`:({
+      loading:'Looking for your introduction…',
+      not_found:'Introduction not found in checked emails',
+      disabled:'Connect Gmail conversation context to find introductions',
+      unavailable:'Could not check your introduction',
+    })[result?.status]||'Introduction lookup is unavailable here.';
+    const line=make('p','rg-connection-line',text);line.setAttribute('aria-live','polite');section.append(line);
+    if(personal&&result?.status==='found'){
+      const origin=result.origin,source=make('details','rg-connection-evidence rg-introduction-evidence');
+      source.append(make('summary','','Introduction email'),make('p','rg-source',new Date(origin.observedAt).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})),make('p','rg-introduction-subject',origin.subject||'(No subject)'),make('blockquote','rg-introduction-quote',origin.quote));
+      try{
+        const url=new URL(origin.url);
+        if(url.protocol==='https:'&&url.hostname==='mail.google.com'&&!url.username&&!url.password&&!url.port){
+          const link=make('a','','Open in Gmail');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';source.append(link);
+        }
+      }catch{}
+      section.append(source);
+    }
+    if(personal&&result?.status==='disabled'){
+      const settings=make('a','rg-connection-settings','Manage Gmail context');settings.href='/accounts.html';section.append(settings);
+    }
+    if(personal&&result?.status==='unavailable'){
+      const retry=make('button','rg-text-button rg-connection-retry','Retry introduction lookup');retry.type='button';
+      retry.onclick=()=>{
+        if(destroyed||!connectionOriginEnabled||selectedId!==node.id)return;
+        connectionOrigins.get(node.id)?.controller?.abort();connectionOrigins.delete(node.id);
+        section.replaceWith(renderConnectionOrigin(node));
+      };section.append(retry);
+    }
+    const evidence=make('details','rg-connection-evidence');
+    evidence.append(make('summary','','Connection details'),make('p','rg-source',connection.detail));section.append(evidence);
+    return section;
+  }
+
   function renderNodePanel() {
     const node = byId.get(selectedId);
     if (!node) return null;
@@ -750,9 +824,7 @@ export function mountGraph(element, options = {}) {
     portrait.append(renderPortrait(node,nodeIndex.get(node.id)));
     panel.append(portrait, make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
     if(node.type==='person'){
-      const connection=howYouKnow(graph,node),origin=make('div','rg-how-you-know');
-      origin.append(make('p','rg-connection-line',connection.text));
-      const evidence=make('details','rg-connection-evidence');evidence.append(make('summary','','Connection details'),make('p','rg-source',connection.detail));origin.append(evidence);panel.append(origin);
+      panel.append(renderConnectionOrigin(node));
     }
     const walkStart=button('Explore from here','walk-person','rg-text-button');walkStart.dataset.nodeId=node.id;panel.append(walkStart);
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
@@ -788,7 +860,7 @@ export function mountGraph(element, options = {}) {
         for(const reason of result.reasons??[]) match.append(make('p','rg-copy',[reason.summary,reason.title,reason.observedAt?.slice(0,10)].filter(Boolean).join(' · ')));
         panel.append(match);
       }
-      const intros=introductionCandidates(node.id,graph.nodes,graph.edges);
+      const intros=graph.source!=='workspace'&&node.directRelationship===true?[]:introductionCandidates(node.id,graph.nodes,graph.edges);
       if(intros.length) {
         const routes=make('section','rg-profile-section'); routes.append(make('h3','','Possible introductions'));
         for(const {person,edge} of intros) {
@@ -1932,6 +2004,8 @@ export function mountGraph(element, options = {}) {
     },
     setGraph(nextGraph, {preserveFocus=false}={}) {
       if (destroyed) return;
+      clearConnectionOrigins();
+      connectionOriginEnabled=nextGraph.source==='email_accounts';
       const previousFocus=preserveFocus?contactFocus:null;
       clearContact();
       meetingBatch = null;meetingFeedback = Object.create(null);
@@ -2013,6 +2087,7 @@ export function mountGraph(element, options = {}) {
       clearContact();
       if (destroyed) return;
       destroyed = true;
+      clearConnectionOrigins();
       meetingBatch = null;meetingFeedback = Object.create(null);meetingPreview = null;
       invalidateRelevance();
       pathRequest += 1;

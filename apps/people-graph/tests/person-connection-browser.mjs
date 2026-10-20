@@ -31,33 +31,60 @@ try{
  await page.goto('http://127.0.0.1:'+server.address().port+'/__person-connection-fixture');
  await page.evaluate(async()=>{
   const {mountGraph}=await import('/relationship-graph/graph.mjs');
-  window.connectionGraph=mountGraph(document.querySelector('#graph'),{graph:{source:'email_accounts',nodes:[
+  window.connectionCalls=[];window.connectionPending={};
+  window.connectionResponses={
+   reciprocal:{status:'found',origin:{introducerName:'Analisa',observedAt:'2026-10-01T12:00:00Z',subject:'Introducing Jordan and you',quote:'I’d like to introduce you to Jordan. <img src=x onerror=alert(1)>',url:'https://mail.google.com/mail/u/0/#all/123abc'}},
+   incoming:{status:'not_found'},unknown:{status:'not_found'},shared:{status:'not_found'},disabled:{status:'disabled'},retry:{status:'unavailable'},
+   unsafe:{status:'found',origin:{introducerName:'Analisa <b>Example</b>',observedAt:'2026-10-01',subject:'A long subject '+('A'.repeat(160)),quote:'An introduction to a person with a long reference '+('x'.repeat(200)),url:'https://mail.google.com.evil.test/email'}},
+  };
+  window.connectionFixture={source:'email_accounts',nodes:[
    {id:'reciprocal',name:'Jordan Rivera',type:'person',directRelationship:true,contactActivity:{sent:12,received:7,meetings:2},strength:70,momentum:50,combined:60},
    {id:'incoming',name:'Maya Chen',type:'person',directRelationship:true,contactActivity:{sent:0,received:3,meetings:0},strength:20,momentum:20,combined:20},
    {id:'unknown',name:'Avery Stone',type:'person',combined:90,lastContact:'2026-10-19T12:00:00Z'},
    {id:'shared',name:'Sam Patel',type:'person',directRelationship:false,via:['Morgan Lee'],contactActivity:{sent:888,received:777,meetings:66}},
-  ],edges:[{id:'undirected-intro',source:'unknown',target:'shared',kind:'cooccurrence',types:['introduced_by'],label:'via Morgan'}],themes:[],themeSignals:[]}});
+   ...['disabled','retry','unsafe','delayed'].map(id=>({id,name:id+' Person',type:'person',directRelationship:true})),
+  ],edges:[
+   {id:'undirected-intro',source:'unknown',target:'shared',kind:'cooccurrence',types:['introduced_by'],label:'via Morgan'},
+   ...['reciprocal','incoming'].map(target=>({id:'connector-'+target,source:'unknown',target,kind:'cooccurrence',label:'Recorded together'})),
+  ],themes:[],themeSignals:[]};
+  window.connectionGraph=mountGraph(document.querySelector('#graph'),{graph:window.connectionFixture,onConnectionOrigin:(id,signal)=>{
+   window.connectionCalls.push({id,signal});
+   if(id==='delayed')return new Promise(resolve=>{window.connectionPending[id]=resolve;});
+   return Promise.resolve(window.connectionResponses[id]);
+  }});
  });
  const panel=page.getByRole('region',{name:'Selected item and connections'});
  const cases=[
-  {id:'reciprocal',name:'Jordan Rivera',line:'You’ve exchanged emails',detail:'12 sent · 7 received · 2 meeting records. From your imported history.'},
-  {id:'incoming',name:'Maya Chen',line:'They’ve emailed you',detail:'0 sent · 3 received. From your imported history.'},
-  {id:'unknown',name:'Avery Stone',line:'In your network',detail:'The imported records don’t say how you first connected.'},
-  {id:'shared',name:'Sam Patel',line:'Shared by Morgan Lee',detail:'This person was shared into your network. A share does not record an introduction.'},
+  {id:'reciprocal',name:'Jordan Rivera',line:'Introduced by Analisa',detail:'12 sent · 7 received · 2 meeting records. From your imported history.'},
+  {id:'incoming',name:'Maya Chen',line:'Introduction not found in checked emails',detail:'0 sent · 3 received. From your imported history.'},
+  {id:'unknown',name:'Avery Stone',line:'Introduction not found in checked emails',detail:'The imported records don’t say how you first connected.'},
+  {id:'shared',name:'Sam Patel',line:'Introduction not found in checked emails',detail:'This person was shared into your network. A share does not record an introduction.'},
  ];
  for(const width of [1280,390,320]){
   await page.setViewportSize({width,height:900});
   for(const sample of cases){
    await page.evaluate(id=>window.connectionGraph.select(id),sample.id);
    const heading=panel.getByRole('heading',{level:2,name:sample.name,exact:true});await heading.waitFor();
-   const summary=panel.locator('.rg-how-you-know'),line=summary.locator('.rg-connection-line'),details=summary.locator('details');
+   const summary=panel.locator('.rg-how-you-know'),line=summary.locator('.rg-connection-line'),details=summary.locator('details').filter({has:page.getByText('Connection details',{exact:true})});
+   await page.waitForFunction(expected=>document.querySelector('.rg-connection-line')?.textContent===expected,sample.line);
    assert.equal(await line.innerText(),sample.line,`${sample.id} has the evidence-supported direction at ${width}px`);
+   if(['reciprocal','incoming'].includes(sample.id))assert.equal(await panel.getByRole('button',{name:/^Request intro from /}).count(),0,'existing direct contacts do not ask for a new introduction');
+   if(sample.id==='shared')assert.equal(await panel.getByRole('button',{name:'Request intro from Avery Stone'}).count(),1,'shared-only contacts retain introduction choices');
    assert.equal(await heading.evaluate(node=>node.nextElementSibling?.matches('.rg-how-you-know')&&node.nextElementSibling.firstElementChild?.matches('.rg-connection-line')),true,'connection summary is immediately below the person name');
    assert.equal(await details.evaluate(node=>node.open),false,'counts and caveats start collapsed');
    assert.equal(await details.locator('p').isVisible(),false);
    await details.getByText('Connection details',{exact:true}).click();
    assert.equal(await details.locator('p').innerText(),sample.detail);
    assert.equal(await details.locator('p').isVisible(),true,'disclosure exposes the actual counts or the evidence limitation');
+   if(sample.id==='reciprocal'){
+    const intro=summary.locator('details').filter({has:page.getByText('Introduction email',{exact:true})});
+    assert.equal(await intro.evaluate(node=>node.open),false,'private quote starts collapsed');
+    await intro.getByText('Introduction email',{exact:true}).click();
+    assert.equal(await intro.locator('blockquote').innerText(),'I’d like to introduce you to Jordan. <img src=x onerror=alert(1)>');
+    assert.equal(await intro.locator('img').count(),0,'source quote is plain text');
+    assert.match(await intro.innerText(),/Introducing Jordan and you/);
+    assert.equal(await intro.getByRole('link',{name:'Open in Gmail'}).getAttribute('href'),'https://mail.google.com/mail/u/0/#all/123abc');
+   }
    if(['unknown','shared'].includes(sample.id)){
     assert.doesNotMatch(await line.innerText(),/introduced|exchanged|emailed|you met/i,'sharing and undirected intro edges cannot invent personal history');
     assert.doesNotMatch(await summary.innerText(),/888|777|66/,'another contributor’s counts are not the viewer’s activity');
@@ -68,8 +95,42 @@ try{
    if(sample.id==='reciprocal'&&width!==320){await heading.scrollIntoViewIfNeeded();await page.screenshot({path:width===1280?'/tmp/person-connection-desktop.png':'/tmp/person-connection-mobile.png'});}
   }
  }
+ assert.equal(await page.evaluate(()=>window.connectionCalls.filter(call=>call.id==='reciprocal').length),1,'reselecting and resizing reuse the mounted graph cache');
+ await page.evaluate(()=>window.connectionGraph.select('disabled'));
+ await panel.getByText('Connect Gmail conversation context to find introductions',{exact:true}).waitFor();
+ assert.equal(await panel.getByRole('link',{name:'Manage Gmail context'}).getAttribute('href'),'/accounts.html');
+ await page.evaluate(()=>window.connectionGraph.select('retry'));
+ await panel.getByRole('button',{name:'Retry introduction lookup'}).waitFor();
+ await page.evaluate(()=>{window.connectionResponses.retry={status:'found',origin:{...window.connectionResponses.reciprocal.origin,introducerName:'Taylor',subject:''}};});
+ await panel.getByRole('button',{name:'Retry introduction lookup'}).click();
+ await panel.getByText('Introduced by Taylor',{exact:true}).waitFor();
+ assert.equal(await panel.locator('.rg-introduction-subject').textContent(),'(No subject)','an email without a subject can still record a verified introduction');
+ assert.equal(await page.evaluate(()=>window.connectionCalls.filter(call=>call.id==='retry').length),2,'retry issues a new lookup');
+ await page.evaluate(()=>window.connectionGraph.select('unsafe'));
+ await panel.getByText('Introduced by Analisa <b>Example</b>',{exact:true}).waitFor();
+ await panel.getByText('Introduction email',{exact:true}).click();
+ assert.equal(await panel.locator('.rg-how-you-know b').count(),0);
+ assert.equal(await panel.getByRole('link',{name:'Open in Gmail'}).count(),0,'lookalike Gmail host is never linked');
+ assert.equal(await panel.locator('.rg-how-you-know').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true,'long source text wraps on mobile');
+ await page.evaluate(()=>window.connectionGraph.select('delayed'));
+ await panel.getByText('Looking for your introduction…',{exact:true}).waitFor();
+ await page.evaluate(()=>{window.connectionGraph.select('incoming');window.connectionPending.delayed(window.connectionResponses.reciprocal);});
+ await panel.getByText('Introduction not found in checked emails',{exact:true}).waitFor();
+ assert.equal(await panel.getByRole('heading',{level:2}).innerText(),'Maya Chen','late response cannot replace the selected person');
+ // Replacing the graph invalidates both cached and pending private responses.
+ await page.evaluate(()=>{window.connectionGraph.setGraph(window.connectionFixture);window.connectionGraph.select('delayed');});
+ await panel.getByText('Looking for your introduction…',{exact:true}).waitFor();
+ const beforeShared=await page.evaluate(()=>window.connectionCalls.length);
+ await page.evaluate(()=>{window.connectionGraph.setGraph({...window.connectionFixture,source:'workspace'});window.connectionPending.delayed(window.connectionResponses.reciprocal);window.connectionGraph.select('unknown');});
+ assert.equal(await page.evaluate(()=>window.connectionCalls.length),beforeShared,'workspace never invokes the private callback');
+ assert.equal(await page.evaluate(()=>window.connectionCalls.filter(call=>call.id==='delayed').at(-1).signal.aborted),true);
+ assert.doesNotMatch(await panel.locator('.rg-connection-line').innerText(),/Introduced by/);
+ await page.evaluate(()=>{window.connectionGraph.setGraph(window.connectionFixture);window.connectionGraph.select('delayed');});
+ await panel.getByText('Looking for your introduction…',{exact:true}).waitFor();
+ await page.evaluate(()=>{window.connectionGraph.destroy();window.connectionPending.delayed(window.connectionResponses.reciprocal);});
+ assert.equal(await page.locator('#graph').innerText(),'','detached graph remains empty after a late response');
  assert.deepEqual(errors,[]);
- console.log('PASS person connection browser: below-name placement, reciprocal/incoming direction, unknown/shared attribution, disclosure counts, desktop and mobile overflow');
+ console.log('PASS person connection browser: automatic introducer lookup, exact source disclosure, private cache and stale-result isolation, retry and disabled states, safe text/links, desktop and mobile layout');
 }catch(error){console.error(error);process.exitCode=1;}
 finally{
  server.closeAllConnections();server.close();

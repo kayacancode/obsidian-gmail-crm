@@ -5,7 +5,7 @@ import { createRelationshipController } from '../public/relationship-host.mjs';
 
 const graph = {
   pushedAt: '2026-09-13T12:00:00Z',
-  nodes: [{ id: 'person-a', name: 'Ada Rivera', type: 'person' }],
+  nodes: [{ id: 'person-a', name: 'Ada Rivera' }],
   edges: [],
 };
 
@@ -15,11 +15,47 @@ async function workflowFixture(handler, options = {}) {
     fetchImpl: async (path, init = {}) => {
       if (path === '/api/accounts') return json({ account: 'alice@example.test', accounts: options.accounts ?? [{email:'mail@example.test'}] });
       if (path === '/api/session') return json({ account: 'bob@example.test' });
-      if (path.startsWith('/api/graph')) return json({ account: 'alice@example.test', graph: {...graph, source:'email_accounts', connectors:[{nodeId:'person-a',score:1}], themes:[], themeSignals:[]} });
+      if (path.startsWith('/api/graph')) return json({ account: 'alice@example.test', graph: {...graph, nodes:options.nodes??graph.nodes, source:'email_accounts', connectors:[{nodeId:'person-a',score:1}], themes:[], themeSignals:[]} });
       calls.push({path,init}); return handler(path,init);
     }});
   await controller.resume(); return {controller,calls};
 }
+
+test('connection origin reads an untyped raw API person through a private POST',async()=>{
+  const {controller,calls}=await workflowFixture(()=>json({status:'not_found'}));
+  const abort=new AbortController();
+  assert.deepEqual(await controller.connectionOrigin('person-a',abort.signal),{status:'not_found'});
+  assert.equal(calls[0].path,'/api/people/connection-origin');
+  assert.equal(calls[0].init.method,'POST');
+  assert.deepEqual(JSON.parse(calls[0].init.body),{personId:'person-a'});
+  assert.equal(calls[0].init.headers.origin,'https://people.test');
+  abort.abort();assert.equal(calls[0].init.signal.aborted,true);
+  await assert.rejects(controller.connectionOrigin('missing'),/Select a person/);
+});
+
+test('connection origin accepts typed people but rejects explicitly non-person nodes',async()=>{
+  const {controller,calls}=await workflowFixture(()=>json({status:'not_found'}),{nodes:[
+    {id:'person-a',name:'Ada Rivera',type:'person'},
+    {id:'company-a',name:'Example company',type:'company'},
+  ]});
+  assert.deepEqual(await controller.connectionOrigin('person-a'),{status:'not_found'});
+  await assert.rejects(controller.connectionOrigin('company-a'),/Select a person/);
+  assert.equal(calls.length,1,'non-person nodes are rejected before fetching');
+});
+
+test('connection origin discards late results after source changes or sign-out',async()=>{
+  for(const next of ['obsidian','workspace:team','sign-out']){
+    let release;
+    const {controller,calls}=await workflowFixture(path=>path==='/api/workspaces/team/graph'?json({account:'alice@example.test',graph:{source:'workspace',workspaceId:'team',nodes:[],edges:[]}}):new Promise(resolve=>{release=resolve;}));
+    const request=controller.connectionOrigin('person-a',new AbortController().signal);
+    if(next==='sign-out')await controller.signOut();else await controller.load(next);
+    assert.equal(calls[0].init.signal.aborted,true);
+    release(json({status:'found',origin:{introducerName:'Private name'}}));
+    await assert.rejects(request,{name:'AbortError'});
+    await assert.rejects(controller.connectionOrigin('person-a'),/My network/);
+    assert.equal(calls.filter(call=>call.path==='/api/people/connection-origin').length,1);
+  }
+});
 
 test('changing lens aborts stale relevance and preserves connectors on score refresh', async () => {
   let release;

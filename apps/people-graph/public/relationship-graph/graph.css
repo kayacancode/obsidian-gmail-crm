@@ -28,11 +28,15 @@
 .rg-profile-portrait { width:110px; height:125px; margin-bottom:20px; }
 .rg-profile-section { border-top:1px solid var(--rg-line); margin:18px 0; padding-top:14px; }
 .rg-profile-score { font:32px/1.2 Georgia,serif; margin:8px 0; }
-.rg-how-you-know { margin:0 0 18px; }
+.rg-how-you-know { margin:0 0 18px; overflow-wrap:anywhere; }
 .rg-connection-line { margin:0 0 5px; font-size:14px; line-height:1.5; color:var(--rg-foreground); }
 .rg-connection-evidence { font-size:11px; color:var(--rg-muted); }
 .rg-connection-evidence summary { cursor:pointer; }
 .rg-connection-evidence p { margin:8px 0; }
+.rg-connection-evidence + .rg-connection-evidence { margin-top:8px; }
+.rg-introduction-subject { font-weight:500; }
+.rg-introduction-quote { margin:8px 0 10px; padding-left:10px; border-left:2px solid var(--rg-line); white-space:pre-wrap; line-height:1.5; }
+.rg-connection-settings, .rg-connection-retry { display:inline-block; margin:4px 0 10px; font-size:11px; }
 .rg-digest { display:flex; flex-wrap:wrap; gap:16px; padding:18px 24px; border-top:1px solid var(--rg-line); }
 .rg-digest-heading { flex:1 0 180px; }.rg-digest-heading h2 {font-size:14px;font-weight:500;margin:0;}
 .rg-digest-person { display:flex; gap:9px; flex:1 1 170px; max-width:260px; min-width:0; padding:0; border:0; background:none; text-align:left; }

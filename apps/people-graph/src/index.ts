@@ -2,7 +2,7 @@ import {repairLegacyGmailContext} from './gmail-context-graph';
 import {ownerLensRoute} from './owner-lens-routes';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
-import {mailRoute,mailCallback,draftRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
+import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
 import type {MailEnv} from "./mail-sync";
 import {isRelevancePath,normalizePushedGraph,relevanceRoute} from "./relevance-routes";
 import type {PushedGraphPayload} from "./relevance-routes";
@@ -83,6 +83,11 @@ export default {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
 				return await draftRoute(request, env, user.email);
+			}
+			if (pathname === "/api/people/connection-origin") {
+				const user = await requireGoogleUser(request, env);
+				if ("error" in user) return json({ error: user.error }, 401);
+				return await connectionOriginRoute(request, env, user.email);
 			}
 			if(pathname==="/api/people/helpers"){const user=await requireGoogleUser(request,env);if("error" in user)return json({error:user.error},401);return await helperRoute(request,env,user.email);}
             if (pathname === "/api/people/search") {

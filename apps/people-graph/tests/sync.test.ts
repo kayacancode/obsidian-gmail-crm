@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {MailSync,__setSearchDeadlineForTests} from '../src/mail-sync';
 import {FakeAI} from './worker-stub';
-import {opaque} from '../src/mail-model';
+import {opaque,seal} from '../src/mail-model';
 import {jevServer,noulA,scoreA} from './granola-jev-extractor.test';
 
 const JEV_KEY='ts_fictional_key_123456';
@@ -38,6 +38,78 @@ test('final wave retrieval resolves ranked visible contacts across selected acco
 });
 function fixture(){const db=new DatabaseSync(':memory:'),kv=new Map<string,unknown>();const ctx={storage:{sql:{exec(sql:string,...args:any[]){if(sql.includes('CREATE TABLE')){db.exec(sql);return {toArray:()=>[]};}const stmt=db.prepare(sql);const rows=sql.startsWith('SELECT')?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},get:async(k:string)=>kv.get(k),put:async(k:string,v:unknown)=>{kv.set(k,v);},delete:async(k:string)=>kv.delete(k),setAlarm:async(n:number)=>{kv.set('alarm',n);},transactionSync<T>(fn:()=>T){db.exec('BEGIN');try{const result=fn();db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}}}};const env={MAIL_TOKEN_KEY:'encrypt-key',GOOGLE_CLIENT_SECRET:'client-secret',GOOGLE_CLIENT_ID:'client-id',TOKEN_SECRET:'identity-key'};return {service:new MailSync(ctx as any,env as any),db,kv};}
 const originalFetch=globalThis.fetch;
+async function originFixture(){
+ const f=fixture();f.kv.set('owner','owner');
+ const email='me@example.com',grant=await seal('test-refresh','encrypt-key');
+ f.db.prepare('INSERT INTO accounts VALUES (?,?)').run(email,JSON.stringify({email,grant,revision:'origin-rev',contextEnabled:true,status:'connected',job:null,lastSync:Date.now(),nextSync:9e15}));
+ f.db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(email,'contact','marie@example.com','Marie Green',Date.now(),'Followup',1,1);
+ const personId=await opaque('owner','marie@example.com','identity-key');
+ const message={id:'abc123',threadId:'def456',internalDate:String(Date.parse('2026-09-01')),payload:{mimeType:'text/plain',headers:[{name:'From',value:'Alex Rivera <alex@example.com>'},{name:'To',value:'Me <me@example.com>, Marie Green <marie@example.com>'},{name:'Subject',value:'Me <> Marie'}],body:{data:Buffer.from('Connecting you two. Marie is building tools for independent artists.').toString('base64url')}}};
+ return {...f,personId,message};
+}
+test('connection origin finds a third-party introduction and privately caches only the evidence',async()=>{
+ const {service,db,kv,personId,message}=await originFixture();let reads=0;
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));
+  if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages')){assert.ok(url.searchParams.get('q')?.includes('marie@example.com'));return Response.json({messages:[{id:message.id}]});}
+  reads++;assert.equal(url.pathname.split('/').at(-1),message.id);return Response.json(message);
+ },async()=>{
+  const result=await service.connectionOrigin(personId);assert.equal(result.status,'found');assert.equal(result.origin?.introducerName,'Alex Rivera');assert.match(result.origin?.quote||'',/Connecting you two/);assert.match(result.origin?.url||'',/^https:\/\/mail.google.com\//);
+  assert.deepEqual(await service.connectionOrigin(personId),result);assert.equal(reads,1);
+  const shared=await service.exportSlice({kind:'all'},'statements');assert.ok(!JSON.stringify(shared).includes('Connecting you two'));
+  assert.ok(!JSON.stringify(await service.graph()).includes('Connecting you two'),'origin excerpt stays outside graph exports');
+  await service.setAutomaticContext('me@example.com',false);assert.equal((await service.connectionOrigin(personId)).status,'disabled');assert.ok(!storageText(db,kv).includes('Connecting you two'));
+ });}finally{db.close();}
+});
+test('connection origin rejects other owners and consent changes during Gmail reads',async()=>{
+ const {service,db,personId,message}=await originFixture();let reads=0;
+ try{
+  await assert.rejects(service.connectionOrigin(await opaque('someone-else','marie@example.com','identity-key')),/unknown_person/);
+  await withFetch(async(input:any)=>{
+   const url=new URL(String(input));
+   if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+   if(url.pathname.endsWith('/messages'))return Response.json({messages:[{id:message.id}]});
+   reads++;await service.setAutomaticContext('me@example.com',false);return Response.json(message);
+  },async()=>{assert.equal((await service.connectionOrigin(personId)).status,'disabled');assert.equal(reads,1);});
+ }finally{db.close();}
+});
+test('connection origin stops before account removal yields and cannot restore its cache',async()=>{
+ const {service,db,personId,message}=await originFixture();
+ let release!:()=>void,removed:Promise<void>|undefined;
+ const paused=new Promise<void>(resolve=>{release=resolve;});
+ const invalidate=(service as any).invalidateRetrieval.bind(service);
+ (service as any).invalidateRetrieval=async(email:string)=>{await paused;return invalidate(email);};
+ try{await withFetch(async(input:any)=>{
+  const url=new URL(String(input));
+  if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'test-access'});
+  if(url.pathname.endsWith('/messages'))return Response.json({messages:[{id:message.id}]});
+  removed=service.remove('me@example.com');return Response.json(message);
+ },async()=>{
+  assert.equal((await service.connectionOrigin(personId)).status,'disabled');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
+  release();await removed;
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
+ });}finally{release();await removed;db.close();}
+});
+test('connection origin distinguishes absence from a failed Gmail search',async()=>{
+ const {service,db,personId}=await originFixture();
+ try{
+  await withFetch(async()=>new Response('private failure',{status:503}),async()=>assert.equal((await service.connectionOrigin(personId)).status,'unavailable'));
+  await withFetch(async(input:any)=>String(input).includes('oauth2.googleapis')?Response.json({access_token:'test-access'}):Response.json({messages:[]}),async()=>assert.equal((await service.connectionOrigin(personId)).status,'not_found'));
+ }finally{db.close();}
+});
+test('connection origin rejects redirects without following them or caching a miss',async()=>{
+ const {service,db,personId}=await originFixture();let calls=0;
+ try{await withFetch(async(_input:any,init?:RequestInit)=>{
+  calls++;assert.equal(init?.redirect,'manual');
+  return new Response(null,{status:302,headers:{Location:'https://other.example/token'}});
+ },async()=>{
+  assert.equal((await service.connectionOrigin(personId)).status,'unavailable');
+  assert.equal(calls,1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM connection_origins').get()!.n,0);
+ });}finally{db.close();}
+});
 function storageText(db:DatabaseSync,kv:Map<string,unknown>){return JSON.stringify([Array.from(kv),db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r:any)=>db.prepare(`SELECT * FROM "${r.name}"`).all())]);}
 async function retrievalFixture(){
  const f=fixture();network();f.kv.set('owner','owner');

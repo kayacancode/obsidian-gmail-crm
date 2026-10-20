@@ -59,6 +59,21 @@ export async function draftRoute(request:Request,env:MailEnv,owner:string){
   throw error;
  }
 }
+
+/** Private lookup in the signed-in owner's mail; shared contacts never select another owner. */
+export async function connectionOriginRoute(request:Request,env:MailEnv,owner:string){
+ if(request.method!=='POST')return json({error:'method_not_allowed'},405);
+ if(request.headers.get('origin')!==new URL(request.url).origin)return json({error:'invalid_origin'},403);
+ let body:any;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),2000);}catch{return json({error:'invalid_request'},400);}
+ if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof body.personId!=='string'||!/^[A-Za-z0-9:_-]{1,200}$/.test(body.personId))return json({error:'invalid_request'},400);
+ const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+ try{const result=await stub.connectionOrigin(body.personId);if(result.status==='unavailable')console.warn('connection_origin_unavailable',{reason:result.reason||'unknown'});return json(result);}
+ catch(error){
+  if(error instanceof Error&&error.message==='unknown_person')return json({error:'unknown_person'},404);
+  if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);
+  console.warn('connection_origin_route_failed',{kind:error instanceof Error?error.name:'unknown'});throw error;
+ }
+}
 /**
  * POST /api/people/search — "who in my network can help with…". The body is one bounded query;
  * the response is the owner's own people with a score and the evidence behind it, and never an
