@@ -1,4 +1,7 @@
 import {repairLegacyGmailContext} from './gmail-context-graph';
+import {bookingOwnerRoute,bookingPublicRoute,bookingOAuthCallback} from './booking-routes';
+import type {BookingEnv} from './booking-types';
+export {BookingCoordinator} from './booking-coordinator';
 import {ownerLensRoute} from './owner-lens-routes';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
@@ -31,7 +34,7 @@ export {MailSync} from "./mail-sync";
  *    without a Google session.
  */
 
-interface Env extends MailEnv {
+interface Env extends BookingEnv {
 	DB: D1Database;
 	ASSETS: Fetcher;
 	GOOGLE_CLIENT_ID: string;
@@ -48,6 +51,12 @@ export default {
 		const { pathname } = url;
 
 		try {
+			if(pathname.startsWith('/api/public/booking/'))return await bookingPublicRoute(request,env);
+			if(pathname==='/api/booking'||pathname.startsWith('/api/booking/')){
+				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+				return await bookingOwnerRoute(request,env,user.email);
+			}
+			if(pathname==='/api/accounts/callback'&&url.searchParams.get('state')?.startsWith('booking.'))return await bookingOAuthCallback(request,env);
 			if(pathname==='/api/lens'||pathname==='/api/lens/matches'){
 				const user=await requireGoogleUser(request,env);
 				if('error' in user)return json({error:user.error},401);
@@ -135,6 +144,14 @@ export default {
 			return json({ error: "server_error" }, 500);
 		}
 
+		if(pathname==='/booking'||pathname.startsWith('/book/')){
+			// Use canonical asset paths: requesting .html triggers a clean-URL
+			// redirect and would loop on /booking or drop the public slug.
+			const asset=new URL(request.url);asset.pathname=pathname==='/booking'?'/booking':'/book';asset.search='';
+			const response=await env.ASSETS.fetch(new Request(asset,request));
+			const headers=new Headers(response.headers);headers.set('referrer-policy','no-referrer');headers.set('cache-control','no-store');headers.set('x-content-type-options','nosniff');
+			return new Response(response.body,{status:response.status,headers});
+		}
 		// Everything else → the static graph UI.
 		return env.ASSETS.fetch(request);
 	},

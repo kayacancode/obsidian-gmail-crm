@@ -40,7 +40,8 @@
     "test:shared-discovery-browser": "node tests/shared-discovery-browser.mjs",
     "test:weekly-browser": "node tests/weekly-context-browser.mjs",
     "test:shared-home-browser": "node tests/shared-home-browser.mjs",
-    "test:owner-lens-browser": "node tests/owner-lens-browser.mjs"
+    "test:owner-lens-browser": "node tests/owner-lens-browser.mjs",
+    "test:booking": "node --test tests/booking-runtime.mjs && node tests/booking-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",
