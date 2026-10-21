@@ -25,7 +25,7 @@
 - [x] Integration: register routes and DO, add Booking navigation and Accounts link, wire existing callback safely, include tests in runner and document setup.
 - [x] Local validation: final existing/new tests, typecheck, predeploy builds, deployment dry run, browser fixtures, and real workerd/D1/SQLite integration passed. Independent integration review findings were addressed; see evidence below.
 - [x] Deploy additive schema and app. Live page routes return HTML, the owner API rejects unauthenticated access, and the browser displays the private sign-in gate.
-- [ ] Push the branch and create the PR.
+- [x] Push `codex/people-booking` and create draft [PR #12](https://github.com/kayacancode/obsidian-gmail-crm/pull/12). Main has not been merged.
 - [ ] Complete production setup: Betaworks sender-domain verification and delivery, owner Calendar write consent, and a fresh Betaworks-owned Rust source. Public intake stays paused until its prerequisites and owner settings are ready.
 
 ## Review focus
