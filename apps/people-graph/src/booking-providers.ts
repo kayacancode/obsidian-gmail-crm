@@ -1,6 +1,6 @@
 import {boundedJSON} from './bounded-json';
 import {bytes, digest, seal, unseal} from './mail-model';
-import type {BookingBusy, BookingCalendarRecord, BookingEnv, BookingRequestRecord, BookingSettings} from './booking-types';
+import type {BookingBusy, BookingCalendarRecord, BookingEnv, BookingRequestRecord, BookingSettings, BookingVisitorIdentity} from './booking-types';
 
 const TOKEN_URL='https://oauth2.googleapis.com/token';
 // Google's OpenID discovery document publishes this signing-key endpoint.
@@ -67,23 +67,6 @@ function accessToken(data:ObjectValue):string {
  return data.access_token;
 }
 
-export async function sendBookingNotice(env:BookingEnv,to:string,subject:string,text:string):Promise<void> {
- if(!env.BOOKING_EMAIL||!env.BOOKING_EMAIL_FROM)throw Error('booking_email_not_configured');
- const recipient=email(to),from=email(env.BOOKING_EMAIL_FROM);
- if(!string(subject,160)||/[\r\n\u0000-\u001f]/.test(subject)||!string(text,10_000))throw Error('booking_email_invalid');
- const body=text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'');
- try{
-  const result=object(await deadline(()=>env.BOOKING_EMAIL!.send({to:recipient,from:{email:from,name:'People Booking'},subject,text:body,html:'<div style="white-space:pre-wrap">'+html(body)+'</div>'}),'booking_email_unavailable'));
-  if(!string(result.messageId,1024)||result.success===false||result.error)throw Error('booking_email_unavailable');
- }catch{throw Error('booking_email_unavailable');}
-}
-
-export async function sendBookingCode(env:BookingEnv,to:string,code:string,displayName:string):Promise<void> {
- if(!/^\d{6}$/.test(code))throw Error('booking_email_invalid');
- const name=safeText(displayName,120)||'your host';
- await sendBookingNotice(env,to,'Your booking verification code',`Your code to request a meeting with ${name} is ${code}.\n\nThis code expires in 10 minutes. If you did not request it, you can ignore this message.`);
-}
-
 export async function createBookingOAuth(env:BookingEnv,origin:string,state:string,verifier:string):Promise<string> {
  const config=credentials(env),redirect=callback(env,origin);validVerifier(verifier);
  if(!string(state,2000)||/[\u0000-\u001f]/.test(state))throw Error('booking_oauth_invalid_state');
@@ -93,16 +76,23 @@ export async function createBookingOAuth(env:BookingEnv,origin:string,state:stri
  return url.href;
 }
 
+/** Visitor authentication requests identity only, with no Calendar grant. */
+export async function createBookingVisitorOAuth(env:BookingEnv,origin:string,state:string,verifier:string):Promise<string> {
+ const url=new URL(await createBookingOAuth(env,origin,state,verifier));
+ url.searchParams.set('scope','openid email');url.searchParams.set('access_type','online');url.searchParams.set('prompt','select_account');
+ return url.href;
+}
+
 function jwtPart(value:string):ObjectValue {
  if(!/^[A-Za-z0-9_-]+$/.test(value))throw Error('booking_oauth_invalid_identity');
  return object(JSON.parse(new TextDecoder('utf-8',{fatal:true,ignoreBOM:false}).decode(bytes(value))));
 }
-async function verifyIdentity(token:unknown,clientId:string,owner:string,verifier:string):Promise<void> {
+async function verifyIdentity(token:unknown,clientId:string,verifier:string):Promise<BookingVisitorIdentity> {
  try{
   if(!string(token,16_384))throw Error();
   const parts=token.split('.');if(parts.length!==3||! /^[A-Za-z0-9_-]+$/.test(parts[2]))throw Error();
   const header=jwtPart(parts[0]),claims=jwtPart(parts[1]),now=Math.floor(Date.now()/1000);
-  if(header.alg!=='RS256'||!string(header.kid,256)||claims.aud!==clientId||(claims.azp!==undefined&&claims.azp!==clientId)||(claims.iss!=='https://accounts.google.com'&&claims.iss!=='accounts.google.com')||claims.email_verified!==true||email(claims.email)!==owner||!string(claims.sub,255)||typeof claims.exp!=='number'||claims.exp<=now||typeof claims.iat!=='number'||claims.iat>now+300||claims.iat<now-86_400||claims.nonce!==await digest(verifier))throw Error();
+  if(header.alg!=='RS256'||!string(header.kid,256)||claims.aud!==clientId||(claims.azp!==undefined&&claims.azp!==clientId)||(claims.iss!=='https://accounts.google.com'&&claims.iss!=='accounts.google.com')||claims.email_verified!==true||!string(claims.sub,255)||typeof claims.exp!=='number'||!Number.isFinite(claims.exp)||claims.exp<=now||typeof claims.iat!=='number'||!Number.isFinite(claims.iat)||claims.iat>now+300||claims.iat<now-86_400||claims.nonce!==await digest(verifier))throw Error();
   const data=success(await provider(KEYS_URL)),keys=data.keys;
   if(!Array.isArray(keys)||keys.length>32)throw Error();
   const matches=keys.map(object).filter(key=>key.kid===header.kid);
@@ -110,6 +100,8 @@ async function verifyIdentity(token:unknown,clientId:string,owner:string,verifie
   const key=matches[0];if(key.kty!=='RSA'||key.use!=='sig'||key.alg!=='RS256'||!string(key.n,2048)||!string(key.e,16)||key.d!==undefined)throw Error();
   const publicKey=await crypto.subtle.importKey('jwk',{kty:'RSA',n:key.n,e:key.e,alg:'RS256',ext:true},{name:'RSASSA-PKCS1-v1_5',hash:'SHA-256'},false,['verify']);
   if(!await crypto.subtle.verify('RSASSA-PKCS1-v1_5',publicKey,bytes(parts[2]),new TextEncoder().encode(parts[0]+'.'+parts[1])))throw Error();
+  const address=email(claims.email);
+  return {email:address,subject:claims.sub,emailAuthoritative:address.endsWith('@gmail.com')||string(claims.hd,253)};
  }catch{throw Error('booking_oauth_invalid_identity');}
 }
 
@@ -119,9 +111,17 @@ export async function exchangeBookingOAuth(env:BookingEnv,origin:string,code:str
  const data=success(await provider(TOKEN_URL,{method:'POST',body:new URLSearchParams({client_id:config.clientId,client_secret:config.clientSecret,redirect_uri:redirect,grant_type:'authorization_code',code,code_verifier:verifier})}));
  accessToken(data);const scopes=permissionScopes(data.scope);
  if(!string(data.refresh_token,8192))throw Error('booking_calendar_offline_access_missing');
- await verifyIdentity(data.id_token,config.clientId,account,verifier);
+ if((await verifyIdentity(data.id_token,config.clientId,verifier)).email!==account)throw Error('booking_oauth_invalid_identity');
  const grant:CalendarGrant={owner:account,email:account,refreshToken:data.refresh_token,scopes};
  return {owner:account,email:account,grant:await seal(JSON.stringify(grant),config.key),connectedAt:Date.now()};
+}
+
+export async function exchangeBookingVisitorOAuth(env:BookingEnv,origin:string,code:string,verifier:string):Promise<BookingVisitorIdentity> {
+ const config=credentials(env),redirect=callback(env,origin);validVerifier(verifier);
+ if(!string(code,4096))throw Error('booking_oauth_invalid_code');
+ const data=success(await provider(TOKEN_URL,{method:'POST',body:new URLSearchParams({client_id:config.clientId,client_secret:config.clientSecret,redirect_uri:redirect,grant_type:'authorization_code',code,code_verifier:verifier})}));
+ // Identity is the only retained result. Access/refresh tokens are discarded.
+ return verifyIdentity(data.id_token,config.clientId,verifier);
 }
 
 async function calendarAccess(env:BookingEnv,record:BookingCalendarRecord):Promise<string> {

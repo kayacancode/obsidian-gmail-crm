@@ -3,7 +3,7 @@ import {BookingStore} from './booking-store';
 import {bookingReadiness,publicBookingRequest} from './booking-coordinator';
 import {defaultBookingSettings} from './booking-policy';
 import {boundedJSON} from './bounded-json';
-import {bookingCookie,setBookingCookie,randomBookingToken,issueBookingChallenge,verifyBookingChallenge,bookingVisitor} from './booking-verification';
+import {bookingCookie,setBookingCookie,randomBookingToken,beginBookingSignIn,bookingVisitor} from './booking-verification';
 import {createBookingOAuth,exchangeBookingOAuth} from './booking-providers';
 import {opaque,seal,unseal} from './mail-model';
 
@@ -70,32 +70,34 @@ export async function bookingPublicRoute(request:Request,env:BookingEnv):Promise
  try{
   const url=new URL(request.url),match=url.pathname.match(/^\/api\/public\/booking\/([a-z0-9-]{3,64})(\/.*)?$/);if(!match)return json({error:'not_found'},404);
   const store=new BookingStore(env.DB);await store.init();const settings=await store.slug(match[1]);if(!settings)return json({error:'not_found'},404);
-  const path=match[2]||'',ready=await bookingReadiness(env,settings.owner),available=settings.enabled&&ready.email&&ready.calendar&&ready.pilot;
-  if(request.method==='GET'&&!path)return json({page:{displayName:settings.displayName,intro:settings.intro,timezone:settings.timezone,durationMinutes:settings.durationMinutes},available,recoveryAvailable:ready.email&&ready.pilot});
+  const path=match[2]||'',ready=await bookingReadiness(env,settings.owner),available=settings.enabled&&ready.signIn&&ready.calendar&&ready.pilot;
+  if(request.method==='GET'&&!path){
+   let visitor=null;try{const identity=await bookingVisitor(env,settings,request);visitor={email:identity.email,identityKey:identity.subject};}catch{}
+   return json({page:{displayName:settings.displayName,intro:settings.intro,timezone:settings.timezone,durationMinutes:settings.durationMinutes},available,recoveryAvailable:ready.signIn&&ready.pilot,visitor});
+  }
   if(request.method!=='GET'&&request.method!=='POST')return json({error:'not_found'},404);
   if(request.method==='POST')origin(request);
   const statusRead=request.method==='GET'&&(path==='/requests'||/^\/requests\/[\w-]{1,100}$/.test(path));
-  const statusVerification=request.method==='POST'&&['/challenge','/verify'].includes(path)&&ready.email&&ready.pilot;
+  const statusVerification=request.method==='POST'&&path==='/sign-in'&&ready.signIn&&ready.pilot;
   if(!available&&!statusRead&&!statusVerification)throw Error('booking_unavailable');
-  if(request.method==='POST'&&path==='/challenge'){
-   const input=await body(request),result=await issueBookingChallenge(env,settings,request,input.email);return json({challengeId:result.challengeId},200,result.cookie);
+  if(request.method==='POST'&&path==='/sign-in'){
+   const result=await beginBookingSignIn(env,settings,request,await body(request));return json({url:result.url},200,result.cookie);
   }
-  if(request.method==='POST'&&path==='/verify'){
-   const result=await verifyBookingChallenge(env,settings,request,await body(request));return json({verified:true,email:result.email},200,result.cookie);
-  }
-  const email=await bookingVisitor(env,settings,request),stub=env.BOOKING.getByName(settings.owner);
+  // Removed email-code endpoints cannot grant visitor authority.
+  if(path==='/challenge'||path==='/verify')return json({error:'not_found'},404);
+  const visitor=await bookingVisitor(env,settings,request),stub=env.BOOKING.getByName(settings.owner);
   if(path==='/requests'&&request.method==='POST'){
-   const r=await stub.submit(settings.owner,email,settings.slug,await body(request));return json({request:publicBookingRequest(r),next:next(r)});
+   const r=await stub.submit(settings.owner,visitor,settings.slug,await body(request));return json({request:publicBookingRequest(r),next:next(r)});
   }
-  if(path==='/requests'&&request.method==='GET')return json({requests:(await store.requests(settings.owner)).filter(r=>r.email===email).slice(0,10).map(r=>({request:publicBookingRequest(r),next:next(r)}))});
-  if(path==='/slots'&&request.method==='GET')return json({slots:await stub.slots(settings.owner,email,settings.slug,url.searchParams.get('requestId')||'')});
+  if(path==='/requests'&&request.method==='GET')return json({requests:(await store.visitorRequests(settings.owner,visitor.email,visitor.subject)).map(r=>({request:publicBookingRequest(r),next:next(r)}))});
+  if(path==='/slots'&&request.method==='GET')return json({slots:await stub.slots(settings.owner,visitor,settings.slug,url.searchParams.get('requestId')||'')});
   const record=path.match(/^\/requests\/([\w-]{1,100})(\/slot)?$/);
   if(record){
    if(record[2]&&request.method==='POST'){
     const input=await body(request);if(typeof input.start!=='string'||input.start.length>40)throw Error('invalid_request');
-    const r=await stub.selectSlot(settings.owner,email,settings.slug,record[1],input.start);return json({request:publicBookingRequest(r),next:next(r)});
+    const r=await stub.selectSlot(settings.owner,visitor,settings.slug,record[1],input.start);return json({request:publicBookingRequest(r),next:next(r)});
    }
-   if(!record[2]&&request.method==='GET'){const r=await store.request(settings.owner,record[1]);if(!r||r.email!==email)throw Error('not_found');return json({request:publicBookingRequest(r),next:next(r)});}
+   if(!record[2]&&request.method==='GET'){const r=await store.request(settings.owner,record[1]);if(!r||r.email!==visitor.email||r.visitorSubject!==visitor.subject)throw Error('not_found');return json({request:publicBookingRequest(r),next:next(r)});}
   }
   return json({error:'not_found'},404);
  }catch(e){return bookingError(e);}

@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 // Production routing, D1, SQLite coordinator, verification and provider code.
-// Only the email transport and external Google/Rust services are synthetic.
+// Only external Google/Rust services are synthetic; no email transport is configured.
 const fixture=`
 import worker from './src/index';
 import {BookingCoordinator as Coordinator} from './src/booking-coordinator';
@@ -16,15 +16,18 @@ import {defaultBookingSettings} from './src/booking-policy';
 import {makeSession,sessionCookie} from './src/session';
 import {seal} from './src/mail-model';
 import {bookingCalendarBusy} from './src/booking-providers';
+import {bookingReadiness} from './src/booking-coordinator';
 const owner='owner@example.com';
-function wrap(env){return {...env,BOOKING_EMAIL:{async send(message){await env.DB.prepare('INSERT INTO fixture_mail(email,body) VALUES(?,?)').bind(message.to,message.text).run();return {messageId:'fixture'};}},AI:{async run(){const row=await env.DB.prepare("SELECT body FROM fixture_mail WHERE email='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(){return {bindOwner:async()=>{},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}})}}}};}
-export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,wrap(env));} restartForTest(){this.ctx.abort('fixture restart');}}
+function wrap(env){return {...env,AI:{async run(){const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(){return {bindOwner:async()=>{},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}})}}}};}
+export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,wrap(env));} restartForTest(){this.ctx.abort('fixture restart');} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
 export default {async fetch(request,env){env=wrap(env);const url=new URL(request.url),store=new BookingStore(env.DB);
- if(url.pathname==='/fixture'){await store.init();await env.DB.prepare('CREATE TABLE IF NOT EXISTS fixture_mail(email TEXT,body TEXT)').run();
+ if(url.pathname==='/fixture'){await store.init();await env.DB.prepare('CREATE TABLE IF NOT EXISTS fixture_control(key TEXT,body TEXT)').run();
  const settings={...defaultBookingSettings(owner),displayName:'Test host',slug:'test-host',thesis:'I meet founders building new interfaces for AI agents.',revision:1,enabled:true,weekdays:[0,1,2,3,4,5],startTime:'09:00',endTime:'17:00'};
  await store.saveSettings(settings,0);
  await store.saveCalendar({owner,email:owner,connectedAt:Date.now(),grant:await seal(JSON.stringify({owner,email:owner,refreshToken:'fixture-refresh',scopes:['openid','email','https://www.googleapis.com/auth/calendar.events','https://www.googleapis.com/auth/calendar.freebusy']}),env.MAIL_TOKEN_KEY)});
  return Response.json({cookie:sessionCookie(await makeSession(owner,env.TOKEN_SECRET)),settings});}
+ if(url.pathname==='/fixture/readiness'){const key=url.searchParams.get('missing');return Response.json(await bookingReadiness({...env,...(key?{[key]:undefined}:{})},owner));}
+ if(url.pathname==='/fixture/legacy-outbox')return Response.json(await env.BOOKING.getByName(owner).legacyOutboxForTest());
  if(url.pathname==='/fixture/busy'){try{return Response.json({busy:await bookingCalendarBusy(env,await store.calendar(owner),new Date().toISOString(),new Date(Date.now()+86400000).toISOString())});}catch(e){return Response.json({error:e.message});}}
  if(url.pathname==='/fixture/restart'){try{await env.BOOKING.getByName(owner).restartForTest();}catch{}return Response.json({ok:true});}
  if(url.pathname==='/fixture/token'){return Response.json({cookie:sessionCookie(await makeSession(url.searchParams.get('email'),env.TOKEN_SECRET))});}
@@ -34,14 +37,27 @@ export default {async fetch(request,env){env=wrap(env);const url=new URL(request
 
 await test('Booking Worker integration with real D1 and SQLite coordinator',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'people-booking-runtime-'));let mf;
+ const googleCodes=new Map(),keys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
+ const jwk=await crypto.subtle.exportKey('jwk',keys.publicKey),encode=value=>Buffer.from(value).toString('base64url');
+ async function identity(claims){const now=Math.floor(Date.now()/1000),head=encode(JSON.stringify({alg:'RS256',kid:'fixture-key'})),body=encode(JSON.stringify({iss:'https://accounts.google.com',aud:'test-client',iat:now,exp:now+3600,email_verified:true,...claims})),signature=encode(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',keys.privateKey,new TextEncoder().encode(head+'.'+body)));return head+'.'+body+'.'+signature;}
  const events=new Map();let inserts=0,failInsert=false,failLookup=false,failDelete=false,sourceMissing=false,externalBusy=[];
  try{
   await build({stdin:{contents:fixture,resolveDir:process.cwd(),loader:'ts'},bundle:true,format:'esm',platform:'browser',external:['cloudflare:workers'],outfile:join(dir,'worker.mjs')});
   const scopes='openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy';
-  mf=new Miniflare({modules:true,modulesRoot:dir,scriptPath:join(dir,'worker.mjs'),compatibilityDate:'2025-05-01',assets:{directory:join(process.cwd(),'public'),binding:'ASSETS',routerConfig:{invoke_user_worker_ahead_of_assets:true,has_user_worker:true}},d1Databases:{DB:'booking-test'},durableObjects:{BOOKING:{className:'TestBookingCoordinator',useSQLite:true}},bindings:{GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-client-secret',TOKEN_SECRET:'test-session-secret',MAIL_TOKEN_KEY:'test-encryption',APP_ORIGIN:'https://people.test',BOOKING_OWNER_EMAIL:'owner@example.com',BOOKING_EMAIL_FROM:'bookings@betaworks.com',BOOKING_EMAIL_READY:'true',PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'test-source-secret',PEOPLEGRAPH_OWNER_EMAIL:'owner@example.com'},outboundService:async req=>{
+  mf=new Miniflare({modules:true,modulesRoot:dir,scriptPath:join(dir,'worker.mjs'),compatibilityDate:'2025-05-01',assets:{directory:join(process.cwd(),'public'),binding:'ASSETS',routerConfig:{invoke_user_worker_ahead_of_assets:true,has_user_worker:true}},d1Databases:{DB:'booking-test'},durableObjects:{BOOKING:{className:'TestBookingCoordinator',useSQLite:true}},bindings:{GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-client-secret',TOKEN_SECRET:'test-session-secret',MAIL_TOKEN_KEY:'test-encryption',APP_ORIGIN:'https://people.test',BOOKING_OWNER_EMAIL:'owner@example.com',PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'test-source-secret',PEOPLEGRAPH_OWNER_EMAIL:'owner@example.com'},outboundService:async req=>{
    const u=new URL(req.url);
    if(u.hostname==='source.test')return Response.json({ok:!sourceMissing,command:'score',stats:{user_email:'owner@example.com',last_sync:new Date(Date.now()-1000).toISOString(),matched:sourceMissing?0:1},...(sourceMissing?{error:{kind:'not_found'}}:{data:{email:u.searchParams.get('email'),name:'Visitor',score:{combined:40}}})},{status:sourceMissing?400:200});
-   if(u.hostname==='oauth2.googleapis.com')return Response.json({access_token:'fixture-access',token_type:'Bearer',expires_in:3600,scope:scopes});
+   if(u.pathname==='/oauth2/v3/certs')return Response.json({keys:[{...jwk,kid:'fixture-key',use:'sig',alg:'RS256'}]});
+   if(u.hostname==='oauth2.googleapis.com'){
+    const input=new URLSearchParams(await req.text());
+    if(input.get('grant_type')==='authorization_code'){
+     const code=input.get('code'),claims=googleCodes.get(code);googleCodes.delete(code);
+     if(!claims||encode(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(input.get('code_verifier'))))!==claims.nonce)return Response.json({error:'invalid_grant'},{status:400});
+     assert.equal(input.get('redirect_uri'),'https://people.test/api/accounts/callback');
+     return Response.json({access_token:'fixture-access',token_type:'Bearer',expires_in:3600,scope:'openid email',id_token:await identity(claims)});
+    }
+    return Response.json({access_token:'fixture-access',token_type:'Bearer',expires_in:3600,scope:scopes});
+   }
    if(u.pathname.endsWith('/freeBusy')){const query=await req.json();return Response.json({kind:'calendar#freeBusy',timeMin:query.timeMin,timeMax:query.timeMax,calendars:{primary:{busy:[...externalBusy,...[...events.values()].filter(e=>e.status!=='cancelled').map(e=>({start:e.start.dateTime,end:e.end.dateTime}))]}}});}
    if(u.pathname.endsWith('/events')&&req.method==='POST'){
     const e=await req.json();inserts++;
@@ -54,7 +70,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    throw Error('Unexpected external request '+u.origin+u.pathname);
   }});
   async function api(path,{method='GET',data,cookie='',origin='https://people.test'}={}){
-   const res=await mf.dispatchFetch('https://people.test'+path,{method,headers:{origin,cookie,...(data?{'content-type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});let value;try{value=await res.json();}catch{value={};}return {res,value};
+   const res=await mf.dispatchFetch('https://people.test'+path,{method,redirect:'manual',headers:{origin,cookie,...(data?{'content-type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});let value;try{value=await res.json();}catch{value={};}return {res,value};
   }
   await t.test('booking pages serve HTML directly without a redirect loop or losing the public slug',async()=>{
    for(const [path,title] of [['/booking','Booking · People'],['/book/test-host','A conversation · People']]){
@@ -67,12 +83,14 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   const setup=await api('/fixture'),ownerCookie=setup.value.cookie.split(';')[0];let settings=setup.value.settings;
   const sql=async(sql,args=[])=> (await api('/fixture/sql',{method:'POST',data:{sql,args}})).value.results;
   const prefix='/api/public/booking/test-host';
-  async function challenge(email){
-   const x=await api(prefix+'/challenge',{method:'POST',data:{email}});assert.equal(x.res.status,200,JSON.stringify(x.value));
-   const browser=x.res.headers.get('set-cookie').split(';')[0],mail=(await sql('SELECT body FROM fixture_mail WHERE email=? ORDER BY rowid DESC LIMIT 1',[email]))[0];
-   const code=mail.body.match(/is (\d{6})/)[1];assert.equal(JSON.stringify(x.value).includes(code),false);return {...x.value,browser,code};
+  async function startSignIn(email,claims={},data={}){
+   const x=await api(prefix+'/sign-in',{method:'POST',data});assert.equal(x.res.status,200,JSON.stringify(x.value));
+   const auth=new URL(x.value.url),browser=x.res.headers.get('set-cookie').split(';')[0],code=crypto.randomUUID();
+   assert.equal(auth.searchParams.get('scope'),'openid email');assert.equal(auth.searchParams.get('access_type'),'online');
+   googleCodes.set(code,{email,sub:'subject-'+email,hd:'example.com',nonce:auth.searchParams.get('nonce'),...claims});
+   return {browser,state:auth.searchParams.get('state'),callback:'/api/accounts/callback?'+new URLSearchParams({state:auth.searchParams.get('state'),code})};
   }
-  async function visitor(email){const c=await challenge(email);const v=await api(prefix+'/verify',{method:'POST',cookie:c.browser,data:{challengeId:c.challengeId,code:c.code}});assert.equal(v.res.status,200);return c.browser+'; '+v.res.headers.get('set-cookie').split(';')[0];}
+  async function visitor(email,claims={}){const c=await startSignIn(email,claims),v=await api(c.callback,{cookie:c.browser});assert.equal(v.res.status,303);assert.ok(v.res.headers.get('location').includes('signed_in=1'));assert.ok(!v.res.headers.get('set-cookie').includes('__Host-people-session='));return c.browser+'; '+v.res.headers.get('set-cookie').split(';')[0];}
   async function submit(cookie,key=crypto.randomUUID()){
    const r=await api(prefix+'/requests',{method:'POST',cookie,data:{name:'Test Visitor',project:'I build interfaces that help people work with AI agents.',purpose:'I would like product feedback on the new interface.',projectUrl:'https://example.com/deck',referrer:'A claimed referral',idempotencyKey:key}});assert.equal(r.res.status,200,JSON.stringify(r.value));return r.value.request;
   }
@@ -85,16 +103,38 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    assert.equal(JSON.stringify(dashboard.value).includes('fixture-refresh'),false);
    const otherCookie=(await api('/fixture/token?email=other@example.com')).value.cookie.split(';')[0];assert.equal((await api('/api/booking/settings',{method:'POST',cookie:otherCookie,data:{...settings,owner:'other@example.com',slug:'stolen',revision:0,enabled:false}})).res.status,503);
   });
-  await t.test('codes bind to browser, allow five attempts, expire, and cannot replay',async()=>{
-   const c=await challenge('wrong@example.com');
-   assert.equal((await api(prefix+'/verify',{method:'POST',data:{challengeId:c.challengeId,code:c.code}})).res.status,400);
-   for(let i=0;i<5;i++)assert.equal((await api(prefix+'/verify',{method:'POST',cookie:c.browser,data:{challengeId:c.challengeId,code:c.code==='000000'?'000001':'000000'}})).res.status,400);
-   assert.equal((await api(prefix+'/verify',{method:'POST',cookie:c.browser,data:{challengeId:c.challengeId,code:c.code}})).res.status,400);
-   const exp=await challenge('expired@example.com');await sql('UPDATE booking_challenges SET expires=0 WHERE id=?',[exp.challengeId]);
-   assert.equal((await api(prefix+'/verify',{method:'POST',cookie:exp.browser,data:{challengeId:exp.challengeId,code:exp.code}})).res.status,400);
-   const good=await challenge('visitor@example.com');
-   const attempts=await Promise.all([0,1].map(()=>api(prefix+'/verify',{method:'POST',cookie:good.browser,data:{challengeId:good.challengeId,code:good.code}})));
-   assert.deepEqual(attempts.map(a=>a.res.status).sort(),[200,400]);const valid=attempts.find(a=>a.res.status===200);visitorCookie=good.browser+'; '+valid.res.headers.get('set-cookie').split(';')[0];
+  await t.test('Google sign-in works without email sending; all Google prerequisites are required',async()=>{
+   assert.equal((await api(prefix)).value.available,true);
+   assert.equal((await api('/fixture/readiness')).value.signIn,true);
+   for(const key of ['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','MAIL_TOKEN_KEY','TOKEN_SECRET'])assert.equal((await api('/fixture/readiness?missing='+key)).value.signIn,false);
+   for(const endpoint of ['/challenge','/verify'])assert.equal((await api(prefix+endpoint,{method:'POST',data:{}})).res.status,404);
+   assert.equal((await api(prefix+'/sign-in',{method:'POST',origin:'https://evil.test',data:{}})).res.status,403);
+   const legacy=await api('/fixture/legacy-outbox');assert.equal(legacy.value.alarm,null);
+  });
+  await t.test('Google callback binds browser, expires, cannot replay, and cannot create an owner session',async()=>{
+   const c=await startSignIn('wrong@example.com');
+   assert.equal((await api(c.callback)).res.status,400);
+   assert.equal((await api(c.callback,{cookie:'__Host-people-booking-browser='+'x'.repeat(43)})).res.status,400);
+   const exp=await startSignIn('expired@example.com',{}, {requestId:'old-request'});await sql('UPDATE booking_visitor_oauth SET expires=0 WHERE id=?',[exp.state.slice('booking-visitor.'.length)]);
+   const expired=await api(exp.callback,{cookie:exp.browser});assert.equal(expired.res.status,303);assert.equal(expired.res.headers.get('location'),'/book/test-host?request=old-request&sign_in=failed');assert.equal(expired.res.headers.get('set-cookie'),null);
+   const good=await startSignIn('visitor@example.com',{}, {requestId:'saved-request'});
+   const attempts=await Promise.all([0,1].map(()=>api(good.callback,{cookie:good.browser})));
+   assert.deepEqual(attempts.map(a=>a.res.status).sort(),[303,400]);const valid=attempts.find(a=>a.res.status===303);
+   assert.equal(valid.res.headers.get('location'),'/book/test-host?signed_in=1&request=saved-request');
+   visitorCookie=good.browser+'; '+valid.res.headers.get('set-cookie').split(';')[0];
+   assert.equal((await api('/api/booking',{cookie:visitorCookie})).res.status,401);
+   const metadata=(await api(prefix,{cookie:visitorCookie})).value;assert.equal(metadata.visitor.email,'visitor@example.com');assert.ok(metadata.visitor.identityKey);assert.equal(JSON.stringify(metadata).includes('subject-visitor'),false);
+   const sessions=await sql('SELECT * FROM booking_google_sessions');assert.equal(JSON.stringify(sessions).includes('fixture-access'),false);assert.equal(JSON.stringify(sessions).includes('subject-visitor'),false);
+  });
+  await t.test('denied or invalid Google identity returns a safe retry without establishing a session',async()=>{
+   for(const claims of [{email_verified:false},{aud:'other-client'},{nonce:'wrong'}]){
+    const c=await startSignIn('invalid@example.com',claims),before=(await sql('SELECT count(*) AS count FROM booking_google_sessions'))[0].count;
+    const response=await api(c.callback,{cookie:c.browser});assert.equal(response.res.status,303);assert.equal(response.res.headers.get('location'),'/book/test-host?sign_in=failed');assert.equal(response.res.headers.get('set-cookie'),null);
+    assert.equal((await sql('SELECT count(*) AS count FROM booking_google_sessions'))[0].count,before);
+   }
+   const denied=await startSignIn('denied@example.com',{}, {requestId:'return-here'}),response=await api('/api/accounts/callback?'+new URLSearchParams({state:denied.state,error:'access_denied'}),{cookie:denied.browser});
+   assert.equal(response.res.status,303);assert.equal(response.res.headers.get('location'),'/book/test-host?request=return-here&sign_in=failed');assert.equal(response.res.headers.get('set-cookie'),null);
+   assert.equal((await api(denied.callback,{cookie:denied.browser})).res.status,400);
   });
   await t.test('unverified and cross-owner visitors cannot create or read requests',async()=>{
    assert.equal((await api(prefix+'/requests',{method:'POST',data:{}})).res.status,401);
@@ -105,6 +145,22 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const key=crypto.randomUUID();const rs=await Promise.all([submit(visitorCookie,key),submit(visitorCookie,key)]);assert.equal(rs[0].id,rs[1].id);first=rs[0];
    assert.equal('decision' in first,false);assert.equal('email' in first,false);
    const privateR=(await api('/api/booking',{cookie:ownerCookie})).value.requests.find(r=>r.id===first.id);assert.equal(privateR.decision.tier,'review');assert.equal(privateR.referrer,'A claimed referral');
+  });
+  await t.test('a different Google account with the same email cannot read or reuse a request',async()=>{
+   const different=await visitor('visitor@example.com',{sub:'different-subject'});
+   assert.equal((await api(prefix+'/requests/'+first.id,{cookie:different})).res.status,404);
+   assert.deepEqual((await api(prefix+'/requests',{cookie:different})).value.requests,[]);
+   assert.equal((await api(prefix+'/slots?requestId='+first.id,{cookie:different})).res.status,404);
+   const record=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[first.id]))[0].data);
+   const reused=await api(prefix+'/requests',{method:'POST',cookie:different,data:{idempotencyKey:record.idempotencyKey}});assert.notEqual(reused.res.status,200);
+  });
+  await t.test('external-email Google accounts cannot claim VIP or network priority',async()=>{
+   await sql("INSERT INTO fixture_control(key,body) VALUES('__model',?)",[JSON.stringify({fit:'strong',reasons:['Thesis fit'],evidence:['I build interfaces that help people work with AI agents.']})]);
+   settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,vipEmails:['external@example.net'],autoBookPriority:true}})).value.settings;
+   const cookie=await visitor('external@example.net',{hd:undefined}),r=await submit(cookie),saved=(await api('/api/booking',{cookie:ownerCookie})).value.requests.find(v=>v.id===r.id);
+   assert.equal(saved.decision.tier,'review');assert.equal(saved.policySnapshot.vipMatch,false);assert.equal(saved.emailAuthoritative,false);
+   const offered=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots;assert.ok(Date.parse(offered[0].start)>=Date.now()+7*86400000-1000);
+   await sql("DELETE FROM fixture_control WHERE key='__model'");settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,vipEmails:[],autoBookPriority:false}})).value.settings;
   });
   await t.test('review visitor chooses a later slot; delayed approval keeps original eligibility',async()=>{
    const slots=await api(prefix+'/slots?requestId='+first.id,{cookie:visitorCookie});assert.equal(slots.res.status,200,JSON.stringify(slots.value));assert.ok(slots.value.slots.length);slot=slots.value.slots[0];assert.ok(Date.parse(slot.start)>=Date.now()+7*86400000-1000);
@@ -154,20 +210,21 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const retry=await api('/api/booking/requests/'+r.id+'/approve',{method:'POST',cookie:ownerCookie});assert.equal(retry.value.request.status,'booked',JSON.stringify(retry.value));assert.equal(inserts,before+1);
   });
   await t.test('automatic priority booking rechecks fit plus relationship state before creating an event',async()=>{
-   await sql("INSERT INTO fixture_mail(email,body) VALUES('__model',?)",[JSON.stringify({fit:'possible',reasons:['Potential thesis fit'],evidence:['I build interfaces that help people work with AI agents.']})]);
+   await sql("INSERT INTO fixture_control(key,body) VALUES('__model',?)",[JSON.stringify({fit:'possible',reasons:['Potential thesis fit'],evidence:['I build interfaces that help people work with AI agents.']})]);
    settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,autoBookPriority:true}})).value.settings;
    const cookie=await visitor('auto@example.com'),r=await submit(cookie),s=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots[0];
    assert.ok(Date.parse(s.start)<Date.now()+7*86400000);const before=inserts;sourceMissing=true;
    const downgraded=await api(prefix+'/requests/'+r.id+'/slot',{method:'POST',cookie,data:{start:s.start}});assert.equal(downgraded.value.request.status,'needs_new_slot');assert.equal(inserts,before);
    sourceMissing=false;const r2=await submit(cookie),s2=(await api(prefix+'/slots?requestId='+r2.id,{cookie})).value.slots[0];
    const booked=await api(prefix+'/requests/'+r2.id+'/slot',{method:'POST',cookie,data:{start:s2.start}});assert.equal(booked.value.request.status,'booked',JSON.stringify(booked.value));assert.equal(inserts,before+1);
-   await sql("DELETE FROM fixture_mail WHERE email='__model'");settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,autoBookPriority:false}})).value.settings;
+   await sql("DELETE FROM fixture_control WHERE key='__model'");settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,autoBookPriority:false}})).value.settings;
   });
   await t.test('active reservations are not hidden by a large history inbox',async()=>{
    const r=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[first.id]))[0].data);
    await sql('UPDATE booking_requests SET created_at=0 WHERE id=?',[first.id]);
    await sql(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1001) INSERT INTO booking_requests SELECT 'history-'||x,'owner@example.com','history@example.com','key-'||x,?,json_set(?,'$.id','history-'||x,'$.status','async_submitted') FROM n`,[Date.now(),JSON.stringify(r)]);
    const all=(await api('/api/booking',{cookie:ownerCookie})).value.requests;assert.equal(all.length,1000);
+   assert.ok((await api(prefix+'/requests',{cookie:visitorCookie})).value.requests.some(item=>item.request.id===first.id),'Visitors recover their requests even outside the owner inbox cap');
    const cookie=await visitor('history@example.com'),newRequest=await submit(cookie);
    assert.equal((await api(prefix+'/requests/'+newRequest.id+'/slot',{method:'POST',cookie,data:{start:slot.start}})).res.status,409);
   });
@@ -186,5 +243,12 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const result=await api('/api/booking/requests/'+first.id+'/cancel',{method:'POST',cookie:ownerCookie});assert.equal(result.value.request.status,'cancelled');assert.equal(events.get(result.value.request.eventId).status,'cancelled');
    const publicState=await api(prefix+'/requests/'+first.id,{cookie:visitorCookie});assert.equal(publicState.value.request.status,'cancelled');assert.equal(JSON.stringify(publicState.value).includes('decision'),false);
   });
+  await t.test('expired visitor sessions require Google sign-in again and recover only their own history',async()=>{
+   await sql("UPDATE booking_google_sessions SET expires=0 WHERE email='visitor@example.com'");
+   assert.equal((await api(prefix+'/requests/'+first.id,{cookie:visitorCookie})).res.status,401);
+   assert.equal((await api(prefix,{cookie:visitorCookie})).value.visitor,null);
+   const renewed=await visitor('visitor@example.com');assert.equal((await api(prefix+'/requests/'+first.id,{cookie:renewed})).value.request.status,'cancelled');
+  });
+
  }finally{await mf?.dispose();await rm(dir,{recursive:true,force:true});}
 });

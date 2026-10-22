@@ -5,7 +5,6 @@
 	"ai": {"binding": "AI"},
 	"durable_objects": {"bindings": [{"name": "MAIL", "class_name": "MailSync"}, {"name": "BOOKING", "class_name": "BookingCoordinator"}]},
 	"migrations": [{"tag": "mail-v1", "new_sqlite_classes": ["MailSync"]}, {"tag": "booking-v1", "new_sqlite_classes": ["BookingCoordinator"]}],
-	"send_email": [{"name": "BOOKING_EMAIL", "allowed_sender_addresses": ["bookings@betaworks.com"]}],
 	"compatibility_date": "2025-05-01",
 	"observability": { "enabled": true },
 	"assets": {
@@ -27,8 +26,6 @@
 		// be added to that client's authorized JavaScript origins.
 		"APP_ORIGIN": "https://people-graph.kayarjones901.workers.dev",
 		"BOOKING_OWNER_EMAIL": "kaya@betaworks.com",
-		"BOOKING_EMAIL_FROM": "bookings@betaworks.com",
-		"BOOKING_EMAIL_READY": "false",
 		"GOOGLE_CLIENT_ID": "726397126192-d5esd42caksfb95hcoh12vpuji8kv008.apps.googleusercontent.com",
 		"THEME_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 	}

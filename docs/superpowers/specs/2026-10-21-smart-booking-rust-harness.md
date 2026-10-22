@@ -4,9 +4,9 @@ Feature specification · October 21, 2026
 
 ## Product and scope
 
-Add Booking to the existing People application in `apps/people-graph`, in this repository. The owner manages their booking page alongside their network, Your lens, and connected accounts. Visitors use a public link on the same site, verify their email, describe what they are building, and explain what they want to discuss. The feature uses the owner's meeting thesis, relationship evidence from the existing Rust `peoplegraph` harness, and an explicit VIP list to decide which booking experience to offer.
+Add Booking to the existing People application in `apps/people-graph`, in this repository. The owner manages their booking page alongside their network, Your lens, and connected accounts. Visitors use a public link on the same site, sign in with Google, describe what they are building, and explain what they want to discuss. The feature uses the owner's meeting thesis, relationship evidence from the existing Rust `peoplegraph` harness, and an explicit VIP list to decide which booking experience to offer.
 
-Use Rust PeopleGraph as the relationship engine. It already provides JSON commands and an authenticated HTTP query server. Add booking modules to the existing web app for intake, email verification, thesis evaluation, booking policy, approvals, and Google Calendar scheduling. Reuse People sign-in, the app's visual design, connected-account setup, and the harness's identity and scoring behavior. This is one product and repository; the native Rust service remains an internal runtime dependency.
+Use Rust PeopleGraph as the relationship engine. It already provides JSON commands and an authenticated HTTP query server. Add booking modules to the existing web app for intake, isolated Google visitor authentication, thesis evaluation, booking policy, approvals, and Google Calendar scheduling. Reuse People sign-in, the app's visual design, connected-account setup, and the harness's identity and scoring behavior. This is one product and repository; the native Rust service remains an internal runtime dependency. The approved visitor flow is Google-only and requires no custom email service or sender-domain setup.
 
 V1 enables one pilot owner with one explicitly configured PeopleGraph data source and one booking calendar. Existing People users do not automatically receive access to that owner's booking settings or data. Store all booking state with an owner key so additional owners can be enabled later with their own mappings and credentials. Start with approval required for all requests. The owner can enable automatic booking for the priority tier after reviewing decisions.
 
@@ -14,30 +14,33 @@ V1 enables one pilot owner with one explicitly configured PeopleGraph data sourc
 
 Add a Booking entry in People's existing navigation. Its private page contains Requests, Booking page, and Rules views. The owner can review requests, edit the public introduction, set availability and priority rules, and copy their booking link. Keep booking configuration on this dedicated page so the network graph remains focused on people and connections.
 
-Proposed routes, to be implemented:
+Booking routes:
 
 | Route | Audience and purpose |
 | --- | --- |
 | `/booking` | Existing People owner session; request inbox, settings, and share-link controls |
 | `/book/:slug` | Public booking page, for example `/book/kaya` after that slug is reserved by its owner |
 | `/api/booking/*` | Owner-authenticated settings, requests, approvals, and cancellations |
-| `/api/public/booking/*` | Public configuration, email-code flow, and limited visitor submission/booking actions |
+| `/api/public/booking/*` | Public configuration, Google sign-in initiation, and limited visitor submission/booking actions |
+| `/api/accounts/callback` | Existing registered Google callback; separate state prefixes distinguish visitor identity, owner Calendar consent, and existing account flows |
 
-The public slug resolves to a server-owned configuration. It never lets a visitor select a cache, People owner, Rust service host, or calendar directly. Bind visitor verification to the email, visitor session, and booking owner. A verified visitor receives limited booking permissions and never a People owner session or access to existing graph APIs. Reuse same-origin and owner authorization checks on private mutations.
+The public slug resolves to a server-owned configuration. It never lets a visitor select a cache, People owner, Rust service host, or calendar directly. Bind visitor authentication to the Google subject, normalized email, browser, slug and booking owner. A visitor receives limited booking permissions and never a People owner session or access to existing graph APIs. Reuse same-origin and owner authorization checks on private mutations.
 
-The route and page names above describe new work; they are not currently available on the live site.
+The Booking routes now implement Google-only visitor authentication, and fresh local validation, deployment and route/asset smoke checks have passed. Live Google sign-in and owner Calendar consent remain unverified, public intake is not configured, and the intended fresh Betaworks-owned Rust source is still missing.
 
 ## Visitor and owner experience
 
-1. A visitor opens the owner's booking link and enters their name, email, project description, and meeting purpose. Company, project URL, and a claimed introducer are optional.
-2. Verify the email using a short-lived, single-use code bound to the submitted address, booking session, and owner. Limit attempts and resends. Changing the email requires verification again. Verification establishes inbox control, not the truth of a name, employer, or project claim.
-3. The booking backend queries PeopleGraph using the verified email and evaluates the request against the owner's saved policy.
+1. A visitor opens the owner's booking link and signs in with Google. The visitor grant requests only `openid email`, with online access; it requests no Calendar or Gmail permissions and stores no visitor access or refresh token.
+2. Use browser-bound PKCE and a single-use state/nonce flow through the existing registered `/api/accounts/callback`. OAuth state expires after ten minutes. Validate the Google token signature, issuer, audience, expiration, nonce and verified-email claim before issuing a separate one-hour visitor session. Store the subject as `opaque('booking-google-sub', sub, TOKEN_SECRET)` and bind requests and sessions to this hash plus the normalized email. A request body cannot select its identity. Switching accounts does not recover a request unless both subject and email match; legacy email-code records do not automatically acquire Google authority.
+3. The visitor provides their name, project description and meeting purpose; project URL and claimed introducer are optional. Google-authoritative Gmail addresses and verified emails with a signed Workspace `hd` claim may be used for exact PeopleGraph lookup and VIP rules. Other third-party addresses attached to Google accounts can submit for review, but receive no PeopleGraph lookup or VIP/network priority. Google sign-in does not verify a name, employer, project claim or referral.
 4. Show the visitor the eligible slots, an approval-request flow, or a friendly asynchronous submission option. Never display their internal tier, private relationship evidence, scores, or the owner's private thesis explanation.
 5. The owner dashboard shows every request or automatic booking, its concise rationale, supporting facts, uncertainty, and policy version. The owner can approve, decline, or override a decision. Automatic bookings are already confirmed and use cancellation controls rather than a misleading pending-approval button.
 
 The owner configures the meeting thesis, examples of desired and undesired requests, VIP emails, working hours, preferred availability windows, buffers, daily and weekly limits, and whether priority bookings can be automatic. Initial editable defaults: 30-minute meetings, 24-hour minimum notice, 10-minute buffers, and a 28-day booking horizon. Review-tier slots start at least seven days out. All slots obey calendar availability and owner limits.
 
 The thesis is an explicit owner-approved booking policy. Prefill it from the signed-in owner's confirmed Your lens fields through the existing internal owner-lens service, with manual entry when the fields are empty. The owner reviews and saves a versioned booking-policy snapshot. Later lens changes may prompt a suggested update, but do not silently change eligibility. The Rust API does not need to expose the lens for this internal integration. Unaccepted Honcho suggestions must never change booking policy. Each submitted request stores a private `policySnapshot` of the settings used, excluding the full VIP list and recording only the visitor’s `vipMatch`; the decision also retains its policy revision. This is an audit record, not an exemption from current availability and scheduling limits. A later policy revision prevents automatic upgrading of the old request, and an automatic-selection recheck preserves the initial decision.
+
+Configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `MAIL_TOKEN_KEY` and `TOKEN_SECRET` for visitor sign-in. Public intake additionally requires pilot access, the owner's separate Calendar consent, a saved thesis and an enabled page. A fresh, owner-matched Rust source remains required for automatic eligibility. No sender binding, custom notification service, domain verification or DNS change is part of activation.
 
 ## Decision rules
 
@@ -47,8 +50,8 @@ Apply the following policy in order:
 
 | Condition | Outcome |
 | --- | --- |
-| Required verification is incomplete | Do not offer or confirm a booking |
-| Identity is ambiguous, the configured People source is unavailable or stale, or model output cannot be validated | Review |
+| Required Google visitor authentication is incomplete | Do not offer or confirm a booking |
+| Google has not established email authority, identity is ambiguous, the configured People source is unavailable or stale, or model output cannot be validated | Review |
 | Exact verified VIP email, or an owner-confirmed alias of that VIP | Priority |
 | Strong thesis fit supported by specific submission details, with no unresolved material ambiguity | Priority, including people new to the network |
 | Exact verified primary email matches an existing contact in the fresh configured source, and the meeting purpose has possible thesis fit | Priority; relationship score alone is not sufficient |
@@ -63,9 +66,11 @@ Apply the following policy in order:
 
 A lookup returning `not_found` against a verified fresh cache represents a new visitor and does not lower thesis fit. A failed lookup is an unknown result and routes to review. A documented introduction can support review; it does not override a clear mismatch or the owner's calendar limits.
 
+For a non-authoritative third-party Google email, skip the relationship lookup and record source context as unavailable with an explanation. Force review and set the policy snapshot's `vipMatch` to false. Automatic selection requires both the current session's email authority and the authority recorded when the request began. A later authoritative sign-in cannot silently upgrade an uncertain request; loss of authority also invalidates cached priority.
+
 Use the model to return structured fit (`strong`, `possible`, `weak`, or `uncertain`), concise reasons, cited submission or authorized context fields, and uncertainties. Validate the result. Application code applies the policy and executes calendar actions. Treat visitor text, links, and stored excerpts as data, never as instructions to modify policy, reveal contacts, or invoke tools.
 
-Store a private decision record with the verification reference, People source and freshness, evidence used, fit result, outcome, policy version, model version, and any owner override. Feedback can inform later suggestions, but must not silently rewrite the policy.
+Store a private decision record with the opaque Google subject, email-authority flag, People source and freshness, evidence used, fit result, outcome, policy version, model version, and any owner override. Feedback can inform later suggestions, but must not silently rewrite the policy.
 
 ## Existing Rust integration
 
@@ -146,7 +151,7 @@ Preserve score units: depth is 1–5, recency 1–10, and combined 0–100. `eff
 
 Create a small adapter inside `apps/people-graph` around the existing Rust commands. This adapter is new feature code; its normalized results are not existing Rust API fields.
 
-1. Resolve using `/score` with the verified email. An exact primary email match is eligible for relationship lookup. If it resolves through an alias, use that association for automatic priority only when the alias is owner-confirmed or its provenance is otherwise verified. Existing lookup chooses the first matching alias and does not report alias collisions; ambiguous or unverified alias resolution requires review.
+1. Resolve using `/score` with a Google-authoritative verified email. An exact primary email match is eligible for relationship lookup. If it resolves through an alias, use that association for automatic priority only when the alias is owner-confirmed or its provenance is otherwise verified. Existing lookup chooses the first matching alias and does not report alias collisions; ambiguous or unverified alias resolution requires review. Third-party Google-account addresses without Gmail or signed Workspace authority do not trigger this lookup.
 2. After resolution, query `/contact-card` using the returned primary email if additional profile information is needed. Use `source_of_truth.contact` for the primary record. The card can fall back to a fuzzy match, and `core.emails` combines candidate external sources, including some company-only matches. Neither a returned card nor its combined email list independently verifies identity. Keep external candidates separate for owner review.
 3. Retrieve neighbors or a specific edge only when relevant, such as investigating a claimed introducer. Do not download the entire network for every visitor. Empty edge lists establish only that no matching edge was returned.
 4. Map results to explicit `matched`, `not_found`, `ambiguous`, `stale`, or `unavailable` outcomes. A transport, parsing, authorization, owner-source mismatch, or missing-cache error is not `not_found`.
@@ -170,6 +175,8 @@ Owner   → People sign-in → Booking settings and requests → existing owner-
 
 Extend the existing People Cloudflare Worker and static assets for the public and private booking pages. Add owner-scoped booking tables to the existing D1 database and a separate booking reservation Durable Object; keep booking state out of the mail-sync object. Run the native Rust service on a persistent host or container with access to the intended cache, behind an authenticated private connection or HTTPS gateway. A deployed Worker cannot reach the developer laptop's loopback address, and the current native binary uses filesystem and TCP APIs rather than running unchanged inside a standard Worker.
 
+The Google-only update adds D1 tables `booking_google_sessions` and `booking_visitor_oauth` without dropping or converting existing records. Old OTP challenges and email-code sessions remain inert and cannot authorize Google visitor access; normal expiry cleanup still applies. Legacy durable email outbox/history records are ignored and never drive further email retries. Preserve settings, requests, encrypted Calendar grants and `booking`/`cancelling` reconciliation state. The existing Booking Durable Object namespace and `booking-v1` migration remain in place.
+
 Reuse the existing cache producer and establish a scheduled, atomic refresh or delivery process to the service host. Running `serve` does not perform Gmail sync. The native cache and the web mail-sync Durable Object are currently separate stores; putting Booking in this repository does not unify them. Show the selected relationship source and freshness in owner settings, establish the explicit People-owner-to-cache-owner mapping, and verify the intended source before enabling automatic bookings. Claims that Booking uses the exact network visible in the graph require a tested data bridge or shared source. Keep source-specific private context separated; Booking receives only the fields needed for its decision.
 
 The current HTTP server is a small synchronous TCP server. Before production, provide bounded connections, request and response limits, timeouts, rate limiting, and redacted access logs through the gateway or a focused server improvement. Prevent a slow client from blocking queries. Keep the service private and restrict the booking credential's reachable routes to the required reads. Never expose the Rust token, filesystem paths, raw response envelopes, or other contacts' details to visitors.
@@ -188,17 +195,21 @@ Request states are `pending_approval`, `booking`, `booked`, `needs_new_slot`, `d
 
 Persist `cancelling` before requesting Calendar deletion and keep its reservation protected until the provider confirms deletion or the event is already absent. An uncertain deletion must not become `cancelled` or return to `booking`. Durable reconciliation retries the same event ID after restarts; the owner can use **Retry cancellation**. Visitors see **Cancelling your booking** and poll their own status until cancellation completes. The equivalent **Retry confirmation** and status polling apply to `booking`.
 
-Pausing public intake blocks new requests and slot selection without removing access to existing request status. A valid visitor session can read its own status even when the booking calendar is disconnected or email delivery is unavailable. The public page offers **View an existing request** for email verification recovery only while email delivery and pilot access remain available (`recoveryAvailable`). Paused recovery shows existing statuses or an empty-history message and never exposes new intake or time selection.
+Pausing public intake blocks new requests and slot selection without removing access to existing request status. A valid Google visitor session can read its own status even when the booking calendar is disconnected. The public page offers **View an existing request** for Google sign-in recovery while sign-in configuration and pilot access remain available (`recoveryAvailable`). Recovery requires the same Google subject and email as the request. Paused recovery shows existing statuses or an empty-history message and never exposes new intake or time selection.
 
-Owner approval and decline require authenticated, idempotent POST actions. Opening a link or an email preview must not approve a meeting. Send the calendar invitation only after successful creation. Keep private scores, referral analysis, and policy reasoning out of the event description and visitor notifications.
+Owner approval and decline require authenticated, idempotent POST actions. Opening a link must not approve a meeting. Google Calendar sends meeting invitations/confirmation and cancellation updates through the owner grant. Request, review, decline and new-slot updates appear in the Booking dashboard and visitor status page; Booking sends no custom email notifications. Keep private scores, referral analysis and policy reasoning out of event descriptions and Calendar notifications.
 
 ## Delivery and acceptance
+
+Local verification on October 21, 2026 passed 868 app tests (148 frontend and 720 TypeScript/core) and 22 workerd/D1/SQLite runtime tests. An independent browser-suite rerun passed owner readiness/settings/actions and visitor Google OAuth, draft restoration, request/slot, paused access and mobile flows; the mobile screenshot was inspected. Final typecheck, generated Wrangler types, asset builds, deployment dry run and `git diff --check` passed. The earlier 43 passing Rust tests apply to the Rust code, which is unchanged by this Google authentication update.
+
+The Google-only deployment completed on October 21, 2026: ten additive SQL queries succeeded, both deployment asset builds passed, and Worker version `7107c5cb-1837-415c-83d2-576500c59f7a` has no custom email bindings. Live `/`, `/booking`, `/book/kaya`, `book.mjs` and `booking.mjs` checks returned 200, with Google sign-in/readiness and no OTP flow in the bundles. The unauthenticated owner API returned 401; the public `kaya` API returned 404 because no slug is saved. These route/asset checks do not verify live Google OAuth or owner Calendar consent. Public intake remains unconfigured, and the fresh Betaworks-owned Rust source is still missing.
 
 Build in this order:
 
 1. Add the Booking navigation entry, owner page, and public slug route in `apps/people-graph`, using existing People owner authentication and isolated visitor sessions.
 2. Implement the Rust adapter and fixtures against the documented envelope, including not-found, stale, ambiguous alias, and service-error cases. Establish the owner/source mapping.
-3. Build verified visitor intake, owner-approved thesis prefill from Your lens, VIP settings, structured fit evaluation, and the approval dashboard. Initially require approval for all bookings.
+3. Build Google visitor sign-in with identity-only scopes, owner-approved thesis prefill from Your lens, VIP settings, structured fit evaluation, and the approval dashboard. Initially require approval for all bookings.
 4. Add availability, conflict handling, event creation, cancellation, and retry recovery.
 5. Connect the actual Rust host and cache refresh process. Verify the intended owner and freshness, then enable the owner's optional automatic-booking setting.
 
@@ -212,7 +223,10 @@ Acceptance tests must demonstrate:
 - VIP status is an explicit booking rule; a high People score alone cannot bypass approval.
 - Stale, missing, mismatched-owner, and malformed source results produce reviewable requests.
 - Submission text cannot override policy or trigger arbitrary commands, URLs, or contact queries.
-- Expired or replayed email codes fail, and changing the address requires reverification.
+- Expired or replayed Google OAuth state, a wrong browser/nonce, or an invalid signed token fails. Visitor scopes are only `openid email`, and owner Calendar/Gmail credentials are not exposed to visitors.
+- Sessions expire after one hour. A different Google subject cannot recover a request through the same email, request ID or idempotency key. Legacy OTP sessions and subjectless requests do not inherit Google visitor access.
+- Third-party Google emails without Gmail or signed Workspace authority skip PeopleGraph, cannot receive VIP/network priority, and remain in review even when the submission has strong fit. Current and original authority are both required for automatic booking.
+- Legacy email outbox alarms send nothing and do not reschedule themselves; Calendar confirmation/cancellation reconciliation still works after restart.
 - Review requests offer dates at least seven days out and remain unconfirmed until approved.
 - Repeated approval, duplicate submission, and uncertain Calendar responses create at most one app booking event.
 - Concurrent requests, external calendar conflicts, daylight-saving changes, and owner limits are handled without false confirmations.

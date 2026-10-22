@@ -1,6 +1,7 @@
 import {repairLegacyGmailContext} from './gmail-context-graph';
 import {bookingOwnerRoute,bookingPublicRoute,bookingOAuthCallback} from './booking-routes';
 import type {BookingEnv} from './booking-types';
+import {completeBookingSignIn} from './booking-verification';
 export {BookingCoordinator} from './booking-coordinator';
 import {ownerLensRoute} from './owner-lens-routes';
 import {matchingWorkspaces} from './workspace-identity';
@@ -56,6 +57,7 @@ export default {
 				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
 				return await bookingOwnerRoute(request,env,user.email);
 			}
+			if(pathname==='/api/accounts/callback'&&url.searchParams.get('state')?.startsWith('booking-visitor.'))return await completeBookingSignIn(env,request);
 			if(pathname==='/api/accounts/callback'&&url.searchParams.get('state')?.startsWith('booking.'))return await bookingOAuthCallback(request,env);
 			if(pathname==='/api/lens'||pathname==='/api/lens/matches'){
 				const user=await requireGoogleUser(request,env);

@@ -1,19 +1,24 @@
 import {DurableObject} from 'cloudflare:workers';
-import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings} from './booking-types';
+import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings,BookingVisitorIdentity} from './booking-types';
 import {BookingStore} from './booking-store';
-import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,decideBooking,generateBookingSlots} from './booking-policy';
+import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,decideBooking,generateBookingSlots,normalizeBookingEmail} from './booking-policy';
 import {lookupBookingPerson} from './booking-people';
 import {assessBookingFit} from './booking-fit';
-import {bookingCalendarBusy,bookingEventId,findBookingEvent,createBookingEvent,cancelBookingEvent,sendBookingNotice} from './booking-providers';
+import {bookingCalendarBusy,bookingEventId,findBookingEvent,createBookingEvent,cancelBookingEvent} from './booking-providers';
 
 export async function bookingReadiness(env:BookingEnv,owner:string):Promise<BookingReadiness>{
  const calendar=!!await new BookingStore(env.DB).calendar(owner);
- const email=!!(env.BOOKING_EMAIL&&env.BOOKING_EMAIL_FROM&&env.BOOKING_EMAIL_READY==='true');
+ const signIn=[env.GOOGLE_CLIENT_ID,env.GOOGLE_CLIENT_SECRET,env.MAIL_TOKEN_KEY,env.TOKEN_SECRET].every(value=>typeof value==='string'&&!!value.trim());
  const pilot=env.BOOKING_OWNER_EMAIL?.toLowerCase()===owner;
  const people=!!(env.PEOPLEGRAPH_HOST&&env.PEOPLEGRAPH_TOKEN&&env.PEOPLEGRAPH_OWNER_EMAIL?.toLowerCase()===owner);
- return {email,calendar,people,pilot,issues:[...(!pilot?['Booking is not enabled for this account yet.']:[]),...(!email?[`Verify ${env.BOOKING_EMAIL_FROM||'your booking sender'} before visitors can receive email codes.`]:[]),...(!calendar?['Connect Google Calendar to check and reserve times.']:[]),...(!people?['Your Rust PeopleGraph source is not connected. Requests will need your review.']:[])]};
+ return {signIn,calendar,people,pilot,issues:[...(!pilot?['Booking is not enabled for this account yet.']:[]),...(!signIn?['Configure Google sign-in before visitors can request a meeting.']:[]),...(!calendar?['Connect Google Calendar to check and reserve times.']:[]),...(!people?['Your Rust PeopleGraph source is not connected. Requests will need your review.']:[])]};
 }
 export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd};}
+const uncertainEmail=()=>({status:'unavailable' as const,reason:'Google has not established authority over this email address. The owner must review this request.'});
+function verifiedVisitor(visitor:BookingVisitorIdentity):BookingVisitorIdentity{
+ if(!visitor||typeof visitor.subject!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(visitor.subject)||typeof visitor.emailAuthoritative!=='boolean')throw Error('verification_required');
+ return {email:normalizeBookingEmail(visitor.email),subject:visitor.subject,emailAuthoritative:visitor.emailAuthoritative};
+}
 
 /** One coordinator per owner. Every mutation uses the same queue; durable request
  * status/event IDs survive a restart, including uncertain Calendar writes. */
@@ -23,9 +28,9 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
  constructor(ctx:DurableObjectState,env:BookingEnv){
   super(ctx,env);this.store=new BookingStore(env.DB);
   ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_identity(owner TEXT PRIMARY KEY)');
-  ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');
   ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_reconcile(id TEXT PRIMARY KEY,attempts INTEGER NOT NULL DEFAULT 0)');
-  ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_notice_sent(id TEXT PRIMARY KEY)');
+  // Legacy email outbox/history tables remain untouched and inert. Old alarms
+  // may wake once, but only Calendar reconciliation can schedule another alarm.
  }
  private serial<T>(owner:string,fn:()=>Promise<T>):Promise<T>{
   const run=this.tail.then(async()=>{
@@ -39,7 +44,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   const current=await this.store.settings(owner)||defaultBookingSettings(owner);
   if(!input||typeof input!=='object'||(input as Record<string,unknown>).revision!==current.revision)throw Error('settings_changed');
   const settings=validateBookingSettings(input,current);
-  if(settings.enabled){const ready=await bookingReadiness(this.env,owner);if(!ready.pilot||!ready.email||!ready.calendar)throw Error('setup_required');}
+  if(settings.enabled){const ready=await bookingReadiness(this.env,owner);if(!ready.pilot||!ready.signIn||!ready.calendar)throw Error('setup_required');}
   await this.store.saveSettings(settings,current.revision);return settings;
  });}
  async saveCalendar(owner:string,record:BookingCalendarRecord){return this.serial(owner,async()=>{if(record.owner!==owner||record.email!==owner)throw Error('wrong_owner');await this.store.saveCalendar(record);});}
@@ -48,30 +53,34 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   await this.store.deleteCalendar(owner);
   const s=await this.store.settings(owner);if(s)await this.store.saveSettings({...s,enabled:false,revision:s.revision+1},s.revision);
  });}
- async submit(owner:string,email:string,slug:string,input:Record<string,unknown>){return this.serial(owner,async()=>{
+ async submit(owner:string,identity:BookingVisitorIdentity,slug:string,input:Record<string,unknown>){return this.serial(owner,async()=>{
+  const visitor=verifiedVisitor(identity),email=visitor.email;
   const settings=await this.active(owner,slug);
   if(typeof input.idempotencyKey!=='string'||!/^[a-zA-Z0-9_-]{16,100}$/.test(input.idempotencyKey))throw Error('invalid_request_key');
-  const previous=await this.store.prior(owner,email,input.idempotencyKey);if(previous)return previous;
+  const previous=await this.store.prior(owner,email,input.idempotencyKey);if(previous){this.assertVisitor(previous,visitor);return previous;}
   await this.store.limit(`submit:${owner}:${email}`,5,86400000);
-  const submission=validateBookingSubmission(input),[fit,people]=await Promise.all([assessBookingFit(this.env,settings,submission),lookupBookingPerson(this.env,owner,email)]);
+  const submission=validateBookingSubmission(input),[fit,people]=await Promise.all([assessBookingFit(this.env,settings,submission),visitor.emailAuthoritative?lookupBookingPerson(this.env,owner,email):Promise.resolve(uncertainEmail())]);
   const decision=decideBooking(settings,email,fit,people),now=Date.now();
   const {vipEmails,...snapshot}=settings;
-  const record:BookingRequestRecord={...submission,id:crypto.randomUUID(),owner,email,createdAt:now,updatedAt:now,status:decision.tier==='async'?'async_submitted':'pending_approval',decision,slotStart:null,slotEnd:null,eventId:null,idempotencyKey:input.idempotencyKey};
-  record.policySnapshot={...snapshot,vipMatch:vipEmails.includes(email)};
+  const record:BookingRequestRecord={...submission,id:crypto.randomUUID(),owner,email,visitorSubject:visitor.subject,emailAuthoritative:visitor.emailAuthoritative,createdAt:now,updatedAt:now,status:decision.tier==='async'?'async_submitted':'pending_approval',decision,slotStart:null,slotEnd:null,eventId:null,idempotencyKey:input.idempotencyKey};
+  record.policySnapshot={...snapshot,vipMatch:visitor.emailAuthoritative&&vipEmails.includes(email)};
   await this.store.add(record);
-  if(record.status==='async_submitted')await this.notice(owner,record.id+':submitted','New submission in People Booking','Someone shared their project. Review it in '+this.origin()+'/booking');
   return record;
  });}
- async slots(owner:string,email:string,slug:string,id:string){return this.serial(owner,async()=>{
-  const s=await this.active(owner,slug),r=await this.required(owner,id);if(r.email!==email)throw Error('not_found');
+ async slots(owner:string,identity:BookingVisitorIdentity,slug:string,id:string){return this.serial(owner,async()=>{
+  const visitor=verifiedVisitor(identity),email=visitor.email;
+  const s=await this.active(owner,slug),r=await this.required(owner,id);this.assertVisitor(r,visitor);
   if(!['pending_approval','needs_new_slot'].includes(r.status))throw Error('request_closed');
+  await this.reviewUncertainIdentity(s,r,visitor);
   await this.store.limit(`slots:${owner}:${email}`,30,3600000);
   return this.available(s,r);
  });}
- async selectSlot(owner:string,email:string,slug:string,id:string,start:string){return this.serial(owner,async()=>{
-  const settings=await this.active(owner,slug),r=await this.required(owner,id);if(r.email!==email)throw Error('not_found');
+ async selectSlot(owner:string,identity:BookingVisitorIdentity,slug:string,id:string,start:string){return this.serial(owner,async()=>{
+  const visitor=verifiedVisitor(identity),email=visitor.email;
+  const settings=await this.active(owner,slug),r=await this.required(owner,id);this.assertVisitor(r,visitor);
   if(['booked','booking','cancelling'].includes(r.status))return r;
   if(!['pending_approval','needs_new_slot'].includes(r.status))throw Error('request_closed');
+  await this.reviewUncertainIdentity(settings,r,visitor);
   if(r.status==='pending_approval'&&r.slotStart===start)return r;
   await this.store.limit(`select:${owner}:${email}`,10,86400000);
   if(!Number.isFinite(Date.parse(start)))throw Error('invalid_request');
@@ -79,7 +88,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   r.slotStart=slot.start;r.slotEnd=slot.end;r.status='pending_approval';r.updatedAt=Date.now();
   await this.store.update(r);
   // A policy change always falls back to approval; it never upgrades an old decision.
-  if(settings.autoBookPriority&&r.decision.tier==='priority'&&settings.revision===r.decision.policyRevision){
+  if(visitor.emailAuthoritative&&r.emailAuthoritative===true&&settings.autoBookPriority&&r.decision.tier==='priority'&&settings.revision===r.decision.policyRevision){
    // Recheck source at selection, so cached tier cannot outlive source availability.
    const people=await lookupBookingPerson(this.env,owner,email);
    const checked=decideBooking(settings,email,r.decision.fit,people);
@@ -89,7 +98,6 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
     r.status='needs_new_slot';await this.store.update(r);return r;
    }
   }
-  await this.notice(owner,r.id+':review','Booking request to review','A visitor requested a time. Approve or decline in '+this.origin()+'/booking');
   return r;
  });}
  async act(owner:string,id:string,action:'approve'|'decline'|'cancel'){return this.serial(owner,async()=>{
@@ -99,7 +107,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
    if(r.status==='booking')return this.book(s,r);
    if(!['pending_approval','needs_new_slot'].includes(r.status)||!r.slotStart)throw Error('no_pending_slot');
    const available=await this.available(s,r,r.slotStart);
-   if(!available.some(v=>v.start===r.slotStart&&v.end===r.slotEnd)){r.status='needs_new_slot';r.updatedAt=Date.now();await this.store.update(r);await this.notice(r.email,r.id+':newslot','Please choose another time','That time is no longer available. Open '+this.origin()+'/book/'+s.slug+' and verify your email to choose another time.');return r;}
+   if(!available.some(v=>v.start===r.slotStart&&v.end===r.slotEnd)){r.status='needs_new_slot';r.updatedAt=Date.now();await this.store.update(r);return r;}
    return this.book(s,r);
   }
   if(action==='decline'){
@@ -110,7 +118,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
    return this.cancel(r);
   }
   r.updatedAt=Date.now();await this.store.update(r);
-  await this.notice(r.email,r.id+':'+r.status,r.status==='declined'?'An update on your meeting request':'Your meeting was cancelled',r.status==='declined'?'Thanks for sharing your work. A meeting is not possible right now. Your submission has been received.':'Your meeting has been cancelled.');return r;
+  return r;
  });}
  private async cancel(r:BookingRequestRecord){
   if(r.status==='cancelled')return r;
@@ -125,10 +133,21 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   try{await cancelBookingEvent(this.env,calendar,r.eventId);}catch{throw Error('booking_in_progress');}
   r.status='cancelled';r.updatedAt=Date.now();await this.store.update(r);
   this.ctx.storage.sql.exec('DELETE FROM booking_reconcile WHERE id=?',r.id);
-  await this.notice(r.email,r.id+':cancelled','Your meeting was cancelled','Your meeting has been cancelled.');return r;
+  return r;
  }
- private async active(owner:string,slug:string){const s=await this.store.settings(owner);const ready=await bookingReadiness(this.env,owner);if(!s||s.slug!==slug||!s.enabled||!ready.email||!ready.calendar||!ready.pilot)throw Error('booking_unavailable');return s;}
+ private async active(owner:string,slug:string){const s=await this.store.settings(owner);const ready=await bookingReadiness(this.env,owner);if(!s||s.slug!==slug||!s.enabled||!ready.signIn||!ready.calendar||!ready.pilot)throw Error('booking_unavailable');return s;}
  private async required(owner:string,id:string){const r=await this.store.request(owner,id);if(!r)throw Error('not_found');return r;}
+ private assertVisitor(r:BookingRequestRecord,visitor:BookingVisitorIdentity){if(!r.visitorSubject||r.visitorSubject!==visitor.subject||r.email!==visitor.email)throw Error('not_found');}
+ private async reviewUncertainIdentity(settings:BookingSettings,r:BookingRequestRecord,visitor:BookingVisitorIdentity){
+  if(visitor.emailAuthoritative&&r.emailAuthoritative===true)return;
+  // A later login cannot upgrade the authority under which the request began.
+  // Conversely, a loss of email authority invalidates any cached VIP decision.
+  r.initialDecision=r.initialDecision||r.decision;
+  r.decision=decideBooking(settings,r.email,r.decision.fit,uncertainEmail());
+  r.emailAuthoritative=false;r.updatedAt=Date.now();
+  if(r.policySnapshot)r.policySnapshot={...r.policySnapshot,vipMatch:false};
+  await this.store.update(r);
+ }
  private async available(s:BookingSettings,r:BookingRequestRecord,targetStart?:string){
   const calendar=await this.store.calendar(s.owner);if(!calendar)throw Error('calendar_unavailable');
   const now=Date.now(),busy=await bookingCalendarBusy(this.env,calendar,new Date(now).toISOString(),new Date(now+(s.horizonDays+1)*86400000).toISOString());
@@ -158,13 +177,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   try{await createBookingEvent(this.env,calendar,r,s);}catch{throw Error('booking_in_progress');}
   r.status='booked';r.updatedAt=Date.now();await this.store.update(r);
   this.ctx.storage.sql.exec('DELETE FROM booking_reconcile WHERE id=?',r.id);
-  await this.notice(s.owner,r.id+':booked','Meeting booked in People','A meeting has been added to your Calendar. View details in '+this.origin()+'/booking');return r;
- }
- private origin(){return this.env.APP_ORIGIN||'https://people-graph.kayarjones901.workers.dev';}
- private async notice(email:string,id:string,subject:string,body:string){
-  if(this.ctx.storage.sql.exec('SELECT id FROM booking_notice_sent WHERE id=?',id).toArray().length)return;
-  this.ctx.storage.sql.exec('INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES(?,?,?,?)',id,email,subject,body);
-  await this.ctx.storage.setAlarm(Date.now()+1000);
+  return r;
  }
  async alarm(){
   const owner=this.ctx.storage.sql.exec<{owner:string}>('SELECT owner FROM booking_identity LIMIT 1').toArray()[0]?.owner;if(!owner)return;
@@ -177,9 +190,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
     this.ctx.storage.sql.exec('UPDATE booking_reconcile SET attempts=attempts+1 WHERE id=?',item.id);
     if(settings)try{if(r.status==='cancelling')await this.cancel(r);else await this.book(settings,r);}catch{}
    }
-   const rows=this.ctx.storage.sql.exec<{id:string;email:string;subject:string;body:string;attempts:number}>('SELECT * FROM booking_outbox WHERE attempts<8 LIMIT 10').toArray();
-   for(const row of rows){try{await sendBookingNotice(this.env,row.email,row.subject,row.body);this.ctx.storage.sql.exec('INSERT OR IGNORE INTO booking_notice_sent(id) VALUES(?)',row.id);this.ctx.storage.sql.exec('DELETE FROM booking_outbox WHERE id=?',row.id);}catch{this.ctx.storage.sql.exec('UPDATE booking_outbox SET attempts=attempts+1 WHERE id=?',row.id);}}
-   if(this.ctx.storage.sql.exec('SELECT id FROM booking_outbox WHERE attempts<8 UNION ALL SELECT id FROM booking_reconcile WHERE attempts<8 LIMIT 1').toArray().length)await this.ctx.storage.setAlarm(Date.now()+300000);
+   if(this.ctx.storage.sql.exec('SELECT id FROM booking_reconcile WHERE attempts<8 LIMIT 1').toArray().length)await this.ctx.storage.setAlarm(Date.now()+300000);
   });
  }
 }

@@ -19,18 +19,23 @@ try{
  page.setDefaultTimeout(4000);page.on('pageerror',error=>errors.push(error.message));
  let settings={owner:'kaya@example.test',revision:1,slug:'kaya',displayName:'Kaya Jones',intro:'A little context makes a better conversation.',thesis:'Applied AI for small teams',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:['sam@example.test'],enabled:false,autoBookPriority:false};
  const request={id:'r1',owner:settings.owner,email:'sam@example.test',name:'Sam Rivera',project:'An agent research studio',purpose:'Compare deployment lessons',projectUrl:'https://example.test',referrer:'Alex',createdAt:1792591200000,updatedAt:1792591200000,status:'pending_approval',slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z',eventId:null,idempotencyKey:'r1',decision:{tier:'review',reasons:['Relevant applied research'],uncertainties:['Introduction is unverified'],policyRevision:1,fit:{fit:'possible',reasons:['Relevant applied research'],evidence:['Project: agent research studio'],model:'fixture'},people:{status:'matched',name:'Sam',email:'sam@example.test',reason:'Exact address match',lastSync:'2026-10-21T09:00:00Z'}}};
- let ownerStatus=200,failSave=false,conflict=false,available=true,publicNext='select_slot',slotNext='pending_approval',failSlot=false,failVerify=false,ready=false,saveCalls=0,slugConflict=false,visitorHistory=[],statusValue='pending_approval',failSubmit=false,recoveryAvailable=true;
+ let ownerStatus=200,failSave=false,conflict=false,available=true,publicNext='select_slot',slotNext='pending_approval',failSlot=false,failSignIn=false,ready=false,saveCalls=0,slugConflict=false,visitorHistory=[],statusValue='pending_approval',failSubmit=false,recoveryAvailable=true,visitor=null,oauthRequestId=null,invalidSignInUrl=false,expireSubmit=false,signInReady=true,oauthIdentityKey='identity-visitor';
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname,body=req.method()==='POST'?req.postDataJSON():null;
   calls.push({path,body});const reply=(value,status=200)=>route.fulfill({status,json:value});
-  if(path==='/api/booking')return reply(ownerStatus===200?{account:{email:settings.owner},settings,requests:[request],readiness:{email:ready,calendar:ready,people:true,pilot:true,issues:ready?[]:['Connect a booking calendar.']},lens:{focus:'Practical agent interfaces',needs:'Design partners',offers:'Product feedback'},calendar:ready?{email:settings.owner}:null}:{error:'Sign in required'},ownerStatus);
+  if(path==='/api/booking')return reply(ownerStatus===200?{account:{email:settings.owner},settings,requests:[request],readiness:{signIn:ready&&signInReady,calendar:ready,people:true,pilot:true,issues:ready?[]:['Connect a booking calendar.']},lens:{focus:'Practical agent interfaces',needs:'Design partners',offers:'Product feedback'},calendar:ready?{email:settings.owner}:null}:{error:'Sign in required'},ownerStatus);
   if(path==='/api/booking/settings'){saveCalls++;if(slugConflict){slugConflict=false;return reply({error:'slug_taken'},409);}if(failSave){failSave=false;return reply({error:'Please try again'},503);}if(conflict){conflict=false;settings={...settings,revision:2,intro:'Changed elsewhere'};return reply({error:'settings_changed'},409);}settings={...body,revision:settings.revision+1};return reply({settings});}
   if(path==='/api/booking/calendar/connect')return reply({url:'https://accounts.google.com/o/oauth2/v2/auth?state=booking-fixture'});
   if(path==='/api/booking/requests/r1/approve'){request.status='booked';return reply({request});}
   if(path==='/api/booking/requests/r1/cancel'){request.status='cancelled';return reply({request});}
-  if(path==='/api/public/booking/kaya')return reply({page:{displayName:'Kaya Jones',intro:'A little context makes a better conversation.',timezone:settings.timezone,durationMinutes:30},available,recoveryAvailable});
-  if(path.endsWith('/challenge'))return reply({challengeId:'challenge-1'});
-  if(path.endsWith('/verify')){if(failVerify){failVerify=false;return reply({error:'That code has expired'},400);}return reply({verified:true,email:'visitor@example.test'});}
+  if(path==='/api/public/booking/kaya')return reply({page:{displayName:'Kaya Jones',intro:'A little context makes a better conversation.',timezone:settings.timezone,durationMinutes:30},available,recoveryAvailable,visitor});
+  if(path==='/api/public/booking/kaya/sign-in'){
+   if(failSignIn){failSignIn=false;return reply({error:'sign_in_unavailable'},503);}
+   oauthRequestId=body.requestId||null;
+   return reply({url:invalidSignInUrl?'https://accounts.google.com.evil.test/sign-in':'https://accounts.google.com/o/oauth2/v2/auth?state=visitor-fixture'});
+  }
+  if(path.startsWith('/api/public/booking/kaya/')&&!visitor)return reply({error:'sign_in_required'},401);
+  if(path==='/api/public/booking/kaya/requests'&&req.method()==='POST'&&expireSubmit){expireSubmit=false;visitor=null;return reply({error:'sign_in_required'},401);}
   if(path==='/api/public/booking/kaya/requests'&&req.method()==='GET')return reply({requests:visitorHistory});
   if(path==='/api/public/booking/kaya/requests'&&failSubmit){failSubmit=false;return reply({error:'booking_failed'},503);}
   if(path==='/api/public/booking/kaya/requests')return reply({request:{id:'visit-1',status:publicNext==='async'?'async_submitted':'pending_approval',slotStart:null,slotEnd:null},next:publicNext});
@@ -42,7 +47,7 @@ try{
  await page.goto(origin+'/booking');
  await page.getByRole('tab',{name:'Requests',exact:true}).focus();await page.keyboard.press('ArrowRight');
  assert.equal(await page.getByRole('tab',{name:'Booking page',exact:true}).getAttribute('aria-selected'),'true','arrow keys navigate owner tabs');
- assert.equal(await page.getByRole('checkbox',{name:'Accept booking requests'}).isDisabled(),true,'publishing waits for configured email and calendar');
+ assert.equal(await page.getByRole('checkbox',{name:'Accept booking requests'}).isDisabled(),true,'publishing waits for Google sign-in and calendar readiness');
  const intro=page.getByRole('textbox',{name:'Introduction',exact:true});await intro.fill('My edited introduction');
  failSave=true;await page.getByRole('button',{name:'Save changes',exact:true}).click();
  await page.getByRole('status').filter({hasText:'Please try again'}).waitFor();
@@ -67,7 +72,12 @@ try{
  await page.getByRole('button',{name:'Cancel booking',exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Approve request',exact:true}).count(),0,'confirmed bookings must have cancellation, not approval');
  ready=true;await page.reload();await page.getByRole('tab',{name:'Booking page',exact:true}).click();
- assert.equal(await page.getByRole('checkbox',{name:'Accept booking requests'}).isDisabled(),false);
+ assert.equal(await page.getByRole('checkbox',{name:'Accept booking requests'}).isDisabled(),false,'Google sign-in and calendar readiness enable publishing without email delivery');
+ assert.match(await page.locator('.setup-list').innerText(),/Google sign-in.*Ready/);
+ assert.doesNotMatch(await page.locator('.setup').innerText(),/Email delivery/i);
+ signInReady=false;await page.reload();await page.getByRole('tab',{name:'Booking page',exact:true}).click();
+ assert.equal(await page.getByRole('checkbox',{name:'Accept booking requests'}).isDisabled(),true,'sign-in must be ready even when a calendar is connected');
+ signInReady=true;await page.reload();await page.getByRole('tab',{name:'Booking page',exact:true}).click();
  slugConflict=true;await page.getByRole('textbox',{name:'Booking link name',exact:true}).fill('taken-link');
  await page.getByRole('button',{name:'Save changes',exact:true}).click();
  await page.getByRole('status').filter({hasText:'already in use'}).waitFor();
@@ -85,7 +95,11 @@ try{
  await page.setViewportSize({width:1280,height:900});await page.getByRole('tab',{name:'Requests',exact:true}).click();
  await page.screenshot({path:'/tmp/people-booking-owner-desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});
- await page.route('https://accounts.google.com/**',route=>route.fulfill({contentType:'text/html',body:'<h1>Calendar permission</h1>'}));
+ await page.route('https://accounts.google.com/**',route=>{
+  if(new URL(route.request().url()).searchParams.get('state')==='booking-fixture')return route.fulfill({contentType:'text/html',body:'<h1>Calendar permission</h1>'});
+  visitor={email:'visitor@example.test',identityKey:oauthIdentityKey};const callback=new URL('/book/kaya?signed_in=1',origin);if(oauthRequestId)callback.searchParams.set('request',oauthRequestId);
+  return route.fulfill({status:302,headers:{location:callback.href}});
+ });
  await page.getByRole('tab',{name:'Booking page',exact:true}).click();
  const disconnectCalls=calls.filter(call=>call.path==='/api/booking/calendar/disconnect').length;
  await page.getByRole('button',{name:'Reconnect Google Calendar',exact:true}).click();
@@ -95,20 +109,35 @@ try{
  assert.equal(calls.filter(call=>call.path==='/api/booking/calendar/disconnect').length,disconnectCalls,'reconnecting must not disconnect the existing grant first');
  ownerStatus=401;await page.goto(origin+'/booking');await page.getByRole('link',{name:'Sign in to People',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Meeting thesis',exact:true}).count(),0,'unauthenticated visitors cannot see owner forms');
- async function verify({fail=false,recover=false,paused=false,empty=false}={}){
-  await page.goto(origin+'/book/kaya');if(paused)await page.getByRole('button',{name:'View an existing request',exact:true}).click();await page.getByRole('textbox',{name:'Email',exact:true}).fill('visitor@example.test');
-  await page.getByRole('button',{name:'Send verification code',exact:true}).click();
-  await page.getByRole('textbox',{name:'Verification code',exact:true}).fill('123456');
-  failVerify=fail;await page.getByRole('button',{name:'Verify email',exact:true}).click();
-  if(fail){await page.getByRole('status').filter({hasText:'expired'}).waitFor();assert.equal(await page.getByRole('textbox',{name:'Verification code',exact:true}).inputValue(),'123456');await page.getByRole('button',{name:'Verify email',exact:true}).click();}
+ async function signIn({fail=false,recover=false,paused=false,empty=false}={}){
+  visitor=null;await page.goto(origin+'/book/kaya');
+  if(paused)await page.getByRole('button',{name:'View an existing request',exact:true}).click();
+  assert.equal(await page.getByRole('textbox',{name:'Email',exact:true}).count(),0,'Google sign-in needs no email-code form');
+  failSignIn=fail;await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();
+  if(fail){await page.getByRole('status').filter({hasText:'Google sign-in is unavailable'}).waitFor();await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();}
   if(empty)await page.getByRole('heading',{name:'No requests found',exact:true}).waitFor();
   else if(recover)await page.getByRole('heading',{name:'Your conversations',exact:true}).waitFor();
   else await page.getByRole('textbox',{name:'Your name',exact:true}).waitFor();
+  assert.equal(new URL(page.url()).searchParams.has('signed_in'),false,'handled OAuth flags are removed from the page URL');
  }
- await verify({fail:true});
+ visitor=null;await page.goto(origin+'/book/kaya?signed_in=1');await page.getByRole('button',{name:'Sign in with Google',exact:true}).waitFor();
+ await page.screenshot({path:'/tmp/people-booking-google-signin-mobile.png',fullPage:true});
+ assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).count(),0,'a callback query cannot grant a visitor session');
+ await page.goto(origin+'/book/kaya?sign_in=failed');await page.getByRole('status').filter({hasText:'Google sign-in did not complete'}).waitFor();
+ assert.equal(new URL(page.url()).searchParams.has('sign_in'),false,'failed callback flags are removed after displaying the error');
+ invalidSignInUrl=true;await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();
+ await page.getByRole('status').filter({hasText:'Google sign-in could not be opened'}).waitFor();
+ assert.equal(new URL(page.url()).origin,origin,'untrusted OAuth destinations must not navigate the visitor');invalidSignInUrl=false;
+ await signIn({fail:true});
+ assert.match(await page.locator('.verified-line').innerText(),/visitor@example.test/);
  await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Visitor');
  await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('An agent workflow');
  await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('How we evaluate useful interfaces');
+ expireSubmit=true;await page.getByRole('button',{name:'Send request',exact:true}).click();
+ await page.getByRole('button',{name:'Sign in with Google',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();
+ await page.getByRole('textbox',{name:'Your name',exact:true}).waitFor();
+ assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'Visitor','OAuth renewal must preserve the visitor draft');
  failSubmit=true;await page.getByRole('button',{name:'Send request',exact:true}).click();
  await page.getByRole('status').filter({hasText:'Your details are still here'}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'Visitor');
@@ -124,17 +153,18 @@ try{
  const submitted=calls.find(call=>call.path==='/api/public/booking/kaya/requests'&&call.body).body;
  assert.equal(submitted.name,'Visitor');assert.ok(submitted.idempotencyKey);
  const retryBodies=calls.filter(call=>call.path==='/api/public/booking/kaya/requests'&&call.body).map(call=>call.body);
- assert.equal(retryBodies[0].idempotencyKey,retryBodies[1].idempotencyKey,'retry reuses request key after a lost response');
+ assert.equal(retryBodies[0].idempotencyKey,retryBodies[1].idempotencyKey,'OAuth renewal retains the original request key');
+ assert.equal(retryBodies[1].idempotencyKey,retryBodies[2].idempotencyKey,'retry reuses request key after a lost response');
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'public page fits mobile');
  await page.screenshot({path:'/tmp/people-booking-public-mobile.png',fullPage:true});
- publicNext='async';await verify();
+ publicNext='async';await signIn();
  await page.getByRole('textbox',{name:'Your name',exact:true}).fill('New visitor');
  await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('A design studio');
  await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('Share a short update');
  await page.getByRole('button',{name:'Send request',exact:true}).click();
  await page.getByRole('heading',{name:'Thanks for the update',exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Choose this time',exact:true}).count(),0);
- publicNext='select_slot';slotNext='booking';await verify();
+ publicNext='select_slot';slotNext='booking';await signIn();
  await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Another visitor');
  await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('A new agent interface');
  await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('Useful deployment lessons');
@@ -145,7 +175,7 @@ try{
  statusValue='booked';await page.getByRole('button',{name:'Check request status',exact:true}).click();
  await page.getByRole('heading',{name:'You’re booked',exact:true}).waitFor();
  visitorHistory=[{request:{id:'visit-1',status:'needs_new_slot',slotStart:null,slotEnd:null},next:'select_slot'}];
- await verify({recover:true});await page.getByRole('button',{name:'View request',exact:true}).click();
+ await signIn({recover:true});await page.getByRole('button',{name:'View request',exact:true}).click();
  await page.getByRole('heading',{name:'Let’s find another time',exact:true}).waitFor();
  await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
  statusValue='cancelling';await page.goto(origin+'/book/kaya?request=visit-1');
@@ -153,24 +183,58 @@ try{
  assert.match(await page.locator('main').innerText(),/not confirmed yet/i,'uncertain cancellations must not appear complete');
  assert.equal(await page.getByRole('heading',{name:'Booking cancelled',exact:true}).count(),0);
  statusValue='cancelled';await page.getByRole('heading',{name:'Booking cancelled',exact:true}).waitFor({timeout:12000});
- statusValue='booked';available=false;await page.goto(origin+'/book/kaya');await page.getByRole('heading',{name:'Booking is paused',exact:true}).waitFor();
+ statusValue='booked';available=false;visitor=null;await page.goto(origin+'/book/kaya');await page.getByRole('heading',{name:'Booking is paused',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Email',exact:true}).count(),0);
- await page.goto(origin+'/book/kaya?request=visit-1');await page.getByRole('heading',{name:'You’re booked',exact:true}).waitFor();
+ visitor={email:'visitor@example.test',identityKey:oauthIdentityKey};await page.goto(origin+'/book/kaya?request=visit-1');await page.getByRole('heading',{name:'You’re booked',exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Start a new request',exact:true}).count(),0,'paused pages recover valid existing sessions without offering new intake');
  const slotsBeforePausedRecovery=calls.filter(call=>call.path.endsWith('/slots')).length;
- await verify({paused:true,recover:true});await page.getByRole('button',{name:'View request',exact:true}).click();
+ await signIn({paused:true,recover:true});await page.getByRole('button',{name:'View request',exact:true}).click();
  await page.getByRole('heading',{name:'Another time is needed',exact:true}).waitFor();
  assert.equal(await page.getByRole('button',{name:'Choose another time',exact:true}).count(),0);
  assert.equal(await page.getByRole('button',{name:'Start a new request',exact:true}).count(),0);
  assert.equal(calls.filter(call=>call.path.endsWith('/slots')).length,slotsBeforePausedRecovery,'paused recovery does not request new slots');
- visitorHistory=[];await verify({paused:true,empty:true});
+ visitorHistory=[];await signIn({paused:true,empty:true});
  assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).count(),0,'no history while paused cannot fall through to intake');
- recoveryAvailable=false;await page.goto(origin+'/book/kaya');await page.getByRole('heading',{name:'Booking is paused',exact:true}).waitFor();
- assert.equal(await page.getByRole('button',{name:'View an existing request',exact:true}).count(),0,'recovery verification is offered only when available');
- await page.goto(origin+'/book/kaya?request=visit-1');await page.getByRole('heading',{name:'You’re booked',exact:true}).waitFor();
- assert.equal(await page.getByRole('button',{name:'Start a new request',exact:true}).count(),0,'existing sessions can still read status when verification delivery is unavailable');
+ recoveryAvailable=false;visitor=null;await page.goto(origin+'/book/kaya');await page.getByRole('heading',{name:'Booking is paused',exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'View an existing request',exact:true}).count(),0,'recovery sign-in is offered only when available');
+ visitor={email:'visitor@example.test',identityKey:oauthIdentityKey};await page.goto(origin+'/book/kaya?request=visit-1');await page.getByRole('heading',{name:'You’re booked',exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Start a new request',exact:true}).count(),0,'existing sessions can still read status when fresh sign-in is unavailable');
+ available=true;recoveryAvailable=true;visitor=null;statusValue='pending_approval';
+ await page.goto(origin+'/book/kaya?request=visit-1');await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();
+ await page.getByRole('heading',{name:'Request received',exact:true}).waitFor();
+ assert.equal(calls.findLast(call=>call.path.endsWith('/sign-in')).body.requestId,'visit-1','OAuth must preserve an existing request for recovery');
+ assert.match(await page.locator('main').innerText(),/return to this page|check.*here/i,'pending requests direct visitors to their status page');
+ assert.equal(calls.some(call=>/\/(challenge|verify)$/.test(call.path)),false,'Google sign-in must never call email-code endpoints');
+ visitorHistory=[];await signIn();
+ await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Old request draft');
+ await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('A project already submitted');
+ await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('An earlier meeting request');
+ expireSubmit=true;await page.getByRole('button',{name:'Send request',exact:true}).click();await page.getByRole('button',{name:'Sign in with Google',exact:true}).waitFor();
+ visitorHistory=[{request:{id:'visit-2',status:'pending_approval',slotStart:null,slotEnd:null},next:'select_slot'}];
+ await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();await page.getByRole('heading',{name:'Your conversations',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Start a new request',exact:true}).click();
+ assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'','starting a new request after history recovery discards the old draft');
+ visitorHistory=[];await signIn();
+ await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Private draft');
+ await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('Private project details');
+ await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('Private meeting context');
+ expireSubmit=true;await page.getByRole('button',{name:'Send request',exact:true}).click();
+ await page.getByRole('button',{name:'Sign in with Google',exact:true}).waitFor();oauthIdentityKey='identity-other';
+ await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();await page.getByRole('textbox',{name:'Your name',exact:true}).waitFor();
+ assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'','the same email with a different Google identity must not restore another account’s draft');
+ assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(key=>key.startsWith('people-booking-oauth-draft:')).length),0,'OAuth draft storage is cleared after callback handling');
+ await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Discard on account change');
+ await Promise.all([page.waitForEvent('domcontentloaded'),page.getByRole('button',{name:'Use another Google account',exact:true}).click()]);await page.getByRole('textbox',{name:'Your name',exact:true}).waitFor();
+ assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'','an explicit account change discards the unfinished draft');
+ await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Discard even when OAuth fails');failSignIn=true;
+ await page.getByRole('button',{name:'Use another Google account',exact:true}).click();
+ await page.getByRole('status').filter({hasText:'Google sign-in is unavailable'}).waitFor();
+ assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).count(),0,'a failed account switch must not leave the previous account’s draft on screen');
+ assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(key=>key.startsWith('people-booking-oauth-draft:')).length),0,'a failed sign-in start must not persist a draft');
+
+
  await page.goto(origin+'/book/missing');await page.getByRole('heading',{name:'This booking page isn’t here',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Email',exact:true}).count(),0,'unknown booking links have no intake form');
  assert.deepEqual(errors,[],'pages execute without uncaught browser errors');
- console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, verification, request, slot recovery, paused-page recovery, async, and mobile passed.');
+ console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, Google sign-in, draft recovery, request, slot recovery, paused-page recovery, async, and mobile passed.');
 }finally{await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

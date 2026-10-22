@@ -1,12 +1,13 @@
 import {test, type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
+import * as providers from '../src/booking-providers';
 import {b64, digest, seal, unseal} from '../src/mail-model';
-import {bookingCalendarBusy, bookingEventId, cancelBookingEvent, createBookingEvent, createBookingOAuth, exchangeBookingOAuth, findBookingEvent, sendBookingCode, sendBookingNotice} from '../src/booking-providers';
+import {bookingCalendarBusy, bookingEventId, cancelBookingEvent, createBookingEvent, createBookingOAuth, exchangeBookingOAuth, findBookingEvent} from '../src/booking-providers';
 import type {BookingCalendarRecord, BookingEnv, BookingRequestRecord, BookingSettings} from '../src/booking-types';
 
 const owner='owner@example.com', origin='https://people.example.com', verifier='a'.repeat(43);
 const scopes='openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy';
-const env={GOOGLE_CLIENT_ID:'booking-client',GOOGLE_CLIENT_SECRET:'client-secret',MAIL_TOKEN_KEY:'test-encryption-secret',APP_ORIGIN:origin,BOOKING_EMAIL_FROM:'bookings@betaworks.com'} as BookingEnv;
+const env={GOOGLE_CLIENT_ID:'booking-client',GOOGLE_CLIENT_SECRET:'client-secret',MAIL_TOKEN_KEY:'test-encryption-secret',APP_ORIGIN:origin} as BookingEnv;
 const start='2026-11-03T15:00:00.000Z', end='2026-11-03T15:30:00.000Z';
 const keyPair=crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
 async function identity(overrides:Record<string,unknown>={}){
@@ -53,24 +54,6 @@ test('booking OAuth rejects forged signatures',async t=>{
 for(const [label,overrides] of Object.entries({scope:{scope:'openid email https://www.googleapis.com/auth/calendar.events.readonly'},refresh:{refresh_token:undefined},access:{access_token:''}})){
  test('booking OAuth rejects missing '+label+' capability',async t=>{await oauthMock(t,overrides);await assert.rejects(exchangeBookingOAuth(env,origin,'code',verifier,owner));});
 }
-test('booking email escapes HTML and sends the code only to the supplied address',async()=>{
- const messages:any[]=[];const mailEnv={...env,BOOKING_EMAIL:{async send(message:any){messages.push(message);return {messageId:'sent-1'};}}};
- await sendBookingCode(mailEnv,'Visitor@Example.com','123456','<Kaya & Team>');
- assert.equal(messages.length,1);assert.equal(messages[0].to,'visitor@example.com');assert.equal(messages[0].from.email,'bookings@betaworks.com');
- assert.ok(messages[0].text.includes('123456'));assert.ok(!messages[0].html.includes('<Kaya'));assert.ok(messages[0].html.includes('&amp;'));
- assert.equal(messages[0].cc,undefined);assert.equal(messages[0].bcc,undefined);
-});
-test('booking email requires a successful binding result and redacts upstream failures',async()=>{
- for(const result of [undefined,{}, {success:false}, {messageId:''}])await assert.rejects(sendBookingNotice({...env,BOOKING_EMAIL:{async send(){return result;}}},'visitor@example.com','Booking update','Please visit your booking page.'));
- await assert.rejects(sendBookingNotice({...env,BOOKING_EMAIL:{async send(){throw Error('secret upstream account details');}}},'visitor@example.com','Update','Safe'),e=>e instanceof Error&&!e.message.includes('secret'));
- await assert.rejects(sendBookingNotice(env,'visitor@example.com','Update','Safe'));
-});
-test('booking email rejects recipient and header injection before calling its binding',async()=>{
- let sent=false;const mailEnv={...env,BOOKING_EMAIL:{async send(){sent=true;return {messageId:'sent'};}}};
- await assert.rejects(sendBookingNotice(mailEnv,'one@example.com\r\nBcc: two@example.com','Update','Safe'));
- await assert.rejects(sendBookingNotice(mailEnv,'one@example.com','Update\r\nBcc: two@example.com','Safe'));
- assert.equal(sent,false);
-});
 test('calendar availability returns validated intervals from the owner primary calendar',async t=>{
  mockFetch(t,(url,init)=>{if(url.includes('/token'))return refresh();assert.equal(init.headers&&new Headers(init.headers).get('authorization'),'Bearer calendar-access');assert.deepEqual(JSON.parse(init.body as string).items,[{id:'primary'}]);return Response.json({kind:'calendar#freeBusy',timeMin:start,timeMax:end,calendars:{primary:{busy:[{start,end}]}}});});
  assert.deepEqual(await bookingCalendarBusy(env,await record(),start,end),[{start,end}]);
@@ -134,7 +117,29 @@ test('calendar availability deadline also bounds a stalled response body and abo
  mockFetch(t,(url,init)=>{if(url.includes('/token'))return refresh();signal=init.signal!;return new Response(new ReadableStream({start(controller){signal!.addEventListener('abort',()=>controller.error(Error('aborted')),{once:true});}}),{headers:{'content-type':'application/json'}});});
  await assert.rejects(bookingCalendarBusy(env,await record(),start,end));assert.equal(signal?.aborted,true);
 });
-test('booking email delivery deadline rejects a binding that never settles',async t=>{
- const nativeTimeout=globalThis.setTimeout;t.mock.method(globalThis,'setTimeout',(handler:()=>void)=>nativeTimeout(handler,20));
- await assert.rejects(sendBookingNotice({...env,BOOKING_EMAIL:{send:()=>new Promise(()=>{})}},'visitor@example.com','Booking update','Please return to your booking page.'));
+test('visitor Google sign-in requests only identity with online access and PKCE',async()=>{
+ const url=new URL(await providers.createBookingVisitorOAuth(env,origin,'booking-visitor.state',verifier));
+ assert.equal(url.origin,'https://accounts.google.com');assert.equal(url.searchParams.get('scope'),'openid email');
+ assert.equal(url.searchParams.get('access_type'),'online');assert.equal(url.searchParams.get('prompt'),'select_account');
+ assert.equal(url.searchParams.get('include_granted_scopes'),'false');assert.equal(url.searchParams.get('redirect_uri'),origin+'/api/accounts/callback');
+ assert.equal(url.searchParams.get('code_challenge_method'),'S256');assert.equal(url.searchParams.get('code_challenge'),await digest(verifier));
+ assert.equal(url.searchParams.get('nonce'),await digest(verifier));assert.equal(url.searchParams.get('state'),'booking-visitor.state');
+ await assert.rejects(providers.createBookingVisitorOAuth(env,'https://attacker.example','state',verifier));
+});
+test('visitor Google sign-in accepts a different account without a refresh grant and returns identity only',async t=>{
+ await oauthMock(t,{scope:'openid email',refresh_token:undefined},{email:'Visitor@gmail.com',sub:'visitor-sub'});
+ assert.deepEqual(await providers.exchangeBookingVisitorOAuth(env,origin,'code',verifier),{email:'visitor@gmail.com',subject:'visitor-sub',emailAuthoritative:true});
+});
+test('visitor identity distinguishes Workspace and external-email Google accounts',async t=>{
+ await oauthMock(t,{scope:'openid email',refresh_token:undefined},{email:'visitor@example.com',sub:'visitor-sub',hd:'example.com'});
+ assert.equal((await providers.exchangeBookingVisitorOAuth(env,origin,'code',verifier)).emailAuthoritative,true);
+ t.mock.restoreAll();await oauthMock(t,{scope:'openid email',refresh_token:undefined},{email:'visitor@example.com',sub:'visitor-sub'});
+ assert.equal((await providers.exchangeBookingVisitorOAuth(env,origin,'code',verifier)).emailAuthoritative,false);
+});
+for(const [label,claims] of Object.entries({verified:{email_verified:false},audience:{aud:'other-client'},issuer:{iss:'https://attacker.example'},expiry:{exp:1},nonce:{nonce:'other-nonce'},subject:{sub:''},authorizedParty:{azp:'attacker'},futureIssued:{iat:Math.floor(Date.now()/1000)+900},invalidExpiry:{exp:'forever'}})){
+ test('visitor Google sign-in rejects incorrect '+label,async t=>{await oauthMock(t,{scope:'openid email'},claims);await assert.rejects(providers.exchangeBookingVisitorOAuth(env,origin,'code',verifier));});
+}
+test('visitor Google sign-in rejects a forged identity',async t=>{
+ const signed=await identity();await oauthMock(t,{id_token:signed.slice(0,signed.lastIndexOf('.')+1)+'A'.repeat(342)});
+ await assert.rejects(providers.exchangeBookingVisitorOAuth(env,origin,'code',verifier));
 });
