@@ -166,7 +166,9 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   // Review delay starts when the visitor applies, not again whenever the owner
   // opens the request. Minimum notice still moves with the actual current time.
   const earliest=Math.max(r.decision.tier==='review'?r.createdAt+s.reviewDelayDays*86400000:0,targetStart?Date.parse(targetStart):0);
-  return generateBookingSlots({...s,minNoticeHours:Math.max(s.minNoticeHours,(earliest-now)/3600000)},r.decision.tier==='async'?'async':'priority',busy,(await this.store.reservations(s.owner)).filter(v=>v.id!==r.id),now);
+  // The calendar needs every date in the configured horizon (at most 90 days
+  // with 96 quarter-hour starts per day); targeted rechecks retain the small cap.
+  return generateBookingSlots({...s,minNoticeHours:Math.max(s.minNoticeHours,(earliest-now)/3600000)},r.decision.tier==='async'?'async':'priority',busy,(await this.store.reservations(s.owner)).filter(v=>v.id!==r.id),now,targetStart?100:90*96);
  }
  private async book(s:BookingSettings,r:BookingRequestRecord){
   const calendar=await this.store.calendar(s.owner);if(!calendar)throw Error('calendar_unavailable');

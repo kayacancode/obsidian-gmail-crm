@@ -122,6 +122,24 @@ test('standard submissions retain required questionnaire validation even for a k
  for(const kind of [undefined,'standard'])await assert.rejects(f.service.submit(owner,visitor,f.settings.slug,{kind,name:'Known Visitor',note:'Catch up',idempotencyKey:'standard_required_'+String(kind)}),/invalid_project/);
  assert.deepEqual(await f.store.requests(owner),[]);
 });
+test('calendar slots include late month availability and selecting it still requires returning approval',async t=>{
+ t.mock.method(Date,'now',()=>Date.parse('2026-10-01T12:00:00Z'));
+ const f=await fixture(t);returningSource(f.env,returningContact());
+ const r=await f.service.submit(owner,visitor,f.settings.slug,{kind:'returning',idempotencyKey:'returning_month_request'});
+ t.mock.method(globalThis,'fetch',async(input:any,init:any)=>{
+  const url=String(input);
+  if(url.includes('/token'))return Response.json({access_token:'access',token_type:'Bearer',expires_in:3600,scope:'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy'});
+  if(url.endsWith('/freeBusy')){const body=JSON.parse(init.body);return Response.json({kind:'calendar#freeBusy',timeMin:body.timeMin,timeMax:body.timeMax,calendars:{primary:{busy:[]}}});}
+  assert.fail('Selecting a returning request must not insert an event or query People');
+ });
+ const slots=await f.service.slots(owner,visitor,f.settings.slug,r.id);
+ const start='2026-10-28T20:30:00.000Z';
+ assert.ok(slots.some(slot=>slot.start===start));assert.ok(slots.length>100);
+ assert.ok(slots.every(slot=>Date.parse(slot.start)>=r.createdAt+7*86400000));
+ assert.ok(slots.every(slot=>Date.parse(slot.end)<=Date.parse('2026-10-29T12:00:00Z')));
+ const selected=await f.service.selectSlot(owner,visitor,f.settings.slug,r.id,start);
+ assert.equal(selected.status,'pending_approval');assert.equal(selected.decision.tier,'review');assert.equal(selected.slotStart,start);assert.equal(selected.eventId,null);
+});
 test('public request recovery exposes the intake kind without contact evidence or private decisions',async t=>{
  const f=await fixture(t),r=f.record({intakeKind:'returning'});
  assert.deepEqual(publicBookingRequest(r),{id:r.id,status:'pending_approval',slotStart:null,slotEnd:null,intakeKind:'returning'});

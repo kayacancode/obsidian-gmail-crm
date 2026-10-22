@@ -70,19 +70,29 @@ test('booking review delay is enforced and async receives no slots',()=>{
  const slots=generateBookingSlots(s,'review',[],[],now);assert.ok(slots.length);assert.ok(slots.every(slot=>Date.parse(slot.start)>=Date.parse('2026-10-28T12:00:00Z')));
  assert.deepEqual(generateBookingSlots(s,'async',[],[],now),[]);assert.ok(slots.length<=100);
 });
+test('booking calendar availability includes late horizon dates beyond the first 100 slots',()=>{
+ const start=Date.parse('2026-10-01T00:00:00Z'),s=settings({timezone:'America/New_York',weekdays:[0,1,2,3,4,5,6],minNoticeHours:0,horizonDays:45});
+ assert.equal(generateBookingSlots(s,'priority',[],[],start).length,100);
+ const slots=generateBookingSlots(s,'priority',[],[],start,8640);
+ assert.ok(slots.length>100);
+ assert.ok(slots.some(slot=>slot.start==='2026-10-30T13:00:00.000Z'));
+ assert.ok(slots.some(slot=>slot.start==='2026-11-01T14:00:00.000Z'));
+ assert.equal(slots.at(-1)?.start,'2026-11-14T21:30:00.000Z');
+ assert.ok(slots.every(slot=>Date.parse(slot.end)<=Date.parse('2026-11-15T00:00:00Z')));
+});
 test('booking slots follow daylight-saving offset changes and skip nonexistent or ambiguous wall times',()=>{
  const s=settings({timezone:'America/New_York',weekdays:[0,1],startTime:'09:00',endTime:'10:00',minNoticeHours:0,horizonDays:4});
- const slots=generateBookingSlots(s,'priority',[],[],Date.parse('2026-10-31T00:00:00Z'));
+ const slots=generateBookingSlots(s,'priority',[],[],Date.parse('2026-10-31T00:00:00Z'),8640);
  assert.equal(slots[0].start,'2026-11-01T14:00:00.000Z');
- const spring=generateBookingSlots({...s,weekdays:[0],startTime:'02:00',endTime:'04:00'},'priority',[],[],Date.parse('2026-03-07T00:00:00Z'));
+ const spring=generateBookingSlots({...s,weekdays:[0],startTime:'02:00',endTime:'04:00'},'priority',[],[],Date.parse('2026-03-07T00:00:00Z'),8640);
  assert.equal(spring[0].start,'2026-03-08T07:00:00.000Z');
- const fall=generateBookingSlots({...s,weekdays:[0],startTime:'01:00',endTime:'03:00'},'priority',[],[],Date.parse('2026-10-31T00:00:00Z'));
+ const fall=generateBookingSlots({...s,weekdays:[0],startTime:'01:00',endTime:'03:00'},'priority',[],[],Date.parse('2026-10-31T00:00:00Z'),8640);
  assert.equal(fall[0].start,'2026-11-01T07:00:00.000Z');
 });
 test('booking daily and local Monday-week limits count active reservations only',()=>{
  const s=settings({timezone:'America/New_York',weekdays:[1,2,3,4,5],dailyLimit:1,weeklyLimit:2,minNoticeHours:0,horizonDays:9});
  const active=[request('2026-10-19T13:00:00Z','2026-10-19T13:30:00Z'),request('2026-10-21T13:00:00Z','2026-10-21T13:30:00Z','booking')];
- const slots=generateBookingSlots(s,'priority',[],active,now);assert.equal(slots[0].start,'2026-10-26T13:00:00.000Z');
+ const slots=generateBookingSlots(s,'priority',[],active,now,8640);assert.equal(slots[0].start,'2026-10-26T13:00:00.000Z');
  const ignored=[request('2026-10-21T13:00:00Z','2026-10-21T13:30:00Z','pending_approval'),request('2026-10-21T13:00:00Z','2026-10-21T13:30:00Z','cancelled'),request('2026-10-21T13:00:00Z','2026-10-21T13:30:00Z','booked','other@example.com')];
  assert.equal(generateBookingSlots(s,'priority',[],ignored,now)[0].start,'2026-10-21T13:00:00.000Z');
 });

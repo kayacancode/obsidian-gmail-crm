@@ -89,7 +89,7 @@ export function decideBooking(settings:BookingSettings,email:string,fit:BookingF
 /** Capacity counts confirmed bookings and in-flight reservations, never pending preferences.
  * Local working hours are converted per date; nonexistent/duplicated DST wall times are omitted.
  */
-export function generateBookingSlots(settings:BookingSettings,tier:BookingTier,busy:BookingBusy[],existing:BookingRequestRecord[],now=Date.now()):BookingSlot[]{
+export function generateBookingSlots(settings:BookingSettings,tier:BookingTier,busy:BookingBusy[],existing:BookingRequestRecord[],now=Date.now(),maxSlots=100):BookingSlot[]{
  if(tier==='async'||!Number.isFinite(now))return [];
  const format=new Intl.DateTimeFormat('en-CA',{timeZone:settings.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
  const active=existing.filter(item=>item.owner===settings.owner&&['booked','booking','cancelling'].includes(item.status));
@@ -115,7 +115,7 @@ export function generateBookingSlots(settings:BookingSettings,tier:BookingTier,b
    if(start<earliest||end>latest||end-start!==settings.durationMinutes*MINUTE)continue;
    if(intervals.some(item=>start-buffer<item.end&&end+buffer>item.start))continue;
    slots.push({start:new Date(start).toISOString(),end:new Date(end).toISOString()});
-   if(slots.length>=100)return slots;
+   if(slots.length>=Math.min(maxSlots,90*96))return slots;
   }
  }
  return slots;

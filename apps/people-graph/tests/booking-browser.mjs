@@ -20,6 +20,7 @@ try{
  let settings={owner:'kaya@example.test',revision:1,slug:'kaya',displayName:'Kaya Jones',intro:'A little context makes a better conversation.',thesis:'Applied AI for small teams',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:['sam@example.test'],enabled:false,autoBookPriority:false};
  const request={id:'r1',owner:settings.owner,email:'sam@example.test',name:'Sam Rivera',project:'An agent research studio',purpose:'Compare deployment lessons',projectUrl:'https://example.test',referrer:'Alex',createdAt:1792591200000,updatedAt:1792591200000,status:'pending_approval',slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z',eventId:null,idempotencyKey:'r1',decision:{tier:'review',reasons:['Relevant applied research'],uncertainties:['Introduction is unverified'],policyRevision:1,fit:{fit:'possible',reasons:['Relevant applied research'],evidence:['Project: agent research studio'],model:'fixture'},people:{status:'matched',name:'Sam',email:'sam@example.test',reason:'Exact address match',lastSync:'2026-10-21T09:00:00Z'}}};
  let initialMainLens={focus:'',needs:'   ',offers:''},savedLens={revision:'r1',fields:{focus:'',needs:'   ',offers:''},suggestions:[{id:'unconfirmed',kind:'focus',text:'Never import this suggestion'}]},failLens=false;
+ let publicSlots=[{start:'2026-11-04T15:00:00Z',end:'2026-11-04T15:30:00Z'}];
  let ownerStatus=200,failSave=false,conflict=false,available=true,publicNext='select_slot',slotNext='pending_approval',failSlot=false,failSignIn=false,ready=false,saveCalls=0,slugConflict=false,visitorHistory=[],statusValue='pending_approval',failSubmit=false,recoveryAvailable=true,visitor=null,oauthRequestId=null,invalidSignInUrl=false,expireSubmit=false,signInReady=true,oauthIdentityKey='identity-visitor',oauthEmail='visitor@example.test',returningContact=null,requireIntake=false,publicIntakeKind='standard';
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname,body=req.method()==='POST'?req.postDataJSON():null;
@@ -42,7 +43,7 @@ try{
   if(path==='/api/public/booking/kaya/requests'&&failSubmit){failSubmit=false;return reply({error:'booking_failed'},503);}
   if(path==='/api/public/booking/kaya/requests'&&requireIntake){requireIntake=false;return reply({error:'intake_required'},409);}
   if(path==='/api/public/booking/kaya/requests'){publicIntakeKind=body.kind==='returning'?'returning':'standard';return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:publicNext==='async'?'async_submitted':'pending_approval',slotStart:null,slotEnd:null},next:publicNext});}
-  if(path.endsWith('/slots'))return reply({slots:[{start:'2026-11-04T15:00:00Z',end:'2026-11-04T15:30:00Z'}]});
+  if(path.endsWith('/slots'))return reply({slots:publicSlots});
   if(path.endsWith('/requests/visit-1/slot')){if(failSlot){failSlot=false;return reply({error:'That time is no longer available'},409);}return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:slotNext,slotStart:body.start,slotEnd:'2026-11-04T15:30:00Z'},next:slotNext});}
   if(path.endsWith('/requests/visit-1'))return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:statusValue,slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z'},next:'pending_approval'});
   return reply({error:'Unexpected API call'},404);
@@ -199,12 +200,12 @@ try{
  await page.getByRole('status').filter({hasText:'Your details are still here'}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'Visitor');
  await page.getByRole('button',{name:'Send request',exact:true}).click();
- await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
+ await page.locator('.calendar-time').waitFor();
  assert.doesNotMatch(await page.locator('main').innerText(),/priority|thesis|unverified|Relevant applied research|tier/i,'public UI never reveals private evaluation details');
- failSlot=true;await page.getByRole('button',{name:'Choose this time',exact:true}).click();
+ failSlot=true;await page.locator('.calendar-time').click();
  await page.getByRole('status').filter({hasText:'no longer available'}).waitFor();
- assert.equal(await page.getByRole('button',{name:'Choose this time',exact:true}).count(),1,'slot errors retain the selection flow');
- await page.getByRole('button',{name:'Choose this time',exact:true}).click();
+ assert.equal(await page.locator('.calendar-time').count(),1,'slot errors retain the selection flow');
+ await page.locator('.calendar-time').click();
  await page.getByRole('heading',{name:'Request received',exact:true}).waitFor();
  assert.match(await page.locator('main').innerText(),/not confirmed/i,'pending approval is not presented as a reservation');
  const submitted=calls.find(call=>call.path==='/api/public/booking/kaya/requests'&&call.body).body;
@@ -220,13 +221,13 @@ try{
  await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('Share a short update');
  await page.getByRole('button',{name:'Send request',exact:true}).click();
  await page.getByRole('heading',{name:'Thanks for the update',exact:true}).waitFor();
- assert.equal(await page.getByRole('button',{name:'Choose this time',exact:true}).count(),0);
+ assert.equal(await page.locator('.calendar-time').count(),0);
  publicNext='select_slot';slotNext='booking';await signIn();
  await page.getByRole('textbox',{name:'Your name',exact:true}).fill('Another visitor');
  await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('A new agent interface');
  await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).fill('Useful deployment lessons');
  await page.getByRole('button',{name:'Send request',exact:true}).click();
- await page.getByRole('button',{name:'Choose this time',exact:true}).click();
+ await page.locator('.calendar-time').click();
  await page.getByRole('heading',{name:'Confirming your time',exact:true}).waitFor();
  assert.equal(await page.getByRole('heading',{name:'You’re booked',exact:true}).count(),0,'uncertain calendar writes cannot appear confirmed');
  statusValue='booked';await page.getByRole('button',{name:'Check request status',exact:true}).click();
@@ -234,7 +235,7 @@ try{
  visitorHistory=[{request:{id:'visit-1',status:'needs_new_slot',slotStart:null,slotEnd:null},next:'select_slot'}];
  await signIn({recover:true});await page.getByRole('button',{name:'View request',exact:true}).click();
  await page.getByRole('heading',{name:'Let’s find another time',exact:true}).waitFor();
- await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
+ await page.locator('.calendar-time').waitFor();
  statusValue='cancelling';await page.goto(origin+'/book/kaya?request=visit-1');
  await page.getByRole('heading',{name:'Cancelling your booking',exact:true}).waitFor();
  assert.match(await page.locator('main').innerText(),/not confirmed yet/i,'uncertain cancellations must not appear complete');
@@ -320,11 +321,11 @@ try{
  assert.equal(await catchup.count(),0);
  // Empty notes are valid and selecting a time still requires owner confirmation.
  await signIn({returning:true});await page.getByRole('button',{name:'Choose a time',exact:true}).click();
- await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
+ await page.locator('.calendar-time').waitFor();
  assert.deepEqual(Object.keys(submissions().at(-1).body).sort(),['idempotencyKey','kind','note']);
  assert.equal(submissions().at(-1).body.kind,'returning');assert.equal(submissions().at(-1).body.note,'');
  assert.match(await page.locator('#booking-card').innerText(),/host.*confirmation/,'returning slot selection explains owner confirmation');
- await page.getByRole('button',{name:'Choose this time',exact:true}).click();await page.getByRole('heading',{name:'Request received',exact:true}).waitFor();
+ await page.locator('.calendar-time').click();await page.getByRole('heading',{name:'Request received',exact:true}).waitFor();
  assert.match(await page.locator('#booking-card').innerText(),/not confirmed|host.*confirm/);
  // OAuth renewal and retries retain the returning note and request key.
  await signIn({returning:true});await catchup.fill('  Comparing notes after our last chat  ');
@@ -334,7 +335,7 @@ try{
  failSubmit=true;await page.getByRole('button',{name:'Choose a time',exact:true}).click();
  await page.getByRole('status').filter({hasText:'Your details are still here'}).waitFor();
  assert.equal(await catchup.inputValue(),'  Comparing notes after our last chat  ');
- await page.getByRole('button',{name:'Choose a time',exact:true}).click();await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Choose a time',exact:true}).click();await page.locator('.calendar-time').waitFor();
  const returningAttempts=submissions().slice(returningStart).map(call=>call.body);
  assert.equal(returningAttempts.length,3);assert.equal(new Set(returningAttempts.map(body=>body.idempotencyKey)).size,1,'returning renewal and retries use one request key');
  assert.equal(returningAttempts[2].note,'Comparing notes after our last chat');
@@ -345,7 +346,7 @@ try{
  assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'Sam Rivera');
  assert.equal(await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).inputValue(),'Keep this catch-up note');
  await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('A new research project');
- await page.getByRole('button',{name:'Send request',exact:true}).click();await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Send request',exact:true}).click();await page.locator('.calendar-time').waitFor();
  assert.equal(submissions().at(-1).body.idempotencyKey,staleKey,'eligibility fallback retains the original request key');
  assert.equal(submissions().at(-1).body.name,'Sam Rivera');assert.equal(submissions().at(-1).body.purpose,'Keep this catch-up note');
  assert.notEqual(submissions().at(-1).body.kind,'returning');
@@ -357,7 +358,7 @@ try{
  assert.equal(await page.getByRole('textbox',{name:'Your name',exact:true}).inputValue(),'Sam Rivera');
  assert.equal(await page.getByRole('textbox',{name:'What would you like to discuss?',exact:true}).inputValue(),'Keep this note through renewal');
  await page.getByRole('textbox',{name:'What are you building?',exact:true}).fill('A useful new research tool');
- await page.getByRole('button',{name:'Send request',exact:true}).click();await page.getByRole('button',{name:'Choose this time',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Send request',exact:true}).click();await page.locator('.calendar-time').waitFor();
  assert.equal(submissions().at(-1).body.idempotencyKey,renewalKey);
  // Request recovery always takes precedence over recognition, including paused pages.
  returningContact={name:'Sam Rivera'};visitorHistory=[{request:{id:'visit-1',intakeKind:'returning',status:'pending_approval',slotStart:null,slotEnd:null},next:'select_slot'}];
@@ -383,8 +384,81 @@ try{
  assert.equal(await page.evaluate(()=>sessionStorage.getItem('people-booking-oauth-draft:kaya')),null);
  returningContact=null;
 
+ // Month calendar: only the chosen day's times, exact timestamps and no implied reservation.
+ publicSlots=[
+  {start:'2026-10-29T15:00:00Z',end:'2026-10-29T15:30:00Z'},
+  {start:'2026-10-29T15:15:00Z',end:'2026-10-29T15:45:00Z'},
+  {start:'2026-10-31T23:30:00Z',end:'2026-11-01T00:00:00Z'},
+  {start:'2026-11-01T05:30:00Z',end:'2026-11-01T06:00:00Z'},
+  {start:'2026-11-01T06:30:00Z',end:'2026-11-01T07:00:00Z'},
+  {start:'2026-11-02T14:00:00Z',end:'2026-11-02T14:30:00Z'},
+  {start:'2026-11-02T14:15:00Z',end:'2026-11-02T14:45:00Z'},
+  {start:'2026-11-02T15:00:00Z',end:'2026-11-02T15:30:00Z'},
+  {start:'2026-11-02T16:00:00Z',end:'2026-11-02T16:30:00Z'},
+  {start:'2026-12-01T14:00:00Z',end:'2026-12-01T14:30:00Z'}];
+ visitorHistory=[];publicNext='select_slot';slotNext='pending_approval';returningContact={name:'Sam Rivera'};
+ await page.setViewportSize({width:1280,height:900});await signIn({returning:true});
+ await page.getByRole('button',{name:'Choose a time',exact:true}).click();await page.locator('.booking-calendar').waitFor();
+ await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('America/New_York');
+ assert.equal(await page.locator('.booking-calendar').getAttribute('data-month'),'2026-10');
+ assert.equal(await page.locator('.calendar-time').count(),2,'show only the first available day’s times');
+ assert.equal(await page.locator('[data-date="2026-10-29"]').getAttribute('aria-pressed'),'true');
+ assert.equal(await page.locator('[data-date="2026-10-28"]').isDisabled(),true,'unavailable dates cannot be selected');
+ assert.equal(await page.getByRole('button',{name:'Previous month',exact:true}).isDisabled(),true);
+ const slotPosts=()=>calls.filter(call=>/\/requests\/[^/]+\/slot$/.test(call.path));
+ const beforeCalendar=slotPosts().length;
+ await page.locator('[data-date="2026-10-31"]').focus();await page.keyboard.press('Enter');
+ assert.equal(await page.locator('.calendar-time').count(),1);
+ assert.equal(await page.locator('[data-date="2026-10-31"]').getAttribute('aria-pressed'),'true','keyboard selects a date');
+ await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('Asia/Tokyo');
+ assert.equal(await page.locator('.booking-calendar').getAttribute('data-month'),'2026-11','timezone changes move the selected instant into the correct month');
+ assert.equal(await page.locator('[data-date="2026-11-01"]').getAttribute('aria-pressed'),'true');
+ await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('America/New_York');
+ assert.equal(await page.locator('.booking-calendar').getAttribute('data-month'),'2026-10');
+ await page.getByRole('button',{name:'Next month',exact:true}).click();
+ assert.equal(await page.locator('.booking-calendar').getAttribute('data-month'),'2026-11');
+ const repeatedTimes=await page.locator('.calendar-time').allTextContents();assert.equal(repeatedTimes.length,2);assert.notEqual(repeatedTimes[0],repeatedTimes[1],'DST repeated local times remain distinguishable');
+ assert.equal(slotPosts().length,beforeCalendar,'date, timezone and month navigation never reserve a time');
+ await page.locator('[data-date="2026-11-02"]').click();
+ publicSlots=publicSlots.filter(slot=>slot.start!=='2026-11-02T14:00:00Z');
+ await page.getByRole('button',{name:'Refresh available times',exact:true}).click();await page.locator('.booking-calendar').waitFor();
+ assert.equal(await page.locator('[data-date="2026-11-02"]').getAttribute('aria-pressed'),'true','refresh keeps the selected date even if its first slot was taken');
+ assert.equal(await page.locator('.calendar-time').first().getAttribute('data-start'),'2026-11-02T14:15:00Z');
+ await page.screenshot({path:'/tmp/people-booking-month-desktop.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/people-booking-month-mobile.png',fullPage:true});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'calendar fits mobile width');
+ await page.setViewportSize({width:320,height:740});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'calendar fits a narrow phone');
+ await page.getByRole('button',{name:'Next month',exact:true}).click();
+ assert.equal(await page.locator('.booking-calendar').getAttribute('data-month'),'2026-12');
+ assert.equal(await page.getByRole('button',{name:'Next month',exact:true}).isDisabled(),true);
+ failSlot=true;await page.locator('.calendar-time').click();await page.getByRole('status').filter({hasText:'no longer available'}).waitFor();
+ assert.equal(await page.locator('.calendar-time').count(),1,'slot conflicts preserve the calendar');
+ assert.equal(await page.getByRole('button',{name:'Next month',exact:true}).isDisabled(),true,'busy-state recovery preserves disabled navigation');
+ assert.equal(await page.locator('[data-date="2026-12-02"]').isDisabled(),true);
+ await page.locator('.calendar-time').click();await page.getByRole('heading',{name:'Request received',exact:true}).waitFor();
+ assert.equal(slotPosts().at(-1).body.start,'2026-12-01T14:00:00Z','send the exact supplied instant without timezone conversion');
+ publicSlots=[];await signIn({returning:true});await page.getByRole('button',{name:'Choose a time',exact:true}).click();
+ await page.getByRole('heading',{name:'No open times just now',exact:true}).waitFor();assert.equal(await page.locator('.calendar-time').count(),0);
+ publicSlots=[{start:'2026-10-29T15:00:00Z',end:'2026-10-29T15:30:00Z'},{start:'2026-12-01T14:00:00Z',end:'2026-12-01T14:30:00Z'}];
+ await page.getByRole('button',{name:'Check availability',exact:true}).click();await page.locator('.booking-calendar').waitFor();
+ await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('America/New_York');
+ await page.getByRole('button',{name:'Next month',exact:true}).click();
+ assert.equal(await page.locator('.booking-calendar').getAttribute('data-month'),'2026-11');assert.equal(await page.locator('.calendar-time').count(),0,'an empty intermediate month has no selectable times');
+ assert.match(await page.locator('.booking-calendar').innerText(),/no.*available|no.*times/i);
+ // Regrouping must not replace the anchor with an earlier slot on the same Tokyo date.
+ publicSlots=[3,4,5].flatMap(day=>Array.from({length:8},(_,hour)=>({start:`2026-11-0${day}T${hour+14}:00:00Z`,end:`2026-11-0${day}T${hour+14}:30:00Z`})));
+ await page.getByRole('button',{name:'Refresh available times',exact:true}).click();await page.locator('.booking-calendar').waitFor();
+ await page.locator('[data-date="2026-11-04"]').click();
+ for(let repeat=0;repeat<2;repeat++){
+  await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('Asia/Tokyo');
+  assert.equal(await page.locator('[data-date="2026-11-04"]').getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'Refresh available times',exact:true}).click();await page.locator('.booking-calendar').waitFor();
+  await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('America/New_York');
+  assert.equal(await page.locator('[data-date="2026-11-04"]').getAttribute('aria-pressed'),'true','timezone changes and refresh preserve the selected instant without day drift');
+ }
  await page.goto(origin+'/book/missing');await page.getByRole('heading',{name:'This booking page isn’t here',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Email',exact:true}).count(),0,'unknown booking links have no intake form');
  assert.deepEqual(errors,[],'pages execute without uncaught browser errors');
- console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, Google sign-in, draft recovery, returning contacts, eligibility fallback, request, slot recovery, paused-page recovery, async, and mobile passed.');
+ console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, Google sign-in, draft recovery, returning contacts, eligibility fallback, month calendar, timezone/DST selection, refresh, request, slot recovery, paused-page recovery, async, and mobile passed.');
 }finally{await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
