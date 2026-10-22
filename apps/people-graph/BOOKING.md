@@ -11,6 +11,8 @@ The configured pilot is `kaya@betaworks.com`. The public page is paused by defau
 3. Connect a fresh Betaworks-owned Rust service as described below. Without an owner-matched configured source, the UI disables turning on automatic booking. Configuration readiness alone does not prove freshness: each lookup validates source ownership and age, and unknown or stale results require review.
 4. Save the display name, link, meeting thesis, working hours, time zone and limits. A saved People lens can prefill the thesis; inferred suggestions are never adopted automatically. Enable the public page only after these settings are reviewed. Automatic priority booking is a separate opt-in.
 
+**Use my saved lens** reads the latest saved focus, needs and offers when clicked. If the lens is empty, open **Network → Your lens**, save those fields or accept a suggested update, then return and click the button again. An empty lens or a failed read leaves the current meeting thesis and other edits intact. Importing a lens only fills the draft; **Save changes** applies it to Booking.
+
 The Google-only update is deployed, but live visitor sign-in and owner Calendar consent remain unverified, and a fresh Betaworks-owned Rust source is still missing. Public intake is not configured: the `kaya` slug has not been saved. Configured Google sign-in, pilot access and the owner Calendar grant gate public intake. Missing Rust evidence falls back to review; automatic booking remains blocked until the intended source is configured and each lookup verifies ownership and freshness. Keep the page paused until the owner has reviewed the setup.
 
 Google may require the owner to be an approved OAuth tester, or additional verification of the new scopes. The application shows connection failure without claiming a grant was established.
@@ -67,6 +69,8 @@ Local validation of the Google-only update passed on October 21, 2026: `npm test
 
 Deployment completed on October 21, 2026. All ten additive SQL queries succeeded, and `npm run deploy` passed both asset builds and deployed Worker version `7107c5cb-1837-415c-83d2-576500c59f7a` without email bindings. Live smoke checks returned 200 for `/`, `/booking`, `/book/kaya`, `book.mjs` and `booking.mjs`; the bundles contain the Google sign-in flow/readiness and no OTP flow. The unauthenticated owner API returned 401. The public `kaya` API returned 404 because no slug has been saved; serving the HTML page does not mean intake is enabled.
 
-Live Google visitor OAuth and owner Calendar consent remain **unverified**, public intake is not configured, and the fresh Betaworks-owned Rust source is still missing. Local synthetic tests and deployed route/asset checks do not establish those prerequisites.
+Live Google visitor OAuth remains **unverified**, public intake is not configured, and the fresh Betaworks-owned Rust source is still missing. Local synthetic tests and deployed route/asset checks do not establish those prerequisites.
+
+The saved-lens follow-up is deployed as `96c0055f-1bc3-4466-b010-e100fad91e3b`. The 868 app tests, Booking browser suite, typecheck and asset builds passed. The live empty-lens action was verified with all 24 draft controls preserved. The owner dashboard now reports the Calendar connection as ready; a real Calendar booking has not been tested.
 
 The `booking-v1` migration adds a new namespace. Existing `MailSync` storage and migration remain unchanged. Do not roll back by deleting the Booking namespace: reservations and reconciliation state must be preserved.

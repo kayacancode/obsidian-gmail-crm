@@ -19,11 +19,13 @@ try{
  page.setDefaultTimeout(4000);page.on('pageerror',error=>errors.push(error.message));
  let settings={owner:'kaya@example.test',revision:1,slug:'kaya',displayName:'Kaya Jones',intro:'A little context makes a better conversation.',thesis:'Applied AI for small teams',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:['sam@example.test'],enabled:false,autoBookPriority:false};
  const request={id:'r1',owner:settings.owner,email:'sam@example.test',name:'Sam Rivera',project:'An agent research studio',purpose:'Compare deployment lessons',projectUrl:'https://example.test',referrer:'Alex',createdAt:1792591200000,updatedAt:1792591200000,status:'pending_approval',slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z',eventId:null,idempotencyKey:'r1',decision:{tier:'review',reasons:['Relevant applied research'],uncertainties:['Introduction is unverified'],policyRevision:1,fit:{fit:'possible',reasons:['Relevant applied research'],evidence:['Project: agent research studio'],model:'fixture'},people:{status:'matched',name:'Sam',email:'sam@example.test',reason:'Exact address match',lastSync:'2026-10-21T09:00:00Z'}}};
+ let initialMainLens={focus:'',needs:'   ',offers:''},savedLens={revision:'r1',fields:{focus:'',needs:'   ',offers:''},suggestions:[{id:'unconfirmed',kind:'focus',text:'Never import this suggestion'}]},failLens=false;
  let ownerStatus=200,failSave=false,conflict=false,available=true,publicNext='select_slot',slotNext='pending_approval',failSlot=false,failSignIn=false,ready=false,saveCalls=0,slugConflict=false,visitorHistory=[],statusValue='pending_approval',failSubmit=false,recoveryAvailable=true,visitor=null,oauthRequestId=null,invalidSignInUrl=false,expireSubmit=false,signInReady=true,oauthIdentityKey='identity-visitor';
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname,body=req.method()==='POST'?req.postDataJSON():null;
   calls.push({path,body});const reply=(value,status=200)=>route.fulfill({status,json:value});
-  if(path==='/api/booking')return reply(ownerStatus===200?{account:{email:settings.owner},settings,requests:[request],readiness:{signIn:ready&&signInReady,calendar:ready,people:true,pilot:true,issues:ready?[]:['Connect a booking calendar.']},lens:{focus:'Practical agent interfaces',needs:'Design partners',offers:'Product feedback'},calendar:ready?{email:settings.owner}:null}:{error:'Sign in required'},ownerStatus);
+  if(path==='/api/booking')return reply(ownerStatus===200?{account:{email:settings.owner},settings,requests:[request],readiness:{signIn:ready&&signInReady,calendar:ready,people:true,pilot:true,issues:ready?[]:['Connect a booking calendar.']},lens:initialMainLens,calendar:ready?{email:settings.owner}:null}:{error:'Sign in required'},ownerStatus);
+  if(path==='/api/lens'){if(failLens){failLens=false;return reply({error:'temporarily_unavailable'},503);}return reply(savedLens);}
   if(path==='/api/booking/settings'){saveCalls++;if(slugConflict){slugConflict=false;return reply({error:'slug_taken'},409);}if(failSave){failSave=false;return reply({error:'Please try again'},503);}if(conflict){conflict=false;settings={...settings,revision:2,intro:'Changed elsewhere'};return reply({error:'settings_changed'},409);}settings={...body,revision:settings.revision+1};return reply({settings});}
   if(path==='/api/booking/calendar/connect')return reply({url:'https://accounts.google.com/o/oauth2/v2/auth?state=booking-fixture'});
   if(path==='/api/booking/requests/r1/approve'){request.status='booked';return reply({request});}
@@ -58,10 +60,47 @@ try{
  await page.getByRole('button',{name:'Load latest settings',exact:true}).click();
  await page.getByRole('status').filter({hasText:'Latest settings loaded'}).waitFor();
  assert.equal(await intro.inputValue(),'Changed elsewhere');
+ await intro.fill('My unsaved introduction');
  await page.getByRole('tab',{name:'Rules',exact:true}).click();
- await page.getByRole('button',{name:'Use my saved lens',exact:true}).click();
- assert.match(await page.getByRole('textbox',{name:'Meeting thesis',exact:true}).inputValue(),/Practical agent interfaces/);
+ const lensButton=page.getByRole('button',{name:'Use my saved lens',exact:true}),thesis=page.getByRole('textbox',{name:'Meeting thesis',exact:true});
+ const emptyLensMessage='Your lens is empty. Add your focus in Network → Your lens, then use it here.';
+ assert.equal(await lensButton.isEnabled(),true,'an empty initial lens must keep the explicit import action available');
+ await page.getByRole('status').filter({hasText:emptyLensMessage}).waitFor();
+ const lensEditor=page.getByRole('link',{name:'Edit lens in Network ↗',exact:true});
+ assert.equal(await lensEditor.getAttribute('href'),'/');assert.equal(await lensEditor.getAttribute('target'),'_blank');assert.match(await lensEditor.getAttribute('rel'),/noopener/);
+ await thesis.fill('My unsaved meeting thesis');
+ await page.getByRole('spinbutton',{name:'Buffer (minutes)',exact:true}).fill('25');
+ await page.getByRole('textbox',{name:'VIP email addresses',exact:true}).fill('draft@example.test');
+ const formDraft=()=>page.locator('#owner-root form').evaluate(form=>[...form.querySelectorAll('input,textarea,select')].map(input=>({name:input.name,value:input.value,checked:input.checked})));
+ const beforeEmptyLens=await formDraft(),lensReadsBefore=calls.filter(call=>call.path==='/api/lens').length;
+ await lensButton.click();
+ await page.waitForFunction(()=>document.querySelector('#owner-root').getAttribute('aria-busy')==='false');
+ assert.equal(calls.filter(call=>call.path==='/api/lens').length,lensReadsBefore+1,'each explicit import reads the current owner lens');
+ await page.getByRole('status').filter({hasText:emptyLensMessage}).waitFor();
+ assert.deepEqual(await formDraft(),beforeEmptyLens,'an empty lens preserves every draft field');
+ assert.equal(await lensButton.isEnabled(),true,'an empty lens can be retried after editing Network');
+ assert.equal(saveCalls,2,'empty imports cannot save booking settings');
+ await page.locator('#rules-panel .form-section').first().screenshot({path:'/tmp/people-booking-empty-lens.png'});
+ savedLens={...savedLens,revision:'r2',fields:{focus:'  Practical agent interfaces  ',needs:'  Design partners ',offers:'Product feedback  '}};
+ await lensButton.click();
+ await page.getByRole('status').filter({hasText:'Your saved lens is ready to review'}).waitFor();
+ assert.equal(await thesis.inputValue(),'Focused on: Practical agent interfaces\n\nLooking for: Design partners\n\nCan offer: Product feedback','imports fresh confirmed fields saved after the Booking page loaded');
+ assert.doesNotMatch(await thesis.inputValue(),/Never import this suggestion/,'unconfirmed lens suggestions are not part of the thesis');
+ assert.deepEqual((await formDraft()).filter(input=>input.name!=='thesis'),beforeEmptyLens.filter(input=>input.name!=='thesis'),'importing the lens preserves all other unsaved settings');
  assert.equal(saveCalls,2,'lens prefill requires an explicit save');
+ await thesis.fill('Keep my revised draft');
+ const beforeFailedLens=await formDraft();failLens=true;
+ await lensButton.click();
+ await page.getByRole('status').filter({hasText:'Your saved lens could not be loaded'}).waitFor();
+ assert.deepEqual(await formDraft(),beforeFailedLens,'failed lens fetches preserve every draft field');
+ assert.equal(await lensButton.isEnabled(),true,'failed lens fetches leave the import action retryable');
+ assert.equal(saveCalls,2,'failed imports cannot save booking settings');
+ savedLens={...savedLens,revision:'r3',fields:{focus:'  Practical agent interfaces  ',needs:' ',offers:' Updated product feedback '}};
+ await lensButton.click();
+ await page.getByRole('status').filter({hasText:'Your saved lens is ready to review'}).waitFor();
+ assert.equal(await thesis.inputValue(),'Focused on: Practical agent interfaces\n\nCan offer: Updated product feedback','retry imports the newest saved lens and omits blank fields');
+ assert.equal(saveCalls,2,'successful retries still require an explicit save');
+ assert.equal(calls.filter(call=>call.path==='/api/lens'&&call.body).length,0,'importing never writes to the owner lens');
  await page.getByRole('button',{name:'Save changes',exact:true}).click();
  await page.getByRole('status').filter({hasText:'Saved'}).waitFor();
  const saved=calls.findLast(call=>call.path==='/api/booking/settings').body;
@@ -83,6 +122,10 @@ try{
  await page.getByRole('status').filter({hasText:'already in use'}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Booking link name',exact:true}).inputValue(),'taken-link');
  assert.equal(await page.getByRole('button',{name:'Load latest settings',exact:true}).isVisible(),false,'a taken slug is a validation error, not a revision conflict');
+ initialMainLens=null;await page.reload();await page.getByRole('tab',{name:'Rules',exact:true}).click();
+ await page.getByRole('status').filter({hasText:'Your saved lens could not be loaded'}).waitFor();
+ assert.equal(await lensButton.isEnabled(),true,'failed initial lens loading must leave fresh imports available');
+ initialMainLens={...savedLens.fields};
  request.status='booking';await page.reload();await page.getByRole('button',{name:'Retry confirmation',exact:true}).waitFor();
  await page.getByRole('button',{name:'Retry confirmation',exact:true}).click();await page.getByRole('button',{name:'Cancel booking',exact:true}).waitFor();
  request.status='cancelling';await page.reload();await page.getByRole('button',{name:'Retry cancellation',exact:true}).waitFor();
