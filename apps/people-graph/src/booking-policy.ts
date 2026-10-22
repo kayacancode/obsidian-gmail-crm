@@ -14,7 +14,7 @@ export function normalizeBookingEmail(value:unknown):string{
 export function defaultBookingSettings(owner:string):BookingSettings{
  const email=normalizeBookingEmail(owner);
  const local=email.split('@')[0].replace(/[^a-z0-9-]/g,'-').replace(/^-+|-+$/g,'').slice(0,40);
- return {owner:email,revision:0,slug:local.length>=3?local:'meet-'+local,displayName:'',intro:'Tell me what you are building and what you would like to discuss.',thesis:'',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:[],enabled:false,autoBookPriority:false};
+ return {owner:email,revision:0,slug:local.length>=3?local:'meet-'+local,displayName:'',intro:'Tell me what you are building and what you would like to discuss.',thesis:'',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:[],enabled:false,autoBookPriority:false,returningContactsEnabled:true,returningScoreThreshold:70};
 }
 
 export function validateBookingSettings(input:unknown,current:BookingSettings):BookingSettings{
@@ -44,9 +44,11 @@ export function validateBookingSettings(input:unknown,current:BookingSettings):B
  if(!Array.isArray(value.vipEmails)||value.vipEmails.length>200)throw Error('invalid_vip_emails');
  const vipEmails=[...new Set(value.vipEmails.map(normalizeBookingEmail))];
  if(typeof value.enabled!=='boolean'||typeof value.autoBookPriority!=='boolean')throw Error('invalid_booking_mode');
+ if(typeof value.returningContactsEnabled!=='boolean')throw Error('invalid_returning_contacts_enabled');
+ const returningScoreThreshold=integer(value.returningScoreThreshold,1,100,'returning_score_threshold');
  const thesis=boundedText(value.thesis,6000,'thesis');
  if((value.enabled||value.autoBookPriority)&&!meaningfulThesis(thesis))throw Error('thesis_required');
- return {owner:current.owner,revision:current.revision+1,slug,displayName:boundedText(value.displayName,100,'display_name'),intro:boundedText(value.intro,2000,'intro'),thesis,timezone,durationMinutes,bufferMinutes,minNoticeHours,horizonDays,reviewDelayDays,dailyLimit,weeklyLimit,weekdays,startTime,endTime,vipEmails,enabled:value.enabled,autoBookPriority:value.autoBookPriority};
+ return {owner:current.owner,revision:current.revision+1,slug,displayName:boundedText(value.displayName,100,'display_name'),intro:boundedText(value.intro,2000,'intro'),thesis,timezone,durationMinutes,bufferMinutes,minNoticeHours,horizonDays,reviewDelayDays,dailyLimit,weeklyLimit,weekdays,startTime,endTime,vipEmails,enabled:value.enabled,autoBookPriority:value.autoBookPriority,returningContactsEnabled:value.returningContactsEnabled,returningScoreThreshold};
 }
 
 export function validateBookingSubmission(input:unknown):BookingSubmission{
@@ -57,6 +59,8 @@ export function validateBookingSubmission(input:unknown):BookingSubmission{
  if(projectUrl){try{const url=new URL(projectUrl);if(url.protocol!=='https:'||!url.hostname||url.username||url.password)throw Error();}catch{throw Error('invalid_project_url');}}
  return {name,project,purpose,projectUrl,referrer};
 }
+
+export function validateReturningBookingNote(input:unknown):string{return boundedText(input===undefined?'':input,2000,'note');}
 
 /** Called only after the route has established verified inbox control. */
 export function decideBooking(settings:BookingSettings,email:string,fit:BookingFit,people:BookingPeopleContext):BookingDecision{

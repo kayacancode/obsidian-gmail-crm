@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 // Production routing, D1, SQLite coordinator, verification and provider code.
-// Only external Google/Rust services are synthetic; no email transport is configured.
+// Google/Rust services and the narrow contact RPC use fixtures; source RPC has separate SQLite tests. No email transport is configured.
 const fixture=`
 import worker from './src/index';
 import {BookingCoordinator as Coordinator} from './src/booking-coordinator';
@@ -18,7 +18,7 @@ import {seal} from './src/mail-model';
 import {bookingCalendarBusy} from './src/booking-providers';
 import {bookingReadiness} from './src/booking-coordinator';
 const owner='owner@example.com';
-function wrap(env){return {...env,AI:{async run(){const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(){return {bindOwner:async()=>{},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}})}}}};}
+function wrap(env){return {...env,AI:{async run(){const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(scopedOwner){return {bindOwner:async()=>{},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}}),bookingContact:async(email)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__contact:'+scopedOwner+':'+email).first();if(!row)return null;const value=JSON.parse(row.body);if(value.fail)throw Error('private source failure');return value;}}}}};}
 export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,wrap(env));} restartForTest(){this.ctx.abort('fixture restart');} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
 export default {async fetch(request,env){env=wrap(env);const url=new URL(request.url),store=new BookingStore(env.DB);
  if(url.pathname==='/fixture'){await store.init();await env.DB.prepare('CREATE TABLE IF NOT EXISTS fixture_control(key TEXT,body TEXT)').run();
@@ -135,6 +135,55 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const denied=await startSignIn('denied@example.com',{}, {requestId:'return-here'}),response=await api('/api/accounts/callback?'+new URLSearchParams({state:denied.state,error:'access_denied'}),{cookie:denied.browser});
    assert.equal(response.res.status,303);assert.equal(response.res.headers.get('location'),'/book/test-host?request=return-here&sign_in=failed');assert.equal(response.res.headers.get('set-cookie'),null);
    assert.equal((await api(denied.callback,{cookie:denied.browser})).res.status,400);
+  });
+  async function setContact(email,overrides={}){
+   await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__contact:owner@example.com:'+email,JSON.stringify({owner:'owner@example.com',email,name:'Known Friend',score:70,checkedAt:Date.now(),sourceUpdatedAt:Date.now()-1000,privateContext:'PRIVATE NOTE',...overrides})]);
+  }
+  await t.test('returning metadata recognizes only the authoritative signed-in contact and exposes no private score',async()=>{
+   const email='returning@example.com';await setContact(email);
+   assert.equal((await api(prefix)).value.returningContact,null);
+   const cookie=await visitor(email),metadata=(await api(prefix,{cookie})).value;
+   assert.deepEqual(metadata.returningContact,{name:'Known Friend'});
+   assert.equal(metadata.visitor.email,email);
+   for(const hidden of ['score','threshold','PRIVATE NOTE','sourceUpdatedAt','lastSync'])assert.equal(JSON.stringify(metadata).includes(hidden),false,hidden);
+   const other=await visitor('unknown@example.com');assert.equal((await api(prefix,{cookie:other})).value.returningContact,null);
+   const external=await visitor(email,{hd:undefined});assert.equal((await api(prefix,{cookie:external})).value.returningContact,null);
+   await setContact(email,{score:69});assert.equal((await api(prefix,{cookie})).value.returningContact,null);
+   await setContact(email,{fail:true});assert.equal((await api(prefix,{cookie})).value.returningContact,null);
+  });
+  await t.test('returning submission resolves known identity on the server and still requires review',async()=>{
+   const email='catchup@example.com';await setContact(email);
+   const cookie=await visitor(email),key=crypto.randomUUID();
+   settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,vipEmails:[email],autoBookPriority:true}})).value.settings;
+   const response=await api(prefix+'/requests',{method:'POST',cookie,data:{kind:'returning',note:'Would love to catch up.',name:'Forged Name',email:'other@example.com',score:100,idempotencyKey:key}});
+   assert.equal(response.res.status,200,JSON.stringify(response.value));assert.equal(response.value.next,'select_slot');
+   const r=response.value.request;assert.equal(r.intakeKind,'returning');assert.equal(JSON.stringify(response.value).includes('score'),false);
+   const saved=(await api('/api/booking',{cookie:ownerCookie})).value.requests.find(v=>v.id===r.id);
+   assert.equal(saved.name,'Known Friend');assert.equal(saved.email,email);assert.equal(saved.project,'');assert.equal(saved.purpose,'Would love to catch up.');assert.equal(saved.decision.tier,'review');
+   const choices=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots;assert.ok(choices.length);assert.ok(Date.parse(choices[0].start)>=Date.now()+7*86400000-1000);
+   const before=inserts,chosen=await api(prefix+'/requests/'+r.id+'/slot',{method:'POST',cookie,data:{start:choices[0].start}});assert.equal(chosen.value.request.status,'pending_approval');assert.equal(inserts,before);
+   await setContact(email,{score:1});const retry=await api(prefix+'/requests',{method:'POST',cookie,data:{kind:'returning',idempotencyKey:key}});assert.equal(retry.value.request.id,r.id);
+   settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,vipEmails:[],autoBookPriority:false}})).value.settings;
+  });
+  await t.test('returning eligibility loss requests full intake without creating records or leaking source errors',async()=>{
+   const email='fallback@example.com',cookie=await visitor(email);await setContact(email);
+   assert.deepEqual((await api(prefix,{cookie})).value.returningContact,{name:'Known Friend'});
+   for(const change of [{score:69},{sourceUpdatedAt:Date.now()-2*86400000},{owner:'other@example.com'},{fail:true}]){
+    await setContact(email,change);
+    const before=(await sql('SELECT count(*) AS count FROM booking_requests WHERE email=?',[email]))[0].count;
+    const response=await api(prefix+'/requests',{method:'POST',cookie,data:{kind:'returning',note:'Keep my note',idempotencyKey:crypto.randomUUID()}});
+    assert.equal(response.res.status,409,JSON.stringify(response.value));assert.deepEqual(response.value,{error:'intake_required'});
+    assert.equal((await sql('SELECT count(*) AS count FROM booking_requests WHERE email=?',[email]))[0].count,before);
+   }
+  });
+  await t.test('returning controls persist and paused pages never expose a returning profile',async()=>{
+   const email='rules@example.com',cookie=await visitor(email);await setContact(email);
+   for(const input of [{returningScoreThreshold:71},{returningScoreThreshold:70,returningContactsEnabled:false},{returningContactsEnabled:true,enabled:false}]){
+    const response=await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,...input}});assert.equal(response.res.status,200,JSON.stringify(response.value));settings=response.value.settings;
+    assert.equal((await api(prefix,{cookie})).value.returningContact,null);
+   }
+   settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,enabled:true}})).value.settings;
+   assert.deepEqual((await api(prefix,{cookie})).value.returningContact,{name:'Known Friend'});
   });
   await t.test('unverified and cross-owner visitors cannot create or read requests',async()=>{
    assert.equal((await api(prefix+'/requests',{method:'POST',data:{}})).res.status,401);

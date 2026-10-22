@@ -1,8 +1,9 @@
 import {DurableObject} from 'cloudflare:workers';
-import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings,BookingVisitorIdentity} from './booking-types';
+import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings,BookingVisitorIdentity,BookingSubmission,BookingDecision} from './booking-types';
 import {BookingStore} from './booking-store';
-import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,decideBooking,generateBookingSlots,normalizeBookingEmail} from './booking-policy';
+import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,validateReturningBookingNote,decideBooking,generateBookingSlots,normalizeBookingEmail} from './booking-policy';
 import {lookupBookingPerson} from './booking-people';
+import {getReturningBookingContact} from './booking-returning';
 import {assessBookingFit} from './booking-fit';
 import {bookingCalendarBusy,bookingEventId,findBookingEvent,createBookingEvent,cancelBookingEvent} from './booking-providers';
 
@@ -13,7 +14,7 @@ export async function bookingReadiness(env:BookingEnv,owner:string):Promise<Book
  const people=!!(env.PEOPLEGRAPH_HOST&&env.PEOPLEGRAPH_TOKEN&&env.PEOPLEGRAPH_OWNER_EMAIL?.toLowerCase()===owner);
  return {signIn,calendar,people,pilot,issues:[...(!pilot?['Booking is not enabled for this account yet.']:[]),...(!signIn?['Configure Google sign-in before visitors can request a meeting.']:[]),...(!calendar?['Connect Google Calendar to check and reserve times.']:[]),...(!people?['Your Rust PeopleGraph source is not connected. Requests will need your review.']:[])]};
 }
-export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd};}
+export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd,intakeKind:r.intakeKind==='returning'?'returning':'standard'};}
 const uncertainEmail=()=>({status:'unavailable' as const,reason:'Google has not established authority over this email address. The owner must review this request.'});
 function verifiedVisitor(visitor:BookingVisitorIdentity):BookingVisitorIdentity{
  if(!visitor||typeof visitor.subject!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(visitor.subject)||typeof visitor.emailAuthoritative!=='boolean')throw Error('verification_required');
@@ -59,10 +60,21 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   if(typeof input.idempotencyKey!=='string'||!/^[a-zA-Z0-9_-]{16,100}$/.test(input.idempotencyKey))throw Error('invalid_request_key');
   const previous=await this.store.prior(owner,email,input.idempotencyKey);if(previous){this.assertVisitor(previous,visitor);return previous;}
   await this.store.limit(`submit:${owner}:${email}`,5,86400000);
-  const submission=validateBookingSubmission(input),[fit,people]=await Promise.all([assessBookingFit(this.env,settings,submission),visitor.emailAuthoritative?lookupBookingPerson(this.env,owner,email):Promise.resolve(uncertainEmail())]);
-  const decision=decideBooking(settings,email,fit,people),now=Date.now();
+  const intakeKind=input.kind==='returning'?'returning':'standard';
+  let submission:BookingSubmission,decision:BookingDecision;
+  if(intakeKind==='returning'){
+   const contact=await getReturningBookingContact(this.env,settings,visitor);if(!contact)throw Error('intake_required');
+   submission={name:contact.name,project:'',purpose:validateReturningBookingNote(input.note),projectUrl:'',referrer:''};
+   // Relationship recognition skips questions; it establishes neither thesis fit nor approval.
+   decision={tier:'review',reasons:['This returning contact skipped the intake questionnaire; owner approval is still required.'],uncertainties:['Thesis fit was not assessed because the intake questionnaire was skipped.'],fit:{fit:'uncertain',reasons:['The optional catch-up note has not been assessed for thesis fit.'],evidence:[],model:'not_assessed'},people:{status:'matched',name:contact.name,email:contact.email,score:contact.score,lastSync:contact.lastSync,reason:'The verified email exactly matches a fresh My Network contact.'},policyRevision:settings.revision};
+  }else{
+   submission=validateBookingSubmission(input);
+   const [fit,people]=await Promise.all([assessBookingFit(this.env,settings,submission),visitor.emailAuthoritative?lookupBookingPerson(this.env,owner,email):Promise.resolve(uncertainEmail())]);
+   decision=decideBooking(settings,email,fit,people);
+  }
+  const now=Date.now();
   const {vipEmails,...snapshot}=settings;
-  const record:BookingRequestRecord={...submission,id:crypto.randomUUID(),owner,email,visitorSubject:visitor.subject,emailAuthoritative:visitor.emailAuthoritative,createdAt:now,updatedAt:now,status:decision.tier==='async'?'async_submitted':'pending_approval',decision,slotStart:null,slotEnd:null,eventId:null,idempotencyKey:input.idempotencyKey};
+  const record:BookingRequestRecord={...submission,id:crypto.randomUUID(),owner,email,visitorSubject:visitor.subject,emailAuthoritative:visitor.emailAuthoritative,intakeKind,createdAt:now,updatedAt:now,status:decision.tier==='async'?'async_submitted':'pending_approval',decision,slotStart:null,slotEnd:null,eventId:null,idempotencyKey:input.idempotencyKey};
   record.policySnapshot={...snapshot,vipMatch:visitor.emailAuthoritative&&vipEmails.includes(email)};
   await this.store.add(record);
   return record;

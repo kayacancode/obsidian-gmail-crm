@@ -693,6 +693,47 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   for(const m of this.granola().contacts()){const r=merged.get(m.email);if(r){r.meetings=m.meetings;r.lastMeeting=m.last;r.sent+=m.meetings;r.received+=m.meetings;r.last=Math.max(r.last,m.last);if(r.name.includes('@')&&!m.name.includes('@'))r.name=m.name;}else merged.set(m.email,{email:m.email,name:m.name,sent:m.meetings,received:m.meetings,last:m.last,meetings:m.meetings,lastMeeting:m.last});}
   return [...merged.values()].filter(r=>!own.has(r.email)).sort((x,y)=>(y.sent+y.received)-(x.sent+x.received)||x.email.localeCompare(y.email)).slice(0,1500);
  }
+ /** Owner-only booking lookup: exact direct identity, adjusted My Network score, no evidence. */
+ async bookingContact(email:string):Promise<{owner:string;email:string;name:string;score:number;checkedAt:number;sourceUpdatedAt:number}|null>{
+  if(typeof email!=='string')return null;
+  email=email.trim().toLowerCase();if(email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return null;
+  try{
+   const owner=await this.ctx.storage.get<string>('owner');if(!owner||owner===email)return null;
+   const id=await opaque(owner,email,this.env.TOKEN_SECRET);
+   const mailSources=this.ctx.storage.sql.exec<{account:string}>('SELECT DISTINCT account FROM contributions WHERE email=?',email).toArray();
+   // Confirmed aliases may affect the existing graph score, but recognition requires
+   // this authenticated address itself in direct mail or a visible attendee record.
+   if(!mailSources.length&&!this.ctx.storage.sql.exec('SELECT a.email FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return null;
+   // Do not await after reading the contact: disconnects and incremental sync writes must
+   // not replace its contributing sources between score and freshness checks.
+   const checkedAt=Date.now(),row=this.graphContacts().find(contact=>contact.email===email);if(!row)return null;
+   const completions:number[]=[];
+   const fresh=(lastSync:unknown):lastSync is number=>typeof lastSync==='number'&&Number.isFinite(lastSync)&&lastSync>0&&lastSync<=checkedAt&&lastSync>=checkedAt-86_400_000;
+   for(const source of mailSources){
+    const account=this.get(source.account);
+    // Gmail retains its completed job. Its connected status and lastSync (set only at
+    // completion) are authoritative; a syncing account may already contain partial rows.
+    if(!account||account.status!=='connected'||!fresh(account.lastSync))return null;
+    completions.push(account.lastSync);
+   }
+   if(row.meetings){
+    const source=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
+    const connection=source?JSON.parse(source.data) as {status?:unknown;lastSync?:unknown;job?:unknown}:null;
+    // A manual retry can restore connected while retaining an unfinished Granola job.
+    if(!connection||connection.status!=='connected'||connection.job!==null||!fresh(connection.lastSync))return null;
+    completions.push(connection.lastSync);
+   }
+   if(!completions.length)return null;
+   const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',id).toArray()[0];
+   const delta=feedback?(JSON.parse(feedback.data) as PersonFeedback).delta:0;
+   if(typeof delta!=='number'||!Number.isFinite(delta))return null;
+   const base=emailScore(row.sent,row.received,(checkedAt-row.last)/86_400_000).combined;
+   if(!Number.isFinite(base))return null;
+   const score=Math.max(0,Math.min(100,base+delta));
+   const name=(row.name.includes('@')?email.split('@')[0]:row.name).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,100)||email.split('@')[0];
+   return {owner,email,name,score,checkedAt,sourceUpdatedAt:Math.min(...completions)};
+  }catch{return null;} // Corrupt or unavailable contact evidence always falls back to intake.
+ }
  /** Resolves an opaque node id back to the contact email, the way retrievalScope does. */
  private async emailForPerson(personId:string){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;

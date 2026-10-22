@@ -2,6 +2,7 @@ import type {BookingEnv,BookingRequestRecord} from './booking-types';
 import {BookingStore} from './booking-store';
 import {bookingReadiness,publicBookingRequest} from './booking-coordinator';
 import {defaultBookingSettings} from './booking-policy';
+import {getReturningBookingContact} from './booking-returning';
 import {boundedJSON} from './bounded-json';
 import {bookingCookie,setBookingCookie,randomBookingToken,beginBookingSignIn,bookingVisitor} from './booking-verification';
 import {createBookingOAuth,exchangeBookingOAuth} from './booking-providers';
@@ -18,10 +19,10 @@ function origin(request:Request){if(request.headers.get('origin')!==new URL(requ
 export function bookingError(error:unknown){
  const raw=error instanceof Error?error.message:'';
  const code=raw==='booking_calendar_reconnect_required'?'calendar_unavailable':raw;
- const codes=['invalid_origin','not_found','verification_required','invalid_code','rate_limited','invalid_request','invalid_request_key','booking_unavailable','email_unavailable','calendar_unavailable','booking_in_progress','request_closed','no_pending_slot','slot_unavailable','settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','setup_required','invalid_oauth_state','wrong_owner'];
+ const codes=['invalid_origin','not_found','verification_required','invalid_code','rate_limited','invalid_request','invalid_request_key','booking_unavailable','email_unavailable','calendar_unavailable','booking_in_progress','request_closed','no_pending_slot','slot_unavailable','settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','setup_required','invalid_oauth_state','wrong_owner','intake_required'];
  // Provider bodies and model output must never become public error messages.
  const safe=codes.includes(code)?code:code.startsWith('invalid_')&&/^[a-z_]{1,60}$/.test(code)?code:'booking_failed';
- return json({error:safe},safe==='invalid_origin'?403:safe==='not_found'?404:safe==='verification_required'?401:safe==='rate_limited'?429:['settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','slot_unavailable','request_closed','booking_in_progress'].includes(safe)?409:['email_unavailable','calendar_unavailable','booking_unavailable','booking_failed'].includes(safe)?503:400);
+ return json({error:safe},safe==='invalid_origin'?403:safe==='not_found'?404:safe==='verification_required'?401:safe==='rate_limited'?429:['settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','slot_unavailable','request_closed','booking_in_progress','intake_required'].includes(safe)?409:['email_unavailable','calendar_unavailable','booking_unavailable','booking_failed'].includes(safe)?503:400);
 }
 export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:string):Promise<Response>{
  try{
@@ -72,8 +73,12 @@ export async function bookingPublicRoute(request:Request,env:BookingEnv):Promise
   const store=new BookingStore(env.DB);await store.init();const settings=await store.slug(match[1]);if(!settings)return json({error:'not_found'},404);
   const path=match[2]||'',ready=await bookingReadiness(env,settings.owner),available=settings.enabled&&ready.signIn&&ready.calendar&&ready.pilot;
   if(request.method==='GET'&&!path){
-   let visitor=null;try{const identity=await bookingVisitor(env,settings,request);visitor={email:identity.email,identityKey:identity.subject};}catch{}
-   return json({page:{displayName:settings.displayName,intro:settings.intro,timezone:settings.timezone,durationMinutes:settings.durationMinutes},available,recoveryAvailable:ready.signIn&&ready.pilot,visitor});
+   let visitor=null,returningContact=null;
+   try{
+    const identity=await bookingVisitor(env,settings,request);visitor={email:identity.email,identityKey:identity.subject};
+    if(available){const contact=await getReturningBookingContact(env,settings,identity);if(contact)returningContact={name:contact.name};}
+   }catch{}
+   return json({page:{displayName:settings.displayName,intro:settings.intro,timezone:settings.timezone,durationMinutes:settings.durationMinutes},available,recoveryAvailable:ready.signIn&&ready.pilot,visitor,returningContact});
   }
   if(request.method!=='GET'&&request.method!=='POST')return json({error:'not_found'},404);
   if(request.method==='POST')origin(request);

@@ -30,6 +30,15 @@ test('booking settings default to disabled approval mode and preserve server aut
 test('booking settings reject malformed and unsafe policy bounds',()=>{
  for(const patch of [{timezone:'Mars/Olympus'},{durationMinutes:0},{bufferMinutes:-1},{dailyLimit:0},{weeklyLimit:0},{reviewDelayDays:6},{horizonDays:1000},{weekdays:[]},{weekdays:[7]},{startTime:'25:00'},{startTime:'17:00',endTime:'09:00'},{enabled:'false'},{enabled:true,thesis:''},{vipEmails:['bad email']},{slug:'../admin'}])assert.throws(()=>validateBookingSettings(patch,settings()),JSON.stringify(patch));
 });
+test('returning-contact rules default to a bounded cutoff and support an explicit opt-out',()=>{
+ const initial=defaultBookingSettings(owner);
+ assert.equal(initial.returningContactsEnabled,true);assert.equal(initial.returningScoreThreshold,70);
+ for(const threshold of [1,70,100])assert.equal(validateBookingSettings({returningScoreThreshold:threshold},initial).returningScoreThreshold,threshold);
+ const disabled=validateBookingSettings({returningContactsEnabled:false},initial);
+ assert.equal(disabled.returningContactsEnabled,false);assert.equal(disabled.enabled,false);
+ for(const returningScoreThreshold of [0,101,69.5,'70',null,NaN])assert.throws(()=>validateBookingSettings({returningScoreThreshold},initial),/invalid_returning_score_threshold/);
+ for(const returningContactsEnabled of ['true',1,null])assert.throws(()=>validateBookingSettings({returningContactsEnabled},initial),/invalid_returning_contacts_enabled/);
+});
 test('booking submission validates bounded text, does not coerce objects, and rejects unsafe URLs',()=>{
  assert.deepEqual(validateBookingSubmission({...submission,name:' Visitor '}),submission);
  for(const patch of [{name:{}},{project:''},{purpose:'x'.repeat(4001)},{projectUrl:'javascript:alert(1)'},{projectUrl:'http://example.com'},{referrer:'x'.repeat(301)}])assert.throws(()=>validateBookingSubmission({...submission,...patch}));

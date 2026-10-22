@@ -6,6 +6,7 @@ export interface BookingSettings {
  timezone:string; durationMinutes:number; bufferMinutes:number; minNoticeHours:number; horizonDays:number;
  reviewDelayDays:number; dailyLimit:number; weeklyLimit:number; weekdays:number[]; startTime:string; endTime:string;
  vipEmails:string[]; enabled:boolean; autoBookPriority:boolean;
+ returningContactsEnabled:boolean; returningScoreThreshold:number;
 }
 export type BookingTier='priority'|'review'|'async';
 export interface BookingFit {fit:'strong'|'possible'|'weak'|'uncertain'; reasons:string[]; evidence:string[]; model:string}
@@ -22,6 +23,7 @@ export interface BookingRequestRecord extends BookingSubmission {
  id:string;owner:string;email:string;createdAt:number;updatedAt:number;status:BookingRequestStatus;
  decision:BookingDecision;slotStart:string|null;slotEnd:string|null;eventId:string|null;idempotencyKey:string;
  visitorSubject?:string;emailAuthoritative?:boolean;
+ intakeKind?:'returning'|'standard';
  initialDecision?:BookingDecision;
  policySnapshot?:Omit<BookingSettings,'vipEmails'> & {vipMatch:boolean};
 }

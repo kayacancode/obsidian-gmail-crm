@@ -1,7 +1,7 @@
 import {test,type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {BookingCoordinator,bookingReadiness} from '../src/booking-coordinator';
+import {BookingCoordinator,bookingReadiness,publicBookingRequest} from '../src/booking-coordinator';
 import {BookingStore} from '../src/booking-store';
 import {defaultBookingSettings,decideBooking} from '../src/booking-policy';
 import {seal} from '../src/mail-model';
@@ -11,6 +11,12 @@ const owner='owner@example.com';
 const visitor:BookingVisitorIdentity={email:'visitor@example.com',subject:'a'.repeat(43),emailAuthoritative:true};
 const submission={name:'Visitor',project:'We are building durable memory for agents.',purpose:'Discuss our developer tooling and design partners.',projectUrl:'',referrer:''};
 const fit={fit:'strong' as const,reasons:['Agent infrastructure fits.'],evidence:['durable memory for agents'],model:'test'};
+function returningContact(){return {owner,email:visitor.email,name:'Known Visitor',score:70,checkedAt:Date.now(),sourceUpdatedAt:Date.now()-60000};}
+function returningSource(env:any,value:ReturnType<typeof returningContact>|null){
+ const source={bindOwner:async(boundOwner:string)=>{assert.equal(boundOwner,owner);},bookingContact:async(email:string)=>{assert.equal(email,visitor.email);return value;}};
+ env.MAIL={getByName:(requestedOwner:string)=>{assert.equal(requestedOwner,owner);return source;}};
+ return source;
+}
 async function fixture(t:TestContext){
  const sqlite=new DatabaseSync(':memory:'),durable=new DatabaseSync(':memory:');t.after(()=>{sqlite.close();durable.close();});
  const db:any={prepare(sql:string){let args:any[]=[];const stmt:any={bind(...values:any[]){args=values;return stmt;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes)}};},async first(){return sqlite.prepare(sql).get(...args)??null;},async all(){return {results:sqlite.prepare(sql).all(...args)};}};return stmt;},async batch(statements:any[]){return Promise.all(statements.map(statement=>statement.run()));}};
@@ -29,6 +35,97 @@ async function fixture(t:TestContext){
 test('booking readiness requires Google credentials without a custom-email binding',async t=>{
  const f=await fixture(t);assert.equal((await bookingReadiness(f.env,owner)).signIn,true);
  for(const field of ['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','MAIL_TOKEN_KEY','TOKEN_SECRET'])assert.equal((await bookingReadiness({...f.env,[field]:''},owner)).signIn,false,field);
+});
+test('legacy booking settings hydrate returning defaults without rewriting or publishing the saved revision',async t=>{
+ const f=await fixture(t),legacy={...f.settings,enabled:false} as Record<string,unknown>;
+ delete legacy.returningContactsEnabled;delete legacy.returningScoreThreshold;
+ const saved=JSON.stringify(legacy);
+ f.sqlite.prepare('UPDATE booking_settings SET data=? WHERE owner=?').run(saved,owner);
+ for(const loaded of [await f.store.settings(owner),await f.store.slug(f.settings.slug)]){
+  assert.equal(loaded?.returningContactsEnabled,true);assert.equal(loaded?.returningScoreThreshold,70);
+  assert.equal(loaded?.revision,1);assert.equal(loaded?.enabled,false);
+ }
+ assert.equal((f.sqlite.prepare('SELECT data FROM booking_settings WHERE owner=?').get(owner) as any).data,saved);
+ const next=await f.service.saveSettings(owner,{revision:1,displayName:'Owner'});
+ assert.equal(next.revision,2);assert.equal(next.returningContactsEnabled,true);assert.equal(next.returningScoreThreshold,70);
+});
+test('returning submission resolves contact identity server-side and keeps VIPs in review without AI or Rust',async t=>{
+ const f=await fixture(t),contact=returningContact();returningSource(f.env,contact);
+ let aiCalls=0,externalCalls=0;
+ f.env.AI.run=async()=>{aiCalls++;return {output_text:JSON.stringify(fit)};};
+ t.mock.method(globalThis,'fetch',async()=>{externalCalls++;throw Error('unexpected external lookup');});
+ const r=await f.service.submit(owner,visitor,f.settings.slug,{kind:'returning',note:'  Catch up about the latest project.  ',idempotencyKey:'returning_request_key',name:'Spoofed name',email:'spoofed@example.com',score:100,project:submission.project,projectUrl:'https://example.com',referrer:'VIP',purpose:'Forged project thesis',emailAuthoritative:false,visitorSubject:'forged'});
+ assert.equal(r.name,'Known Visitor');assert.equal(r.email,visitor.email);assert.equal(r.visitorSubject,visitor.subject);assert.equal(r.emailAuthoritative,true);
+ assert.equal(r.project,'');assert.equal(r.projectUrl,'');assert.equal(r.referrer,'');assert.equal(r.purpose,'Catch up about the latest project.');
+ assert.equal(r.intakeKind,'returning');assert.equal(r.status,'pending_approval');assert.equal(r.decision.tier,'review');assert.equal(r.decision.fit.fit,'uncertain');assert.deepEqual(r.decision.fit.evidence,[]);
+ assert.equal(r.decision.people.status,'matched');assert.equal(r.decision.people.score,70);assert.equal(r.decision.people.lastSync,new Date(contact.sourceUpdatedAt).toISOString());
+ assert.ok(r.decision.reasons.some(reason=>/approval|review/i.test(reason)));assert.ok(r.decision.uncertainties.some(reason=>/thesis|fit/i.test(reason)));
+ assert.equal(r.policySnapshot?.vipMatch,true);assert.equal(aiCalls,0);assert.equal(externalCalls,0);
+ assert.equal((await f.store.request(owner,r.id))?.intakeKind,'returning');
+});
+test('returning requests accept an omitted or empty note and validate its text bounds',async t=>{
+ const f=await fixture(t);returningSource(f.env,returningContact());
+ for(const [index,note] of [undefined,'','x'.repeat(2000)].entries()){
+  const r=await f.service.submit(owner,visitor,f.settings.slug,{kind:'returning',note,idempotencyKey:'optional_note_key_'+index});
+  assert.equal(r.purpose,note??'');assert.equal(r.status,'pending_approval');
+ }
+});
+test('returning request note rejects malformed text without saving a request',async t=>{
+ const f=await fixture(t);returningSource(f.env,returningContact());
+ for(const [index,note] of [null,42,{},'x'.repeat(2001),'bad\u0000note'].entries())await assert.rejects(f.service.submit(owner,visitor,f.settings.slug,{kind:'returning',note,idempotencyKey:'invalid_note_key_'+index}),/invalid_note/);
+ assert.deepEqual(await f.store.requests(owner),[]);
+});
+test('returning submissions require current eligibility and never save a request on fallback',async t=>{
+ const cases=[{contact:null},{contact:{...returningContact(),score:69}},{contact:returningContact(),disabled:true},{contact:returningContact(),threshold:71},{contact:returningContact(),authoritative:false}];
+ for(const [index,item] of cases.entries()){
+  const f=await fixture(t);returningSource(f.env,item.contact);
+  if(item.disabled||item.threshold)await f.store.saveSettings({...f.settings,revision:2,returningContactsEnabled:!item.disabled,returningScoreThreshold:item.threshold??70},1);
+  await assert.rejects(f.service.submit(owner,{...visitor,emailAuthoritative:item.authoritative??true},f.settings.slug,{kind:'returning',note:'Catch up',idempotencyKey:'ineligible_request_'+index,name:'Forged Known Visitor',score:100,email:visitor.email}),/intake_required/);
+  assert.deepEqual(await f.store.requests(owner),[]);
+ }
+});
+test('returning retry recovers only the owned request before rechecking lost eligibility or rate limits',async t=>{
+ const f=await fixture(t);returningSource(f.env,returningContact());
+ const input={kind:'returning',note:'Catch up',idempotencyKey:'returning_retry_key'};
+ const original=await f.service.submit(owner,visitor,f.settings.slug,input);
+ returningSource(f.env,null);
+ for(let index=0;index<6;index++)assert.equal((await f.service.submit(owner,visitor,f.settings.slug,input)).id,original.id);
+ await assert.rejects(f.service.submit(owner,{...visitor,subject:'b'.repeat(43)},f.settings.slug,input),/not_found/);
+ await assert.rejects(f.service.submit(owner,visitor,f.settings.slug,{...input,idempotencyKey:'returning_new_retry_key'}),/intake_required/);
+ assert.equal((await f.store.requests(owner)).length,1);
+});
+test('returning eligibility is checked after the submission rate limit',async t=>{
+ const f=await fixture(t);let sourceCalls=0;
+ const source=returningSource(f.env,returningContact());source.bookingContact=async()=>{sourceCalls++;return null;};
+ for(let index=0;index<5;index++)await f.store.limit('submit:'+owner+':'+visitor.email,5,86400000);
+ await assert.rejects(f.service.submit(owner,visitor,f.settings.slug,{kind:'returning',idempotencyKey:'rate_limited_returning'}),/rate_limited/);
+ assert.equal(sourceCalls,0);assert.deepEqual(await f.store.requests(owner),[]);
+});
+test('returning slot selection preserves owner approval even when priority auto-booking and VIP match are enabled',async t=>{
+ const f=await fixture(t);returningSource(f.env,returningContact());
+ const r=await f.service.submit(owner,visitor,f.settings.slug,{kind:'returning',idempotencyKey:'returning_slot_request'});
+ let eventWrites=0,sourceReads=0;
+ t.mock.method(globalThis,'fetch',async(input:any,init:any)=>{
+  const url=String(input);
+  if(url.startsWith('https://source.test')){sourceReads++;throw Error('must not query');}
+  if(url.includes('/token'))return Response.json({access_token:'access',token_type:'Bearer',expires_in:3600,scope:'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy'});
+  if(url.endsWith('/freeBusy')){const body=JSON.parse(init.body);return Response.json({kind:'calendar#freeBusy',timeMin:body.timeMin,timeMax:body.timeMax,calendars:{primary:{busy:[]}}});}
+  eventWrites++;throw Error('must not insert event');
+ });
+ const slots=await f.service.slots(owner,visitor,f.settings.slug,r.id);assert.ok(slots.length);assert.ok(Date.parse(slots[0].start)>=r.createdAt+7*86400000);
+ const selected=await f.service.selectSlot(owner,visitor,f.settings.slug,r.id,slots[0].start);
+ assert.equal(selected.status,'pending_approval');assert.equal(selected.decision.tier,'review');assert.equal(selected.slotStart,slots[0].start);assert.equal(selected.eventId,null);
+ assert.equal(sourceReads,0);assert.equal(eventWrites,0);
+});
+test('standard submissions retain required questionnaire validation even for a known contact',async t=>{
+ const f=await fixture(t);returningSource(f.env,returningContact());
+ for(const kind of [undefined,'standard'])await assert.rejects(f.service.submit(owner,visitor,f.settings.slug,{kind,name:'Known Visitor',note:'Catch up',idempotencyKey:'standard_required_'+String(kind)}),/invalid_project/);
+ assert.deepEqual(await f.store.requests(owner),[]);
+});
+test('public request recovery exposes the intake kind without contact evidence or private decisions',async t=>{
+ const f=await fixture(t),r=f.record({intakeKind:'returning'});
+ assert.deepEqual(publicBookingRequest(r),{id:r.id,status:'pending_approval',slotStart:null,slotEnd:null,intakeKind:'returning'});
+ assert.equal(publicBookingRequest(f.record()).intakeKind,'standard');
 });
 test('legacy custom-email outbox is inert after an alarm wakeup',async t=>{
  const f=await fixture(t);

@@ -1,4 +1,5 @@
 import type {BookingSettings,BookingCalendarRecord,BookingRequestRecord} from './booking-types';
+type StoredBookingSettings=Omit<BookingSettings,'returningContactsEnabled'|'returningScoreThreshold'>&Partial<Pick<BookingSettings,'returningContactsEnabled'|'returningScoreThreshold'>>;
 
 export const BOOKING_SCHEMA=[
  `CREATE TABLE IF NOT EXISTS booking_settings(owner TEXT PRIMARY KEY,slug TEXT NOT NULL UNIQUE,revision INTEGER NOT NULL,data TEXT NOT NULL)`,
@@ -15,8 +16,13 @@ export const BOOKING_SCHEMA=[
 export class BookingStore {
  constructor(readonly db:D1Database){}
  async init(){await this.db.batch(BOOKING_SCHEMA.map(s=>this.db.prepare(s)));}
- async settings(owner:string){return this.read<BookingSettings>('SELECT data FROM booking_settings WHERE owner=?',owner);}
- async slug(slug:string){return this.read<BookingSettings>('SELECT data FROM booking_settings WHERE slug=?',slug);}
+ async settings(owner:string){return this.readSettings('SELECT data FROM booking_settings WHERE owner=?',owner);}
+ async slug(slug:string){return this.readSettings('SELECT data FROM booking_settings WHERE slug=?',slug);}
+ private async readSettings(sql:string,key:string){
+  const settings=await this.read<StoredBookingSettings>(sql,key);
+  // Hydrate new policy fields in memory; a read must never revise or publish old settings.
+  return settings?{returningContactsEnabled:true,returningScoreThreshold:70,...settings}:null;
+ }
  async saveSettings(s:BookingSettings,previousRevision:number){
   try{
    const result=await this.db.prepare(`INSERT INTO booking_settings(owner,slug,revision,data) SELECT ?,?,?,? WHERE ?=0

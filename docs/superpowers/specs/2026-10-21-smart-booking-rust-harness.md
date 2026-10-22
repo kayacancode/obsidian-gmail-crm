@@ -26,7 +26,7 @@ Booking routes:
 
 The public slug resolves to a server-owned configuration. It never lets a visitor select a cache, People owner, Rust service host, or calendar directly. Bind visitor authentication to the Google subject, normalized email, browser, slug and booking owner. A visitor receives limited booking permissions and never a People owner session or access to existing graph APIs. Reuse same-origin and owner authorization checks on private mutations.
 
-The Booking routes now implement Google-only visitor authentication, and fresh local validation, deployment and route/asset smoke checks have passed. Live Google sign-in and owner Calendar consent remain unverified, public intake is not configured, and the intended fresh Betaworks-owned Rust source is still missing.
+The Booking routes implement Google-only visitor authentication. Local validation, deployment and route/asset checks passed. On October 22 the live dashboard showed Calendar connected, the saved `kaya` page accepting requests, and a Google visitor request awaiting review. A real Calendar booking and the new returning-contact flow with an eligible live visitor remain unverified; the intended fresh Betaworks-owned Rust source is still missing.
 
 ## Visitor and owner experience
 
@@ -71,6 +71,14 @@ For a non-authoritative third-party Google email, skip the relationship lookup a
 Use the model to return structured fit (`strong`, `possible`, `weak`, or `uncertain`), concise reasons, cited submission or authorized context fields, and uncertainties. Validate the result. Application code applies the policy and executes calendar actions. Treat visitor text, links, and stored excerpts as data, never as instructions to modify policy, reveal contacts, or invoke tools.
 
 Store a private decision record with the opaque Google subject, email-authority flag, People source and freshness, evidence used, fit result, outcome, policy version, model version, and any owner override. Feedback can inform later suggestions, but must not silently rewrite the policy.
+
+## Returning-contact intake extension (October 22)
+
+The owner-approved shortcut uses the adjusted My Network People score, not the different Rust combined score. Default `returningContactsEnabled:true` and `returningScoreThreshold:70` are editable in Rules; the cutoff is an integer from 1 to 100. A narrow owner-scoped MailSync RPC checks an exact normalized authoritative Google email against direct contacts and returns the known name and score privately. Every source contributing to that contact must have completed sync within 24 hours, with no unfinished Granola job. Exact raw Gmail or visible Granola attendee evidence anchors identity before existing confirmed merges may contribute to the adjusted score; alias-only, shared-only or unavailable evidence cannot qualify.
+
+The public page returns only the recognized visitor’s name alongside their verified email. Name and email are autofilled; no company is inferred from its domain and no private notes become intake text. The visitor submits an optional catch-up note or chooses the full questionnaire. The server rechecks eligibility, ignores client profile/score claims, preserves owned idempotent recovery, and returns `409 intake_required` when regular intake is needed. The UI retains the note and binds any OAuth draft to the same email and Google identity for at most one hour.
+
+Returning catch-up requests always use the existing review path and review slot delay: a high score grants no booking or thesis-fit approval. Normal full-intake priority continues using the Rust service. Existing history/resume links, paused-page recovery, account separation and Calendar reservation controls remain intact. No schema or credential changes are needed.
 
 ## Existing Rust integration
 

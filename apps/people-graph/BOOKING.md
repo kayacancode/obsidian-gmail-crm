@@ -13,7 +13,7 @@ The configured pilot is `kaya@betaworks.com`. The public page is paused by defau
 
 **Use my saved lens** reads the latest saved focus, needs and offers when clicked. If the lens is empty, open **Network → Your lens**, save those fields or accept a suggested update, then return and click the button again. An empty lens or a failed read leaves the current meeting thesis and other edits intact. Importing a lens only fills the draft; **Save changes** applies it to Booking.
 
-The Google-only update is deployed, but live visitor sign-in and owner Calendar consent remain unverified, and a fresh Betaworks-owned Rust source is still missing. Public intake is not configured: the `kaya` slug has not been saved. Configured Google sign-in, pilot access and the owner Calendar grant gate public intake. Missing Rust evidence falls back to review; automatic booking remains blocked until the intended source is configured and each lookup verifies ownership and freshness. Keep the page paused until the owner has reviewed the setup.
+The Google-only update is deployed. On October 22 the live dashboard showed Calendar connected, the saved `kaya` page accepting requests, and an existing Google visitor request awaiting review. A real Calendar booking and the new returning-contact flow with an eligible live visitor have not been verified. The fresh Betaworks-owned Rust source is still missing: normal submissions fall back to review and automatic booking remains blocked until that source is configured and each lookup verifies ownership and freshness.
 
 Google may require the owner to be an approved OAuth tester, or additional verification of the new scopes. The application shows connection failure without claiming a grant was established.
 
@@ -24,6 +24,18 @@ Visitor OAuth starts from a same-origin POST and binds a ten-minute, single-use 
 Sessions and requests bind both the normalized email and an opaque hash of the Google account subject (`opaque('booking-google-sub', sub, TOKEN_SECRET)`). Knowing the email or a request ID is insufficient to recover another Google account's request. Returning to a request requires the same subject and email; an old email-code session or legacy request without a Google subject does not automatically gain access.
 
 A signed Gmail address, or a verified email with Google's signed Workspace `hd` claim, establishes Google email authority for booking rules. A Google account using a third-party address without `hd` may sign in and submit a review request, but the app does not query PeopleGraph for that address or grant VIP/network priority. Its `vipMatch` is false. Current and originally recorded email authority must both be present for automatic booking; later sign-in cannot silently upgrade a request that began with uncertainty. Google sign-in does not establish an employer, project claim, or referral.
+
+## Returning contacts
+
+In **Booking → Rules**, **Offer a shorter form to returning contacts** is on by default with a **Returning contact score cutoff of 70/100**. The owner can change the cutoff (1–100) or turn the shortcut off. Reading older saved settings supplies these defaults without changing their revision or enabling a paused booking page.
+
+After Google sign-in, an exact authoritative email match to the owner’s direct My Network contact qualifies when its adjusted People score reaches the cutoff. This is the same activity/recency/feedback score shown in My Network, including Granola meetings. All sources contributing to that contact must have a completed sync within 24 hours. Shared-only contacts, alias-only identity matches, unknown or non-authoritative emails, stale or incomplete syncs and source errors use the regular questionnaire. An exact raw email contribution or visible meeting attendee record anchors identity; previously confirmed identity merges may contribute to the displayed score after that exact match. This recognition lookup is separate from the Rust service used by the normal thesis/priority decision.
+
+Eligible visitors see their name and verified email, an optional catch-up note, and **Choose a time**. They may choose **Share more context** to fill the full questionnaire. The shortcut does not infer a company, project, or meeting purpose from private notes. No score, cutoff, contact evidence or other profile information is sent to the visitor. Existing requests and resume links take precedence over starting a new one.
+
+Submission rechecks eligibility and resolves the name on the server. If eligibility changes, the UI opens the normal questionnaire with the name and note preserved. Account switching clears recognition; OAuth draft recovery requires the same email and Google identity and expires after one hour. An owned retry returns its existing request before reevaluating the score.
+
+Returning catch-up requests require owner approval and use the existing review slots (at least seven days out). Their optional note is not scored as a thesis submission. Neither a high People score nor the shortcut grants automatic booking, even when the visitor is a VIP. Normal full submissions retain their existing priority rules. The owner can see why intake was skipped and approve the selected time through the usual Calendar flow. These changes add JSON fields only; no migration, secret or Rust deployment is required.
 
 ## Rust PeopleGraph connection
 
@@ -38,7 +50,7 @@ On October 21 the local cache found on this computer belonged to the personal Gm
 ## Behavior
 
 - Exact VIPs, strong thesis fits (including newcomers), and exact known contacts with plausible thesis fits get priority consideration when Google email authority and the other inputs are verified and fresh. Unknown identity, email authority, source or model state requires review. Clear mismatches with otherwise validated inputs receive an asynchronous submission path.
-- The owner sees decision reasons and quoted submission evidence. Visitors never receive private network scores, names, source records, or internal tiers.
+- The owner sees decision reasons and quoted submission evidence. Visitors never receive private network scores, other contacts’ names, source records, or internal tiers. A recognized returning visitor receives only their own contact name and already-verified email.
 - Each request stores a private `policySnapshot` of the settings used at submission, omitting the complete VIP list and recording only whether the verified visitor matched it (`vipMatch`). The decision retains its policy revision; automatic-selection rechecks preserve the initial decision. Current scheduling limits and availability still apply, and a changed policy revision falls back to owner approval rather than upgrading an old request.
 - Review eligibility starts seven days after submission, not seven days after each approval attempt. Current minimum notice and Calendar availability are checked again when reserving.
 - Slot preferences are not holds. A per-owner coordinator serializes bookings, persists a stable Calendar event ID before insert, and reconciles uncertain outcomes before retrying. Timeouts never create a second event ID.
@@ -69,8 +81,10 @@ Local validation of the Google-only update passed on October 21, 2026: `npm test
 
 Deployment completed on October 21, 2026. All ten additive SQL queries succeeded, and `npm run deploy` passed both asset builds and deployed Worker version `7107c5cb-1837-415c-83d2-576500c59f7a` without email bindings. Live smoke checks returned 200 for `/`, `/booking`, `/book/kaya`, `book.mjs` and `booking.mjs`; the bundles contain the Google sign-in flow/readiness and no OTP flow. The unauthenticated owner API returned 401. The public `kaya` API returned 404 because no slug has been saved; serving the HTML page does not mean intake is enabled.
 
-Live Google visitor OAuth remains **unverified**, public intake is not configured, and the fresh Betaworks-owned Rust source is still missing. Local synthetic tests and deployed route/asset checks do not establish those prerequisites.
+Those October 21 checks did not verify live visitor OAuth or configured intake. The later October 22 dashboard check found a saved, enabled page and a visitor request; a fresh Betaworks-owned Rust source remains missing.
 
 The saved-lens follow-up is deployed as `96c0055f-1bc3-4466-b010-e100fad91e3b`. The 868 app tests, Booking browser suite, typecheck and asset builds passed. The live empty-lens action was verified with all 24 draft controls preserved. The owner dashboard now reports the Calendar connection as ready; a real Calendar booking has not been tested.
+
+The returning-contact update is deployed as `a39795d6-20e0-4f3f-aa53-b6802afdb4e1` (October 22). All 894 app tests (148 frontend/model + 746 TypeScript/core), 26 workerd/D1/SQLite tests, expanded desktop/mobile browser checks, typecheck, asset builds, dry run and diff checks passed. Source regressions cover unfinished Granola retries and alias-only recognition. Live HTML/assets and the enabled `kaya` metadata endpoint passed smoke checks; anonymous metadata contains no visitor/profile and the owner API remains protected. No new migration was needed. An eligible real visitor has not yet exercised the returning shortcut in production.
 
 The `booking-v1` migration adds a new namespace. Existing `MailSync` storage and migration remain unchanged. Do not roll back by deleting the Booking namespace: reservations and reconciliation state must be preserved.
