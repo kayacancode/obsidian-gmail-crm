@@ -149,6 +149,14 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   }
   /** "Who can help with…" over the owner's own graph; the server decides the ranking. */
   async function helperPeople(personId,brief){return request(workspacePath()?workspacePath()+'/helpers':'/api/people/helpers',{body:{personId,brief}},context());}
+  function personalContextScope(personId){
+    if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to use private context.');
+    const node=state.graph.nodes?.find(node=>node.id===personId&&(node.type===undefined||node.type==='person'));
+    if(!node||node.directRelationship===false||node.via?.length&&node.directRelationship!==true)throw Error('Select a person in your own network.');
+    return context();
+  }
+  async function getPersonContext(personId){return request('/api/people/context?personId='+encodeURIComponent(personId),{},personalContextScope(personId));}
+  async function savePersonContext({personId,text,revision}){return request('/api/people/context',{body:{personId,text,revision}},personalContextScope(personId));}
   async function connectionOrigin(personId,signal){
     if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to find your introductions.');
     if(!state.graph.nodes?.some(node=>node.id===personId&&(node.type===undefined||node.type==='person')))throw Error('Select a person in your network.');
@@ -405,7 +413,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signOut,
     requestPushToken,
     async personFeedback(personId,action){const ctx=context();await request('/api/people/feedback',{body:{personId,action}},ctx);const data=await request('/api/graph',{},ctx);if(data.graph){publish({graph:data.graph});}return data.graph;},
-    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, connectionOrigin, loadOwnerLens, updateOwnerLens, findOwnerMatches,
+    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, getPersonContext, savePersonContext, connectionOrigin, loadOwnerLens, updateOwnerLens, findOwnerMatches,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
     pollRetrieval: id => pollJob(id, 'retrieval'),
@@ -795,6 +803,8 @@ async function startBrowserApp() {
       onPersonFeedback:state.graph.source==='email_accounts'?(personId,action)=>controller.personFeedback(personId,action):undefined,
       onConnectionOrigin:state.graph.source==='email_accounts'?(personId,signal)=>controller.connectionOrigin(personId,signal):undefined,
       onFindHelpers:(personId,brief)=>controller.helperPeople(personId,brief),
+      onGetPersonContext:personId=>controller.getPersonContext(personId),
+      onSavePersonContext:input=>controller.savePersonContext(input),
       onMergePeople:(sourceId,targetId)=>controller.mergePeople(sourceId,targetId),
       onConfirmRelationship:(personId,confirmed)=>controller.confirmRelationship(personId,confirmed),
       onExcludeContribution:async personId=>{const source=controller.getState().source,account=controller.getState().account;await controller.excludeContribution(personId);document.querySelector('#contribution-undo')?.remove();const toast=document.createElement('div');toast.id='contribution-undo';toast.setAttribute('role','status');Object.assign(toast.style,{position:'fixed',bottom:'24px',left:'24px',zIndex:200,background:'#fff',padding:'16px',border:'1px solid #ddd',borderRadius:'12px',boxShadow:'0 4px 20px #0002'});toast.append('Removed from your shared contribution. ');const undo=document.createElement('button');undo.textContent='Undo';undo.onclick=async()=>{undo.disabled=true;try{await controller.excludeContribution(personId,true,source,account);toast.remove();}catch{undo.disabled=false;undo.textContent='Retry undo';}};toast.append(undo);document.body.append(toast);},

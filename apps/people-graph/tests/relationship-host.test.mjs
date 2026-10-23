@@ -21,6 +21,19 @@ async function workflowFixture(handler, options = {}) {
   await controller.resume(); return {controller,calls};
 }
 
+test('private person context reads and saves only the selected personal contact with account cancellation',async()=>{
+ const value={personId:'person-a',text:'Building clinic tools',revision:'v1',updatedAt:1};
+ const {controller,calls}=await workflowFixture(()=>json(value));
+ assert.deepEqual(await controller.getPersonContext('person-a'),value);
+ assert.equal(calls[0].path,'/api/people/context?personId=person-a');
+ assert.deepEqual(await controller.savePersonContext({...value,revision:null}),value);
+ assert.deepEqual(JSON.parse(calls[1].init.body),{personId:'person-a',text:value.text,revision:null});
+ assert.equal(calls[1].init.headers.origin,'https://people.test');
+ await assert.rejects(controller.getPersonContext('missing'),/Select a person/);
+ await controller.signOut();assert.equal(calls[0].init.signal.aborted,true);
+ await assert.rejects(controller.getPersonContext('person-a'),/My network/);
+});
+
 test('connection origin reads an untyped raw API person through a private POST',async()=>{
   const {controller,calls}=await workflowFixture(()=>json({status:'not_found'}));
   const abort=new AbortController();

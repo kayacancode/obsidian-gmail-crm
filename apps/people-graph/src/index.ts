@@ -8,6 +8,7 @@ import type {BookingEnv} from './booking-types';
 import {completeBookingSignIn} from './booking-verification';
 export {BookingCoordinator} from './booking-coordinator';
 import {ownerLensRoute} from './owner-lens-routes';
+import {personContextRoute} from './person-context-routes';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
@@ -96,6 +97,10 @@ export default {
                 if("error" in user)return json({error:user.error},401);
                 return await personFeedbackRoute(request,env,user.email);
             }
+			if(pathname==='/api/people/context'){
+				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+				return await personContextRoute(request,env,user.email);
+			}
 			if (pathname === "/api/people/draft") {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
