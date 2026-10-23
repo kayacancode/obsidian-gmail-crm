@@ -3,6 +3,7 @@ import {extractConnectionOrigin,extractDirectConnectionContext} from './connecti
 import {collectGranolaOwnerPassages,collectGranolaMeetingTopics} from './granola-owner-context';
 import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
+import {PersonContextStore,validContextPerson,validPersonContextInput,type SavePersonContext} from './person-context';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
 import {DurableObject} from 'cloudflare:workers';
@@ -12,6 +13,8 @@ import type {MetadataInput} from './relevance-store';
 import type {RelevanceLens} from './relevance-model';
 import {canonicalThemeName,type Theme,type ThemeSignal} from './relevance-model';
 import {decodeGmailMessage} from './gmail-body';
+import {verifySentSchedulingKickoff} from './scheduling-gmail';
+import {schedulingMessageId} from './scheduling-email-policy';
 import {ThemeExtractor,THEME_MODEL,EXTRACTOR_VERSION,THEME_TOPICS} from './theme-extractor';
 import type {GmailMessage} from './mail-model';
 import type {RetrievalJob,RetrievalError} from './relevance-store';
@@ -37,6 +40,24 @@ interface GraphPersonNode {directRelationship:boolean;directLastContact:string|n
 export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
+ private personContextStore?:PersonContextStore;
+ async verifySchedulingKickoff(messageId:string,agentAddress:string){
+  schedulingMessageId(messageId);
+  const owner=await this.ctx.storage.get<string>('owner'),key=this.env.MAIL_TOKEN_KEY,secret=this.env.GOOGLE_CLIENT_SECRET;
+  if(!owner||!key||!secret)throw Error('scheduling_gmail_unavailable');
+  const account=this.get(owner);
+  if(!account||!['connected','syncing'].includes(account.status))throw Error('scheduling_gmail_unavailable');
+  const current=()=>{const latest=this.get(owner);return !!latest&&latest.grant===account.grant&&latest.revision===account.revision&&['connected','syncing'].includes(latest.status);};
+  const refresh=await unseal(account.grant,key);if(!current())throw Error('scheduling_grant_revoked');
+  const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:secret,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});
+  if(!current()){await response.body?.cancel();throw Error('scheduling_grant_revoked');}
+  if(!response.ok){await response.body?.cancel();throw Error('scheduling_gmail_unavailable');}
+  const token=await readBoundedJSON(response,32768) as {access_token?:string};
+  if(!token.access_token||!current())throw Error('scheduling_grant_revoked');
+  const verified=await verifySentSchedulingKickoff({owner,agentAddress,messageId,accessToken:token.access_token,current});
+  if(!current()||await this.ctx.storage.get<string>('owner')!==owner)throw Error('scheduling_grant_revoked');
+  return verified;
+ }
  private originRequests=new Map<string,Promise<ConnectionOriginResult>>();
  private originTable(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS connection_origins (person_id TEXT PRIMARY KEY,scope TEXT NOT NULL,checked_at INTEGER NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS messages_account_canonical ON messages(account,canonical)');}
  private clearConnectionOrigins(){this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins');}
@@ -693,11 +714,97 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   for(const m of this.granola().contacts()){const r=merged.get(m.email);if(r){r.meetings=m.meetings;r.lastMeeting=m.last;r.sent+=m.meetings;r.received+=m.meetings;r.last=Math.max(r.last,m.last);if(r.name.includes('@')&&!m.name.includes('@'))r.name=m.name;}else merged.set(m.email,{email:m.email,name:m.name,sent:m.meetings,received:m.meetings,last:m.last,meetings:m.meetings,lastMeeting:m.last});}
   return [...merged.values()].filter(r=>!own.has(r.email)).sort((x,y)=>(y.sent+y.received)-(x.sent+x.received)||x.email.localeCompare(y.email)).slice(0,1500);
  }
+ /** Owner-only booking lookup: exact direct identity, adjusted My Network score, no evidence. */
+ async bookingContact(email:string):Promise<{owner:string;email:string;name:string;score:number;checkedAt:number;sourceUpdatedAt:number}|null>{
+  if(typeof email!=='string')return null;
+  email=email.trim().toLowerCase();if(email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return null;
+  try{
+   const owner=await this.ctx.storage.get<string>('owner');if(!owner||owner===email)return null;
+   const id=await opaque(owner,email,this.env.TOKEN_SECRET);
+   const mailSources=this.ctx.storage.sql.exec<{account:string}>('SELECT DISTINCT account FROM contributions WHERE email=?',email).toArray();
+   // Confirmed aliases may affect the existing graph score, but recognition requires
+   // this authenticated address itself in direct mail or a visible attendee record.
+   if(!mailSources.length&&!this.ctx.storage.sql.exec('SELECT a.email FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return null;
+   // Do not await after reading the contact: disconnects and incremental sync writes must
+   // not replace its contributing sources between score and freshness checks.
+   const checkedAt=Date.now(),row=this.graphContacts().find(contact=>contact.email===email);if(!row)return null;
+   const completions:number[]=[];
+   const fresh=(lastSync:unknown):lastSync is number=>typeof lastSync==='number'&&Number.isFinite(lastSync)&&lastSync>0&&lastSync<=checkedAt&&lastSync>=checkedAt-86_400_000;
+   for(const source of mailSources){
+    const account=this.get(source.account);
+    // Gmail retains its completed job. Its connected status and lastSync (set only at
+    // completion) are authoritative; a syncing account may already contain partial rows.
+    if(!account||account.status!=='connected'||!fresh(account.lastSync))return null;
+    completions.push(account.lastSync);
+   }
+   if(row.meetings){
+    const source=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
+    const connection=source?JSON.parse(source.data) as {status?:unknown;lastSync?:unknown;job?:unknown}:null;
+    // A manual retry can restore connected while retaining an unfinished Granola job.
+    if(!connection||connection.status!=='connected'||connection.job!==null||!fresh(connection.lastSync))return null;
+    completions.push(connection.lastSync);
+   }
+   if(!completions.length)return null;
+   const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',id).toArray()[0];
+   const delta=feedback?(JSON.parse(feedback.data) as PersonFeedback).delta:0;
+   if(typeof delta!=='number'||!Number.isFinite(delta))return null;
+   const base=emailScore(row.sent,row.received,(checkedAt-row.last)/86_400_000).combined;
+   if(!Number.isFinite(base))return null;
+   const score=Math.max(0,Math.min(100,base+delta));
+   const name=(row.name.includes('@')?email.split('@')[0]:row.name).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,100)||email.split('@')[0];
+   return {owner,email,name,score,checkedAt,sourceUpdatedAt:Math.min(...completions)};
+  }catch{return null;} // Corrupt or unavailable contact evidence always falls back to intake.
+ }
+ /** Exact owner-local relationship lookup, with a verified miss only after all sources finish. */
+ async bookingPerson(email:string):Promise<{owner:string;email:string;status:'matched'|'not_found'|'ambiguous'|'unavailable';checkedAt:number;sourceUpdatedAt?:number;name?:string;score?:number}>{
+  const owner=await this.ctx.storage.get<string>('owner')||'',checkedAt=Date.now();
+  email=typeof email==='string'?email.trim().toLowerCase():'';
+  const unknown={owner,email,status:'unavailable' as const,checkedAt};
+  if(!owner||owner===email||email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return unknown;
+  try{
+   const contact=await this.bookingContact(email);if(contact)return {...contact,status:'matched'};
+   // Never turn a failed exact lookup (stale, corrupt, capped, or partially synced) into a miss.
+   if(this.ctx.storage.sql.exec('SELECT 1 FROM contributions WHERE email=? LIMIT 1',email).toArray().length||this.ctx.storage.sql.exec('SELECT 1 FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return unknown;
+   if(this.ctx.storage.sql.exec("SELECT 1 FROM granola_identity WHERE (attendee_email=? OR contact_email=?) AND status='confirmed' LIMIT 1",email,email).toArray().length)return {...unknown,status:'ambiguous'};
+   const source=this.bookingSourceSnapshot(owner);
+   return source.ready?{owner,email,status:'not_found',checkedAt:source.checkedAt,sourceUpdatedAt:source.sourceUpdatedAt}:unknown;
+  }catch{return unknown;}
+ }
+ /** Readiness reports actual completion, not merely the presence of a binding. */
+ async bookingSourceStatus(){return this.bookingSourceSnapshot(await this.ctx.storage.get<string>('owner')||'');}
+ private bookingSourceSnapshot(owner:string):{owner:string;ready:boolean;checkedAt:number;sourceUpdatedAt?:number}{
+  const now=Date.now(),unknown={owner,ready:false,checkedAt:now};if(!owner)return unknown;
+  try{
+   const completions:number[]=[],fresh=(value:unknown):value is number=>typeof value==='number'&&Number.isFinite(value)&&value>0&&value<=now&&now-value<=86_400_000;
+   for(const account of this.rows()){
+    if(account.status!=='connected'||!fresh(account.lastSync)||account.job&&(account.job.pending.length>0||account.job.hasMore))return unknown;
+    completions.push(account.lastSync);
+   }
+   const row=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
+   if(row){const connection=JSON.parse(row.data) as {status?:unknown;lastSync?:unknown;job?:unknown};if(connection.status!=='connected'||connection.job!==null||!fresh(connection.lastSync))return unknown;completions.push(connection.lastSync);}
+   return completions.length?{owner,ready:true,checkedAt:now,sourceUpdatedAt:Math.min(...completions)}:unknown;
+  }catch{return unknown;}
+ }
  /** Resolves an opaque node id back to the contact email, the way retrievalScope does. */
  private async emailForPerson(personId:string){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;
   for(const row of this.graphContacts())if(await opaque(owner,row.email,this.env.TOKEN_SECRET)===personId)return row.email;
   return null;
+ }
+ private personContextFor(email:string|null){
+  // Hashing yields; a disconnect may have removed this exact identity in the meantime.
+  if(!email||!this.graphContacts().some(row=>row.email===email))throw Error('unknown_person');
+  return this.personContextStore??=new PersonContextStore(this.ctx.storage);
+ }
+ async getPersonContext(personId:string){
+  if(!validContextPerson(personId))throw Error('invalid_request');
+  const email=await this.emailForPerson(personId);
+  return this.personContextFor(email).get(personId);
+ }
+ async savePersonContext(input:SavePersonContext){
+  if(!validPersonContextInput(input))throw Error('invalid_request');
+  const email=await this.emailForPerson(input.personId);
+  return this.personContextFor(email).save(input);
  }
  /**
   * Outreach draft for one person from their own visible evidence. The prompt carries the

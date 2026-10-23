@@ -1,4 +1,5 @@
 import {helperSection} from './helper-suggestions.mjs';
+import {personContextEditor} from './person-context.mjs';
 import {sharedHome,sharedHomePersonAllowed} from './shared-home.mjs';
 import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
@@ -128,6 +129,7 @@ export function mountGraph(element, options = {}) {
   let nodeIndex;
   let edgesByNode;
   let selectedId = null;
+  let privateContextEditor=null;
   let timeWindow = 'all';
   let topicsOpen = false;
   let walkHistory=[];
@@ -832,6 +834,7 @@ export function mountGraph(element, options = {}) {
     const node = byId.get(selectedId);
     if (!node) return null;
     const panel = make('section', 'rg-context-panel');
+    let helpers;
     panel.setAttribute('aria-label', 'Selected item and connections');
     panel.append(button('×', 'close-panel', 'rg-close'));
     panel.lastElementChild.setAttribute('aria-label', 'Close details');
@@ -884,7 +887,14 @@ export function mountGraph(element, options = {}) {
         }
         panel.append(routes);
       }
-      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[]).filter(signal=>signal.sourceType!=='gmail_subject')},node.id);
+      if(connectionOriginEnabled&&node.directRelationship!==false&&(!node.via?.length||node.directRelationship===true)&&typeof options.onGetPersonContext==='function'&&typeof options.onSavePersonContext==='function'){
+        // Canvas/layout updates must not replace an active text editor and lose its draft.
+        if(privateContextEditor?.personId!==node.id){const entry={personId:node.id,element:null,onSaved:null};entry.element=personContextEditor(document,{person:node,onLoad:options.onGetPersonContext,onSave:options.onSavePersonContext,onSaved:()=>entry.onSaved?.()});privateContextEditor=entry;}
+        privateContextEditor.onSaved=()=>{
+          if(!helpers?.isConnected)return;const open=helpers.open,next=helperSection(document,graph,node.id,options.onFindHelpers);helpers.replaceWith(next);helpers=next;next.open=open;
+        };panel.insertBefore(privateContextEditor.element,scores.parentNode===panel?scores:null);
+      }
+      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[]).filter(signal=>signal.sourceType!=='gmail_subject'&&!/^(?:Activity involving\b|Recorded topic:|Subject metadata matched\b)/i.test((signal.summary||'').trim()))},node.id);
       if(context.length){const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent context'));for(const e of context.slice(0,3))notes.append(contextBlock(document,e));notes.append(make('p','rg-source','Note context is separate from contact activity; a mention does not confirm attendance.'));panel.insertBefore(notes,scores.parentNode===panel?scores:null);}
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
@@ -915,7 +925,7 @@ export function mountGraph(element, options = {}) {
       next.append(nextButton);
     }
     panel.append(next);
-    if(node.type==='person')panel.append(helperSection(document,graph,node.id,options.onFindHelpers));
+    if(node.type==='person'){helpers=helperSection(document,graph,node.id,options.onFindHelpers);panel.append(helpers);}
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
     panel.append(actions);
@@ -1445,12 +1455,14 @@ export function mountGraph(element, options = {}) {
   }
 
   function render(focusAction = null) {
+    if(privateContextEditor?.personId!==selectedId||panelMode!=='node')privateContextEditor=null;
     if (destroyed) return;
     refreshRelevance();
     root.dataset.profileOpen = String(Boolean(panelMode && !pathState));
     root.dataset.demo = String(demoEnabled());
     root.dataset.workspace = String(graph.source==='workspace');
     const focusedSearch=simpleShared()&&document.activeElement?.matches('.sh-search input')?{start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd}:null;
+    const contextFocus=privateContextEditor?.element.contains(document.activeElement)?{element:document.activeElement,start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd,direction:document.activeElement.selectionDirection,scrollTop:document.activeElement.scrollTop}:null;
     root.replaceChildren();
     root.dataset.simpleShared=String(simpleShared());
     if(simpleShared()){
@@ -1582,6 +1594,11 @@ export function mountGraph(element, options = {}) {
       root.append(status);
     }
     if (focusAction) root.querySelector(`[data-action="${focusAction}"]`)?.focus();
+    else if(contextFocus?.element.isConnected){
+      contextFocus.element.focus({preventScroll:true});
+      if(typeof contextFocus.start==='number')contextFocus.element.setSelectionRange(contextFocus.start,contextFocus.end,contextFocus.direction);
+      contextFocus.element.scrollTop=contextFocus.scrollTop;
+    }
   }
 
   function selectNode(id, { notify = true } = {}) {
@@ -2019,6 +2036,7 @@ export function mountGraph(element, options = {}) {
     },
     setGraph(nextGraph, {preserveFocus=false}={}) {
       if (destroyed) return;
+      privateContextEditor=null;
       clearConnectionOrigins();
       connectionOriginEnabled=nextGraph.source==='email_accounts';
       const previousFocus=preserveFocus?contactFocus:null;

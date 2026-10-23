@@ -2,6 +2,7 @@ import {rankHelperBrief} from './helper-brief';
 import {b64,bytes,digest,opaque} from './mail-model';
 import type {MailEnv} from './mail-sync';
 import {boundedJSON} from './bounded-json';
+import type {PersonContext} from './person-context';
 export const configured=(env:MailEnv)=>Boolean(env.GOOGLE_CLIENT_SECRET&&env.MAIL_TOKEN_KEY&&env.APP_ORIGIN);
 const json=(body:unknown,status=200)=>Response.json(body,{status,headers:{'cache-control':'no-store'}});
 function cookie(request:Request){return request.headers.get('cookie')?.split(';').map(c=>c.trim()).find(c=>c.startsWith('__Host-people-connect='))?.slice('__Host-people-connect='.length)||'';}
@@ -113,9 +114,19 @@ export async function helperRoute(request:Request,env:MailEnv,owner:string){
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
  try{
   const graph=await stub.graph();if(!graph?.nodes.some(node=>node.id===body.personId))return json({error:'invalid_request'},400);
-  // Refresh the selected person's context first; all full passages remain private to this request.
-  await stub.refreshHelperContext(body.personId);
+  let saved:PersonContext|null=null;const explicit=body.brief.trim();
+  if(!explicit){try{saved=await stub.getPersonContext(body.personId);}catch(error){if(!(error instanceof Error&&error.message==='unknown_person'))throw error;}}
+  const brief=explicit||saved?.text||'',contextSource=explicit?'brief':saved?.text?'saved_note':'automatic';
+  // A supplied brief already defines the search. Only automatic context needs a foreground
+  // inbox refresh; all full candidate passages remain private to this authenticated request.
+  if(!brief)await stub.refreshHelperContext(body.personId);
   const helperContext=await stub.helperContext();
-  return json(await rankHelperBrief(env,{...graph,helperContext},body.personId,body.brief));
+  const result=await rankHelperBrief(env,{...graph,helperContext},body.personId,brief);
+  if(saved){
+   // An edit/removal or identity withdrawal supersedes an in-flight model result.
+   try{if((await stub.getPersonContext(body.personId)).revision!==saved.revision)return json({error:'person_context_conflict'},409);}
+   catch(error){if(error instanceof Error&&error.message==='unknown_person')return json({error:'person_context_conflict'},409);throw error;}
+  }
+  return json({...result,contextSource,brief});
  }catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
 }

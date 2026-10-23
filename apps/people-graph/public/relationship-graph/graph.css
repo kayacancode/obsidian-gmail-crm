@@ -27,6 +27,7 @@
 .rg-node[data-answer-match='true'] .rg-portrait { outline:1px solid var(--rg-orange); outline-offset:3px; }
 .rg-profile-portrait { width:110px; height:125px; margin-bottom:20px; }
 .rg-profile-section { border-top:1px solid var(--rg-line); margin:18px 0; padding-top:14px; }
+.rg-person-context label{display:block;line-height:1.5}.rg-person-context textarea{display:block;box-sizing:border-box;width:100%;min-height:130px;margin:10px 0 5px;padding:12px;border:1px solid var(--rg-line);border-radius:8px;background:var(--rg-background);color:var(--rg-foreground);font:inherit;font-size:14px;line-height:1.5;resize:vertical}.rg-context-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}.rg-context-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:12px}.rg-context-actions button{min-height:38px}.rg-context-save{border:0;border-radius:8px;background:#303f31;color:#fff!important;padding:10px 16px}.rg-context-actions button:disabled{opacity:.5;cursor:default}.rg-context-status{font-size:12px;line-height:1.5}.rg-context-status button{display:block;margin-top:8px}
 .rg-profile-score { font:32px/1.2 Georgia,serif; margin:8px 0; }
 .rg-how-you-know { margin:0 0 18px; overflow-wrap:anywhere; }
 .rg-connection-line { margin:0 0 5px; font-size:14px; line-height:1.5; color:var(--rg-foreground); }

@@ -1274,12 +1274,21 @@ fn find_person(
 fn score_person(index: &ContactIndex, feedback: &FeedbackStore, email: &str, start: Instant) -> Response {
     let email_norm = email.trim().to_ascii_lowercase();
     let Some(row) = find_by_email_or_alias(index, &email_norm) else {
-        return fail(
+        let mut response = fail(
             "score",
             "not_found",
             format!("no contact found for {email}"),
             start,
         );
+        // A genuine miss still comes from a known cache. Consumers need its
+        // provenance to distinguish a new contact from an unavailable source.
+        response.stats = Some(json!({
+            "matched": 0,
+            "last_sync": &index.last_sync,
+            "user_email": &index.user_email,
+            "ms": elapsed_ms(start)
+        }));
+        return response;
     };
 
     let score = infer_score(&row.contact);
@@ -4998,6 +5007,63 @@ mod tests {
 
         let row = find_by_email_or_alias(&index, "primary@example.com").unwrap();
         assert_eq!(row.contact.name, "Primary");
+    }
+
+    #[test]
+    fn score_not_found_includes_source_identity_and_freshness_without_contact_data() {
+        let index = ContactIndex {
+            schema_version: Some(1),
+            last_sync: Some("2026-10-21T10:00:00Z".to_string()),
+            user_email: Some("owner@example.com".to_string()),
+            contacts: HashMap::new(),
+            edges: vec![],
+        };
+        let response = score_person(
+            &index,
+            &FeedbackStore {
+                schema_version: 1,
+                updated_at_unix: 0,
+                entries: HashMap::new(),
+            },
+            "new@example.com",
+            Instant::now(),
+        );
+        assert!(!response.ok);
+        assert_eq!(response.command, "score");
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+        assert!(response.data.is_none());
+        let stats = response.stats.unwrap();
+        assert_eq!(stats["matched"], 0);
+        assert_eq!(stats["user_email"], "owner@example.com");
+        assert_eq!(stats["last_sync"], "2026-10-21T10:00:00Z");
+        assert!(stats["ms"].is_number());
+    }
+
+    #[test]
+    fn score_not_found_does_not_invent_missing_source_metadata() {
+        let index = ContactIndex {
+            schema_version: None,
+            last_sync: None,
+            user_email: None,
+            contacts: HashMap::new(),
+            edges: vec![],
+        };
+        let response = score_person(
+            &index,
+            &FeedbackStore {
+                schema_version: 1,
+                updated_at_unix: 0,
+                entries: HashMap::new(),
+            },
+            "new@example.com",
+            Instant::now(),
+        );
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().kind, "not_found");
+        let stats = response.stats.unwrap();
+        assert_eq!(stats["matched"], 0);
+        assert!(stats.get("last_sync").unwrap().is_null());
+        assert!(stats.get("user_email").unwrap().is_null());
     }
 
     #[test]

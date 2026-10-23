@@ -1,5 +1,14 @@
+import {schedulingMachineRoute} from './scheduling-routes';
+import {schedulingEmail} from './scheduling-email';
+import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
+export {SchedulingEmailCoordinator} from './scheduling-email-coordinator';
 import {repairLegacyGmailContext} from './gmail-context-graph';
+import {bookingOwnerRoute,bookingPublicRoute,bookingOAuthCallback} from './booking-routes';
+import type {BookingEnv} from './booking-types';
+import {completeBookingSignIn} from './booking-verification';
+export {BookingCoordinator} from './booking-coordinator';
 import {ownerLensRoute} from './owner-lens-routes';
+import {personContextRoute} from './person-context-routes';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
@@ -31,7 +40,7 @@ export {MailSync} from "./mail-sync";
  *    without a Google session.
  */
 
-interface Env extends MailEnv {
+interface Env extends BookingEnv, SchedulingEmailEnv {
 	DB: D1Database;
 	ASSETS: Fetcher;
 	GOOGLE_CLIENT_ID: string;
@@ -43,11 +52,20 @@ interface Env extends MailEnv {
 const MAX_PAYLOAD_BYTES = 1_900_000;
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async email(message: ForwardableEmailMessage, env: Env): Promise<void> { await schedulingEmail(message,env); },
+	async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const { pathname } = url;
 
 		try {
+			if(pathname.startsWith('/api/scheduling/'))return await schedulingMachineRoute(request,env,ctx);
+			if(pathname.startsWith('/api/public/booking/'))return await bookingPublicRoute(request,env);
+			if(pathname==='/api/booking'||pathname.startsWith('/api/booking/')){
+				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+				return await bookingOwnerRoute(request,env,user.email);
+			}
+			if(pathname==='/api/accounts/callback'&&url.searchParams.get('state')?.startsWith('booking-visitor.'))return await completeBookingSignIn(env,request);
+			if(pathname==='/api/accounts/callback'&&url.searchParams.get('state')?.startsWith('booking.'))return await bookingOAuthCallback(request,env);
 			if(pathname==='/api/lens'||pathname==='/api/lens/matches'){
 				const user=await requireGoogleUser(request,env);
 				if('error' in user)return json({error:user.error},401);
@@ -79,6 +97,10 @@ export default {
                 if("error" in user)return json({error:user.error},401);
                 return await personFeedbackRoute(request,env,user.email);
             }
+			if(pathname==='/api/people/context'){
+				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+				return await personContextRoute(request,env,user.email);
+			}
 			if (pathname === "/api/people/draft") {
 				const user = await requireGoogleUser(request, env);
 				if ("error" in user) return json({ error: user.error }, 401);
@@ -135,6 +157,14 @@ export default {
 			return json({ error: "server_error" }, 500);
 		}
 
+		if(pathname==='/booking'||pathname.startsWith('/book/')){
+			// Use canonical asset paths: requesting .html triggers a clean-URL
+			// redirect and would loop on /booking or drop the public slug.
+			const asset=new URL(request.url);asset.pathname=pathname==='/booking'?'/booking':'/book';asset.search='';
+			const response=await env.ASSETS.fetch(new Request(asset,request));
+			const headers=new Headers(response.headers);headers.set('referrer-policy','no-referrer');headers.set('cache-control','no-store');headers.set('x-content-type-options','nosniff');
+			return new Response(response.body,{status:response.status,headers});
+		}
 		// Everything else → the static graph UI.
 		return env.ASSETS.fetch(request);
 	},
@@ -236,6 +266,8 @@ export async function requireGoogleUser(
 ): Promise<{ email: string } | { error: string }> {
 	const token = bearer(request);
 	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
+	// Scheduling credentials are scoped to our API; never send them to Google.
+	if (token.startsWith("sched_")) return {error:"invalid_token"};
 
 	let resp:Response,info:{aud?:string;email?:string;email_verified?:string|boolean};
 	try{

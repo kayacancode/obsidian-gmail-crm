@@ -10,7 +10,7 @@
     "db:init": "wrangler d1 execute people-graph --file ./schema.sql",
     "db:init:remote": "wrangler d1 execute people-graph --remote --file ./schema.sql",
     "smoke": "bash scripts/smoke.sh",
-    "test": "node --test tests/owner-lens.test.mjs tests/shared-home.test.mjs tests/weekly-context.test.mjs tests/shared-discovery.test.mjs tests/topic-context.test.mjs tests/person-suggestions.test.mjs tests/guided-network.test.mjs tests/person-walk.test.mjs tests/shared-paths.test.mjs tests/contact-sheet.test.mjs tests/introduction-client.test.mjs tests/intelligence.test.mjs tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
+    "test": "node --test tests/booking-calendar.test.mjs tests/owner-lens.test.mjs tests/shared-home.test.mjs tests/weekly-context.test.mjs tests/shared-discovery.test.mjs tests/topic-context.test.mjs tests/person-suggestions.test.mjs tests/guided-network.test.mjs tests/person-walk.test.mjs tests/shared-paths.test.mjs tests/contact-sheet.test.mjs tests/introduction-client.test.mjs tests/intelligence.test.mjs tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
     "test:intelligence-browser": "node tests/intelligence-browser.mjs",
     "test:relationship-host": "node --test tests/relationship-host.test.mjs",
     "test:relationship-browser": "node tests/relationship-browser.mjs",
@@ -32,6 +32,8 @@
     "test:all-people-browser": "node tests/all-people-browser.mjs",
     "test:workspace-browser": "node tests/workspace-browser.mjs && node tests/workspace-readability-browser.mjs",
     "test:person-suggestions-browser": "node tests/person-suggestions-browser.mjs",
+    "test:person-context-browser": "node tests/person-context-browser.mjs",
+    "test:person-context-runtime": "node --test tests/person-context-runtime.mjs",
     "test:guided-network-browser": "node tests/guided-network-browser.mjs",
     "test:shared-paths-browser": "node tests/shared-paths-browser.mjs",
     "test:introduction-browser": "node tests/introduction-browser.mjs",
@@ -40,7 +42,8 @@
     "test:shared-discovery-browser": "node tests/shared-discovery-browser.mjs",
     "test:weekly-browser": "node tests/weekly-context-browser.mjs",
     "test:shared-home-browser": "node tests/shared-home-browser.mjs",
-    "test:owner-lens-browser": "node tests/owner-lens-browser.mjs"
+    "test:owner-lens-browser": "node tests/owner-lens-browser.mjs",
+    "test:booking": "node --test tests/booking-runtime.mjs && node tests/booking-browser.mjs && node tests/scheduling-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",
@@ -49,6 +52,11 @@
     "wrangler": "4.96.0"
   },
   "dependencies": {
-    "three": "0.180.0"
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "agents": "0.30.1",
+    "postal-mime": "4.1.4",
+    "three": "0.180.0",
+    "zod": "4.6.7"
   }
 }

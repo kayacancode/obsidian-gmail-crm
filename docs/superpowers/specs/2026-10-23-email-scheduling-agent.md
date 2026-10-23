@@ -1,0 +1,37 @@
+# Owner-delegated scheduling through email, API and MCP
+
+## Intent and approved behavior
+Kaya wants to CC an agent on an existing meeting thread, ask it to find times, and have it automatically book once the counterpart selects a time. The reusable scheduling service must also be callable from other apps and MCP clients. The user explicitly approved automatic booking within the owner's scheduling rules. Existing visitor Booking remains supported.
+
+## Approach
+Use the existing Worker and BookingCoordinator as the single reservation authority. Add an owner-authorized scheduling path, a revocable machine API/MCP adapter, and a separate durable email conversation/outbox coordinator. Reusing visitor sessions would invent Google identities and require a questionnaire; implementing separate Calendar writes would split conflict/recovery logic. Neither is appropriate.
+
+First iteration is one-to-one meetings (owner plus one counterpart). Additional participants need clarification rather than silently dropping people. Owner CC delegation is permission to find/book a meeting, so public visitor review delay and missing Rust classification do not block it. Working hours, duration, minimum notice, buffers, horizon and capacity still apply. Lens/relationship context informs a private recommendation; it cannot override explicit owner instructions or calendar limits. Use latest confirmed lens and exact fresh My Network bookingContact, keeping normal public Rust intake unchanged.
+
+## Core contract
+BookingCoordinator exposes:
+- `prepareScheduling(owner, input, authority)` -> SchedulingResult; persists idempotent owner-authorized request and initial offered set.
+- `refreshScheduling(owner, requestId)` -> SchedulingResult; replaces offered set/revision, unless booking/closed.
+- `confirmScheduling(owner, requestId, {revision, slotId, evidenceId})` -> SchedulingResult; exact current offer only, fresh Calendar check, existing serialized book/reconciliation.
+- `getScheduling(owner, requestId)` -> SchedulingResult.
+
+Input: `{email, name?, context, instructions?, timezone?, windowStart?, windowEnd?, idempotencyKey}`. Windows are explicit UTC ISO instants, bounded by configured horizon. API/MCP rejects nonempty free-text instructions; callers must encode supported constraints as a UTC window or clarify. Email supports saved rules and this/next calendar week, and clarifies other detected constraints. Authority is server-created `{channel:'owner_api'|'owner_email', evidenceId:string}`; never accepted as caller JSON. Email authority evidence is canonical verified owner Gmail message ID. API authority is authenticated credential ID. No fake visitor subject.
+
+SchedulingResult: `{requestId,status,timezone,offer:{revision,expiresAt,slots:[{id,start,end}]}|null,replyText,recommendation:{summary,reasons,uncertainties}}`. At most three diverse offered times; expire within 48 hours and before the first offered instant. Recommendation is owner-only. External mail uses deterministic scheduling text and exact slots only. Request stores authorization, original context/instructions, bounded window, settings revision and offered snapshot in additive JSON. Calendar descriptions use a neutral meeting purpose, never raw thread/private analysis. Current settings revision changes require fresh offers. Repeated confirm of the same selection recovers the same event; a different selection cannot replace an in-flight write.
+
+## API/MCP
+Owner web session can access `/api/booking/scheduling/*`; machine clients use `/api/scheduling/*` and `/api/scheduling/mcp`. Credentials are random, hashed at rest, owner-bound, revocable, expire after 90 days; separate `scheduling:read` and `scheduling:write` scope. Readiness/list/revoke/mint are owner-session operations, same-origin writes. Bearer credentials never authenticate ordinary People/visitor APIs. Reject unapproved cross-origin requests and bound body sizes.
+
+REST: POST `/prepare`, POST `/requests/:id/refresh`, POST `/requests/:id/confirm`, GET `/requests/:id`. MCP tools use the same implementations: `prepare_scheduling_reply`, `refresh_scheduling_options`, `confirm_scheduling_time`, `get_scheduling_request`. Preparation/refresh require write scope (persist offers); confirmation creates Calendar invitation and is explicitly described as a write. No email sending from API preparation. Client-supplied text is untrusted context and cannot change authority, recipients or tool permissions.
+
+## Email
+The user selected scheduling@agent.bestmate.io for testing. Configure the dedicated agent.bestmate.io routing subdomain with a literal agent address and enabled plus-addressing. Existing apex MX is Google Workspace and must remain intact. Email receive is disabled unless address/domain binding is configured. Use `postal-mime`, bounded raw email, reject attachments from context, auto-responses and invalid/ambiguous mailbox headers. No arbitrary HTTP email-ingress endpoint.
+
+Owner kickoff: incoming Message-ID is only a lookup hint. MailSync verifies exact owner's existing Gmail grant, retrieves canonical SENT message with exact ID, owner From, agent in To/Cc, age <=24h, and current account/grant after async work. Canonical Gmail content/recipients are authoritative. Canonical extraction retains the full bounded plain-text authored request and its constraints; HTML-only kickoff is unsupported. Quoted instructions do not activate a thread; new authored text must explicitly ask to schedule/find a time. Freeze owner and one counterpart. Unknown auth, unavailable Gmail or multiple counterparts cannot book.
+
+Participant replies: use crypto-random reply-address capability on the dedicated routing subdomain, bound to request/counterpart/current offer/expiry. Require exact frozen counterpart and existing thread reference. A reply token proves possession of the offered thread, not independent Google identity. Ignore arbitrary Reply-To/new CC recipients. No new recipients or changes to meeting rules from participant text. Parse a clear selection of exactly one current offered option; uncertainty/negation/multiple choices asks for clarification. Refresh options on conflict or requested alternatives; cancellation/rescheduling of confirmed meetings stays with the owner dashboard for this version.
+
+Durable email state records canonical kickoff ID, bounded thread identifiers, inbound deduplication, current offer, capability and outbox status. Persist outgoing intent before sending, store returned provider Message-ID, never blindly resend an uncertain send. Use fixed owner/counterpart recipients, bounded References/In-Reply-To, and auto-response suppression. Only say booked once Calendar confirms; uncertain bookings are reconciled through the existing stable event flow. No real third-party email/invitation during automated verification.
+
+## Acceptance and deployment
+Tests must cover sender spoof/quoted kickoff, Gmail canonical verification/revocation, capability/recipient/revision/expiry checks, ambiguous replies, duplicate messages, stale/conflicting offers, concurrent approvals, unknown Calendar/email outcomes, private-data separation, token scope/revocation and MCP transport. Existing 912 app and 30 runtime tests remain green. Real inbox activation requires selected domain configuration and a controlled owner-only smoke test; do not claim that missing infrastructure is live. Deployment/push authorized by ongoing project work; do not merge main.
