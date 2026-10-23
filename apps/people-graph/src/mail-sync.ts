@@ -12,6 +12,8 @@ import type {MetadataInput} from './relevance-store';
 import type {RelevanceLens} from './relevance-model';
 import {canonicalThemeName,type Theme,type ThemeSignal} from './relevance-model';
 import {decodeGmailMessage} from './gmail-body';
+import {verifySentSchedulingKickoff} from './scheduling-gmail';
+import {schedulingMessageId} from './scheduling-email-policy';
 import {ThemeExtractor,THEME_MODEL,EXTRACTOR_VERSION,THEME_TOPICS} from './theme-extractor';
 import type {GmailMessage} from './mail-model';
 import type {RetrievalJob,RetrievalError} from './relevance-store';
@@ -37,6 +39,23 @@ interface GraphPersonNode {directRelationship:boolean;directLastContact:string|n
 export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
+ async verifySchedulingKickoff(messageId:string,agentAddress:string){
+  schedulingMessageId(messageId);
+  const owner=await this.ctx.storage.get<string>('owner'),key=this.env.MAIL_TOKEN_KEY,secret=this.env.GOOGLE_CLIENT_SECRET;
+  if(!owner||!key||!secret)throw Error('scheduling_gmail_unavailable');
+  const account=this.get(owner);
+  if(!account||!['connected','syncing'].includes(account.status))throw Error('scheduling_gmail_unavailable');
+  const current=()=>{const latest=this.get(owner);return !!latest&&latest.grant===account.grant&&latest.revision===account.revision&&['connected','syncing'].includes(latest.status);};
+  const refresh=await unseal(account.grant,key);if(!current())throw Error('scheduling_grant_revoked');
+  const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',body:new URLSearchParams({client_id:this.env.GOOGLE_CLIENT_ID,client_secret:secret,refresh_token:refresh,grant_type:'refresh_token'}),signal:AbortSignal.timeout(10000)});
+  if(!current()){await response.body?.cancel();throw Error('scheduling_grant_revoked');}
+  if(!response.ok){await response.body?.cancel();throw Error('scheduling_gmail_unavailable');}
+  const token=await readBoundedJSON(response,32768) as {access_token?:string};
+  if(!token.access_token||!current())throw Error('scheduling_grant_revoked');
+  const verified=await verifySentSchedulingKickoff({owner,agentAddress,messageId,accessToken:token.access_token,current});
+  if(!current()||await this.ctx.storage.get<string>('owner')!==owner)throw Error('scheduling_grant_revoked');
+  return verified;
+ }
  private originRequests=new Map<string,Promise<ConnectionOriginResult>>();
  private originTable(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS connection_origins (person_id TEXT PRIMARY KEY,scope TEXT NOT NULL,checked_at INTEGER NOT NULL,data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS messages_account_canonical ON messages(account,canonical)');}
  private clearConnectionOrigins(){this.originTable();this.ctx.storage.sql.exec('DELETE FROM connection_origins');}

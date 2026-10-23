@@ -1,3 +1,7 @@
+import {schedulingMachineRoute} from './scheduling-routes';
+import {schedulingEmail} from './scheduling-email';
+import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
+export {SchedulingEmailCoordinator} from './scheduling-email-coordinator';
 import {repairLegacyGmailContext} from './gmail-context-graph';
 import {bookingOwnerRoute,bookingPublicRoute,bookingOAuthCallback} from './booking-routes';
 import type {BookingEnv} from './booking-types';
@@ -35,7 +39,7 @@ export {MailSync} from "./mail-sync";
  *    without a Google session.
  */
 
-interface Env extends BookingEnv {
+interface Env extends BookingEnv, SchedulingEmailEnv {
 	DB: D1Database;
 	ASSETS: Fetcher;
 	GOOGLE_CLIENT_ID: string;
@@ -47,11 +51,13 @@ interface Env extends BookingEnv {
 const MAX_PAYLOAD_BYTES = 1_900_000;
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async email(message: ForwardableEmailMessage, env: Env): Promise<void> { await schedulingEmail(message,env); },
+	async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const { pathname } = url;
 
 		try {
+			if(pathname.startsWith('/api/scheduling/'))return await schedulingMachineRoute(request,env,ctx);
 			if(pathname.startsWith('/api/public/booking/'))return await bookingPublicRoute(request,env);
 			if(pathname==='/api/booking'||pathname.startsWith('/api/booking/')){
 				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
@@ -255,6 +261,8 @@ export async function requireGoogleUser(
 ): Promise<{ email: string } | { error: string }> {
 	const token = bearer(request);
 	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
+	// Scheduling credentials are scoped to our API; never send them to Google.
+	if (token.startsWith("sched_")) return {error:"invalid_token"};
 
 	let resp:Response,info:{aud?:string;email?:string;email_verified?:string|boolean};
 	try{

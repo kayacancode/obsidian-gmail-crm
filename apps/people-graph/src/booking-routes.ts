@@ -1,3 +1,4 @@
+import {schedulingOwnerRoute} from './scheduling-routes';
 import type {BookingEnv,BookingRequestRecord} from './booking-types';
 import {BookingStore} from './booking-store';
 import {bookingReadiness,publicBookingRequest} from './booking-coordinator';
@@ -27,6 +28,7 @@ export function bookingError(error:unknown){
 export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:string):Promise<Response>{
  try{
   const url=new URL(request.url),path=url.pathname,store=new BookingStore(env.DB);await store.init();
+  if(path.startsWith('/api/booking/scheduling/'))return schedulingOwnerRoute(request,env,owner);
   if(request.method==='GET'&&path==='/api/booking'){
    const [settings,requests,readiness,calendar]=await Promise.all([store.settings(owner),store.requests(owner),bookingReadiness(env,owner),store.calendar(owner)]);
    let lens=null;try{const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);const saved=await stub.getOwnerLens();lens=saved.fields;}catch{}

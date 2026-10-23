@@ -41,7 +41,7 @@
     "test:weekly-browser": "node tests/weekly-context-browser.mjs",
     "test:shared-home-browser": "node tests/shared-home-browser.mjs",
     "test:owner-lens-browser": "node tests/owner-lens-browser.mjs",
-    "test:booking": "node --test tests/booking-runtime.mjs && node tests/booking-browser.mjs"
+    "test:booking": "node --test tests/booking-runtime.mjs && node tests/booking-browser.mjs && node tests/scheduling-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",
@@ -50,6 +50,11 @@
     "wrangler": "4.96.0"
   },
   "dependencies": {
-    "three": "0.180.0"
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "agents": "0.30.1",
+    "postal-mime": "4.1.4",
+    "three": "0.180.0",
+    "zod": "4.6.7"
   }
 }

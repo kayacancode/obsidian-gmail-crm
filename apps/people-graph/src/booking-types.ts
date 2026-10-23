@@ -1,5 +1,6 @@
 import type {MailEnv} from './mail-sync';
 import type {BookingCoordinator} from './booking-coordinator';
+import type {SchedulingRecord} from './scheduling-types';
 
 export interface BookingSettings {
  owner:string; revision:number; slug:string; displayName:string; intro:string; thesis:string;
@@ -28,6 +29,7 @@ export interface BookingRequestRecord extends BookingSubmission {
  slotSource?:'suggested'|'offered';
  initialDecision?:BookingDecision;
  policySnapshot?:Omit<BookingSettings,'vipEmails'> & {vipMatch:boolean};
+ scheduling?:SchedulingRecord;
 }
 export interface BookingSlot {start:string;end:string}
 export interface BookingBusy {start:string;end:string}

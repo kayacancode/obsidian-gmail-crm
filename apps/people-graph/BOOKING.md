@@ -55,7 +55,7 @@ On October 21 the local cache found on this computer belonged to the personal Gm
 - Review eligibility starts seven days after submission, not seven days after each approval attempt. Current minimum notice and Calendar availability are checked again when reserving.
 - Slot preferences are not holds. A per-owner coordinator serializes bookings, persists a stable Calendar event ID before insert, and reconciles uncertain outcomes before retrying. Timeouts never create a second event ID.
 - Working hours, DST, buffers, daily/weekly booking limits and existing bookings are respected. Google Calendar does not offer an atomic free/busy-plus-insert operation: changes made concurrently outside People remain a provider limitation.
-- Google Calendar sends meeting confirmation/invitation and cancellation updates through the owner's Calendar grant. Event descriptions contain only visitor-supplied meeting details. Request, review, decline and new-slot updates appear in the owner's Booking dashboard and the visitor's status page; Booking sends no custom email notifications.
+- Google Calendar sends meeting confirmation/invitation and cancellation updates through the owner's Calendar grant. Event descriptions contain only visitor-supplied meeting details. Request, review, decline and new-slot updates appear in the owner's Booking dashboard and the visitor's status page; Public Booking sends no custom email notifications; the separately configured scheduling assistant replies within its delegated email threads.
 - A request in `booking` remains unconfirmed until Calendar confirms it; the owner can retry confirmation from the dashboard. Unresolved reservations stay protected. Cancellation enters `cancelling` before deletion; only confirmed deletion or an already-absent event becomes `cancelled`. The owner can **Retry cancellation** and the visitor sees **Cancelling your booking** until status polling observes completion. Durable reconciliation retries uncertain confirmations and cancellations after restarts.
 - Pausing intake blocks new submissions and slot selection while preserving existing request status. A valid Google visitor session can read its own status even if the calendar is disconnected. **View an existing request** offers Google sign-in recovery when sign-in configuration and pilot access remain available. Recovery requires the same Google subject and email and never offers new intake while paused, including when no previous requests are found.
 
@@ -74,6 +74,71 @@ When the listed openings do not fit, visitors can use **None of these times work
 The request displays saved suggestions to its visitor and to the owner. The owner can approve one or ask for different times. Explicit approval can accept a start outside the owner's normal weekdays or hours. It still checks current minimum notice, the request's review delay, horizon, meeting duration, Calendar availability, buffers and daily/weekly booking limits. Nonexistent or ambiguous daylight-saving times, invalid dates, duplicates and excessive suggestions are rejected rather than silently converted.
 
 Proposal sets carry revisions so an old owner screen cannot approve a replaced suggestion. Identical submission retries reuse the saved set. Choosing an offered calendar time clears suggestions; pending proposals do not consume capacity. In-flight/confirmed bookings cannot have their choices replaced. The existing owner coordinator and persisted Calendar event ID handle concurrent approvals and uncertain writes. No additional schema migration, custom email sender or Google permission is needed.
+
+## Scheduling assistant, REST API and MCP
+
+In **Booking → Scheduling assistant**, the owner can create and revoke app credentials and see whether the agent inbox is connected. Public booking intake keeps its existing review rules. An explicit owner scheduling request authorizes automatic booking after the counterpart chooses a current offered time; it does not require the public priority classifier or the Rust service. The saved page must be enabled and Calendar connected. Working hours, duration, minimum notice, horizon, buffers and capacity still apply.
+
+The scheduler prepares up to three options, each with a slot ID and an offer revision. Offers expire within 48 hours and before their earliest start. A changed settings revision, changed offer or conflict requires fresh options. Confirmation rechecks the live Calendar and uses the existing persisted event ID and reconciliation path. There is no second Calendar writer. Owner-delegated records have no fabricated Google visitor identity and are inaccessible through public visitor endpoints.
+
+Exact, fresh My Network contact information and the latest confirmed People lens provide owner-private context. They do not automatically override saved hours or assign a new priority. The recommendation is private to the owner or their authorized API client. Only `replyText` is intended for a counterpart; never send the whole API result. Calendar descriptions are neutral and exclude private thread text, People scores and lens information.
+
+### Connect another app
+
+Create a token in the Scheduling assistant tab. It is shown once in that browser page, expires after 90 days, and is stored as a SHA-256 hash. `scheduling:read` reads existing requests; `scheduling:write` prepares options, refreshes them and books a selected option. These credentials work only on `/api/scheduling/*`; owner browser cookies work only on the owner routes. Keep tokens in server-side secrets, never URLs or browser bundles.
+
+REST base: `https://people-graph.kayarjones901.workers.dev/api/scheduling`
+
+MCP endpoint: `https://people-graph.kayarjones901.workers.dev/api/scheduling/mcp`
+
+Both use `Authorization: Bearer <scheduling token>`. The MCP server uses the official stateless Streamable HTTP handler. Configure a client that supports a custom bearer header. Tools:
+
+- `prepare_scheduling_reply`: prepare and persist options; does not send email.
+- `refresh_scheduling_options`: replace the options and invalidate the old revision.
+- `confirm_scheduling_time`: create the Calendar invitation for the selected option.
+- `get_scheduling_request`: read current status, options and private context.
+
+REST example bodies (placeholders, not live credentials):
+
+```http
+POST /api/scheduling/prepare
+Authorization: Bearer <scheduling token>
+Content-Type: application/json
+
+{
+  "email": "counterpart@example.com",
+  "name": "Counterpart",
+  "context": "Catch up about their new project",
+  "timezone": "America/New_York",
+  "idempotencyKey": "one-stable-key-for-this-request"
+}
+```
+
+Optional `windowStart` and `windowEnd` are UTC ISO timestamps. A caller must translate requested date ranges into these fields before asking for options. Nonempty free-text `instructions` are rejected with `invalid_instructions`; `context` is background, not enforced scheduling constraints. If a request such as “afternoons only” cannot fit the saved rules and one continuous window, ask the owner to clarify rather than silently ignoring it.
+
+Use the returned `requestId`, `offer.revision` and selected `offer.slots[].id`:
+
+```http
+POST /api/scheduling/requests/<requestId>/confirm
+Authorization: Bearer <scheduling token>
+Content-Type: application/json
+
+{"revision":"<current offer revision>","slotId":"<selected offered slot>"}
+```
+
+`GET /api/scheduling/requests/<requestId>` reads the result; `POST /api/scheduling/requests/<requestId>/refresh` with `{}` obtains new options. Repeating an identical preparation key returns its existing request. Reusing that key with changed input or authority fails. Repeating the same confirmation recovers the existing meeting. A `booking` result means confirmation is still unresolved; do not tell a counterpart it is booked until status is `booked`.
+
+### CC email flow and inbox setup
+
+Email is disabled until `SCHEDULING_EMAIL_ADDRESS`, `SCHEDULING_EMAIL_REPLY_DOMAIN`, the sending binding and incoming routing are configured. Deploying the code alone does not activate an address. The owner's connected Gmail account needs its existing read grant; the separate Calendar grant writes the meeting.
+
+The pilot supports one owner and one counterpart. The owner CCs the configured agent and sends a direct request such as “Please find us times to meet next week.” The agent checks the exact Message-ID against the owner's canonical Gmail SENT copy and uses its recipients and authored text. Spoofed From headers, quoted requests, ambiguous authorization, extra recipients and unsupported timing constraints cannot initiate automatic booking. “This week” and “next week” use the owner's saved timezone. Arbitrary date language and recurring negotiations are not supported yet.
+
+The reply offers numbered options. The counterpart can reply “Option 1 works” or “Other options please.” Each offer has a random plus-address reply capability, bound to its counterpart, current offer and expiry; replies must reference the current outbound message. This proves possession of that thread capability, not a separately verified Google identity. Ambiguous or stale choices require clarification or fresh options. Participant rescheduling/cancellation and group meetings are not included in this version. The owner can cancel confirmed meetings in Booking.
+
+Configure a dedicated subdomain when the main domain already uses Google Workspace mail. Do not replace its apex MX. Enable Email Routing and subaddress support for the dedicated subdomain, route the literal agent address to this Worker, and separately configure Email Sending for that sender. The reply domain must accept `scheduling+<capability>@<reply-domain>` through the literal `scheduling@<reply-domain>` rule. Subdomain catchall routing is not used. A `scheduling-email-v1` migration adds the per-owner email coordinator; preserve its namespace on rollback.
+
+Durable email state deduplicates inbound messages and records send intent before delivery. An ambiguous send outcome is not blindly resent; owner attention may be required. Calendar uncertainty follows the stable event reconciliation path. No real email or Calendar invitation is created by the automated tests.
 
 ## Additive storage update
 
@@ -108,3 +173,9 @@ The month-calendar update is deployed as `458dc43d-5098-4785-a25e-452a6486120d` 
 The suggested-times update is deployed as `228a5056-555f-4a01-a43a-b4d1c08ad8dd` (October 23). All 912 app tests (156 frontend/model + 756 TypeScript/core), 30 workerd/D1/SQLite tests, expanded desktop/mobile browser checks, typecheck, asset builds, deployment dry run and diff checks passed. Tests cover timezone/DST validation, visitor identity and origin, revision changes, manual outside-hours approval, conflicts and capacity, uncertain Calendar recovery, preserved drafts and owner settings, and requests changed or confirmed while a visitor is editing. Independent review found no remaining actionable issues. Live pages/assets and enabled public metadata passed smoke checks; owner and proposal APIs reject anonymous access. No real booking or invitation was created during verification. Authenticated proposal and approval flows were verified against synthetic providers. No migration was needed.
 
 The `booking-v1` migration adds a new namespace. Existing `MailSync` storage and migration remain unchanged. Do not roll back by deleting the Booking namespace: reservations and reconciliation state must be preserved.
+
+The scheduling assistant update is deployed as `b941c3f5-9182-44ae-aa5e-ecab24f0afca` (October 23). **959 app tests (156 frontend/model + 803 TypeScript/core), 33 workerd/D1/SQLite integration tests, both desktop/mobile Booking browser suites, typecheck, asset builds, dry run and diff checks pass.** Independent review findings were repaired with regressions for negated kickoff, preserved timing constraints, SMTP reply local-part length, different selections booked by another channel, and successive recovered offers.
+
+The pilot agent address is **scheduling@agent.bestmate.io**. Email Sending is enabled for `agent.bestmate.io`; its SPF, DKIM, DMARC and bounce MX resolve. The dedicated subdomain's routing is ready and literal rule `77242c28bbfd4f189bbbd78324fe3f60` points to `people-graph`, with subaddressing enabled. The Worker restricts sending to this address. Existing apex Google MX/SPF and the disabled catch-all are unchanged. Cloudflare's apex Routing status reports “misconfigured” because those Google MX intentionally remain; the subdomain independently reports ready. Do not fix that apex warning by replacing its MX.
+
+A single automated self-addressed probe to a fresh `scheduling+<token>@agent.bestmate.io` recipient reached the deployed email handler with `outcome: ok` and no exceptions. Its auto-generated header prevented any scheduling action. This verifies live sending, DNS and plus routing; it does not verify a live owner's Gmail kickoff or create a Calendar invitation. The full kickoff-to-booking path passed synthetic integration tests. A real counterpart booking remains untested. Live anonymous route/assets and authorization checks pass. The live browser required sign-in, so the owner controls were verified in the browser fixture; no production API credential was minted. Read-only D1 checks confirmed the `kaya` page remains enabled with 30-minute meetings in America/New_York and a saved Calendar grant.
