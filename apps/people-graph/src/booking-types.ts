@@ -24,6 +24,8 @@ export interface BookingRequestRecord extends BookingSubmission {
  decision:BookingDecision;slotStart:string|null;slotEnd:string|null;eventId:string|null;idempotencyKey:string;
  visitorSubject?:string;emailAuthoritative?:boolean;
  intakeKind?:'returning'|'standard';
+ proposedTimes?:{timezone:string;slots:BookingSlot[];revision:string};
+ slotSource?:'suggested'|'offered';
  initialDecision?:BookingDecision;
  policySnapshot?:Omit<BookingSettings,'vipEmails'> & {vipMatch:boolean};
 }

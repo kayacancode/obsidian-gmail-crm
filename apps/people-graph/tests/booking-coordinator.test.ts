@@ -196,3 +196,72 @@ test('current or original email uncertainty keeps a cached priority request in r
  }
  assert.equal(sourceReads,0);assert.equal(eventWrites,0);
 });
+
+
+const proposalNow=Date.parse('2026-10-23T12:00:00Z');
+const proposalInput={timezone:'America/New_York',times:['2026-11-01T18:20','2026-11-02T18:20']};
+function proposalCalendar(t:TestContext){
+ const state={busy:[] as {start:string;end:string}[],writes:[] as any[],lostWrite:false,found:false};
+ t.mock.method(globalThis,'fetch',async(input:any,init:any)=>{
+  const url=String(input);
+  if(url.includes('/token'))return Response.json({access_token:'access',token_type:'Bearer',expires_in:3600,scope:'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy'});
+  if(url.endsWith('/freeBusy')){const body=JSON.parse(init.body);return Response.json({kind:'calendar#freeBusy',timeMin:body.timeMin,timeMax:body.timeMax,calendars:{primary:{busy:state.busy}}});}
+  if(url.includes('/events/')&&(!init?.method||init.method==='GET'))return state.found?Response.json({id:url.split('/').at(-1),status:'confirmed'}):Response.json({error:'not found'},{status:404});
+  if(url.includes('/events')&&init?.method==='POST'){const body=JSON.parse(init.body);state.writes.push(body);if(state.lostWrite)throw Error('lost response');return Response.json({id:body.id,status:'confirmed'});}
+  assert.fail('Unexpected provider call '+url);
+ });return state;
+}
+test('suggested times save privately, never auto-book, and identical retries recover before rate limiting',async t=>{
+ t.mock.method(Date,'now',()=>proposalNow);const f=await fixture(t),r=f.record();await f.store.add(r);
+ t.mock.method(globalThis,'fetch',async()=>{assert.fail('Saving preferences cannot query or book Calendar');});
+ const saved=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput);
+ assert.equal(saved.status,'pending_approval');assert.equal(saved.slotStart,null);assert.equal(saved.eventId,null);assert.equal(saved.slotSource,'suggested');assert.equal(saved.proposedTimes?.slots.length,2);assert.ok(saved.proposedTimes?.revision);
+ for(let i=0;i<12;i++)assert.equal((await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,{...proposalInput,times:[...proposalInput.times].reverse()})).proposedTimes?.revision,saved.proposedTimes?.revision);
+ const projected=publicBookingRequest(saved);assert.deepEqual(projected.proposedTimes,saved.proposedTimes);assert.equal(projected.slotSource,'suggested');assert.equal('email' in projected,false);assert.equal('decision' in projected,false);
+ const replaced=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,{...proposalInput,times:['2026-11-03T18:20']});assert.notEqual(replaced.proposedTimes?.revision,saved.proposedTimes?.revision);
+});
+test('suggested times require request identity and mutable state and cannot upgrade async decisions',async t=>{
+ t.mock.method(Date,'now',()=>proposalNow);const f=await fixture(t),r=f.record();await f.store.add(r);
+ for(const identity of [{...visitor,subject:'b'.repeat(43)},{...visitor,email:'other@example.com'}])await assert.rejects(f.service.proposeTimes(owner,identity,f.settings.slug,r.id,proposalInput),/not_found/);
+ for(const status of ['booking','booked','cancelling','cancelled','declined','expired','async_submitted'] as const){const closed=f.record({status});await f.store.add(closed);await assert.rejects(f.service.proposeTimes(owner,visitor,f.settings.slug,closed.id,proposalInput),/request_closed/);}
+ const asyncRequest=f.record({decision:{...r.decision,tier:'async'}});await f.store.add(asyncRequest);await assert.rejects(f.service.proposeTimes(owner,visitor,f.settings.slug,asyncRequest.id,proposalInput),/request_closed/);
+ const reviewed=f.record({decision:{...r.decision,tier:'review'}});await f.store.add(reviewed);await assert.rejects(f.service.proposeTimes(owner,visitor,f.settings.slug,reviewed.id,{timezone:'UTC',times:['2026-10-29T18:00']}),/invalid_proposal_time/);
+});
+test('owner approves an exact current suggestion outside working hours with stable retry identity',async t=>{
+ t.mock.method(Date,'now',()=>proposalNow);const f=await fixture(t),r=f.record({decision:{...f.record().decision,tier:'review'}});await f.store.add(r);const state=proposalCalendar(t);
+ const saved=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput),set=saved.proposedTimes!;
+ await assert.rejects(f.service.approveProposal(owner,r.id,set.slots[0].start,'old-revision'),/proposal_changed/);
+ await assert.rejects(f.service.approveProposal(owner,r.id,'2026-11-01T23:21:00.000Z',set.revision),/proposal_changed/);
+ const booked=await f.service.approveProposal(owner,r.id,set.slots[0].start,set.revision);
+ assert.equal(booked.status,'booked');assert.equal(booked.slotSource,'suggested');assert.equal(booked.slotStart,set.slots[0].start);assert.equal(state.writes.length,1);
+ assert.equal((await f.service.approveProposal(owner,r.id,set.slots[0].start,set.revision)).eventId,booked.eventId);assert.equal(state.writes.length,1);
+ await assert.rejects(f.service.approveProposal(owner,r.id,set.slots[1].start,set.revision),/request_closed/);
+});
+test('suggested approval rejects replaced proposals and current duration, busy, buffer, notice or capacity conflicts',async t=>{
+ t.mock.method(Date,'now',()=>proposalNow);const f=await fixture(t),r=f.record();await f.store.add(r);const state=proposalCalendar(t);
+ const saved=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput),old=saved.proposedTimes!;
+ const replacement=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,{...proposalInput,times:['2026-11-03T18:20']}),set=replacement.proposedTimes!,start=set.slots[0].start;
+ await assert.rejects(f.service.approveProposal(owner,r.id,old.slots[0].start,old.revision),/proposal_changed/);
+ state.busy=[{start:'2026-11-03T23:55:00Z',end:'2026-11-04T00:30:00Z'}];assert.equal((await f.service.approveProposal(owner,r.id,start,set.revision)).status,'needs_new_slot');state.busy=[];
+ await f.store.saveSettings({...f.settings,revision:2,durationMinutes:45},1);assert.equal((await f.service.approveProposal(owner,r.id,start,set.revision)).status,'needs_new_slot');
+ await f.store.saveSettings({...f.settings,revision:3,dailyLimit:1},2);
+ await f.store.add(f.record({status:'booked',slotStart:'2026-11-03T14:00:00.000Z',slotEnd:'2026-11-03T14:30:00.000Z'}));assert.equal((await f.service.approveProposal(owner,r.id,start,set.revision)).status,'needs_new_slot');
+ assert.equal(state.writes.length,0);assert.equal((await f.store.request(owner,r.id))?.slotStart,null);
+});
+test('offered selection and owner request-times clear alternatives without retaining a stale choice',async t=>{
+ t.mock.method(Date,'now',()=>proposalNow);const f=await fixture(t),r=f.record({decision:{...f.record().decision,tier:'review'}});await f.store.add(r);proposalCalendar(t);
+ await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput);
+ const slots=await f.service.slots(owner,visitor,f.settings.slug,r.id),selected=await f.service.selectSlot(owner,visitor,f.settings.slug,r.id,slots[0].start);
+ assert.equal(selected.proposedTimes,undefined);assert.equal(selected.slotSource,'offered');assert.ok(selected.slotStart);
+ const cleared=await f.service.requestTimes(owner,r.id);assert.equal(cleared.status,'needs_new_slot');assert.equal(cleared.slotStart,null);assert.equal(cleared.slotEnd,null);assert.equal(cleared.slotSource,undefined);assert.equal(cleared.proposedTimes,undefined);
+ const proposed=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput);const again=await f.service.requestTimes(owner,r.id);assert.equal(again.proposedTimes,undefined);
+ await assert.rejects(f.service.approveProposal(owner,r.id,proposed.proposedTimes!.slots[0].start,proposed.proposedTimes!.revision),/proposal_changed/);
+});
+test('uncertain suggested Calendar writes retain the chosen start and event id through retry and reject edits',async t=>{
+ t.mock.method(Date,'now',()=>proposalNow);const f=await fixture(t),r=f.record();await f.store.add(r);const state=proposalCalendar(t);
+ const saved=await f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput),set=saved.proposedTimes!;
+ state.lostWrite=true;await assert.rejects(f.service.approveProposal(owner,r.id,set.slots[0].start,set.revision),/booking_in_progress/);
+ const pending=await f.store.request(owner,r.id);assert.equal(pending?.status,'booking');assert.ok(pending?.eventId);assert.equal(state.writes.length,1);
+ await assert.rejects(f.service.proposeTimes(owner,visitor,f.settings.slug,r.id,proposalInput),/request_closed/);await assert.rejects(f.service.requestTimes(owner,r.id),/request_closed/);await assert.rejects(f.service.approveProposal(owner,r.id,set.slots[1].start,set.revision),/request_closed/);
+ state.lostWrite=false;const booked=await f.service.approveProposal(owner,r.id,set.slots[0].start,set.revision);assert.equal(booked.status,'booked');assert.equal(booked.eventId,pending?.eventId);assert.equal(state.writes.length,2);assert.equal(state.writes[1].id,state.writes[0].id);assert.deepEqual(state.writes[1].start,state.writes[0].start);
+});

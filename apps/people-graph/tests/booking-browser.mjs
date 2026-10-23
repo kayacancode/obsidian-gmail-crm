@@ -12,14 +12,17 @@ const server=createServer(async(req,res)=>{
  try{res.setHeader('content-type',({'.mjs':'text/javascript','.css':'text/css','.html':'text/html'})[extname(path)]||'application/octet-stream');res.end(await readFile(path));}catch{res.writeHead(404).end();}
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-const browser=await chromium.launch({headless:true,timeout:30000,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+let browser,failure;
 const origin='http://127.0.0.1:'+server.address().port;
 try{
+ browser=await chromium.launch({headless:true,timeout:30000,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],calls=[];
+ await page.addInitScript(()=>{Date.now=()=>Date.parse('2026-10-23T16:00:00Z');});
  page.setDefaultTimeout(4000);page.on('pageerror',error=>errors.push(error.message));
  let settings={owner:'kaya@example.test',revision:1,slug:'kaya',displayName:'Kaya Jones',intro:'A little context makes a better conversation.',thesis:'Applied AI for small teams',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:['sam@example.test'],enabled:false,autoBookPriority:false};
  const request={id:'r1',owner:settings.owner,email:'sam@example.test',name:'Sam Rivera',project:'An agent research studio',purpose:'Compare deployment lessons',projectUrl:'https://example.test',referrer:'Alex',createdAt:1792591200000,updatedAt:1792591200000,status:'pending_approval',slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z',eventId:null,idempotencyKey:'r1',decision:{tier:'review',reasons:['Relevant applied research'],uncertainties:['Introduction is unverified'],policyRevision:1,fit:{fit:'possible',reasons:['Relevant applied research'],evidence:['Project: agent research studio'],model:'fixture'},people:{status:'matched',name:'Sam',email:'sam@example.test',reason:'Exact address match',lastSync:'2026-10-21T09:00:00Z'}}};
  let initialMainLens={focus:'',needs:'   ',offers:''},savedLens={revision:'r1',fields:{focus:'',needs:'   ',offers:''},suggestions:[{id:'unconfirmed',kind:'focus',text:'Never import this suggestion'}]},failLens=false;
+ let proposedTimes=null,failProposal=false,expireProposal=false,closedProposal=false,staleProposal=false;
  let publicSlots=[{start:'2026-11-04T15:00:00Z',end:'2026-11-04T15:30:00Z'}];
  let ownerStatus=200,failSave=false,conflict=false,available=true,publicNext='select_slot',slotNext='pending_approval',failSlot=false,failSignIn=false,ready=false,saveCalls=0,slugConflict=false,visitorHistory=[],statusValue='pending_approval',failSubmit=false,recoveryAvailable=true,visitor=null,oauthRequestId=null,invalidSignInUrl=false,expireSubmit=false,signInReady=true,oauthIdentityKey='identity-visitor',oauthEmail='visitor@example.test',returningContact=null,requireIntake=false,publicIntakeKind='standard';
  await page.route('**/api/**',async route=>{
@@ -29,6 +32,8 @@ try{
   if(path==='/api/lens'){if(failLens){failLens=false;return reply({error:'temporarily_unavailable'},503);}return reply(savedLens);}
   if(path==='/api/booking/settings'){saveCalls++;if(slugConflict){slugConflict=false;return reply({error:'slug_taken'},409);}if(failSave){failSave=false;return reply({error:'Please try again'},503);}if(conflict){conflict=false;settings={...settings,revision:2,intro:'Changed elsewhere'};return reply({error:'settings_changed'},409);}settings={...body,revision:settings.revision+1};return reply({settings});}
   if(path==='/api/booking/calendar/connect')return reply({url:'https://accounts.google.com/o/oauth2/v2/auth?state=booking-fixture'});
+  if(path==='/api/booking/requests/r1/approve-proposal'){if(staleProposal){staleProposal=false;return reply({error:'proposal_changed'},409);}request.status='booked';request.slotStart=body.start;request.slotEnd=request.proposedTimes.slots.find(slot=>slot.start===body.start).end;request.slotSource='suggested';return reply({request});}
+  if(path==='/api/booking/requests/r1/request-times'){request.status='needs_new_slot';request.proposedTimes=null;request.slotStart=null;request.slotEnd=null;return reply({request});}
   if(path==='/api/booking/requests/r1/approve'){request.status='booked';return reply({request});}
   if(path==='/api/booking/requests/r1/cancel'){request.status='cancelled';return reply({request});}
   if(path==='/api/public/booking/kaya')return reply({page:{displayName:'Kaya Jones',intro:'A little context makes a better conversation.',timezone:settings.timezone,durationMinutes:30},available,recoveryAvailable,visitor,returningContact});
@@ -44,7 +49,9 @@ try{
   if(path==='/api/public/booking/kaya/requests'&&requireIntake){requireIntake=false;return reply({error:'intake_required'},409);}
   if(path==='/api/public/booking/kaya/requests'){publicIntakeKind=body.kind==='returning'?'returning':'standard';return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:publicNext==='async'?'async_submitted':'pending_approval',slotStart:null,slotEnd:null},next:publicNext});}
   if(path.endsWith('/slots'))return reply({slots:publicSlots});
+  if(path.endsWith('/requests/visit-1/proposals')){if(closedProposal){closedProposal=false;proposedTimes=null;statusValue='booked';return reply({error:'request_closed'},409);}if(expireProposal){expireProposal=false;visitor=null;return reply({error:'sign_in_required'},401);}if(failProposal){failProposal=false;return reply({error:'ambiguous_proposal_time'},400);}proposedTimes={timezone:body.timezone,revision:'proposal-v1',slots:body.times.map(value=>({start:value+':00Z',end:value.slice(0,14)+'30:00Z'}))};return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:'pending_approval',slotStart:null,slotEnd:null,proposedTimes,slotSource:'suggested'},next:'pending_approval'});}
   if(path.endsWith('/requests/visit-1/slot')){if(failSlot){failSlot=false;return reply({error:'That time is no longer available'},409);}return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:slotNext,slotStart:body.start,slotEnd:'2026-11-04T15:30:00Z'},next:slotNext});}
+  if(path.endsWith('/requests/visit-1')&&proposedTimes)return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:statusValue,slotStart:null,slotEnd:null,proposedTimes,slotSource:'suggested'},next:'pending_approval'});
   if(path.endsWith('/requests/visit-1'))return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:statusValue,slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z'},next:'pending_approval'});
   return reply({error:'Unexpected API call'},404);
  });
@@ -457,8 +464,99 @@ try{
   await page.getByRole('combobox',{name:'Display timezone',exact:true}).selectOption('America/New_York');
   assert.equal(await page.locator('[data-date="2026-11-04"]').getAttribute('aria-pressed'),'true','timezone changes and refresh preserve the selected instant without day drift');
  }
+ // Suggested times remain optional, precise, editable and private to the signed-in visitor.
+ await page.getByRole('button',{name:'None of these times work? Suggest a time',exact:true}).click();
+ await page.getByRole('heading',{name:'Suggest a time',exact:true}).waitFor();
+ const proposalZone=page.getByRole('combobox',{name:'Suggested times timezone',exact:true});
+ assert.equal(await proposalZone.inputValue(),'America/New_York','suggestions start in the calendar display timezone');
+ await proposalZone.selectOption('UTC');
+ const proposalInput=index=>page.getByLabel('Preferred time '+index,{exact:true});
+ await proposalInput(1).fill('2026-11-09T10:00');
+ await page.getByRole('button',{name:'Add another time',exact:true}).click();
+ await proposalInput(2).fill('2026-11-09T10:00');
+ const proposalPosts=()=>calls.filter(call=>call.path.endsWith('/proposals'));
+ const beforeDuplicate=proposalPosts().length;
+ await page.getByRole('button',{name:'Send suggested times',exact:true}).click();
+ await page.getByRole('status').filter({hasText:'different time'}).waitFor();
+ assert.equal(proposalPosts().length,beforeDuplicate,'duplicate starts are rejected before submission');
+ await proposalInput(2).fill('2026-11-10T14:00');
+ await page.getByRole('button',{name:'Add another time',exact:true}).click();await proposalInput(3).fill('2026-11-11T11:00');
+ assert.equal(await page.getByRole('button',{name:'Add another time',exact:true}).isDisabled(),true,'only three precise suggestions are allowed');
+ await page.getByRole('button',{name:'Remove preferred time 3',exact:true}).click();
+ failProposal=true;await page.getByRole('button',{name:'Send suggested times',exact:true}).click();
+ await page.getByRole('status').filter({hasText:'daylight saving'}).waitFor();
+ assert.equal(await proposalInput(1).inputValue(),'2026-11-09T10:00','server failures retain form values');
+ await page.setViewportSize({width:1280,height:900});await page.screenshot({path:'/tmp/people-booking-suggested-desktop.png',fullPage:true});
+ await page.setViewportSize({width:320,height:740});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'suggestions fit narrow phones');
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ await page.locator('#booking-card').screenshot({path:'/tmp/people-booking-suggested-mobile.png'});
+ await page.getByRole('button',{name:'Back to calendar',exact:true}).click();await page.locator('.booking-calendar').waitFor();
+ await page.getByRole('button',{name:'None of these times work? Suggest a time',exact:true}).click();
+ assert.equal(await proposalInput(2).inputValue(),'2026-11-10T14:00','calendar navigation retains the unsent suggestions');
+ await page.getByRole('button',{name:'Send suggested times',exact:true}).click();
+ await page.getByRole('heading',{name:'Suggested times sent',exact:true}).waitFor();
+ assert.deepEqual(proposalPosts().at(-1).body,{timezone:'UTC',times:['2026-11-09T10:00','2026-11-10T14:00']},'send civil strings and explicit timezone without browser date conversion');
+ assert.match(await page.locator('.proposed-times').innerText(),/Nov 9|9 Nov/);
+ assert.match(await page.locator('#booking-card').innerText(),/not confirmed/);
+ await page.reload();await page.getByRole('heading',{name:'Suggested times sent',exact:true}).waitFor();
+ assert.equal(await page.getByLabel('Preferred time 1',{exact:true}).count(),0,'request recovery displays saved proposals instead of reopening intake');
+ statusValue='needs_new_slot';await page.getByRole('button',{name:'Check request status',exact:true}).click();
+ await page.getByRole('heading',{name:'Let’s find another time',exact:true}).waitFor();
+ assert.equal(await page.locator('.proposed-times li').count(),2,'an unavailable suggestion keeps saved alternatives visible on status refresh');
+ assert.equal(await page.locator('.booking-calendar').count(),0,'retained proposals do not unexpectedly reopen the calendar');
+ await page.reload();await page.getByRole('button',{name:'Edit suggested times',exact:true}).waitFor();
+ assert.equal(await page.locator('.proposed-times li').count(),2,'saved alternatives survive request recovery');
+ assert.equal(await page.getByRole('button',{name:'Choose from the calendar',exact:true}).count(),1);
+ statusValue='pending_approval';await page.getByRole('button',{name:'Edit suggested times',exact:true}).click();
+ assert.equal(await proposalInput(1).inputValue(),'2026-11-09T10:00','editing uses the saved proposal timezone');
+ await proposalInput(1).fill('2026-11-12T10:00');expireProposal=true;
+ await page.getByRole('button',{name:'Send suggested times',exact:true}).click();await page.getByRole('button',{name:'Sign in with Google',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Sign in with Google',exact:true}).click();await page.getByRole('heading',{name:'Suggested times sent',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Edit suggested times',exact:true}).click();
+ assert.equal(await proposalInput(1).inputValue(),'2026-11-12T10:00','same-identity sign-in renewal preserves unsent edits');
+ failSignIn=true;await page.getByRole('button',{name:'Use another Google account',exact:true}).click();await page.getByRole('status').filter({hasText:'Google sign-in is unavailable'}).waitFor();
+ assert.equal(await page.evaluate(()=>sessionStorage.getItem('people-booking-proposal-draft:kaya')),null,'account switching immediately clears proposal drafts');
+ proposedTimes=null;publicSlots=[];visitorHistory=[];await signIn({returning:true});await page.getByRole('button',{name:'Choose a time',exact:true}).click();
+ await page.getByRole('heading',{name:'No open times just now',exact:true}).waitFor();
+ await page.getByRole('button',{name:'None of these times work? Suggest a time',exact:true}).click();
+ assert.equal(await proposalInput(1).inputValue(),'','new requests never inherit previous visitor suggestions');
+ const intakePostsBeforeClosed=calls.filter(call=>call.path==='/api/public/booking/kaya/requests'&&call.body).length;
+ await proposalInput(1).fill('2026-11-12T10:00');closedProposal=true;
+ await page.getByRole('button',{name:'Send suggested times',exact:true}).click();
+ await page.getByRole('heading',{name:'You’re booked',exact:true}).waitFor();
+ assert.equal(await page.locator('.proposal-form').count(),0,'a concurrent owner booking closes the stale proposal form');
+ assert.equal(await page.getByRole('button',{name:'Try availability again',exact:true}).count(),0,'closed requests do not enter an availability retry loop');
+ assert.equal(calls.filter(call=>call.path==='/api/public/booking/kaya/requests'&&call.body).length,intakePostsBeforeClosed,'recovering a closed request never creates another request');
+ // Owners approve a stored suggestion explicitly without discarding any settings draft.
+ ownerStatus=200;request.status='pending_approval';request.slotStart=null;request.slotEnd=null;
+ request.proposedTimes={timezone:'America/Los_Angeles',revision:'owner-proposal-v2',slots:[{start:'2026-11-09T17:00:00Z',end:'2026-11-09T17:30:00Z'},{start:'2026-11-10T18:00:00Z',end:'2026-11-10T18:30:00Z'}]};
+ await page.setViewportSize({width:1280,height:900});await page.goto(origin+'/booking');
+ assert.match(await page.locator('.proposed-times').innerText(),/America\/New York/);assert.match(await page.locator('.proposed-times').innerText(),/America\/Los Angeles/);
+ assert.equal(await page.getByRole('button',{name:'Approve request',exact:true}).count(),0,'suggestions require approving a specific stored choice');
+ await page.getByRole('tab',{name:'Booking page',exact:true}).click();await intro.fill('Keep my private owner draft');await page.getByRole('tab',{name:'Requests',exact:true}).click();
+ staleProposal=true;await page.getByRole('button',{name:'Approve this time',exact:true}).first().click();
+ await page.getByRole('status').filter({hasText:'changed'}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Approve this time',exact:true}).count(),2,'stale approval does not claim confirmation');
+ await page.locator('.request-card').screenshot({path:'/tmp/people-booking-suggested-owner.png'});
+ await page.setViewportSize({width:320,height:740});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'owner suggested-time actions fit narrow phones');
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));await page.locator('.request-card').screenshot({path:'/tmp/people-booking-suggested-owner-mobile.png'});
+ await page.getByRole('button',{name:'Approve this time',exact:true}).nth(1).click();await page.getByRole('button',{name:'Cancel booking',exact:true}).waitFor();
+ const approval=calls.findLast(call=>call.path.endsWith('/approve-proposal'));
+ assert.deepEqual(approval.body,{start:'2026-11-10T18:00:00Z',revision:'owner-proposal-v2'},'owner approves exact stored instant and revision');
+ await page.getByRole('tab',{name:'Booking page',exact:true}).click();assert.equal(await intro.inputValue(),'Keep my private owner draft','review actions do not replace the settings form');
+ request.status='pending_approval';request.slotStart=null;request.slotEnd=null;await page.getByRole('tab',{name:'Requests',exact:true}).click();await page.getByRole('button',{name:'Refresh',exact:true}).click();
+ await page.getByRole('button',{name:'Ask for different times',exact:true}).click();await page.locator('.status-pill').filter({hasText:'Needs another time'}).waitFor();
+ assert.equal(calls.at(-1).path,'/api/booking/requests/r1/request-times');assert.equal(await page.getByRole('button',{name:'Approve this time',exact:true}).count(),0);
  await page.goto(origin+'/book/missing');await page.getByRole('heading',{name:'This booking page isn’t here',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Email',exact:true}).count(),0,'unknown booking links have no intake form');
  assert.deepEqual(errors,[],'pages execute without uncaught browser errors');
- console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, Google sign-in, draft recovery, returning contacts, eligibility fallback, month calendar, timezone/DST selection, refresh, request, slot recovery, paused-page recovery, async, and mobile passed.');
-}finally{await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+ console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, Google sign-in, draft recovery, returning contacts, eligibility fallback, month calendar, timezone/DST selection, refresh, request, slot recovery, paused-page recovery, suggested times, proposal drafts, precise owner approval, settings preservation, async, and mobile passed.');
+}catch(error){failure=error;}finally{
+ // Some Chrome builds exit without acknowledging close; never strand the local fixture server.
+ if(browser)await new Promise(resolve=>{const timeout=setTimeout(resolve,5000);browser.close().catch(()=>{}).finally(()=>{clearTimeout(timeout);resolve();});});
+ server.closeAllConnections();await new Promise(resolve=>server.close(resolve));
+}
+
+if(failure)console.error(failure);
+// Release any orphaned Playwright transport after the fixture server and browser are closed.
+process.exit(failure?1:0);

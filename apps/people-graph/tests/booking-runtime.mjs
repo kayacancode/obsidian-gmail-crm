@@ -292,6 +292,62 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const result=await api('/api/booking/requests/'+first.id+'/cancel',{method:'POST',cookie:ownerCookie});assert.equal(result.value.request.status,'cancelled');assert.equal(events.get(result.value.request.eventId).status,'cancelled');
    const publicState=await api(prefix+'/requests/'+first.id,{cookie:visitorCookie});assert.equal(publicState.value.request.status,'cancelled');assert.equal(JSON.stringify(publicState.value).includes('decision'),false);
   });
+  function proposalInput(days,hour=22){const date=new Date(Date.now()+days*86400000);date.setUTCHours(hour,0,0,0);return {timezone:'UTC',times:[date.toISOString().slice(0,16)]};}
+  async function propose(cookie,r,input){const response=await api(prefix+'/requests/'+r.id+'/proposals',{method:'POST',cookie,data:input});assert.equal(response.res.status,200,JSON.stringify(response.value));return response.value.request;}
+  async function approveProposal(r,start=r.proposedTimes.slots[0].start){return api('/api/booking/requests/'+r.id+'/approve-proposal',{method:'POST',cookie:ownerCookie,data:{start,revision:r.proposedTimes.revision}});}
+  await t.test('visitor proposals use Google ownership and origin checks, survive resume, and remain unreserved',async()=>{
+   const email='suggestions@example.com',cookie=await visitor(email),r=await submit(cookie),input=proposalInput(12),path=prefix+'/requests/'+r.id+'/proposals',before=inserts;
+   assert.equal((await api(path,{method:'POST',data:input})).res.status,401);
+   assert.equal((await api(path,{method:'POST',cookie,origin:'https://evil.test',data:input})).res.status,403);
+   const foreign=await visitor(email,{sub:'other-google-subject'});
+   assert.equal((await api(path,{method:'POST',cookie:foreign,data:input})).res.status,404);
+   for(const invalid of [{...input,times:[]},{...input,times:Array(4).fill(input.times[0])},{...input,timezone:'Not/A_Zone'},{...input,times:['2026-99-01T25:00']},{...input,times:[input.times[0],input.times[0]]}]){
+    assert.equal((await api(path,{method:'POST',cookie,data:invalid})).res.status,400,'invalid proposal data cannot reach Calendar');
+   }
+   const saved=await propose(cookie,r,input);assert.equal(saved.status,'pending_approval');assert.equal(saved.slotStart,null);assert.equal(inserts,before);
+   assert.deepEqual(saved.proposedTimes.slots,[{start:input.times[0]+':00.000Z',end:input.times[0].slice(0,14)+'30:00.000Z'}]);
+   const retry=await propose(cookie,r,input);assert.equal(retry.proposedTimes.revision,saved.proposedTimes.revision,'same suggestions are idempotent');
+   const status=await api(prefix+'/requests/'+r.id,{cookie});assert.equal(status.value.next,'pending_approval');assert.deepEqual(status.value.request.proposedTimes,saved.proposedTimes);
+   const history=(await api(prefix+'/requests',{cookie})).value.requests.find(item=>item.request.id===r.id);assert.equal(history.next,'pending_approval');
+   for(const privateField of ['decision','owner','email','purpose','policySnapshot'])assert.equal(privateField in status.value.request,false,privateField);
+   const privateRecord=(await api('/api/booking',{cookie:ownerCookie})).value.requests.find(item=>item.id===r.id);assert.deepEqual(privateRecord.proposedTimes,saved.proposedTimes);
+   settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,enabled:false}})).value.settings;
+   assert.equal((await api(path,{method:'POST',cookie,data:input})).res.status,503);
+   assert.equal((await api(prefix+'/requests/'+r.id,{cookie})).value.next,'pending_approval');
+   settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,enabled:true}})).value.settings;
+   assert.equal((await api('/api/booking/requests/'+r.id+'/approve-proposal',{method:'POST',data:{start:saved.proposedTimes.slots[0].start,revision:saved.proposedTimes.revision}})).res.status,401);
+   assert.equal((await api('/api/booking/requests/'+r.id+'/approve-proposal',{method:'POST',cookie:ownerCookie,origin:'https://evil.test',data:{start:saved.proposedTimes.slots[0].start,revision:saved.proposedTimes.revision}})).res.status,403);
+   const approved=await approveProposal(saved);assert.equal(approved.res.status,200,JSON.stringify(approved.value));assert.equal(approved.value.request.status,'booked');assert.equal(approved.value.request.slotSource,'suggested');assert.equal(inserts,before+1,'explicit owner approval books an evening outside normal hours');
+   assert.equal((await approveProposal(saved)).value.request.eventId,approved.value.request.eventId);assert.equal(inserts,before+1);
+   assert.equal((await api(path,{method:'POST',cookie,data:proposalInput(13)})).res.status,409,'booked alternatives cannot be changed');
+  });
+  await t.test('replaced proposal revisions cannot book; owner can request new times and offered choices clear proposals',async()=>{
+   const cookie=await visitor('revised-times@example.com'),r=await submit(cookie),firstSet=await propose(cookie,r,proposalInput(14));
+   const secondSet=await propose(cookie,r,proposalInput(15));assert.notEqual(firstSet.proposedTimes.revision,secondSet.proposedTimes.revision);
+   const before=inserts,stale=await approveProposal(firstSet);assert.equal(stale.res.status,409);assert.equal(stale.value.error,'proposal_changed');assert.equal(inserts,before);
+   const asked=await api('/api/booking/requests/'+r.id+'/request-times',{method:'POST',cookie:ownerCookie});assert.equal(asked.value.request.status,'needs_new_slot');assert.ok(!asked.value.request.proposedTimes);
+   assert.equal((await api(prefix+'/requests/'+r.id,{cookie})).value.next,'select_slot');
+   await propose(cookie,r,proposalInput(15));
+   const slots=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots;
+   const chosen=await api(prefix+'/requests/'+r.id+'/slot',{method:'POST',cookie,data:{start:slots[0].start}});assert.equal(chosen.res.status,200,JSON.stringify(chosen.value));assert.ok(!chosen.value.request.proposedTimes);assert.equal(chosen.value.request.status,'pending_approval');assert.equal(inserts,before);
+  });
+  await t.test('serialized alternative approvals allow only one meeting at a shared instant',async()=>{
+   const a=await visitor('proposal-race-a@example.com'),b=await visitor('proposal-race-b@example.com'),ra=await submit(a),rb=await submit(b),input=proposalInput(18);
+   const savedA=await propose(a,ra,input),savedB=await propose(b,rb,input),before=inserts;
+   const results=await Promise.all([savedA,savedB].map(r=>approveProposal(r)));
+   assert.deepEqual(results.map(result=>result.value.request?.status).sort(),['booked','needs_new_slot'],JSON.stringify(results.map(result=>result.value)));
+   assert.equal(inserts,before+1);
+  });
+  await t.test('suggested-time uncertain writes survive restart with one persisted Calendar event',async()=>{
+   const cookie=await visitor('proposal-retry@example.com'),r=await submit(cookie),saved=await propose(cookie,r,proposalInput(20)),before=inserts;
+   failInsert=true;failLookup=true;
+   const uncertain=await approveProposal(saved);assert.equal(uncertain.res.status,409,JSON.stringify(uncertain.value));
+   assert.equal((await api(prefix+'/requests/'+r.id,{cookie})).value.request.status,'booking');
+   assert.equal((await api(prefix+'/requests/'+r.id+'/proposals',{method:'POST',cookie,data:proposalInput(21)})).res.status,409,'in-flight suggestions stay fixed');
+   await api('/fixture/restart');failInsert=false;failLookup=false;
+   const recovered=await approveProposal(saved);assert.equal(recovered.value.request.status,'booked',JSON.stringify(recovered.value));assert.equal(inserts,before+1);
+   assert.equal(recovered.value.request.slotStart,saved.proposedTimes.slots[0].start);
+  });
   await t.test('expired visitor sessions require Google sign-in again and recover only their own history',async()=>{
    await sql("UPDATE booking_google_sessions SET expires=0 WHERE email='visitor@example.com'");
    assert.equal((await api(prefix+'/requests/'+first.id,{cookie:visitorCookie})).res.status,401);

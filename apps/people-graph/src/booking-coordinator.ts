@@ -1,7 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
-import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings,BookingVisitorIdentity,BookingSubmission,BookingDecision} from './booking-types';
+import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings,BookingVisitorIdentity,BookingSubmission,BookingDecision,BookingSlot} from './booking-types';
 import {BookingStore} from './booking-store';
-import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,validateReturningBookingNote,decideBooking,generateBookingSlots,normalizeBookingEmail} from './booking-policy';
+import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,validateReturningBookingNote,decideBooking,generateBookingSlots,normalizeBookingEmail,parseBookingProposals,suggestedBookingSlotAvailable} from './booking-policy';
 import {lookupBookingPerson} from './booking-people';
 import {getReturningBookingContact} from './booking-returning';
 import {assessBookingFit} from './booking-fit';
@@ -14,7 +14,7 @@ export async function bookingReadiness(env:BookingEnv,owner:string):Promise<Book
  const people=!!(env.PEOPLEGRAPH_HOST&&env.PEOPLEGRAPH_TOKEN&&env.PEOPLEGRAPH_OWNER_EMAIL?.toLowerCase()===owner);
  return {signIn,calendar,people,pilot,issues:[...(!pilot?['Booking is not enabled for this account yet.']:[]),...(!signIn?['Configure Google sign-in before visitors can request a meeting.']:[]),...(!calendar?['Connect Google Calendar to check and reserve times.']:[]),...(!people?['Your Rust PeopleGraph source is not connected. Requests will need your review.']:[])]};
 }
-export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd,intakeKind:r.intakeKind==='returning'?'returning':'standard'};}
+export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd,intakeKind:r.intakeKind==='returning'?'returning':'standard',...(r.proposedTimes?{proposedTimes:{timezone:r.proposedTimes.timezone,revision:r.proposedTimes.revision,slots:r.proposedTimes.slots.map(slot=>({start:slot.start,end:slot.end}))}}:{}),...(r.slotSource?{slotSource:r.slotSource}:{})};}
 const uncertainEmail=()=>({status:'unavailable' as const,reason:'Google has not established authority over this email address. The owner must review this request.'});
 function verifiedVisitor(visitor:BookingVisitorIdentity):BookingVisitorIdentity{
  if(!visitor||typeof visitor.subject!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(visitor.subject)||typeof visitor.emailAuthoritative!=='boolean')throw Error('verification_required');
@@ -93,11 +93,11 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   if(['booked','booking','cancelling'].includes(r.status))return r;
   if(!['pending_approval','needs_new_slot'].includes(r.status))throw Error('request_closed');
   await this.reviewUncertainIdentity(settings,r,visitor);
-  if(r.status==='pending_approval'&&r.slotStart===start)return r;
+  if(r.status==='pending_approval'&&r.slotStart===start&&!r.proposedTimes&&r.slotSource!=='suggested')return r;
   await this.store.limit(`select:${owner}:${email}`,10,86400000);
   if(!Number.isFinite(Date.parse(start)))throw Error('invalid_request');
   const slot=(await this.available(settings,r,start)).find(s=>s.start===start);if(!slot)throw Error('slot_unavailable');
-  r.slotStart=slot.start;r.slotEnd=slot.end;r.status='pending_approval';r.updatedAt=Date.now();
+  r.slotStart=slot.start;r.slotEnd=slot.end;r.status='pending_approval';r.slotSource='offered';delete r.proposedTimes;r.updatedAt=Date.now();
   await this.store.update(r);
   // A policy change always falls back to approval; it never upgrades an old decision.
   if(visitor.emailAuthoritative&&r.emailAuthoritative===true&&settings.autoBookPriority&&r.decision.tier==='priority'&&settings.revision===r.decision.policyRevision){
@@ -112,11 +112,46 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   }
   return r;
  });}
+ async proposeTimes(owner:string,identity:BookingVisitorIdentity,slug:string,id:string,input:unknown){return this.serial(owner,async()=>{
+  const visitor=verifiedVisitor(identity),s=await this.active(owner,slug),r=await this.required(owner,id);this.assertVisitor(r,visitor);
+  this.assertMutable(r);await this.reviewUncertainIdentity(s,r,visitor);
+  const proposed=parseBookingProposals(input,s.durationMinutes);
+  if(r.proposedTimes?.timezone===proposed.timezone&&JSON.stringify(r.proposedTimes.slots)===JSON.stringify(proposed.slots))return r;
+  await this.store.limit(`proposals:${owner}:${visitor.email}`,10,86400000);
+  if(proposed.slots.some(slot=>!suggestedBookingSlotAvailable(s,r,slot,[],[])))throw Error('invalid_proposal_time');
+  r.proposedTimes={...proposed,revision:crypto.randomUUID()};r.slotSource='suggested';r.slotStart=null;r.slotEnd=null;r.status='pending_approval';r.updatedAt=Date.now();
+  await this.store.update(r);return r;
+ });}
+ async approveProposal(owner:string,id:string,start:string,revision:string){return this.serial(owner,async()=>{
+  const r=await this.required(owner,id),s=await this.store.settings(owner);if(!s)throw Error('not_found');
+  const slot=r.proposedTimes?.slots.find(value=>value.start===start);
+  if(!slot||r.proposedTimes?.revision!==revision)throw Error('proposal_changed');
+  if(['booking','booked'].includes(r.status)){
+   if(r.slotSource!=='suggested'||r.slotStart!==slot.start||r.slotEnd!==slot.end)throw Error('request_closed');
+   return r.status==='booked'?r:this.book(s,r);
+  }
+  this.assertMutable(r);
+  if(!await this.suggestedAvailable(s,r,slot)){r.status='needs_new_slot';r.slotStart=null;r.slotEnd=null;r.updatedAt=Date.now();await this.store.update(r);return r;}
+  r.slotStart=slot.start;r.slotEnd=slot.end;r.slotSource='suggested';r.updatedAt=Date.now();await this.store.update(r);
+  return this.book(s,r);
+ });}
+ async requestTimes(owner:string,id:string){return this.serial(owner,async()=>{
+  const r=await this.required(owner,id);this.assertMutable(r);
+  r.status='needs_new_slot';r.slotStart=null;r.slotEnd=null;delete r.proposedTimes;delete r.slotSource;r.updatedAt=Date.now();await this.store.update(r);return r;
+ });}
+ private assertMutable(r:BookingRequestRecord){if(!['pending_approval','needs_new_slot'].includes(r.status)||r.decision.tier==='async')throw Error('request_closed');}
+ private async suggestedAvailable(s:BookingSettings,r:BookingRequestRecord,slot:BookingSlot){
+  if(!suggestedBookingSlotAvailable(s,r,slot,[],[]))return false;
+  const calendar=await this.store.calendar(s.owner);if(!calendar)throw Error('calendar_unavailable');
+  const busy=await bookingCalendarBusy(this.env,calendar,new Date(Date.parse(slot.start)-s.bufferMinutes*60000).toISOString(),new Date(Date.parse(slot.end)+s.bufferMinutes*60000).toISOString());
+  return suggestedBookingSlotAvailable(s,r,slot,busy,await this.store.reservations(s.owner));
+ }
  async act(owner:string,id:string,action:'approve'|'decline'|'cancel'){return this.serial(owner,async()=>{
   const r=await this.required(owner,id),s=await this.store.settings(owner);if(!s)throw Error('not_found');
   if(action==='approve'){
    if(r.status==='booked')return r;
    if(r.status==='booking')return this.book(s,r);
+   if(r.proposedTimes||r.slotSource==='suggested')throw Error('proposal_changed');
    if(!['pending_approval','needs_new_slot'].includes(r.status)||!r.slotStart)throw Error('no_pending_slot');
    const available=await this.available(s,r,r.slotStart);
    if(!available.some(v=>v.start===r.slotStart&&v.end===r.slotEnd)){r.status='needs_new_slot';r.updatedAt=Date.now();await this.store.update(r);return r;}
@@ -181,8 +216,9 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
    if(busy.length)throw Error('booking_in_progress');
    if(Date.parse(r.slotStart)<Date.now()+s.minNoticeHours*3600000)throw Error('booking_in_progress');
    s={...s,durationMinutes:(Date.parse(r.slotEnd)-Date.parse(r.slotStart))/60000};
-  }else if(!(await this.available(s,r,r.slotStart)).some(slot=>slot.start===r.slotStart&&slot.end===r.slotEnd)){
-   r.status='needs_new_slot';r.updatedAt=Date.now();return this.store.update(r);
+   if(r.slotSource==='suggested'&&!await this.suggestedAvailable(s,r,{start:r.slotStart,end:r.slotEnd}))throw Error('booking_in_progress');
+  }else if(r.slotSource==='suggested'?!await this.suggestedAvailable(s,r,{start:r.slotStart,end:r.slotEnd}):!(await this.available(s,r,r.slotStart)).some(slot=>slot.start===r.slotStart&&slot.end===r.slotEnd)){
+   r.status='needs_new_slot';if(r.slotSource==='suggested'){r.slotStart=null;r.slotEnd=null;}r.updatedAt=Date.now();return this.store.update(r);
   }
   r.status='booking';r.eventId=r.eventId||await bookingEventId(r.id);r.updatedAt=Date.now();
   await this.store.update(r);

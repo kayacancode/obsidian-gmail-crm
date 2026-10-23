@@ -121,6 +121,49 @@ export function generateBookingSlots(settings:BookingSettings,tier:BookingTier,b
  return slots;
 }
 
+/** Proposals use exact local starts: silently choosing one side of a DST repeat
+ * or shifting a missing wall time would approve a different time than requested. */
+export function parseBookingProposals(input:unknown,durationMinutes:number):{timezone:string;slots:BookingSlot[]}{
+ if(!record(input)||!Array.isArray(input.times)||input.times.length<1||input.times.length>3)throw Error('invalid_proposed_times');
+ const timezone=boundedText(input.timezone,100,'timezone',1);
+ let format:Intl.DateTimeFormat;
+ try{format=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});}catch{throw Error('invalid_timezone');}
+ const seen=new Set<number>();
+ const slots=input.times.map(value=>{
+  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))throw Error('invalid_proposal_time');
+  const wall=Date.parse(value+':00.000Z');
+  if(!Number.isFinite(wall)||new Date(wall).toISOString().slice(0,16)!==value)throw Error('invalid_proposal_time');
+  const offsets=new Set<number>();
+  for(let hour=-36;hour<=36;hour+=6){const instant=wall+hour*60*MINUTE;offsets.add(localStamp(format,instant)-instant);}
+  const starts=wallInstants(format,wall,offsets);
+  if(!starts.length)throw Error('nonexistent_proposal_time');
+  if(starts.length!==1)throw Error('ambiguous_proposal_time');
+  const start=starts[0];if(seen.has(start))throw Error('invalid_proposed_times');seen.add(start);
+  return {start:new Date(start).toISOString(),end:new Date(start+durationMinutes*MINUTE).toISOString()};
+ }).sort((a,b)=>a.start.localeCompare(b.start));
+ return {timezone,slots};
+}
+
+/** Explicit owner approval can waive weekdays/hours only. Pending suggestions
+ * never count as reservations; host-local days/weeks still enforce capacity. */
+export function suggestedBookingSlotAvailable(settings:BookingSettings,request:BookingRequestRecord,slot:BookingSlot,busy:BookingBusy[],existing:BookingRequestRecord[],now=Date.now()):boolean{
+ const start=Date.parse(slot.start),end=Date.parse(slot.end);
+ if(request.decision.tier==='async'||!Number.isFinite(now)||!Number.isFinite(start)||!Number.isFinite(end)||end-start!==settings.durationMinutes*MINUTE)return false;
+ const earliest=Math.max(now+settings.minNoticeHours*60*MINUTE,request.decision.tier==='review'?request.createdAt+Math.max(7,settings.reviewDelayDays)*DAY:0);
+ if(start<earliest||end>now+settings.horizonDays*DAY)return false;
+ const active=existing.filter(item=>item.owner===settings.owner&&item.id!==request.id&&['booked','booking','cancelling'].includes(item.status));
+ const buffer=settings.bufferMinutes*MINUTE;
+ for(const item of [...busy,...active.map(item=>({start:item.slotStart??'',end:item.slotEnd??''}))]){
+  const otherStart=Date.parse(item.start),otherEnd=Date.parse(item.end);
+  if(!Number.isFinite(otherStart)||!Number.isFinite(otherEnd)||otherEnd<=otherStart||start-buffer<otherEnd&&end+buffer>otherStart)return false;
+ }
+ const format=new Intl.DateTimeFormat('en-CA',{timeZone:settings.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+ const date=localDate(format,start),week=weekStart(date);
+ let daily=0,weekly=0;
+ for(const item of active){const otherDate=localDate(format,Date.parse(item.slotStart!));if(otherDate===date)daily++;if(weekStart(otherDate)===week)weekly++;}
+ return daily<settings.dailyLimit&&weekly<settings.weeklyLimit;
+}
+
 export function meaningfulThesis(value:string):boolean{return value.trim().length>=20&&(value.trim().match(/[\p{L}\p{N}]+/gu)?.length??0)>=4;}
 function record(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==='object'&&!Array.isArray(value);}
 function boundedText(value:unknown,max:number,label:string,min=0):string{if(typeof value!=='string')throw Error('invalid_'+label);const text=value.trim();if(text.length<min||text.length>max||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text))throw Error('invalid_'+label);return text;}

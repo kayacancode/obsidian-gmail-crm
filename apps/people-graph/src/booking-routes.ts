@@ -19,10 +19,10 @@ function origin(request:Request){if(request.headers.get('origin')!==new URL(requ
 export function bookingError(error:unknown){
  const raw=error instanceof Error?error.message:'';
  const code=raw==='booking_calendar_reconnect_required'?'calendar_unavailable':raw;
- const codes=['invalid_origin','not_found','verification_required','invalid_code','rate_limited','invalid_request','invalid_request_key','booking_unavailable','email_unavailable','calendar_unavailable','booking_in_progress','request_closed','no_pending_slot','slot_unavailable','settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','setup_required','invalid_oauth_state','wrong_owner','intake_required'];
+ const codes=['invalid_origin','not_found','verification_required','invalid_code','rate_limited','invalid_request','invalid_request_key','booking_unavailable','email_unavailable','calendar_unavailable','booking_in_progress','request_closed','no_pending_slot','slot_unavailable','settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','setup_required','invalid_oauth_state','wrong_owner','intake_required','proposal_changed','ambiguous_proposal_time','nonexistent_proposal_time'];
  // Provider bodies and model output must never become public error messages.
  const safe=codes.includes(code)?code:code.startsWith('invalid_')&&/^[a-z_]{1,60}$/.test(code)?code:'booking_failed';
- return json({error:safe},safe==='invalid_origin'?403:safe==='not_found'?404:safe==='verification_required'?401:safe==='rate_limited'?429:['settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','slot_unavailable','request_closed','booking_in_progress','intake_required'].includes(safe)?409:['email_unavailable','calendar_unavailable','booking_unavailable','booking_failed'].includes(safe)?503:400);
+ return json({error:safe},safe==='invalid_origin'?403:safe==='not_found'?404:safe==='verification_required'?401:safe==='rate_limited'?429:['settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','slot_unavailable','request_closed','booking_in_progress','intake_required','proposal_changed'].includes(safe)?409:['email_unavailable','calendar_unavailable','booking_unavailable','booking_failed'].includes(safe)?503:400);
 }
 export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:string):Promise<Response>{
  try{
@@ -46,6 +46,12 @@ export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:str
    return json({url:authUrl},200,setBookingCookie(OAUTH_COOKIE,cookie,600));
   }
   if(path==='/api/booking/calendar/disconnect'){await stub.disconnectCalendar(owner);return json({ok:true});}
+  const proposalAction=path.match(/^\/api\/booking\/requests\/([\w-]{1,100})\/(approve-proposal|request-times)$/);
+  if(proposalAction){
+   if(proposalAction[2]==='request-times')return json({request:await stub.requestTimes(owner,proposalAction[1])});
+   const input=await body(request);if(typeof input.start!=='string'||input.start.length>40||typeof input.revision!=='string'||input.revision.length>100)throw Error('invalid_request');
+   return json({request:await stub.approveProposal(owner,proposalAction[1],input.start,input.revision)});
+  }
   const action=path.match(/^\/api\/booking\/requests\/([\w-]{1,100})\/(approve|decline|cancel)$/);
   if(action)return json({request:await stub.act(owner,action[1],action[2] as 'approve'|'decline'|'cancel')});
   return json({error:'not_found'},404);
@@ -66,7 +72,7 @@ export async function bookingOAuthCallback(request:Request,env:BookingEnv):Promi
   return new Response(null,{status:303,headers:{location:'/booking?calendar=connected','set-cookie':clear,'cache-control':'no-store','referrer-policy':'no-referrer'}});
  }catch{return new Response(null,{status:303,headers:{location:'/booking?calendar=failed','set-cookie':clear,'cache-control':'no-store','referrer-policy':'no-referrer'}});}
 }
-function next(r:BookingRequestRecord){return r.status==='needs_new_slot'?'select_slot':r.status==='async_submitted'?'async':r.status==='booked'?'booked':r.slotStart?'pending_approval':'select_slot';}
+function next(r:BookingRequestRecord){return r.status==='needs_new_slot'?'select_slot':r.proposedTimes&&r.status==='pending_approval'?'pending_approval':r.status==='async_submitted'?'async':r.status==='booked'?'booked':r.slotStart?'pending_approval':'select_slot';}
 export async function bookingPublicRoute(request:Request,env:BookingEnv):Promise<Response>{
  try{
   const url=new URL(request.url),match=url.pathname.match(/^\/api\/public\/booking\/([a-z0-9-]{3,64})(\/.*)?$/);if(!match)return json({error:'not_found'},404);
@@ -96,6 +102,8 @@ export async function bookingPublicRoute(request:Request,env:BookingEnv):Promise
   }
   if(path==='/requests'&&request.method==='GET')return json({requests:(await store.visitorRequests(settings.owner,visitor.email,visitor.subject)).map(r=>({request:publicBookingRequest(r),next:next(r)}))});
   if(path==='/slots'&&request.method==='GET')return json({slots:await stub.slots(settings.owner,visitor,settings.slug,url.searchParams.get('requestId')||'')});
+  const proposals=path.match(/^\/requests\/([\w-]{1,100})\/proposals$/);
+  if(proposals&&request.method==='POST'){const r=await stub.proposeTimes(settings.owner,visitor,settings.slug,proposals[1],await body(request));return json({request:publicBookingRequest(r),next:next(r)});}
   const record=path.match(/^\/requests\/([\w-]{1,100})(\/slot)?$/);
   if(record){
    if(record[2]&&request.method==='POST'){
