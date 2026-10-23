@@ -7,6 +7,8 @@ const MAX_SOURCE_AGE=86_400_000;
 /** Reads only a server-configured source; it never discovers identities through fuzzy queries. */
 export async function lookupBookingPerson(env:BookingEnv,owner:string,email:string,now=Date.now()):Promise<BookingPeopleContext>{
  const unavailable=(reason:string):BookingPeopleContext=>({status:'unavailable',reason});
+ // A configured Rust endpoint remains authoritative even during an outage.
+ if(!env.PEOPLEGRAPH_HOST&&!env.PEOPLEGRAPH_TOKEN&&!env.PEOPLEGRAPH_OWNER_EMAIL)return lookupLocalBookingPerson(env,owner,email,now);
  let url:URL,expected:string,verified:string;
  try{
   expected=normalizeBookingEmail(env.PEOPLEGRAPH_OWNER_EMAIL);
@@ -47,3 +49,32 @@ export async function lookupBookingPerson(env:BookingEnv,owner:string,email:stri
  finally{if(timer!==undefined)clearTimeout(timer);controller.abort();}
 }
 function record(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==='object'&&!Array.isArray(value);}
+
+async function lookupLocalBookingPerson(env:BookingEnv,owner:string,email:string,now:number):Promise<BookingPeopleContext>{
+ const unavailable=(reason:string):BookingPeopleContext=>({status:'unavailable',reason});
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  owner=normalizeBookingEmail(owner);email=normalizeBookingEmail(email);
+  const read=async()=>{const source=env.MAIL.getByName(owner);await source.bindOwner(owner);return source.bookingPerson(email);};
+  const value=await Promise.race([read(),new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),3000);})]);
+  if(!value||value.owner!==owner||value.email!==email||!Number.isFinite(value.checkedAt)||Math.abs(now-value.checkedAt)>300000)return unavailable('Exact My Network ownership and identity could not be verified.');
+  if(value.status!=='matched'&&value.status!=='not_found')return {status:value.status==='ambiguous'?'ambiguous':'unavailable',reason:'The My Network source could not establish an exact, complete relationship lookup.'};
+  if(!Number.isFinite(value.sourceUpdatedAt)||value.sourceUpdatedAt!>now||now-value.sourceUpdatedAt!>MAX_SOURCE_AGE)return {status:'stale',reason:'My Network source freshness could not be verified.'};
+  const lastSync=new Date(value.sourceUpdatedAt!).toISOString();
+  if(value.status==='not_found')return {status:'not_found',lastSync,reason:'No exact contact matched the complete fresh My Network source snapshot.'};
+  if(typeof value.score!=='number'||!Number.isFinite(value.score)||value.score<0||value.score>100)return unavailable('The My Network contact score could not be verified.');
+  return {status:'matched',email,lastSync,score:value.score,...(typeof value.name==='string'&&value.name.length<=100?{name:value.name}:{}),reason:'The email exactly matches a fresh direct My Network contact.'};
+ }catch{return unavailable('The My Network relationship source is unavailable.');}
+ finally{if(timer!==undefined)clearTimeout(timer);}
+}
+
+/** Configured Rust source or a fully completed fresh local snapshot. */
+export async function bookingPeopleReady(env:BookingEnv,owner:string,now=Date.now()):Promise<boolean>{
+ if(env.PEOPLEGRAPH_HOST||env.PEOPLEGRAPH_TOKEN||env.PEOPLEGRAPH_OWNER_EMAIL)return !!(env.PEOPLEGRAPH_HOST&&env.PEOPLEGRAPH_TOKEN&&env.PEOPLEGRAPH_OWNER_EMAIL?.toLowerCase()===owner);
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  const read=async()=>{const source=env.MAIL.getByName(owner);await source.bindOwner(owner);return source.bookingSourceStatus();};
+  const value=await Promise.race([read(),new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),3000);})]);
+  return !!value&&value.owner===owner&&value.ready===true&&Number.isFinite(value.checkedAt)&&Math.abs(now-value.checkedAt)<=300000&&typeof value.sourceUpdatedAt==='number'&&Number.isFinite(value.sourceUpdatedAt)&&value.sourceUpdatedAt<=now&&now-value.sourceUpdatedAt<=MAX_SOURCE_AGE;
+ }catch{return false;}finally{if(timer!==undefined)clearTimeout(timer);}
+}

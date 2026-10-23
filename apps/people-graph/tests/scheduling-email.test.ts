@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {authoredSchedulingText,parseSchedulingChoice,schedulingCounterpart,parseOwnerSchedulingWindow,schedulingAddress,isSchedulingKickoff} from '../src/scheduling-email-policy';
 import {SchedulingEmailCoordinator} from '../src/scheduling-email-coordinator';
 import {parseSchedulingEmail} from '../src/scheduling-email';
+import {schedulingOwnerRoute} from '../src/scheduling-routes';
 
 const owner='owner@example.com',agent='scheduling@agent.example.com',peer='peer@example.com';
 const slot={id:'slot-one',start:'2030-01-03T15:00:00.000Z',end:'2030-01-03T15:30:00.000Z'};
@@ -13,8 +14,8 @@ function incoming(patch:any={}){return {messageId:'<kickoff@example.com>',envelo
 function fixture(t:TestContext){
  const db=new DatabaseSync(':memory:');t.after(()=>db.close());const sent:any[]=[],confirmed:any[]=[];let prepares=0,refreshes=0,unknown=false,booking=false;
  const ctx:any={storage:{sql:{exec(sql:string,...args:any[]){if(sql.includes('CREATE TABLE')){db.exec(sql);return {toArray:()=>[]};}const stmt=db.prepare(sql);const rows=/^\s*(SELECT|PRAGMA)/i.test(sql)?stmt.all(...args):(stmt.run(...args),[]);return {toArray:()=>rows};}},setAlarm:async()=>{},deleteAlarm:async()=>{},transactionSync(fn:any){db.exec('BEGIN');try{const r=fn();db.exec('COMMIT');return r;}catch(e){db.exec('ROLLBACK');throw e;}}}};
- const core:any={prepareScheduling:async(o:string,input:any,authority:any)=>{assert.equal(o,owner);assert.equal(input.email,peer);assert.equal(authority.channel,'owner_email');prepares++;return result();},refreshScheduling:async()=>{refreshes++;return {...result(),offer:{...offer,revision:'revision-two'}};},confirmScheduling:async(o:string,id:string,input:any)=>{confirmed.push(input);return result(booking?'booking':'booked');},getScheduling:async()=>result(booking?'booking':'booked')};
- const env:any={BOOKING_OWNER_EMAIL:owner,SCHEDULING_EMAIL_ADDRESS:agent,SCHEDULING_EMAIL_REPLY_DOMAIN:'agent.example.com',SCHEDULING_EMAIL_SEND:{send:async(message:any)=>{sent.push(message);if(unknown)throw Error('timeout after accept');return {messageId:`<outbound-${sent.length}@cloudflare.net>`};}},BOOKING:{getByName:()=>core},MAIL:{getByName:()=>({bindOwner:async()=>{},verifySchedulingKickoff:async()=>({gmailId:'gmail-one',messageId:'<kickoff@example.com>',owner,from:owner,to:[peer],cc:[agent],subject:'Meeting',text:'Please find a time to meet.',receivedAt:Date.now()})})}};
+ const core:any={prepareScheduling:async(o:string,input:any,authority:any)=>{assert.equal(o,owner);assert.equal(input.email,peer);assert.equal(authority.channel,'owner_email');prepares++;return result();},refreshScheduling:async()=>{refreshes++;return {...result(),offer:{...offer,revision:'revision-two'}};},confirmScheduling:async(o:string,id:string,input:any)=>{confirmed.push(input);return result(booking?'booking':'booked');},getScheduling:async()=>result(booking?'booking':'pending_approval')};
+ const env:any={APP_ORIGIN:'https://people.example.com',BOOKING_OWNER_EMAIL:owner,SCHEDULING_EMAIL_ADDRESS:agent,SCHEDULING_EMAIL_REPLY_DOMAIN:'agent.example.com',SCHEDULING_EMAIL_SEND:{send:async(message:any)=>{sent.push(message);if(unknown)throw Error('timeout after accept');return {messageId:`<outbound-${sent.length}@cloudflare.net>`};}},BOOKING:{getByName:()=>core},MAIL:{getByName:()=>({bindOwner:async()=>{},verifySchedulingKickoff:async()=>({gmailId:'gmail-one',messageId:'<kickoff@example.com>',owner,from:owner,to:[peer],cc:[agent],subject:'Meeting',text:'Please find a time to meet.',receivedAt:Date.now()})})}};
  env.DB={prepare(){return {bind(){return {first:async()=>({data:JSON.stringify({timezone:'America/New_York',returningContactsEnabled:true,returningScoreThreshold:70})})};}};}};
  const service=new SchedulingEmailCoordinator(ctx,env);
  return {service,env,ctx,db,sent,confirmed,prepares:()=>prepares,refreshes:()=>refreshes,setUnknown:(v:boolean)=>{unknown=v;},setBooking:(v:boolean)=>{booking=v;},restart:()=>new SchedulingEmailCoordinator(ctx,env)};
@@ -125,4 +126,108 @@ test('two successive recovery re-offers both deliver their new capabilities',asy
   await f.restart().alarm();assert.equal(f.sent.length,i+1);
  }
  assert.equal(new Set(f.sent.map(message=>message.replyTo)).size,3);assert.ok(f.sent.every(message=>!/meeting is booked/i.test(message.text)));
+});
+const reviewResult=(tier='review')=>({...result(),offer:null,requiresReview:true,decision:{tier,reasons:['PRIVATE assessment reason'],uncertainties:['PRIVATE missing context'],policyRevision:3,fit:{fit:tier==='async'?'weak':'uncertain',reasons:[],evidence:[],model:'test'},people:{status:'unavailable',reason:'PRIVATE source unavailable'}}});
+test('review and weak decisions send only the owner a private explanation and retain the conversation',async t=>{
+ for(const tier of ['review','async']){
+  const f=fixture(t);f.env.BOOKING.getByName().prepareScheduling=async()=>reviewResult(tier);
+  await f.service.receive(owner,incoming());assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);assert.deepEqual(f.sent[0].cc,[]);
+  assert.match(f.sent[0].text,/PRIVATE assessment reason/);assert.match(f.sent[0].text,/https:\/\/people\.example\.com\/booking\?request=request-one/);assert.equal(f.sent[0].replyTo,undefined);
+  const thread=JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data);assert.equal(thread.status,'awaiting_review');assert.equal(thread.capabilityHash,null);assert.equal(thread.offer,null);
+ }
+});
+test('strong assessed offers use canonical context and keep private assessment away from the counterpart',async t=>{
+ const f=fixture(t),mail=f.env.MAIL.getByName();let context='';f.env.MAIL.getByName=()=>({...mail,verifySchedulingKickoff:async()=>({...await mail.verifySchedulingKickoff(),context:'Untrusted canonical purpose: our shared project proposal.'})});
+ f.env.BOOKING.getByName().prepareScheduling=async(_o:string,input:any)=>{context=input.context;return {...result(),requiresReview:false,decision:{...reviewResult().decision,tier:'priority'}};};
+ await f.service.receive(owner,incoming());assert.equal(context,'Untrusted canonical purpose: our shared project proposal.');assert.deepEqual(f.sent[0].to,[peer]);assert.deepEqual(f.sent[0].cc,[owner]);assert.match(f.sent[0].text,/available times/);assert.doesNotMatch(f.sent[0].text,/PRIVATE/);
+});
+test('approved review resumes once across duplicate calls and restarts without rotating a delivered offer',async t=>{
+ const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>reviewResult();core.getScheduling=async()=>({...result(),requiresReview:false});
+ await f.service.receive(owner,incoming());await f.service.resumeApproved(owner,'request-one');assert.equal(f.sent.length,2);assert.deepEqual(f.sent[1].to,[peer]);const address=f.sent[1].replyTo;
+ await f.restart().resumeApproved(owner,'request-one');await f.service.resumeApproved(owner,'request-one');assert.equal(f.sent.length,2);
+ const thread=JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data);assert.equal(thread.replyAddress,address);assert.equal(thread.latestMessageId,'<outbound-2@cloudflare.net>');
+ await assert.rejects(f.service.resumeApproved('attacker@example.com','request-one'),/disabled|owner/);
+});
+test('resume does not bypass a current review and never replays an uncertain approval offer',async t=>{
+ const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>reviewResult();core.getScheduling=async()=>reviewResult();
+ await f.service.receive(owner,incoming());await f.service.resumeApproved(owner,'request-one');assert.equal(f.sent.length,1);
+ core.getScheduling=async()=>({...result(),requiresReview:false});f.setUnknown(true);await assert.rejects(f.service.resumeApproved(owner,'request-one'),/delivery_unknown/);assert.equal(f.sent.length,2);
+ f.setUnknown(false);await assert.rejects(f.restart().resumeApproved(owner,'request-one'),/delivery_unknown/);await f.restart().alarm();assert.equal(f.sent.length,2);
+});
+test('legacy offer acceptance reassesses privately instead of retrying confirmation without review',async t=>{
+ const f=fixture(t);await f.service.receive(owner,incoming());const core=f.env.BOOKING.getByName();core.confirmScheduling=async()=>{throw Error('assessment_required');};core.refreshScheduling=async()=>reviewResult();
+ await f.service.receive(owner,incoming({messageId:'<legacy-choice@example.com>',from:peer,envelopeTo:f.sent[0].replyTo,to:[f.sent[0].replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Option 1 works'}));
+ assert.equal(f.sent.length,2);assert.deepEqual(f.sent[1].to,[owner]);assert.deepEqual(f.sent[1].cc,[]);await f.restart().alarm();assert.equal(f.sent.length,2);
+});
+test('confirmation review results remain private without refreshing into an automatic offer',async t=>{
+ const f=fixture(t);await f.service.receive(owner,incoming());f.env.BOOKING.getByName().confirmScheduling=async()=>reviewResult();
+ await f.service.receive(owner,incoming({messageId:'<review-choice@example.com>',from:peer,envelopeTo:f.sent[0].replyTo,to:[f.sent[0].replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Option 1 works'}));
+ assert.equal(f.refreshes(),0);assert.equal(f.sent.length,2);assert.deepEqual(f.sent[1].to,[owner]);assert.deepEqual(f.sent[1].cc,[]);
+});
+test('review notice and resumable conversation persist together after storage failure',async t=>{
+ const f=fixture(t);f.env.BOOKING.getByName().prepareScheduling=async()=>reviewResult();const exec=f.ctx.storage.sql.exec;let fail=true;
+ f.ctx.storage.sql.exec=(sql:string,...args:any[])=>{if(fail&&sql.startsWith('INSERT OR IGNORE INTO scheduling_email_outbox')){fail=false;throw Error('storage interrupted');}return exec(sql,...args);};
+ await f.service.receive(owner,incoming());assert.equal(f.sent.length,0);await f.restart().alarm();assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);
+});
+test('pending offers are cancelled when a policy change requires private review',async t=>{
+ const f=fixture(t);await f.service.receive(owner,incoming());f.sent.length=0;
+ // Model a restart after queue persistence but before its first delivery.
+ f.db.prepare("UPDATE scheduling_email_outbox SET status='ready',message_id=NULL").run();f.env.BOOKING.getByName().getScheduling=async()=>reviewResult();
+ await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);assert.deepEqual(f.sent[0].cc,[]);
+});
+test('approval resume never duplicates an already delivered original priority offer',async t=>{
+ const f=fixture(t);await f.service.receive(owner,incoming());f.env.BOOKING.getByName().getScheduling=async()=>({...result(),requiresReview:false});const replyTo=f.sent[0].replyTo;
+ await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,1);assert.equal(JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data).replyAddress,replyTo);
+});
+test('uncertain preparation reuses frozen canonical evidence when a retry cannot reread thread context',async t=>{
+ const f=fixture(t),mail=f.env.MAIL.getByName(),core=f.env.BOOKING.getByName();let reads=0,prepared:any;
+ f.env.MAIL.getByName=()=>({...mail,verifySchedulingKickoff:async()=>({...await mail.verifySchedulingKickoff(),...(!reads++?{context:'Canonical project purpose from the prior thread.'}:{})})});
+ core.prepareScheduling=async(_o:string,input:any)=>{if(!prepared){prepared=structuredClone(input);throw Error('transport interrupted after preparation');}if(JSON.stringify(prepared)!==JSON.stringify(input))throw Error('idempotency_conflict');return reviewResult();};
+ await f.service.receive(owner,incoming());assert.equal(f.sent.length,0);await f.restart().alarm();assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);
+});
+function ownerAction(f:ReturnType<typeof fixture>,action:string,body:unknown={}){
+ return schedulingOwnerRoute(new Request('https://people.example.com/api/booking/scheduling/requests/request-one/'+action,{method:'POST',headers:{origin:'https://people.example.com','content-type':'application/json'},body:JSON.stringify(body)}),f.env,owner);
+}
+test('owner refresh downgrade invalidates the existing email capability before a participant replies',async t=>{
+ const f=fixture(t);f.env.SCHEDULING_EMAIL={getByName:()=>f.service};await f.service.receive(owner,incoming());const original=f.sent[0];
+ const core=f.env.BOOKING.getByName();core.getScheduling=async()=>reviewResult();core.refreshScheduling=async()=>reviewResult();
+ assert.equal((await ownerAction(f,'refresh')).status,200);assert.equal(f.sent.length,2);assert.deepEqual(f.sent[1].to,[owner]);assert.deepEqual(f.sent[1].cc,[]);
+ const thread=JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data);assert.equal(thread.status,'awaiting_review');assert.equal(thread.capabilityHash,null);
+ await f.service.receive(owner,incoming({messageId:'<downgrade-clarify@example.com>',from:peer,envelopeTo:original.replyTo,to:[original.replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Maybe option 1'}));
+ assert.equal(f.sent.length,2);assert.equal(f.confirmed.length,0);
+});
+test('clarification checks current assessment without re-running a model when review is already required',async t=>{
+ const f=fixture(t);await f.service.receive(owner,incoming());f.env.BOOKING.getByName().getScheduling=async()=>reviewResult();
+ await f.service.receive(owner,incoming({messageId:'<stale-clarify@example.com>',from:peer,envelopeTo:f.sent[0].replyTo,to:[f.sent[0].replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Maybe option 1'}));
+ assert.equal(f.refreshes(),0);assert.equal(f.sent.length,2);assert.deepEqual(f.sent[1].to,[owner]);assert.deepEqual(f.sent[1].cc,[]);assert.equal(f.confirmed.length,0);
+});
+test('clarification refreshes only when the current eligible offer is no longer available',async t=>{
+ const f=fixture(t);await f.service.receive(owner,incoming());f.env.BOOKING.getByName().getScheduling=async()=>({...result('needs_new_slot'),requiresReview:false,offer:null});
+ await f.service.receive(owner,incoming({messageId:'<expired-current-clarify@example.com>',from:peer,envelopeTo:f.sent[0].replyTo,to:[f.sent[0].replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Maybe option 1'}));
+ assert.equal(f.refreshes(),1);assert.equal(f.sent.length,2);assert.deepEqual(f.sent[1].to,[peer]);assert.equal(JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data).offer.revision,'revision-two');
+});
+test('API-only owner approval succeeds with an unconfigured email binding and exact owner is still required',async t=>{
+ const f=fixture(t);f.env.SCHEDULING_EMAIL={getByName:()=>f.service};delete f.env.SCHEDULING_EMAIL_ADDRESS;let approved=false;
+ f.env.BOOKING.getByName().approveScheduling=async()=>{approved=true;return {...result(),requiresReview:false};};
+ const response=await ownerAction(f,'approve',{policyRevision:3});assert.equal(approved,true);assert.equal(response.status,200,await response.text());assert.equal(f.sent.length,0);
+ await assert.rejects(f.service.resumeApproved('attacker@example.com','no-email-request'),/owner/);
+});
+test('temporary no-availability closure resumes with fresh eligible times after owner reassessment',async t=>{
+ for(const initial of ['owner-approval','participant-refresh']){
+  const f=fixture(t),core=f.env.BOOKING.getByName();f.env.SCHEDULING_EMAIL={getByName:()=>f.service};
+  if(initial==='owner-approval')core.prepareScheduling=async()=>reviewResult();
+  await f.service.receive(owner,incoming());const unavailable=async()=>({...result('needs_new_slot'),offer:null,requiresReview:false});core.getScheduling=unavailable;
+  if(initial==='owner-approval'){core.approveScheduling=unavailable;assert.equal((await ownerAction(f,'approve',{policyRevision:3})).status,200);}
+  else{core.refreshScheduling=unavailable;await f.service.receive(owner,incoming({messageId:'<no-options@example.com>',from:peer,envelopeTo:f.sent[0].replyTo,to:[f.sent[0].replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Other options please'}));}
+  const sentBefore=f.sent.length;core.getScheduling=async()=>({...result(),offer:{...offer,revision:'available-again'},requiresReview:false});core.refreshScheduling=core.getScheduling;
+  assert.equal((await ownerAction(f,'refresh')).status,200);assert.equal(f.sent.length,sentBefore+1);assert.deepEqual(f.sent.at(-1).to,[peer]);assert.ok(f.sent.at(-1).replyTo);
+  const address=f.sent.at(-1).replyTo;await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,sentBefore+1);assert.equal(f.sent.at(-1).replyTo,address);
+ }
+});
+test('resume preserves declined, cancelled, booked and confirming terminal conversations',async t=>{
+ for(const [local,status] of [['closed','declined'],['closed','cancelled'],['booked','booked'],['confirming','booking']]){
+  const f=fixture(t);await f.service.receive(owner,incoming());const row=f.db.prepare('SELECT id,data FROM scheduling_email_threads').get() as any,thread=JSON.parse(row.data);thread.status=local;thread.capabilityHash=null;f.db.prepare('UPDATE scheduling_email_threads SET data=?,capability_hash=NULL WHERE id=?').run(JSON.stringify(thread),row.id);
+  f.env.BOOKING.getByName().getScheduling=async()=>({...result(status),offer:null,requiresReview:false});await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,1);
+  assert.equal(JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data).status,local);
+ }
 });

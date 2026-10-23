@@ -189,3 +189,11 @@ test('suggested booking approval waives only working hours while enforcing sched
  assert.equal(available(s,r,slot,[],[],Date.parse('2026-11-01T00:00:00Z')),false,'notice moves with approval time');
  assert.equal(available(s,r,slot,[],[],Date.parse('2026-10-30T00:00:00Z')),true,'review delay stays anchored to application');
 });
+
+test('booking fallback uses exact fresh My Network evidence only when Rust is unconfigured',async()=>{
+ const value={owner,email:'visitor@example.com',status:'matched',name:'Visitor',score:75,checkedAt:now,sourceUpdatedAt:now-1000};let calls=0;
+ const env={MAIL:{getByName:()=>({bindOwner:async()=>{},bookingPerson:async()=>{calls++;return value;}})}} as unknown as BookingEnv;
+ const matched=await lookupBookingPerson(env,owner,'visitor@example.com',now);assert.equal(matched.status,'matched');assert.equal(matched.score,75);
+ for(const patch of [{owner:'other@example.com'},{email:'other@example.com'},{checkedAt:now-300001},{sourceUpdatedAt:now-86400001}]){Object.assign(value,patch);assert.notEqual((await lookupBookingPerson(env,owner,'visitor@example.com',now)).status,'matched');Object.assign(value,{owner,email:'visitor@example.com',checkedAt:now,sourceUpdatedAt:now-1000});}
+ const before=calls;await withFetch(async()=>new Response('',{status:503}),async()=>assert.equal((await lookupBookingPerson({...env,...peopleEnv},owner,'visitor@example.com',now)).status,'unavailable'));assert.equal(calls,before);
+});

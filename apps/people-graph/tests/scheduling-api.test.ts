@@ -95,6 +95,38 @@ test('API scheduling fails closed on free-text constraints and accepts explicit 
  const problem:any=await blocked.json();assert.equal(problem.error,'invalid_instructions');assert.match(problem.message,/windowStart.*windowEnd/);assert.equal(f.calls.length,0);
  const bounded=await f.machineRequest('/prepare',credential.token,{...input,windowStart:'2026-11-02T18:00:00.000Z',windowEnd:'2026-11-02T22:00:00.000Z'});assert.equal(bounded.status,200);assert.equal(f.calls.length,1);
 });
+test('meeting assessment overrides require an explicit same-origin owner action and resume only that owner conversation',async t=>{
+ const f=schedulingFixture(t),credential=await f.mint();
+ const resumed:string[][]=[];
+ f.service.approveScheduling=async(...args:any[])=>{f.calls.push({method:'approveScheduling',args});return f.result;};
+ f.env.SCHEDULING_EMAIL={getByName:(key:string)=>{assert.equal(key,owner);return {resumeApproved:async(...args:string[])=>{resumed.push(args);}};}};
+ assert.equal((await f.ownerRequest('/requests/request-1/approve',{policyRevision:7},{origin:'https://evil.test'})).status,403);
+ assert.equal((await f.ownerRequest('/requests/request-1/approve',{policyRevision:7},{},'other@example.test')).status,403);
+ assert.equal((await f.machineRequest('/requests/request-1/approve',credential.token,{policyRevision:7})).status,404);
+ assert.equal((await f.ownerRequest('/requests/request-1/approve',{policyRevision:7,ignoreFit:true})).status,400);
+ assert.equal((await f.ownerRequest('/requests/request-1/approve',{})).status,400);
+ assert.equal(f.calls.length,0);assert.equal(resumed.length,0);
+ const response=await f.ownerRequest('/requests/request-1/approve',{policyRevision:7});
+ assert.equal(response.status,200,await response.clone().text());
+ assert.deepEqual(f.calls,[{method:'approveScheduling',args:[owner,'request-1',7]}]);
+ assert.deepEqual(resumed,[[owner,'request-1']]);
+ f.service.approveScheduling=async()=>{throw Error('settings_changed');};
+ assert.equal((await f.ownerRequest('/requests/request-1/approve',{policyRevision:6})).status,409);
+ assert.equal(resumed.length,1,'a rejected override must not resume mail');
+ f.service.approveScheduling=async()=>f.result;
+ f.env.SCHEDULING_EMAIL.getByName=()=>({resumeApproved:async()=>{throw Error('scheduling_email_delivery_unknown');}});
+ const uncertain=await f.ownerRequest('/requests/request-1/approve',{policyRevision:7});
+ assert.equal(uncertain.status,409);assert.equal((await uncertain.json() as any).error,'scheduling_email_delivery_unknown');
+});
+test('owner reassessment synchronizes eligible and review email results while machine refresh sends nothing',async t=>{
+ const f=schedulingFixture(t),credential=await f.mint();let resumed=0;
+ f.env.SCHEDULING_EMAIL={getByName:()=>({resumeApproved:async()=>{resumed++;}})};
+ f.service.refreshScheduling=async()=>({...f.result,requiresReview:true,offer:null});
+ assert.equal((await f.ownerRequest('/requests/request-1/refresh',{})).status,200);assert.equal(resumed,1);
+ f.service.refreshScheduling=async()=>({...f.result,requiresReview:false});
+ assert.equal((await f.ownerRequest('/requests/request-1/refresh',{})).status,200);assert.equal(resumed,2);
+ assert.equal((await f.machineRequest('/requests/request-1/refresh',credential.token,{})).status,200);assert.equal(resumed,2);
+});
 test('integrated routes isolate scheduling bearers from ordinary owner/People sessions without disclosing them to Google',async t=>{
  const f=schedulingFixture(t),credential=await f.mint();f.env.TOKEN_SECRET='fixture-session-secret';
  let external=0;t.mock.method(globalThis,'fetch',async()=>{external++;throw Error('No external provider calls are allowed.');});

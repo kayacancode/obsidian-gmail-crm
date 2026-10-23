@@ -1,4 +1,4 @@
-import type {BookingRequestStatus,BookingSlot} from './booking-types';
+import type {BookingDecision,BookingRequestStatus,BookingSlot} from './booking-types';
 
 /** Created by authenticated adapters; never copied from caller JSON. */
 export interface SchedulingAuthority {channel:'owner_api'|'owner_email';evidenceId:string}
@@ -13,11 +13,13 @@ export interface SchedulingRecommendation {summary:string;reasons:string[];uncer
 export interface SchedulingResult {
  requestId:string;status:BookingRequestStatus;timezone:string;offer:SchedulingOffer|null;
  replyText:string;recommendation:SchedulingRecommendation;
+ decision?:BookingDecision;requiresReview?:boolean;
 }
 /** Additive private request JSON. Never included in visitor projections. */
 export interface SchedulingRecord {
  authority:SchedulingAuthority;input:SchedulingInput;timezone:string;settingsRevision:number;
  windowStart:string;windowEnd:string;offer:SchedulingOffer|null;
  recommendation:SchedulingRecommendation;
+ assessmentVersion?:1;approval?:{policyRevision:number;approvedAt:number};
  confirmation?:SchedulingConfirmation;
 }

@@ -130,3 +130,29 @@ test('booking contact fails closed on corrupt feedback instead of returning an u
   db.prepare('INSERT OR REPLACE INTO person_feedback VALUES (?,?)').run(id,data);assert.equal(await service.bookingContact(CONTACT),null);
  }
 });
+
+test('booking person distinguishes a fresh complete source miss from missing or partial sources',async t=>{
+ const {db,service}=fixture(t);assert.equal(typeof (service as any).bookingPerson,'function');
+ assert.equal((await (service as any).bookingPerson(CONTACT)).status,'unavailable');
+ account(db);assert.equal((await (service as any).bookingPerson(CONTACT)).status,'not_found');
+ for(const patch of [{status:'syncing'},{lastSync:NOW-DAY-1},{lastSync:0},{job:{pending:['unfinished'],hasMore:true}}]){account(db,OWNER,patch);assert.notEqual((await (service as any).bookingPerson(CONTACT)).status,'not_found');}
+ account(db);granola(db,{job:{pending:['unfinished']}});assert.notEqual((await (service as any).bookingPerson(CONTACT)).status,'not_found');
+ granola(db);assert.equal((await (service as any).bookingPerson(CONTACT)).status,'not_found');
+});
+test('booking person does not misreport stale exact evidence or confirmed aliases as missing',async t=>{
+ const {db,service}=fixture(t);assert.equal(typeof (service as any).bookingPerson,'function');account(db);mail(db);
+ assert.equal((await (service as any).bookingPerson(CONTACT)).status,'matched');
+ account(db,OWNER,{status:'syncing'});assert.notEqual((await (service as any).bookingPerson(CONTACT)).status,'not_found');
+ account(db);db.prepare('DELETE FROM contributions').run();
+ db.prepare('INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at,decided_by) VALUES (?,?,?,?,?,?,?,?)').run(CONTACT,'alias@example.com','Ada','Ada',1,'confirmed',NOW,'owner');
+ assert.equal((await (service as any).bookingPerson(CONTACT)).status,'ambiguous');
+});
+
+test('booking source readiness requires every configured snapshot to be fresh and complete',async t=>{
+ const {db,service}=fixture(t);assert.equal(typeof (service as any).bookingSourceStatus,'function');
+ assert.equal((await (service as any).bookingSourceStatus()).ready,false);account(db);assert.equal((await (service as any).bookingSourceStatus()).ready,true);
+ account(db,'other@example.com',{status:'syncing'});assert.equal((await (service as any).bookingSourceStatus()).ready,false);
+ account(db,'other@example.com',{lastSync:NOW-DAY-1});assert.equal((await (service as any).bookingSourceStatus()).ready,false);
+ account(db,'other@example.com');granola(db,{job:{pending:['unfinished']}});assert.equal((await (service as any).bookingSourceStatus()).ready,false);
+ granola(db);assert.equal((await (service as any).bookingSourceStatus()).ready,true);
+});

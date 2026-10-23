@@ -7,6 +7,7 @@ export interface SchedulingInboundEmail {
 }
 export interface VerifiedSchedulingKickoff {
  gmailId:string;messageId:string;owner:string;from:string;to:string[];cc:string[];subject:string;text:string;receivedAt:number;
+ context?:string;
 }
 export function schedulingAddress(value:string):string {
  const normalized=value.trim().toLowerCase();

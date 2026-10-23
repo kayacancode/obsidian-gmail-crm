@@ -13,12 +13,12 @@ export const schedulingInstructionsMessage='Free-text scheduling constraints are
 export function schedulingJSON(data:unknown,status=200){return Response.json(data,{status,headers:{'cache-control':'no-store','referrer-policy':'no-referrer'}});}
 export function schedulingErrorCode(error:unknown){
  const code=error instanceof Error?error.message:'';
- const safe=['scheduling_unauthorized','scheduling_forbidden','insufficient_scope','invalid_origin','not_found','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required','booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','idempotency_conflict','rate_limited','scheduling_failed'];
+ const safe=['scheduling_unauthorized','scheduling_forbidden','insufficient_scope','invalid_origin','not_found','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required','booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','assessment_required','scheduling_email_delivery_unknown','idempotency_conflict','rate_limited','scheduling_failed'];
  return safe.includes(code)||/^invalid_[a-z_]{1,60}$/.test(code)?code:'scheduling_failed';
 }
 export function schedulingError(error:unknown){
  const code=schedulingErrorCode(error);
- const status=code==='scheduling_unauthorized'?401:['scheduling_forbidden','insufficient_scope','invalid_origin'].includes(code)?403:code==='not_found'?404:code==='rate_limited'?429:['booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','idempotency_conflict'].includes(code)?409:['scheduling_failed','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required'].includes(code)?503:400;
+ const status=code==='scheduling_unauthorized'?401:['scheduling_forbidden','insufficient_scope','invalid_origin'].includes(code)?403:code==='not_found'?404:code==='rate_limited'?429:['booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','assessment_required','scheduling_email_delivery_unknown','idempotency_conflict'].includes(code)?409:['scheduling_failed','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required'].includes(code)?503:400;
  const response=schedulingJSON({error:code,...(code==='invalid_instructions'?{message:schedulingInstructionsMessage}:{})},status);if(status===401)response.headers.set('www-authenticate','Bearer realm="scheduling"');return response;
 }
 export async function schedulingBody(request:Request):Promise<Record<string,unknown>>{
@@ -67,6 +67,17 @@ export async function schedulingOwnerRoute(request:Request,env:SchedulingRouteEn
   }
   const revoke=path.match(/^\/tokens\/([\w-]{1,100})\/revoke$/);
   if(request.method==='POST'&&revoke){fields(await schedulingBody(request),[]);await revokeSchedulingCredential(env.DB,owner,revoke[1]);return schedulingJSON({ok:true});}
+  // Judgment overrides are deliberate owner UI actions, never scheduling-token
+  // capabilities or text supplied by an email participant.
+  const review=path.match(/^\/requests\/([\w-]{1,100})\/(approve|refresh)$/);
+  if(request.method==='POST'&&review){
+   const body=await schedulingBody(request),service=env.BOOKING.getByName(owner);
+   fields(body,review[2]==='approve'?['policyRevision']:[]);
+   if(review[2]==='approve'&&(!Number.isSafeInteger(body.policyRevision)||Number(body.policyRevision)<1))throw Error('invalid_policy_revision');
+   const result=review[2]==='approve'?await service.approveScheduling(owner,review[1],body.policyRevision as number):await service.refreshScheduling(owner,review[1]);
+   if(['pending_approval','needs_new_slot'].includes(result.status)&&env.SCHEDULING_EMAIL)await env.SCHEDULING_EMAIL.getByName(owner).resumeApproved(owner,review[1]);
+   return schedulingJSON(result);
+  }
   return await actionRoute(request,env,{owner,credentialId:'owner-session:'+owner,scopes:schedulingScopes},path);
  }catch(error){return schedulingError(error);}
 }

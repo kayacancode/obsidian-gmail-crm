@@ -753,6 +753,36 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    return {owner,email,name,score,checkedAt,sourceUpdatedAt:Math.min(...completions)};
   }catch{return null;} // Corrupt or unavailable contact evidence always falls back to intake.
  }
+ /** Exact owner-local relationship lookup, with a verified miss only after all sources finish. */
+ async bookingPerson(email:string):Promise<{owner:string;email:string;status:'matched'|'not_found'|'ambiguous'|'unavailable';checkedAt:number;sourceUpdatedAt?:number;name?:string;score?:number}>{
+  const owner=await this.ctx.storage.get<string>('owner')||'',checkedAt=Date.now();
+  email=typeof email==='string'?email.trim().toLowerCase():'';
+  const unknown={owner,email,status:'unavailable' as const,checkedAt};
+  if(!owner||owner===email||email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return unknown;
+  try{
+   const contact=await this.bookingContact(email);if(contact)return {...contact,status:'matched'};
+   // Never turn a failed exact lookup (stale, corrupt, capped, or partially synced) into a miss.
+   if(this.ctx.storage.sql.exec('SELECT 1 FROM contributions WHERE email=? LIMIT 1',email).toArray().length||this.ctx.storage.sql.exec('SELECT 1 FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return unknown;
+   if(this.ctx.storage.sql.exec("SELECT 1 FROM granola_identity WHERE (attendee_email=? OR contact_email=?) AND status='confirmed' LIMIT 1",email,email).toArray().length)return {...unknown,status:'ambiguous'};
+   const source=this.bookingSourceSnapshot(owner);
+   return source.ready?{owner,email,status:'not_found',checkedAt:source.checkedAt,sourceUpdatedAt:source.sourceUpdatedAt}:unknown;
+  }catch{return unknown;}
+ }
+ /** Readiness reports actual completion, not merely the presence of a binding. */
+ async bookingSourceStatus(){return this.bookingSourceSnapshot(await this.ctx.storage.get<string>('owner')||'');}
+ private bookingSourceSnapshot(owner:string):{owner:string;ready:boolean;checkedAt:number;sourceUpdatedAt?:number}{
+  const now=Date.now(),unknown={owner,ready:false,checkedAt:now};if(!owner)return unknown;
+  try{
+   const completions:number[]=[],fresh=(value:unknown):value is number=>typeof value==='number'&&Number.isFinite(value)&&value>0&&value<=now&&now-value<=86_400_000;
+   for(const account of this.rows()){
+    if(account.status!=='connected'||!fresh(account.lastSync)||account.job&&(account.job.pending.length>0||account.job.hasMore))return unknown;
+    completions.push(account.lastSync);
+   }
+   const row=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
+   if(row){const connection=JSON.parse(row.data) as {status?:unknown;lastSync?:unknown;job?:unknown};if(connection.status!=='connected'||connection.job!==null||!fresh(connection.lastSync))return unknown;completions.push(connection.lastSync);}
+   return completions.length?{owner,ready:true,checkedAt:now,sourceUpdatedAt:Math.min(...completions)}:unknown;
+  }catch{return unknown;}
+ }
  /** Resolves an opaque node id back to the contact email, the way retrievalScope does. */
  private async emailForPerson(personId:string){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;

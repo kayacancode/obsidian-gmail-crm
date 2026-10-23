@@ -2,20 +2,20 @@ import {DurableObject} from 'cloudflare:workers';
 import type {BookingEnv,BookingRequestRecord,BookingCalendarRecord,BookingReadiness,BookingSettings,BookingVisitorIdentity,BookingSubmission,BookingDecision,BookingSlot} from './booking-types';
 import {BookingStore} from './booking-store';
 import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,validateReturningBookingNote,decideBooking,generateBookingSlots,normalizeBookingEmail,parseBookingProposals,suggestedBookingSlotAvailable} from './booking-policy';
-import {lookupBookingPerson} from './booking-people';
+import {lookupBookingPerson,bookingPeopleReady} from './booking-people';
 import {getReturningBookingContact} from './booking-returning';
-import {assessBookingFit} from './booking-fit';
+import {assessMeetingRequest} from './booking-assessment';
 import {bookingCalendarBusy,bookingEventId,findBookingEvent,createBookingEvent,cancelBookingEvent} from './booking-providers';
 import type {SchedulingAuthority,SchedulingConfirmation,SchedulingInput,SchedulingResult} from './scheduling-types';
-import {validateSchedulingInput,validateSchedulingAuthority,validateSchedulingConfirmation,schedulingWindow,schedulingOffer,schedulingResult} from './scheduling-policy';
+import {validateSchedulingInput,validateSchedulingAuthority,validateSchedulingConfirmation,schedulingWindow,schedulingOffer,schedulingResult,schedulingRequiresReview} from './scheduling-policy';
 import {schedulingRecommendation} from './scheduling-context';
 
 export async function bookingReadiness(env:BookingEnv,owner:string):Promise<BookingReadiness>{
  const calendar=!!await new BookingStore(env.DB).calendar(owner);
  const signIn=[env.GOOGLE_CLIENT_ID,env.GOOGLE_CLIENT_SECRET,env.MAIL_TOKEN_KEY,env.TOKEN_SECRET].every(value=>typeof value==='string'&&!!value.trim());
  const pilot=env.BOOKING_OWNER_EMAIL?.toLowerCase()===owner;
- const people=!!(env.PEOPLEGRAPH_HOST&&env.PEOPLEGRAPH_TOKEN&&env.PEOPLEGRAPH_OWNER_EMAIL?.toLowerCase()===owner);
- return {signIn,calendar,people,pilot,issues:[...(!pilot?['Booking is not enabled for this account yet.']:[]),...(!signIn?['Configure Google sign-in before visitors can request a meeting.']:[]),...(!calendar?['Connect Google Calendar to check and reserve times.']:[]),...(!people?['Your Rust PeopleGraph source is not connected. Requests will need your review.']:[])]};
+ const people=await bookingPeopleReady(env,owner);
+ return {signIn,calendar,people,pilot,issues:[...(!pilot?['Booking is not enabled for this account yet.']:[]),...(!signIn?['Configure Google sign-in before visitors can request a meeting.']:[]),...(!calendar?['Connect Google Calendar to check and reserve times.']:[]),...(!people?['A relationship source is not connected. Requests will need your review.']:[])]};
 }
 export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd,intakeKind:r.intakeKind==='returning'?'returning':'standard',...(r.proposedTimes?{proposedTimes:{timezone:r.proposedTimes.timezone,revision:r.proposedTimes.revision,slots:r.proposedTimes.slots.map(slot=>({start:slot.start,end:slot.end}))}}:{}),...(r.slotSource?{slotSource:r.slotSource}:{})};}
 const uncertainEmail=()=>({status:'unavailable' as const,reason:'Google has not established authority over this email address. The owner must review this request.'});
@@ -68,10 +68,11 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   }
   const settings=await this.schedulingSettings(owner),now=Date.now(),window=schedulingWindow(valid,settings,now);
   await this.store.limit(`scheduling:prepare:${owner}`,50,86400000);
-  const recommendation=await schedulingRecommendation(this.env,owner,valid.email,now,valid.instructions);
+  const decision=await assessMeetingRequest(this.env,settings,valid.email,{project:'',purpose:valid.context});
+  const recommendation=schedulingRecommendation(decision,valid.instructions);
   const record:BookingRequestRecord={id:crypto.randomUUID(),owner,email:valid.email,name:valid.name||valid.email,project:'',purpose:'Owner-authorized meeting.',projectUrl:'',referrer:'',createdAt:now,updatedAt:now,status:'pending_approval',slotStart:null,slotEnd:null,eventId:null,idempotencyKey:key,
-   decision:{tier:'review',reasons:['The owner explicitly authorized this scheduling request.'],uncertainties:[],fit:{fit:'uncertain',reasons:['Public intake classification does not apply to owner-authorized scheduling.'],evidence:[],model:'not_assessed'},people:{status:'unavailable',reason:'Private scheduling context is stored separately.'},policyRevision:settings.revision},
-   scheduling:{authority:verified,input:valid,timezone:valid.timezone||settings.timezone,settingsRevision:settings.revision,...window,offer:null,recommendation}};
+   decision,
+   scheduling:{authority:verified,input:valid,timezone:valid.timezone||settings.timezone,settingsRevision:settings.revision,assessmentVersion:1,...window,offer:null,recommendation}};
   await this.replaceSchedulingOffer(settings,record);
   await this.store.add(record);return schedulingResult(record,settings.revision);
  });}
@@ -79,7 +80,19 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   const r=await this.requiredScheduling(owner,id);
   if(!['pending_approval','needs_new_slot'].includes(r.status))return schedulingResult(r);
   const s=await this.schedulingSettings(owner);await this.store.limit(`scheduling:refresh:${owner}`,100,3600000);
-  r.scheduling!.recommendation=await schedulingRecommendation(this.env,owner,r.email,Date.now(),r.scheduling!.input.instructions);
+  const saved=r.scheduling!;if(saved.approval?.policyRevision!==s.revision)delete saved.approval;
+  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:saved.input.context});saved.assessmentVersion=1;
+  saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+  await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
+ });}
+ /** Only authenticated owner UI routes expose this override, never an API/MCP tool. */
+ async approveScheduling(owner:string,id:string,expectedRevision:number):Promise<SchedulingResult>{return this.serial(owner,async()=>{
+  const r=await this.requiredScheduling(owner,id),s=await this.schedulingSettings(owner),saved=r.scheduling!;
+  if(!['pending_approval','needs_new_slot'].includes(r.status))throw Error('request_closed');
+  if(expectedRevision!==s.revision||r.decision.policyRevision!==s.revision||saved.assessmentVersion!==1)throw Error('settings_changed');
+  // A duplicate click keeps the current revision/capability usable.
+  if(saved.approval?.policyRevision===s.revision&&saved.offer&&saved.offer.expiresAt>Date.now())return schedulingResult(r,s.revision);
+  saved.approval={policyRevision:s.revision,approvedAt:Date.now()};
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
  });}
  async confirmScheduling(owner:string,id:string,input:SchedulingConfirmation):Promise<SchedulingResult>{return this.serial(owner,async()=>{
@@ -93,9 +106,16 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   if(!['pending_approval','needs_new_slot'].includes(r.status))throw Error('request_closed');
   const s=await this.schedulingSettings(owner);
   if(saved.settingsRevision!==s.revision)throw Error('settings_changed');
+  if(saved.assessmentVersion!==1)throw Error('assessment_required');
+  if(saved.approval?.policyRevision!==s.revision&&r.decision.tier!=='priority')throw Error('assessment_required');
   if(!saved.offer||saved.offer.revision!==confirmation.revision)throw Error('offer_changed');
   if(saved.offer.expiresAt<=Date.now())throw Error('offer_expired');
   const slot=saved.offer.slots.find(value=>value.id===confirmation.slotId);if(!slot)throw Error('offer_changed');
+  if(saved.approval?.policyRevision!==s.revision){
+   r.decision=decideBooking(s,r.email,r.decision.fit,await lookupBookingPerson(this.env,owner,r.email));
+   saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+   if(schedulingRequiresReview(r,s.revision)){saved.offer=null;r.updatedAt=Date.now();await this.store.update(r);return schedulingResult(r,s.revision);}
+  }
   if(!(await this.available(s,r,slot.start)).some(value=>value.start===slot.start&&value.end===slot.end)){
    r.status='needs_new_slot';saved.offer=null;r.updatedAt=Date.now();await this.store.update(r);return schedulingResult(r,s.revision);
   }
@@ -112,9 +132,10 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
  private async requiredScheduling(owner:string,id:string){const r=await this.required(owner,id);if(!r.scheduling)throw Error('not_found');return r;}
  private async replaceSchedulingOffer(s:BookingSettings,r:BookingRequestRecord){
   const saved=r.scheduling!;saved.settingsRevision=s.revision;
-  saved.offer=schedulingOffer(await this.available(s,r),saved.timezone);
+  const requiresReview=schedulingRequiresReview(r,s.revision);
+  saved.offer=requiresReview?null:schedulingOffer(await this.available(s,r),saved.timezone);
   delete saved.confirmation;r.slotStart=null;r.slotEnd=null;delete r.slotSource;r.updatedAt=Date.now();
-  r.status=saved.offer?'pending_approval':'needs_new_slot';
+  r.status=requiresReview||saved.offer?'pending_approval':'needs_new_slot';
  }
  private async finishScheduling(s:BookingSettings,r:BookingRequestRecord):Promise<SchedulingResult>{
   try{await this.book(s,r);}catch(error){
@@ -142,8 +163,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
    decision={tier:'review',reasons:['This returning contact skipped the intake questionnaire; owner approval is still required.'],uncertainties:['Thesis fit was not assessed because the intake questionnaire was skipped.'],fit:{fit:'uncertain',reasons:['The optional catch-up note has not been assessed for thesis fit.'],evidence:[],model:'not_assessed'},people:{status:'matched',name:contact.name,email:contact.email,score:contact.score,lastSync:contact.lastSync,reason:'The verified email exactly matches a fresh My Network contact.'},policyRevision:settings.revision};
   }else{
    submission=validateBookingSubmission(input);
-   const [fit,people]=await Promise.all([assessBookingFit(this.env,settings,submission),visitor.emailAuthoritative?lookupBookingPerson(this.env,owner,email):Promise.resolve(uncertainEmail())]);
-   decision=decideBooking(settings,email,fit,people);
+   decision=await assessMeetingRequest(this.env,settings,email,submission,visitor.emailAuthoritative);
   }
   const now=Date.now();
   const {vipEmails,...snapshot}=settings;

@@ -15,7 +15,7 @@ export async function schedulingFixture(t:TestContext){
  const db:any={prepare(sql:string){let args:any[]=[];const stmt:any={bind(...values:any[]){args=values;return stmt;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes)}};},async first(){return sqlite.prepare(sql).get(...args)??null;},async all(){return {results:sqlite.prepare(sql).all(...args)};}};return stmt;},async batch(statements:any[]){return Promise.all(statements.map(statement=>statement.run()));}};
  let alarms=0;
  const ctx={storage:{sql:{exec(sql:string,...args:any[]){const rows=durable.prepare(sql).all(...args);return {toArray:()=>rows};}},setAlarm:async()=>{alarms++;}}};
- const env:any={DB:db,GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',MAIL_TOKEN_KEY:'test-key',TOKEN_SECRET:'test-session',BOOKING_OWNER_EMAIL:owner,PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'source-token',PEOPLEGRAPH_OWNER_EMAIL:owner,AI:{run:async()=>({output_text:JSON.stringify({fit:fit.fit,reasons:fit.reasons,evidence:fit.evidence})})}};
+ const env:any={DB:db,GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',MAIL_TOKEN_KEY:'test-key',TOKEN_SECRET:'test-session',BOOKING_OWNER_EMAIL:owner,AI:{run:async()=>({output_text:JSON.stringify({fit:fit.fit,reasons:fit.reasons,evidence:['SECRET CONTEXT']})})}};
  const store=new BookingStore(db);await store.init();
  const settings={...defaultBookingSettings(owner),revision:1,enabled:true,autoBookPriority:true,slug:'test-host',thesis:'Meet founders building infrastructure and durable memory for AI agents.',vipEmails:[visitor.email]};
  await store.saveSettings(settings,0);
@@ -40,20 +40,20 @@ function calendar(t:TestContext){
   throw Error('unexpected provider '+url);
  });return state;
 }
-function source(env:any,contact:any={owner,email:visitor.email,name:'Known Visitor',score:72,checkedAt:now,sourceUpdatedAt:now-60000}){
+function source(env:any,contact?:any){
  const lens={revision:'lens-v1',fields:{focus:'PRIVATE FOCUS',needs:'PRIVATE NEEDS',offers:'PRIVATE OFFERS'},suggestions:[{text:'UNCONFIRMED SECRET'}]};
- env.MAIL={getByName:(who:string)=>{assert.equal(who,owner);return {bindOwner:async(who:string)=>assert.equal(who,owner),bookingContact:async(email:string)=>{assert.equal(email,visitor.email);return contact;},getOwnerLens:async()=>lens};}};return lens;
+ env.MAIL={getByName:(who:string)=>{assert.equal(who,owner);return {bindOwner:async(who:string)=>assert.equal(who,owner),bookingContact:async(email:string)=>{assert.equal(email,visitor.email);return contact??{owner,email:visitor.email,name:'Known Visitor',score:72,checkedAt:Date.now(),sourceUpdatedAt:Date.now()-60000};},bookingPerson:async()=>({...(contact??{owner,email:visitor.email,name:'Known Visitor',score:72,checkedAt:Date.now(),sourceUpdatedAt:Date.now()-60000}),status:'matched'}),getOwnerLens:async()=>lens};}};return lens;
 }
-test('scheduling owner authority offers immediate permitted dates without a visitor identity or Rust',async t=>{
+test('scheduling priority assessment offers immediate permitted dates without a visitor identity or Rust',async t=>{
  t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);calendar(t);source(f.env);delete f.env.PEOPLEGRAPH_HOST;
  assert.equal(typeof (f.service as any).prepareScheduling,'function');
  const r=await f.service.prepareScheduling(owner,input,authority);
  assert.equal(r.status,'pending_approval');assert.equal(r.offer?.slots.length,3);
  assert.ok(Date.parse(r.offer!.slots[0].start)<now+7*86400000);assert.ok(r.offer!.expiresAt<=now+48*3600000);assert.ok(r.offer!.expiresAt<Date.parse(r.offer!.slots[0].start));
  assert.equal(new Set(r.offer!.slots.map(slot=>slot.start.slice(0,10))).size,3);
- const saved=await f.store.request(owner,r.requestId);assert.equal(saved?.visitorSubject,undefined);assert.equal(saved?.emailAuthoritative,undefined);assert.equal(saved?.decision.tier,'review');
+ const saved=await f.store.request(owner,r.requestId);assert.equal(saved?.visitorSubject,undefined);assert.equal(saved?.emailAuthoritative,undefined);assert.equal(saved?.decision.tier,'priority');
  assert.deepEqual(saved?.scheduling?.authority,authority);
- assert.ok(r.recommendation.reasons.some(reason=>reason.includes('72')));assert.ok(JSON.stringify(r.recommendation).includes('PRIVATE FOCUS'));
+ assert.ok(r.recommendation.reasons.some(reason=>reason.includes('72')));assert.ok(!JSON.stringify(r.recommendation).includes('PRIVATE FOCUS'));
  assert.ok(!JSON.stringify(r.recommendation).includes('UNCONFIRMED'));
  assert.ok(!r.replyText.includes('SECRET'));assert.ok(!r.replyText.includes('PRIVATE'));
  await assert.rejects(f.service.slots(owner,visitor,f.settings.slug,r.requestId),/not_found/);
@@ -95,7 +95,7 @@ test('scheduling expired and superseded offers cannot book and refresh creates a
  const fresh=await f.service.refreshScheduling(owner,first.requestId);assert.notEqual(fresh.offer?.revision,original.revision);
  await assert.rejects(f.service.confirmScheduling(owner,first.requestId,{revision:original.revision,slotId:original.slots[0].id,evidenceId:'old-reply'}),/offer_changed/);
  await f.store.saveSettings({...f.settings,revision:2,durationMinutes:60},1);
- assert.equal((await f.service.getScheduling(owner,first.requestId)).status,'needs_new_slot');
+ assert.equal((await f.service.getScheduling(owner,first.requestId)).status,'pending_approval');
  await assert.rejects(f.service.confirmScheduling(owner,first.requestId,{revision:fresh.offer!.revision,slotId:fresh.offer!.slots[0].id,evidenceId:'policy-reply'}),/settings_changed/);
  const current=await f.service.refreshScheduling(owner,first.requestId);assert.equal(Date.parse(current.offer!.slots[0].end)-Date.parse(current.offer!.slots[0].start),3600000);assert.equal(cal.writes.length,0);
 });
@@ -104,9 +104,9 @@ test('scheduling stale and mismatched private sources yield uncertainty without 
  for(const [index,patch] of [{owner:'other@example.com'},{email:'other@example.com'},{sourceUpdatedAt:now-86400001},{checkedAt:now-300001},{score:NaN}].entries()){
   const lens=source(f.env,{owner,email:visitor.email,name:'Known Visitor',score:72,checkedAt:now,sourceUpdatedAt:now-60000,...patch});lens.fields={focus:'',needs:'',offers:''};
   const result=await f.service.prepareScheduling(owner,{...input,idempotencyKey:'invalid_contact_key_'+index},authority);
-  assert.deepEqual(result.recommendation.reasons,[]);assert.ok(result.recommendation.uncertainties.length>=2);assert.ok(!JSON.stringify(result).includes('UNCONFIRMED'));
+  assert.equal(result.offer,null);assert.equal(result.requiresReview,true);assert.ok(result.recommendation.uncertainties.length>=1);assert.ok(!JSON.stringify(result).includes('UNCONFIRMED'));
  }
- delete f.env.MAIL;const result=await f.service.prepareScheduling(owner,{...input,idempotencyKey:'missing_context_key'},authority);assert.deepEqual(result.recommendation.reasons,[]);assert.ok(result.offer?.slots.length);
+ delete f.env.MAIL;const result=await f.service.prepareScheduling(owner,{...input,idempotencyKey:'missing_context_key'},authority);assert.equal(result.offer,null);assert.equal(result.requiresReview,true);
 });
 test('scheduling confirmation serializes cross-request conflicts against the existing reservation store',async t=>{
  t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);
@@ -156,4 +156,73 @@ test('private scheduling advice states that freeform constraints have not been v
  const r=await f.service.prepareScheduling(owner,{...input,instructions:'Only Wednesday mornings'},authority);
  assert.ok(r.recommendation.uncertainties.some(value=>/instructions.*not.*validated/i.test(value)));
  assert.ok(!r.replyText.includes('Wednesday mornings'));
+});
+
+test('shared assessment gates uncertain and weak scheduling requests before availability or Calendar writes',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);delete f.env.PEOPLEGRAPH_HOST;
+ await f.store.saveSettings({...f.settings,revision:2,vipEmails:[]},1);
+ for(const [index,kind] of ['uncertain','weak'].entries()){
+  f.env.AI.run=async()=>({output_text:JSON.stringify({fit:kind,reasons:['Meeting context does not establish fit.'],evidence:kind==='weak'?['SECRET CONTEXT']:[]})});
+  const result=await f.service.prepareScheduling(owner,{...input,idempotencyKey:'gated_request_key_'+index},authority);
+  assert.equal(result.offer,null);assert.equal((result as any).requiresReview,true);assert.equal(result.status,'pending_approval');
+  assert.equal((result as any).decision.fit.fit,kind);assert.equal(result.decision?.tier,kind==='weak'?'async':'review');assert.ok(!result.replyText.includes('SECRET'));assert.equal(cal.writes.length,0);
+ }
+});
+test('shared assessment requires explicit owner approval and invalidates that approval when policy changes',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);delete f.env.PEOPLEGRAPH_HOST;delete f.env.AI;
+ const result=await f.service.prepareScheduling(owner,input,authority);assert.equal(result.offer,null);
+ assert.equal(typeof (f.service as any).approveScheduling,'function');
+ await assert.rejects((f.service as any).approveScheduling(owner,result.requestId,0),/settings_changed/);
+ const approved=await (f.service as any).approveScheduling(owner,result.requestId,1);assert.ok(approved.offer?.slots.length);assert.equal(approved.requiresReview,false);assert.equal(approved.decision.tier,'review');
+ await f.store.saveSettings({...f.settings,revision:2},1);
+ assert.equal((await f.service.getScheduling(owner,result.requestId) as any).requiresReview,true);
+ await assert.rejects(f.service.confirmScheduling(owner,result.requestId,{revision:approved.offer.revision,slotId:approved.offer.slots[0].id,evidenceId:'stale-policy'}),/settings_changed/);
+ await assert.rejects((f.service as any).approveScheduling(owner,result.requestId,2),/settings_changed/);assert.equal(cal.writes.length,0);
+});
+test('shared assessment blocks legacy unassessed offers before read and confirmation',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);
+ const legacy=f.record({visitorSubject:undefined,emailAuthoritative:undefined,scheduling:{authority,input,timezone:f.settings.timezone,settingsRevision:1,windowStart:new Date(now).toISOString(),windowEnd:new Date(now+86400000*7).toISOString(),recommendation:{summary:'Old delegated request',reasons:[],uncertainties:[]},offer:{revision:'old',expiresAt:now+3600000,slots:[{id:'old-slot',start:'2026-10-26T13:00:00.000Z',end:'2026-10-26T13:30:00.000Z'}]}}});await f.store.add(legacy);
+ const result=await f.service.getScheduling(owner,legacy.id);assert.equal(result.offer,null);assert.equal((result as any).requiresReview,true);
+ await assert.rejects(f.service.confirmScheduling(owner,legacy.id,{revision:'old',slotId:'old-slot',evidenceId:'old-reply'}),/assessment_required/);assert.equal(cal.writes.length,0);
+});
+
+test('shared assessment applies identical saved-thesis decisions to public intake and delegated requests',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);calendar(t);source(f.env);
+ await f.store.saveSettings({...f.settings,revision:2,vipEmails:[]},1);
+ const project='We are building durable memory for AI agents.',purpose='Discuss design partners and our developer tooling.',seen:any[]=[];
+ for(const [index,kind] of ['strong','possible','weak','uncertain'].entries()){
+  f.env.AI.run=async(_model:any,payload:any)=>{seen.push(payload);return {output_text:JSON.stringify({fit:kind,reasons:['Evidence assessed against the saved thesis.'],evidence:kind==='uncertain'?[]:['durable memory for AI agents']})};};
+  const publicRequest=await f.service.submit(owner,visitor,f.settings.slug,{name:'Visitor',project,purpose,projectUrl:'',referrer:'',idempotencyKey:'public_parity_key_'+index});
+  const delegated=await f.service.prepareScheduling(owner,{...input,context:project+' '+purpose,idempotencyKey:'delegated_parity_key_'+index},authority);
+  assert.deepEqual(delegated.decision,publicRequest.decision);assert.equal(!!delegated.offer,publicRequest.decision.tier==='priority');
+  assert.equal(delegated.requiresReview,publicRequest.decision.tier!=='priority');
+ }
+ assert.ok(seen.every(payload=>JSON.stringify(payload).includes(f.settings.thesis)));assert.ok(seen.every(payload=>!JSON.stringify(payload).includes('PRIVATE FOCUS')));
+});
+test('shared assessment rechecks relationship freshness at confirmation without rerunning fit',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);let fits=0;
+ f.env.AI.run=async()=>{fits++;return {output_text:JSON.stringify({fit:'strong',reasons:['Fits the saved thesis.'],evidence:['SECRET CONTEXT']})};};
+ const prepared=await f.service.prepareScheduling(owner,input,authority);assert.ok(prepared.offer);assert.equal(fits,1);
+ source(f.env,{owner,email:visitor.email,name:'Known Visitor',score:72,checkedAt:now,sourceUpdatedAt:now-86400001});
+ const blocked=await f.service.confirmScheduling(owner,prepared.requestId,{revision:prepared.offer!.revision,slotId:prepared.offer!.slots[0].id,evidenceId:'reply-during-outage'});
+ assert.equal(blocked.requiresReview,true);assert.equal(blocked.offer,null);assert.equal(cal.writes.length,0);assert.equal(fits,1);
+ const approved=await f.service.approveScheduling(owner,prepared.requestId,1);assert.equal(approved.requiresReview,false);assert.ok(approved.offer);assert.equal(approved.decision?.people.status,'stale');
+ const booked=await f.service.confirmScheduling(owner,prepared.requestId,{revision:approved.offer!.revision,slotId:approved.offer!.slots[0].id,evidenceId:'owner-approved-reply'});assert.equal(booked.status,'booked');assert.equal(cal.writes.length,1);
+});
+test('shared assessment refresh replaces legacy bypass with a real review decision',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);calendar(t);source(f.env);delete f.env.AI;
+ const legacy=f.record({visitorSubject:undefined,emailAuthoritative:undefined,scheduling:{authority,input,timezone:f.settings.timezone,settingsRevision:1,windowStart:new Date(now).toISOString(),windowEnd:new Date(now+86400000*7).toISOString(),recommendation:{summary:'Old delegated request',reasons:[],uncertainties:[]},offer:{revision:'old',expiresAt:now+3600000,slots:[{id:'old-slot',start:'2026-10-26T13:00:00.000Z',end:'2026-10-26T13:30:00.000Z'}]}}});await f.store.add(legacy);
+ const result=await f.service.refreshScheduling(owner,legacy.id);assert.equal(result.offer,null);assert.equal(result.requiresReview,true);assert.equal(result.decision?.fit.fit,'uncertain');assert.equal((await f.store.request(owner,legacy.id))?.scheduling?.assessmentVersion,1);
+});
+
+test('shared assessment readiness recognizes only a fresh complete local relationship source',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);source(f.env);
+ const {bookingReadiness}=await import('../src/booking-coordinator');
+ let ready=true,sourceUpdatedAt=now-1000,sourceOwner=owner;
+ f.env.MAIL={getByName:()=>({bindOwner:async()=>{},bookingSourceStatus:async()=>({owner:sourceOwner,ready,checkedAt:now,sourceUpdatedAt})})};
+ assert.equal((await bookingReadiness(f.env,owner)).people,true);
+ ready=false;assert.equal((await bookingReadiness(f.env,owner)).people,false);ready=true;
+ sourceUpdatedAt=now-86400001;assert.equal((await bookingReadiness(f.env,owner)).people,false);sourceUpdatedAt=now-1000;
+ sourceOwner='other@example.com';assert.equal((await bookingReadiness(f.env,owner)).people,false);sourceOwner=owner;
+ f.env.PEOPLEGRAPH_HOST='https://configured.test';assert.equal((await bookingReadiness(f.env,owner)).people,false);
 });

@@ -42,11 +42,19 @@ export function schedulingOffer(slots:BookingSlot[],timezone:string,now=Date.now
  if(!chosen.length)return null;chosen.sort((a,b)=>a.start.localeCompare(b.start));
  return {revision:crypto.randomUUID(),expiresAt:Math.min(now+48*3600000,Date.parse(chosen[0].start)-1),slots:chosen.map(slot=>({...slot,id:crypto.randomUUID()}))};
 }
+export function schedulingRequiresReview(record:BookingRequestRecord,currentRevision?:number,now=Date.now()):boolean{
+ const saved=record.scheduling;if(!saved||!['pending_approval','needs_new_slot'].includes(record.status))return false;
+ if(saved.assessmentVersion!==1||saved.settingsRevision!==record.decision.policyRevision||(currentRevision!==undefined&&saved.settingsRevision!==currentRevision))return true;
+ if(saved.approval?.policyRevision===saved.settingsRevision)return false;
+ const sync=Date.parse(record.decision.people.lastSync||'');
+ return record.decision.tier!=='priority'||!Number.isFinite(sync)||sync>now||now-sync>86400000;
+}
 export function schedulingResult(record:BookingRequestRecord,currentRevision?:number,now=Date.now()):SchedulingResult{
  const saved=record.scheduling;if(!saved)throw Error('not_found');
  const mutable=['pending_approval','needs_new_slot'].includes(record.status),fresh=saved.offer&&saved.offer.expiresAt>now&&(currentRevision===undefined||saved.settingsRevision===currentRevision);
- const offer=mutable&&fresh?saved.offer:null,status=mutable&&!offer?'needs_new_slot':record.status;
+ const requiresReview=schedulingRequiresReview(record,currentRevision,now);
+ const offer=mutable&&fresh&&!requiresReview?saved.offer:null,status=requiresReview?'pending_approval':mutable&&!offer?'needs_new_slot':record.status;
  const format=new Intl.DateTimeFormat('en-US',{timeZone:saved.timezone,weekday:'short',month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'});
- const replyText=status==='booked'&&record.slotStart?'Booked for '+format.format(new Date(record.slotStart))+'.':status==='booking'?'The calendar confirmation is still pending.':offer?'Please choose one of these times:\n'+offer.slots.map((slot,index)=>`${index+1}. ${format.format(new Date(slot.start))}`).join('\n'):status==='needs_new_slot'?'No current times are available. Please request fresh options.':'This scheduling request is closed.';
- return {requestId:record.id,status,timezone:saved.timezone,offer,replyText,recommendation:saved.recommendation};
+ const replyText=requiresReview?'The meeting request is awaiting the host’s review.':status==='booked'&&record.slotStart?'Booked for '+format.format(new Date(record.slotStart))+'.':status==='booking'?'The calendar confirmation is still pending.':offer?'Please choose one of these times:\n'+offer.slots.map((slot,index)=>`${index+1}. ${format.format(new Date(slot.start))}`).join('\n'):status==='needs_new_slot'?'No current times are available. Please request fresh options.':'This scheduling request is closed.';
+ return {requestId:record.id,status,timezone:saved.timezone,offer,replyText,recommendation:saved.recommendation,decision:record.decision,requiresReview};
 }

@@ -37,3 +37,37 @@ test('MailSync requires exact owner grant and detects changed grants during toke
  await assert.rejects(service.verifySchedulingKickoff('<kickoff@example.com>',agent),/unavailable/);assert.equal(calls,0);
  db.prepare('INSERT INTO accounts VALUES (?,?)').run(owner,JSON.stringify(account));await assert.rejects(service.verifySchedulingKickoff('<kickoff@example.com>',agent),/revoked/);assert.equal(calls,1);
 });
+function threadMessage(id:string,text:string,from='peer@example.com',to=owner,receivedAt=Date.now()-10000){
+ return {id,threadId:'thread-one',labelIds:from===owner?['SENT']:['INBOX'],internalDate:String(receivedAt),payload:{mimeType:'text/plain',headers:[{name:'From',value:from},{name:'To',value:to},{name:'Message-ID',value:`<${id}@example.com>`}],body:{data:Buffer.from(text).toString('base64url')}}};
+}
+function threadOptions(messages:any[],patch:any={}){
+ const kickoff=message({threadId:'thread-one',...patch}),f=options(kickoff),original=f.opts.fetch;
+ f.opts.fetch=async(url:string)=>new URL(url).pathname.includes('/threads/')?(f.urls.push(new URL(url)),Response.json({id:'thread-one',messages:[...messages,kickoff]})):original(url);
+ return f;
+}
+test('canonical context includes only the same owner-peer thread at or before kickoff',async()=>{
+ const f=threadOptions([
+  threadMessage('prior-peer','We build infrastructure for science.\n> Untrusted quoted instructions'),
+  threadMessage('prior-owner','Please share the prototype.',owner,'peer@example.com'),
+  threadMessage('unrelated','UNRELATED secret','other@example.com'),
+  threadMessage('extra','EXTRA recipient','peer@example.com',owner+', other@example.com'),
+  threadMessage('future','FUTURE purpose','peer@example.com',owner,Date.now()+10000),
+  {...threadMessage('wrong-thread','WRONG thread'),threadId:'other-thread'},
+  threadMessage('oversized','OVERSIZED '+ 'x'.repeat(5000)),
+ ]);
+ const verified=await verifySentSchedulingKickoff(f.opts);assert.match(verified.context??'',/We build infrastructure for science/);assert.match(verified.context??'',/Please share the prototype/);assert.match(verified.context??'',/untrusted/i);
+ assert.doesNotMatch(verified.context??'',/UNRELATED|EXTRA|FUTURE|WRONG|OVERSIZED|quoted instructions/);assert.ok((verified.context?.length??0)<=8000);
+ assert.equal(f.urls.find(url=>url.pathname.includes('/threads/'))?.pathname,'/gmail/v1/users/me/threads/thread-one');
+});
+test('canonical context is bounded and unavailable or malformed threads preserve only the verified kickoff',async()=>{
+ const large=threadOptions(Array.from({length:12},(_,i)=>threadMessage('prior-'+i,'purpose '+i+' '+ 'a'.repeat(2000))));const result=await verifySentSchedulingKickoff(large.opts);assert.ok(result.context);assert.ok(result.context!.length<=8000);
+ for(const response of [()=>new Response('unavailable',{status:503}),()=>Response.json({id:'another-thread',messages:[]}),()=>Response.json({id:'thread-one',messages:[threadMessage('prior','missing kickoff')]})]){
+  const f=threadOptions([]),fetch=f.opts.fetch;f.opts.fetch=async(url:string)=>new URL(url).pathname.includes('/threads/')?response():fetch(url);
+  const r=await verifySentSchedulingKickoff(f.opts);assert.equal(r.text,'Please find a time to meet.');assert.equal(r.context,undefined);
+ }
+});
+test('grant revocation during canonical thread read invalidates all context and kickoff authority',async()=>{
+ const f=threadOptions([threadMessage('prior','Project purpose')]);let active=true;const fetch=f.opts.fetch;
+ f.opts.current=()=>active;f.opts.fetch=async(url:string)=>{const r=await fetch(url);if(new URL(url).pathname.includes('/threads/'))active=false;return r;};
+ await assert.rejects(verifySentSchedulingKickoff(f.opts),/revoked/);
+});
