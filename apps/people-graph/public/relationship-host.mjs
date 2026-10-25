@@ -10,7 +10,8 @@ const MAILTO_SAFE = /^[^\s?&#%/<>"']+@[^\s?&#%/<>"']+$/;
 
 export function personDeepLinkId(graph,href){
  const values=new URL(href).searchParams.getAll('person');if(values.length!==1||!/^[A-Za-z0-9:_-]{1,200}$/.test(values[0]))return null;
- const person=graph?.nodes?.find(node=>node.id===values[0]&&(node.type===undefined||node.type==='person')&&!['denied','conflicted'].includes(node.permission)&&!node.permissionConflict&&node.identityResolved!==false&&node.identityStatus!=='unresolved');return person?.id||null;
+ const id=graph?.personAliases?.[values[0]]||values[0];
+ const person=graph?.nodes?.find(node=>node.id===id&&(node.type===undefined||node.type==='person')&&!['denied','conflicted'].includes(node.permission)&&!node.permissionConflict&&node.identityResolved!==false&&node.identityStatus!=='unresolved');return person?.id||null;
 }
 
 function abortableSleep(ms, signal) {
@@ -171,7 +172,9 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     const ctx=context(),requestSignal=signal?AbortSignal.any([ctx.signal,signal]):ctx.signal;
     requestSignal.throwIfAborted();
     const value=await request('/api/people/connection-origin',{body:{personId},signal:requestSignal},ctx);
-    requestSignal.throwIfAborted();return value;
+    requestSignal.throwIfAborted();
+    if(value.connectionsRevision&&value.connectionsRevision!==state.graph?.connectionsRevision){const data=await request('/api/graph',{},ctx);requestSignal.throwIfAborted();if(data.graph&&data.graph.connectionsRevision!==state.graph?.connectionsRevision)publish({graph:data.graph});}
+    return value;
   }
   function ownerLensContext(){
     if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to use your private lens.');
@@ -386,7 +389,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   return {
     cancelNetworkSearch:()=>searchAbort?.abort(),
     introductionRequest:(path,body,signal)=>request(path,{body,signal},context()),
-    async mergePeople(sourceId,targetId){const path=workspacePath();if(!path)throw Error('Select a shared network first');await request(path+'/person-merges',{body:{sourceId,targetId},method:targetId?'POST':'DELETE'},context());await load(state.source);},
+    async mergePeople(sourceId,targetId){const path=workspacePath();const ctx=path?context():personalContextScope(targetId||state.graph.personAliases?.[sourceId]||sourceId);await request((path||'/api/people')+'/person-merges',{body:targetId?{sourceId,targetId}:{sourceId},method:targetId?'POST':'DELETE'},ctx);await load(state.source);},
     async confirmRelationship(personId,confirmed=true){const path=workspacePath();if(!path)throw Error('Select a shared network first');await request(path+'/relationship-confirmations',{body:{personId},method:confirmed?'POST':'DELETE'},context());await load(state.source);},
     async excludeContribution(personId,restore=false,expectedSource=state.source,expectedAccount=state.account){if(expectedSource!==state.source||expectedAccount!==state.account)throw Error('Return to the original network to undo');const path=workspacePath();if(!path)throw Error('Select a shared network first');await request(path+'/excluded-people',{body:{personId},method:restore?'DELETE':'POST'},context());await load(state.source);},
     rankIntroductions:()=>workspacePath()?request(workspacePath()+'/introductions',{body:{}},context()):Promise.resolve({suggestions:[],checked:false}),
@@ -826,7 +829,7 @@ async function startBrowserApp() {
       onRankIntroductions:()=>controller.rankIntroductions(),
       onWander:()=>{clearNetworkSearch({answer:false});showMode('wander');},
       onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });
-    else if (mountedGraph !== state.graph) {clearNetworkSearch();graphInstance.setGraph(state.graph,{preserveFocus:state.graph.source==='workspace'&&mountedGraph?.workspaceId===state.graph.workspaceId&&mountedGraph?.revision===state.graph.revision});}
+    else if (mountedGraph !== state.graph) {clearNetworkSearch();graphInstance.setGraph(state.graph,{preserveFocus:state.graph.source==='email_accounts'&&mountedGraph?.source==='email_accounts'||state.graph.source==='workspace'&&mountedGraph?.workspaceId===state.graph.workspaceId&&mountedGraph?.revision===state.graph.revision});}
     mountedGraph = state.graph;
     const linkedPerson=personDeepLinkId(state.graph,location.href),personLink=[state.account,state.source,linkedPerson].join(':');
     if(linkedPerson&&personLink!==appliedPersonLink){appliedPersonLink=personLink;graphInstance.select(linkedPerson);}

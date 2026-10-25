@@ -16,6 +16,25 @@ test('person deep links resolve only a permitted person in the current authorize
  assert.equal(personDeepLinkId({nodes:[{id:'person-a',type:'company'}]},'https://people.test/?person=person-a'),null);
 });
 
+test('person deep links follow owner aliases only to an available permitted person',()=>{
+ assert.equal(personDeepLinkId({...graph,personAliases:{old:'person-a'}},'https://people.test/?person=old'),'person-a');
+ assert.equal(personDeepLinkId({...graph,personAliases:{old:'missing'}},'https://people.test/?person=old'),null);
+ assert.equal(personDeepLinkId({nodes:[{id:'person-a',permission:'denied'}],personAliases:{old:'person-a'}},'https://people.test/?person=old'),null);
+});
+
+test('stale origin connection revisions do not repeatedly publish an unchanged graph',async()=>{
+ let publications=0;
+ const controller=createRelationshipController({origin:'https://people.test',onState:()=>{publications++;},fetchImpl:async(path)=>{
+  if(path==='/api/accounts')return json({account:'alice@example.test',accounts:[{email:'mail@example.test'}]});
+  if(path.startsWith('/api/graph'))return json({account:'alice@example.test',graph:{...graph,source:'email_accounts',connectionsRevision:'new-revision'}});
+  if(path==='/api/people/connection-origin')return json({status:'not_found',connectionsRevision:'old-revision'});
+  return json({});
+ }});
+ await controller.resume();const ready=controller.getState().graph;
+ await controller.connectionOrigin('person-a');
+ assert.equal(controller.getState().graph,ready,'unchanged revision must keep graph reference and selection stable');
+});
+
 async function workflowFixture(handler, options = {}) {
   const calls = [];
   const controller = createRelationshipController({ origin: 'https://people.test', ...options,

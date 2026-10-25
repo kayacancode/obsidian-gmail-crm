@@ -34,6 +34,7 @@
     "test:person-suggestions-browser": "node tests/person-suggestions-browser.mjs",
     "test:person-context-browser": "node tests/person-context-browser.mjs",
     "test:relationship-memory-browser": "node tests/relationship-memory-browser.mjs",
+    "test:connection-browser": "node tests/connection-browser.mjs",
     "test:person-context-runtime": "node --test tests/person-context-runtime.mjs",
     "test:guided-network-browser": "node tests/guided-network-browser.mjs",
     "test:shared-paths-browser": "node tests/shared-paths-browser.mjs",

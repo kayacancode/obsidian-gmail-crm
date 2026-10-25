@@ -1,6 +1,6 @@
 import {element,action} from './contact-sheet.mjs';
 
-const empty={text:'',company:'',building:'',needs:'',offers:'',interests:[],pointPersonId:null,notBefore:null,relationship:'neutral',entries:[],revision:null,updatedAt:null};
+const empty={text:'',company:'',building:'',needs:'',offers:'',interests:[],pointPersonId:null,notBefore:null,relationship:'neutral',entries:[],aliasMemories:[],revision:null,updatedAt:null};
 const fields=[['company','Company',160],['building','Building',600],['needs','Needs',600],['offers','Can help with',600]];
 const date=value=>new Date(value).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 /** Owner-authored memory stays separate from imported and shared conversation evidence. */
@@ -11,7 +11,7 @@ export function personContextEditor(doc,{person,people=[],onLoad,onSave,onSaved,
  const peers=people.filter(p=>p.id!==person.id&&p.type!=='company'&&(p.memoryEligible===true||p.directRelationship!==false&&(!p.via?.length||p.directRelationship===true))).sort((a,b)=>a.name.localeCompare(b.name));
  function stopVoice(){const current=recognition;recognition=null;current?.abort();}
  function heading(){section.append(el('h3','','Your context'),el('p','rg-source','Private · Used in your recommendations and introduction suggestions.'));}
- function normalize(value){return {...empty,...value,interests:value.interests||[],entries:value.entries||[]};}
+ function normalize(value){return {...empty,...value,interests:value.interests||[],entries:value.entries||[],aliasMemories:Array.isArray(value.aliasMemories)?value.aliasMemories:[]};}
  function payload(values){return {personId:person.id,text:values.text.trim(),revision:saved.revision,company:values.company.trim(),building:values.building.trim(),needs:values.needs.trim(),offers:values.offers.trim(),interests:values.interests,pointPersonId:values.pointPersonId||null,notBefore:values.notBefore||null,relationship:values.relationship};}
  function savedNotice(status,error){status.textContent=error.status===409?'This context changed elsewhere. Reload it before changing it.':'Could not update this context. Please try again.';if(error.status===409)status.append(button('Load latest context',()=>void load()));}
  function render(){
@@ -32,6 +32,20 @@ export function personContextEditor(doc,{person,people=[],onLoad,onSave,onSaved,
    catch(error){if(section.isConnected){const status=el('p','rg-context-status');status.setAttribute('role','status');savedNotice(status,error);section.append(status);}}
    finally{busy=false;for(const b of controls.querySelectorAll('button'))b.disabled=false;}
   }));section.append(controls);
+  if(saved.aliasMemories.length){
+   const combined=el('details','rg-alias-context');combined.append(el('summary','','Context from combined profiles'));
+   for(const memory of saved.aliasMemories){
+    const profile=(person.mergedProfiles||[]).find(p=>p.id===memory.personId)||people.find(p=>p.id===memory.personId);
+    const row=el('article');row.append(el('h4','',profile?.name||'Combined profile'));
+    if(memory.text)row.append(el('p','rg-context-text',memory.text));
+    const facts=el('dl','rg-memory-facts');for(const [key,label]of fields)if(memory[key])facts.append(el('dt','',label),el('dd','',memory[key]));
+    if(Array.isArray(memory.interests)&&memory.interests.length)facts.append(el('dt','','Interests'),el('dd','',memory.interests.join(' · ')));
+    if(facts.childElementCount)row.append(facts);
+    for(const entry of Array.isArray(memory.entries)?memory.entries:[]){if(entry.text)row.append(el('p','rg-context-text',entry.text));if(Number.isFinite(entry.createdAt))row.append(el('small','rg-source','Saved note · '+date(entry.createdAt)));}
+    combined.append(row);
+   }
+   section.append(combined);
+  }
   if(saved.entries.length){const updates=el('details','rg-memory-updates');updates.append(el('summary','','Saved updates'));
    for(const entry of saved.entries){const row=el('article');row.append(el('p','rg-context-text',entry.text),el('small','rg-source',(entry.sourceKind==='voice_transcript'?'Voice transcript':'Saved note')+' · '+date(entry.createdAt)));
     if(onRemoveEntry)row.append(button('Remove saved update',async()=>{if(busy)return;busy=true;const control=row.querySelector('button');control.disabled=true;try{const next=await onRemoveEntry({personId:person.id,entryId:entry.id,revision:saved.revision});if(!section.isConnected)return;saved=normalize(next);render();onSaved?.(saved);}catch(error){if(section.isConnected){const status=el('p','rg-context-status');status.setAttribute('role','status');savedNotice(status,error);row.append(status);}}finally{busy=false;control.disabled=false;}}));updates.append(row);

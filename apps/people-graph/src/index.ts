@@ -14,6 +14,7 @@ import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-age
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
+import {personMergeRoute} from './person-merge-routes';
 import type {MailEnv} from "./mail-sync";
 import {isRelevancePath,normalizePushedGraph,relevanceRoute} from "./relevance-routes";
 import type {PushedGraphPayload} from "./relevance-routes";
@@ -95,6 +96,10 @@ export default {
 				return await mailRoute(request, env, user.email);
 			}
 
+            if(pathname==='/api/people/person-merges'){
+                const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+                return await personMergeRoute(request,env,user.email);
+            }
             if(pathname.startsWith('/api/people/integrations')){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
                 return await peopleMemoryOwnerRoute(request,env,user.email);

@@ -1,3 +1,4 @@
+import {connectionSection} from './connections.mjs';
 import {helperSection} from './helper-suggestions.mjs';
 import {howYouKnow} from './intelligence.mjs';
 import {weeklyContext} from './weekly-context.mjs';
@@ -31,7 +32,7 @@ export function connectionContext(graph,personId,memberId,now=Date.now()){
  const evidence=personContext({...graph,themeSignals},personId),latest=evidence[0];
  return latest?evidence.filter(e=>e.date===latest.date&&e.sourceType===latest.sourceType&&e.title===latest.title).slice(0,3):[];
 }
-export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro,onMerge,onFindHelpers}={}){
+export function sharedHome(doc,graph,{answer=null,selectedId=null,selectedEdgeId=null,query='',status='',headerOnly=false,compact=false,onQueryChange,onSearch,onClear,onPerson,onBack,onIntro,onMerge,onFindHelpers}={}){
  const root=element(doc,'section','shared-home');root.setAttribute('aria-label',compact?'Person details':'Shared people');if(compact)root.classList.add('sh-detail');
  const selected=graph.nodes.find(n=>n.id===selectedId&&sharedHomePersonAllowed(n));
  if(selected){
@@ -58,6 +59,7 @@ export function sharedHome(doc,graph,{answer=null,selectedId=null,query='',statu
    }else block.append(element(doc,'p','sh-subtitle','No conversation context shared for this connection yet.'));
    for(const fact of facts)block.append(element(doc,'p','',fact));root.append(block);
   }
+  const connections=connectionSection(doc,graph,selected.id,{allowed:sharedHomePersonAllowed,onPerson,selectedEdgeId});if(connections)root.append(connections);
   const privateContext=graph.viewerPrivateContext?.[selected.id]||[];
   if(privateContext.length){
    const section=element(doc,'section','sh-private-context');section.setAttribute('aria-label','Your private context');

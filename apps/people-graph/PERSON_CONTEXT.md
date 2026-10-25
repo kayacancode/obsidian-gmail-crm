@@ -17,6 +17,13 @@ Memory remains private to the signed-in owner. It is never inserted into importe
 - `POST /api/people/memory/structure` with `{text}` returns a draft of structured fields without saving.
 - `DELETE /api/people/memory/entry` with `{personId,entryId,revision}` removes a captured update.
 - Legacy `GET/POST /api/people/context` still reads/edits the 1,000-character note and preserves all other fields.
+- `GET/POST/DELETE /api/people/person-merges` reads, applies or undoes an owner-confirmed duplicate profile (`sourceId`, plus `targetId` for POST). Writes require the same-origin signed-in session. The chosen target ID remains canonical; existing source links resolve to it.
+
+## Duplicate profiles and connection labels
+
+The private profile's **Duplicate profiles** control combines confirmed aliases. Same-name candidates are suggestions only. Raw imported records stay separate, and **Separate this profile** restores them. Connections, topic membership and activity references follow the canonical profile; overlapping counts and scores are not added. The chosen target's measurements remain authoritative. Original private notes remain readable under **Context from combined profiles** and continue to inform private recommendations.
+
+Selecting a person reveals their permitted connected neighbors through search and overview filters. Connection labels distinguish **Intro**, **Shared email**, and **Meeting**, and expandable details show supplied source evidence. Private Gmail introduction metadata is discovered during the bounded, consented introduction lookup, including introductions sent by the owner. It requires current authored introduction language and two unambiguous recipients. An introduction does not establish present closeness or willingness. Quotes and private introduction metadata do not enter shared exports; shared views use only their supplied evidence.
 
 The profile uses one opaque revision across fields, note and captured updates. Stale writes return 409. Removed entries retain only retry metadata and a content fingerprint, preventing a retried capture from resurrecting the text. New text/voice-transcript captures use a stable source ID; a changed payload with that ID conflicts. Recommendations use up to five latest captured entries per person, preserving complete passages, and invalidate results if notes, policy, identity, consent or source evidence changes while inference runs.
 

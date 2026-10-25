@@ -5,6 +5,7 @@ import {Miniflare} from 'miniflare';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {normalizeGraph} from '../public/relationship-graph/model.mjs';
 
 // Production MailSync, routing/session and SQLite RPC; all people are synthetic.
 const fixture=`
@@ -18,6 +19,7 @@ export class MailSync extends ProductionMailSync {
   await this.bindOwner(owner);
   this.ctx.storage.sql.exec('INSERT OR REPLACE INTO accounts VALUES (?,?)',inbox,JSON.stringify({email:inbox,status:'connected',job:null,lastSync:Date.now(),contextEnabled:false}));
   for(let i=0;i<count;i++)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO contributions VALUES (?,?,?,?,?,?,?,?)',inbox,'m'+i,'p'+String(i).padStart(4,'0')+'@example.test','Synthetic '+i,Date.now(),'Synthetic contact',1,1);
+  if(count>2){this.ctx.storage.sql.exec('INSERT OR REPLACE INTO mail_edges VALUES (?,?,?,?,?)',inbox,'thread-one','p0000@example.test','p0001@example.test','Shared discussion');this.ctx.storage.sql.exec('INSERT OR REPLACE INTO mail_edges VALUES (?,?,?,?,?)',inbox,'thread-two','p0001@example.test','p0002@example.test','Another discussion');}
   return {personId:await opaque(owner,'p'+String(count-1).padStart(4,'0')+'@example.test',this.env.TOKEN_SECRET)};
  }
  async inspect(personId){try{return {value:await this.getPersonContext(personId)};}catch(error){return {error:error.message,stack:error.stack};}}
@@ -73,6 +75,16 @@ await test('private person context uses production SQLite Durable Object RPC and
    await mf.setOptions({...options,scriptPath:join(dir,'production.mjs')});
    const reloaded=await api('/api/people/memory?personId='+setup.personId);assert.equal(reloaded.value.building,'Clinic handoff tool');assert.equal(reloaded.value.text,'Met in person.');assert.equal(reloaded.value.revision,legacy.value.revision);
    assert.equal((await api('/api/people/memory',{...input,building:'Stale'})).status,409);
+  });
+  await t.test('owner identity merges survive production RPC and preserve private profile context',async()=>{
+   const current=await api('/api/graph');assert.equal(current.status,200);
+   const source=current.value.graph.nodes.find(person=>person.name==='Synthetic 1').id;
+   const merged=await api('/api/people/person-merges',{sourceId:source,targetId:setup.personId});assert.equal(merged.status,200,JSON.stringify(merged));
+   const graph=await api('/api/graph');assert.equal(graph.value.graph.personAliases[source],setup.personId);assert.ok(!graph.value.graph.nodes.some(person=>person.id===source));
+   assert.doesNotThrow(()=>normalizeGraph(graph.value.graph),'merged production RPC graph must satisfy the complete browser contract');
+   const memory=await api('/api/people/memory?personId='+source);assert.equal(memory.value.personId,setup.personId);assert.equal(memory.value.building,'Clinic handoff tool');
+   const undone=await mf.dispatchFetch('https://people.test/api/people/person-merges',{method:'DELETE',headers:{cookie:setup.cookie,origin:'https://people.test','content-type':'application/json'},body:JSON.stringify({sourceId:source})});assert.equal(undone.status,200);
+   assert.equal((await api('/api/graph')).value.graph.personAliases[source],undefined);
   });
  }finally{if(mf)await mf.dispose();await rm(dir,{recursive:true,force:true});}
 });

@@ -1,3 +1,5 @@
+import {renderPersonIdentity} from './person-identity.mjs';
+import {connectionSection,incidentConnections} from './connections.mjs';
 import {helperSection} from './helper-suggestions.mjs';
 import {personContextEditor} from './person-context.mjs';
 import {sharedHome,sharedHomePersonAllowed} from './shared-home.mjs';
@@ -275,7 +277,7 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactFocus=null;suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id,continued=null,startIndex=0,suggestionContext=null){if(simpleShared()){homePerson=id;selectedId=id;render();const heading=root.querySelector('.sh-detail h2');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
+  function showContact(id,continued=null,startIndex=0,suggestionContext=null){id=graph.personAliases?.[id]||id;if(simpleShared()){homePerson=id;selectedId=id;render();const heading=root.querySelector('.sh-detail h2');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=continued||personWalk(graph,id,pathGraph),container=contactContainer();
 
@@ -417,7 +419,7 @@ export function mountGraph(element, options = {}) {
     return {mutual,connected};
   }
 
-  function canvasMatches(){
+  function baseCanvasMatches(){
     const matches=searchGraph(relevanceGraph,query).filter(n=>!simpleShared()||sharedHomePersonAllowed(n));
     if(simpleShared()&&searchAnswer){const ids=new Set(searchAnswer.results.map(r=>r.personId));return matches.filter(n=>ids.has(n.id));}
     if(graph.source!=='workspace')return matches;
@@ -426,6 +428,17 @@ export function mountGraph(element, options = {}) {
     const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
     const ids=introduction?new Set(introduction.personIds):activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
     return matches.filter(n=>ids.has(n.id));
+  }
+
+  function canvasMatches(){
+    const matches=baseCanvasMatches();
+    if(!selectedId)return matches;
+    const allowed=n=>graph.source==='workspace'?sharedHomePersonAllowed(n):!['denied','conflicted'].includes(n.permission)&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved';
+    const selected=graph.nodes.find(n=>n.id===selectedId&&allowed(n));
+    if(!selected)return matches;
+    const nodes=new Map(matches.map(n=>[n.id,n]));nodes.set(selected.id,selected);
+    for(const {person} of incidentConnections(graph,selectedId,allowed))nodes.set(person.id,person);
+    return [...nodes.values()];
   }
 
   function promotedThemes() {
@@ -583,6 +596,7 @@ export function mountGraph(element, options = {}) {
     const scale = layout.fitScale * camera.zoom;
     canvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
     canvas.dataset.detail = String(panelMode==='topic' || data.isPath || scale >= .8);
+    canvas.dataset.selected=String(Boolean(selectedId));
     let scene = canvas;
     if (!data.isPath) {
       const viewport = make('div', 'rg-map-viewport');
@@ -671,6 +685,9 @@ export function mountGraph(element, options = {}) {
       }
     });
     const bridgeIds=graph.source==='workspace'?sharedConnectionIds().mutual:new Set();
+    const parallelLabels=new Map(),pairLabels=new Map();
+    for(const edge of data.edges){const pair=JSON.stringify([edge.source,edge.target].sort());if(!pairLabels.has(pair))pairLabels.set(pair,[]);pairLabels.get(pair).push(edge.id);}
+    for(const ids of pairLabels.values())ids.forEach((id,i)=>parallelLabels.set(id,i-(ids.length-1)/2));
     data.edges.forEach((edge, edgeIndex) => {
       const source = positions.get(edge.source);
       const target = positions.get(edge.target);
@@ -689,6 +706,7 @@ export function mountGraph(element, options = {}) {
       if (!selectedId && !data.isPath) return;
       const edgeButton = button(edge.label, 'inspect-edge', 'rg-edge-label');
       edgeButton.dataset.edgeId = edge.id;
+      edgeButton.style.setProperty('--edge-label-row',String(data.isPath?0:parallelLabels.get(edge.id)||0));
       edgeButton.dataset.uncertain = String(edge.kind !== 'personal');
       edgeButton.style.left = data.isPath ? `${((source.x + target.x) / 2) / 10}%` : `${(source.x + target.x) / 2}px`;
       edgeButton.style.top = data.isPath ? `${((source.y + target.y) / 2) / 7.8}%` : `${(source.y + target.y) / 2}px`;
@@ -843,6 +861,7 @@ export function mountGraph(element, options = {}) {
     panel.append(portrait, make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
     if(node.type==='person'){
       panel.append(renderConnectionOrigin(node));
+      if(graph.source!=='workspace'){const identity=renderPersonIdentity({graph,person:node,onMergePeople:options.onMergePeople,onUnmergePeople:options.onUnmergePeople});if(identity)panel.append(identity);}
     }
     const walkStart=button('Explore from here','walk-person','rg-text-button');walkStart.dataset.nodeId=node.id;panel.append(walkStart);
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
@@ -914,20 +933,8 @@ export function mountGraph(element, options = {}) {
         panel.append(badge);
       }
     }
-    const next = make('div', 'rg-next');
-    const seen = new Set();
-    for (const edge of edgesByNode.get(node.id) ?? []) {
-      const id = other(edge, node.id);
-      if (seen.has(id) || seen.size >= 8) continue;
-      seen.add(id);
-      const nextButton = button('', 'select-node');
-      nextButton.dataset.nodeId = id;
-      const text = make('span');
-      text.append(make('strong', '', byId.get(id).name), make('small', '', edge.label));
-      nextButton.append(text, make('span', '', '↗'));
-      next.append(nextButton);
-    }
-    panel.append(next);
+    const connections=connectionSection(document,graph,node.id,{allowed:n=>!['denied','conflicted'].includes(n.permission)&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved',onPerson:selectNode,selectedEdgeId});
+    if(connections)panel.append(connections);
     if(node.type==='person'){helpers=helperSection(document,graph,node.id,options.onFindHelpers,{onExplore:selectNode});panel.append(helpers);}
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
@@ -1480,7 +1487,7 @@ export function mountGraph(element, options = {}) {
       const controls=make('nav','sh-map-controls');controls.setAttribute('aria-label','Map controls');
       controls.append(button('−','zoom-out'),button('+','zoom-in'),button('Fit','fit'));controls.children[0].setAttribute('aria-label','Zoom out');controls.children[1].setAttribute('aria-label','Zoom in');
       const all=make('button','',guidedOverview?'Show all people':'Focused view');all.type='button';all.onclick=()=>{guidedOverview=!guidedOverview;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();};controls.append(all);canvas.append(controls);stage.append(canvas);
-      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,onFindHelpers:options.onFindHelpers,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,selectedEdgeId,onPerson:id=>showContact(id),onFindHelpers:options.onFindHelpers,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
       root.append(stage);
       if(focusedSearch){const input=root.querySelector('.sh-search input');input?.focus({preventScroll:true});input?.setSelectionRange(focusedSearch.start,focusedSearch.end);}
       return;
@@ -1605,6 +1612,7 @@ export function mountGraph(element, options = {}) {
   }
 
   function selectNode(id, { notify = true } = {}) {
+    id=graph.personAliases?.[id]||id;
     if(byId.get(id)?.memberId)return;
     if (destroyed || !byId.has(id)) return;
     if(graph.source==='workspace'&&graph.members.length&&!pathState){showContact(id);return;}
@@ -1726,7 +1734,7 @@ export function mountGraph(element, options = {}) {
       const layout=cameraLayout,scale=layout.fitScale*camera.zoom;
       cameraScene.style.transform=`translate(${(layout.usableWidth-layout.worldWidth*scale)/2+camera.x}px, ${(layout.usableHeight-layout.worldHeight*scale)/2+camera.y}px) scale(${scale})`;
       cameraCanvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
-      cameraCanvas.dataset.detail=String(scale>=.8);
+      cameraCanvas.dataset.detail=String(panelMode==='topic'||Boolean(currentRoute())||scale>=.8);
       const label=root.querySelector('.rg-zoom-value');if(label)label.textContent=`${Math.round(scale*100)}%`;
       if(focusAction)root.querySelector(`[data-action="${focusAction}"]`)?.focus({preventScroll:true});
     });
