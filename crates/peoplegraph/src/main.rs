@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use strsim::jaro_winkler;
+mod memory;
 
 const COMMAND_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -52,6 +53,8 @@ enum OutputFormat {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
+    /// Read, append context or explicitly edit private relationship memory in the hosted People account.
+    Memory(memory::MemoryArgs),
     /// Fuzzy match a person by name, email, or alias.
     FindPerson(FindPersonArgs),
     /// Return score fields for one email.
@@ -539,6 +542,12 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
+    if let Commands::Memory(args) = &cli.command {
+        if cli.remote || cli.host.is_some() || cli.token.is_some() || cli.cache.is_some() {
+            return fail("memory", "incompatible_backend", "Memory uses --url/PEOPLEGRAPH_WEB_URL and PEOPLEGRAPH_WEB_TOKEN, not local-cache or --remote options.".to_string(), start);
+        }
+        return memory::run(args, start);
+    }
     if let Commands::Serve(args) = &cli.command {
         return serve_http(cli, args, start);
     }
@@ -601,6 +610,7 @@ fn run(cli: &Cli, command: &'static str, start: Instant) -> Response {
         Commands::DismissMerge(args) => dismiss_merge(cli, command, args, start),
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
         Commands::Serve(_) => unreachable!("serve handled before command dispatch"),
+        Commands::Memory(_) => unreachable!("memory handled before command dispatch"),
     }
 }
 
@@ -742,7 +752,8 @@ fn remote_path(command: &Commands) -> Option<String> {
         )),
         Commands::Describe => Some("/describe".to_string()),
         Commands::Version => Some("/version".to_string()),
-        Commands::ImportCache(_)
+        Commands::Memory(_)
+        | Commands::ImportCache(_)
         | Commands::ApplyExternalMerge(_)
         | Commands::DismissExternalMerge(_)
         | Commands::ApplyMerge(_)
@@ -4692,6 +4703,7 @@ fn obsidian_config_path() -> Option<PathBuf> {
 
 fn command_name(command: &Commands) -> &'static str {
     match command {
+        Commands::Memory(_) => "memory",
         Commands::FindPerson(_) => "find-person",
         Commands::Score(_) => "score",
         Commands::WhoKnows(_) => "who-knows",
@@ -4730,6 +4742,12 @@ fn describe_payload() -> Value {
             "--quiet"
         ],
         "commands": [
+            {
+                "name": "memory",
+                "usage": "peoplegraph memory [--url <https-origin>] lookup --email <email> | capture --email <email> --name <name> --source-id <stable-id> --text-file <path> [--source-kind text|voice-transcript] [--company <company>] | save --file <profile.json|->",
+                "status": "implemented",
+                "notes": "Hosted private People account only. Requires PEOPLEGRAPH_WEB_TOKEN and --url or PEOPLEGRAPH_WEB_URL; never falls back to the local cache or PEOPLEGRAPH_TOKEN. capture appends at most 2,000 characters of owner-authorized context without changing the steering note or scores. save posts a complete explicit profile edit with its current revision from a bounded UTF-8 JSON file or stdin; conflicts are returned without retries."
+            },
             {
                 "name": "find-person",
                 "usage": "peoplegraph find-person <query> [--strict-name-order]",

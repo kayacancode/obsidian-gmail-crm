@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createRelationshipController } from '../public/relationship-host.mjs';
+import { createRelationshipController, personDeepLinkId } from '../public/relationship-host.mjs';
 
 const graph = {
   pushedAt: '2026-09-13T12:00:00Z',
   nodes: [{ id: 'person-a', name: 'Ada Rivera' }],
   edges: [],
 };
+
+test('person deep links resolve only a permitted person in the current authorized graph',()=>{
+ assert.equal(personDeepLinkId(graph,'https://people.test/?person=person-a'),'person-a');
+ for(const query of ['person=missing','person=person-a&person=person-a','person=owner%40example.test'])assert.equal(personDeepLinkId(graph,'https://people.test/?'+query),null);
+ assert.equal(personDeepLinkId({nodes:[{id:'person-a',permission:'denied'}]},'https://people.test/?person=person-a'),null);
+ assert.equal(personDeepLinkId({nodes:[{id:'person-a',type:'company'}]},'https://people.test/?person=person-a'),null);
+});
 
 async function workflowFixture(handler, options = {}) {
   const calls = [];
@@ -25,13 +32,24 @@ test('private person context reads and saves only the selected personal contact 
  const value={personId:'person-a',text:'Building clinic tools',revision:'v1',updatedAt:1};
  const {controller,calls}=await workflowFixture(()=>json(value));
  assert.deepEqual(await controller.getPersonContext('person-a'),value);
- assert.equal(calls[0].path,'/api/people/context?personId=person-a');
+ assert.equal(calls[0].path,'/api/people/memory?personId=person-a');
  assert.deepEqual(await controller.savePersonContext({...value,revision:null}),value);
  assert.deepEqual(JSON.parse(calls[1].init.body),{personId:'person-a',text:value.text,revision:null});
  assert.equal(calls[1].init.headers.origin,'https://people.test');
  await assert.rejects(controller.getPersonContext('missing'),/Select a person/);
  await controller.signOut();assert.equal(calls[0].init.signal.aborted,true);
  await assert.rejects(controller.getPersonContext('person-a'),/My network/);
+});
+
+test('person memory saves structured private facts and previews without committing them',async()=>{
+ const {controller,calls}=await workflowFixture(()=>json({ok:true}));
+ const input={personId:'person-a',text:'Met after demo',revision:null,company:'Clinic Lab',building:'Scheduling for nurses',needs:'Hospital partners',offers:'Workflow research',interests:['Nurse handoffs'],pointPersonId:null,notBefore:'2026-12-01',relationship:'closer'};
+ await controller.savePersonContext(input);
+ assert.equal(calls[0].path,'/api/people/memory');assert.deepEqual(JSON.parse(calls[0].init.body),input);
+ await controller.structurePersonContext('person-a','Met after demo');
+ assert.equal(calls[1].path,'/api/people/memory/structure');assert.deepEqual(JSON.parse(calls[1].init.body),{text:'Met after demo'});
+ await controller.removePersonContextEntry({personId:'person-a',entryId:'entry-a',revision:'rev'});
+ assert.equal(calls[2].path,'/api/people/memory/entry');assert.equal(calls[2].init.method,'DELETE');
 });
 
 test('connection origin reads an untyped raw API person through a private POST',async()=>{

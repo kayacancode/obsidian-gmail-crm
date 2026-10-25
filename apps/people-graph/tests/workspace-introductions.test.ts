@@ -57,7 +57,7 @@ test('helper route ranks the current graph outside the long-running sync object'
  const {helperRoute}=await import('../src/mail-routes');
  const graph=clinicGraph(),original=globalThis.fetch;
  try{globalThis.fetch=groundedJev();
- const env:any={TYPESAFE_API_KEY:'test',AI:helperAI({...groundedProposal,anchorRefs:[]}),MAIL:{getByName:()=>({bindOwner:async()=>{},refreshHelperContext:async()=>{},helperContext:async()=>[],graph:async()=>graph})}};
+ const env:any={TYPESAFE_API_KEY:'test',AI:helperAI({...groundedProposal,anchorRefs:[]}),MAIL:{getByName:()=>({bindOwner:async()=>{},refreshHelperContext:async()=>{},helperContext:async()=>[],recommendationMemory:async()=>({revision:'empty',people:{}}),graph:async()=>graph})}};
  const response=await helperRoute(new Request('https://example.com/api/people/helpers',{method:'POST',headers:{origin:'https://example.com','content-type':'application/json'},body:JSON.stringify({personId:'a',brief:'Clinic scheduling feedback'})}),env,'owner');
  assert.equal(response.status,200);assert.equal((await response.json() as any).results[0].personId,'b');
  }finally{globalThis.fetch=original;}
@@ -363,4 +363,94 @@ test('helper explanations allow a complete concise sentence just over forty word
  assert.equal(reason.split(/\s+/).length,41);
  try{globalThis.fetch=groundedJev();const result=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI:helperAI({...groundedProposal,reason})},clinicGraph(),'a','');assert.equal(result.results.length,1);
  }finally{globalThis.fetch=original;}
+});
+
+const memoryPerson=(personId:string,overrides:Record<string,unknown>={})=>({personId,text:'',revision:'memory-'+personId,updatedAt:Date.parse('2020-01-01T00:00:00Z'),company:'',building:'',needs:'',offers:'',interests:[],pointPersonId:null,notBefore:null,relationship:'neutral',entries:[],...overrides});
+test('relationship memory enables durable owner-reported candidate evidence with full attribution and audit',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const previous=globalThis.fetch;
+ const passage='Max has interviewed nurses about handoffs. '+('The interviews covered clinic staffing and continuity. '.repeat(24))+'He has not worked on hospital procurement.';
+ const g:any={nodes:[{id:'a',name:'Angelica'},{id:'b',name:'Max'},{id:'p',name:'Jordan'}],themeSignals:[],recommendationMemory:{revision:'one',people:{b:memoryPerson('b',{pointPersonId:'p',entries:[{id:'entry',sourceKind:'voice_transcript',createdAt:Date.parse('2020-01-01T00:00:00Z'),text:passage}]})}}};
+ let audits=0;
+ const AI:any={run:async(_model:any,input:any)=>{const state=JSON.parse(input.input[1].content),source=state.candidates?.[0]?.evidence[0]||state.candidate?.evidence[0];
+  assert.equal(source.authoredBy,'OWNER');assert.equal(source.subject,'PERSON_B');assert.equal(source.sourceKind,'owner_report');assert.equal(source.summary,passage);
+  if(state.candidates)return helperResponse({matches:[{...groundedProposal,anchorRefs:[]}]});
+  audits++;assert.match(source.sentences.at(-1).text,/not worked on hospital procurement/);return helperResponse(helperAuditValue(input));
+ }};
+ try{globalThis.fetch=groundedJev();const result=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI},g,'a','Needs to validate nurse handoffs.');
+  assert.equal(result.status,'ready');assert.equal(result.results.length,1);assert.equal(audits,1);assert.equal(result.results[0].evidence[0].sourceType,'owner_context');assert.equal(result.results[0].evidence[0].sourceLabel,'Your saved context');assert.deepEqual((result.results[0] as any).pointPerson,{personId:'p',name:'Jordan'});
+ }finally{globalThis.fetch=previous;}
+});
+
+test('relationship memory supplies selected evidence while explicit refinement wins and shared matching ignores private memory',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const previous=globalThis.fetch;
+ const g:any=clinicGraph();g.themeSignals=g.themeSignals.filter((s:any)=>s.personId==='b');g.recommendationMemory={revision:'one',people:{a:memoryPerson('a',{building:'Clinic scheduling tool.',needs:'Validate nurse handoffs.',entries:[{id:'one',text:'Angelica is testing the workflow with a nursing team.',sourceKind:'text',createdAt:Date.now()}]})}};
+ let explicitMode=false;const AI:any={run:async(_model:any,input:any)=>{const state=JSON.parse(input.input[1].content);
+  if(explicitMode){assert.equal(state.selected.brief||state.selected.userBrief,'Override only');assert.equal(state.selected.evidence,undefined);}
+  else{assert.match(state.selected.evidence[0].summary,/Clinic scheduling/);assert.equal(state.selected.evidence[0].authoredBy,'OWNER');assert.equal(state.selected.evidence[0].subject,'PERSON_A');assert.equal(state.selected.evidence[0].sourceKind,'owner_report');}
+  return helperResponse(state.candidates?{matches:[{...groundedProposal,anchorRefs:explicitMode?[]:['a0']}]}:helperAuditValue(input));}};
+ try{globalThis.fetch=groundedJev();const saved=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI},g,'a','');assert.equal(saved.automatic,true);assert.equal(saved.results.length,1);assert.match((saved as any).brief,/nursing team/);assert.ok(saved.anchorEvidence.every(e=>e.sourceType==='owner_context'));
+  explicitMode=true;const explicit=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI},g,'a','Override only');assert.equal((explicit as any).brief,'Override only');assert.equal(explicit.automatic,false);
+  g.source='workspace';g.themeSignals=[];const shared=await rankHelperBrief({},g,'a','');assert.equal(shared.status,'no_anchor_context');assert.deepEqual(shared.results,[]);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('selected voice memory preserves owner pronouns and full passages through shortlist and independent source audit',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const previous=globalThis.fetch;
+ const passage='I am building a clinic scheduling tool; Pat needs help with pricing. '+('Our discussion covered the upcoming product planning session. '.repeat(24))+'Pat has not worked on nurse handoffs.';
+ const g:any=clinicGraph();g.nodes[0].name='Pat';g.recommendationMemory={revision:'one',people:{a:memoryPerson('a',{entries:[{id:'voice',sourceKind:'voice_transcript',createdAt:Date.now(),text:passage}]})}};
+ let shortlistCalls=0,audits=0;
+ const assertOwnerSource=(source:any)=>{assert.equal(source.summary,passage);assert.equal(source.authoredBy,'OWNER');assert.equal(source.subject,'PERSON_A');assert.equal(source.sourceKind,'owner_report');};
+ try{
+  globalThis.fetch=jevServer((_id:string,q:any,state:any)=>{shortlistCalls++;assert.equal(state.selectedContext.userBrief,undefined);assert.equal(state.selectedContext.evidence.length,1);assertOwnerSource(state.selectedContext.evidence[0]);assert.match(q.instructions.task,/I\/my[^.]*owner/i);return scoreA(3);}).fake;
+  for(const reading of [{workSubject:'third_party',polarity:'affirmed'},{workSubject:'person_or_team',polarity:'negated'}]){
+   const AI:any={run:async(_model:any,input:any)=>{const state=JSON.parse(input.input[1].content);assertOwnerSource(state.selected.evidence[0]);assert.match(input.input[0].content,/I\/my[^.]*owner/i);
+    if(state.candidates)return helperResponse({matches:[groundedProposal]});
+    audits++;assertOwnerSource(state.selected.backgroundEvidence[0]);const source=state.selected.evidence[0];assert.match(source.sentences.at(-1).text,/Pat has not worked on nurse handoffs/);
+    const audit=helperAuditValue(input),sentence=reading.polarity==='negated'?source.sentences.at(-1):source.sentences[0];Object.assign(audit.sourceReadings[0],reading,{sentenceIds:[sentence.id],ownWork:sentence.text});return helperResponse(audit);
+   }};
+   const result=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI},g,'a','');assert.equal(result.checked,true);assert.equal(result.status,'ready');assert.deepEqual(result.results,[],'selected-side third-party or negated readings must veto positive audit verdicts');assert.equal((result as any).brief,passage);
+  }
+  assert.equal(shortlistCalls,2);assert.equal(audits,2);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('relationship memory timing and feedback filter candidates without treating weaker relationships as exclusions',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const previous=globalThis.fetch;
+ const ids=['closer','neutral','weaker','deferred','suppressed','snoozed'];const g:any={nodes:[{id:'a'},...ids.map(id=>({id,name:id}))],themeSignals:ids.map(id=>helperSignal(id,id,'I interviewed nurses about clinic handoffs.')),personFeedback:{suppressed:{action:'suppress'},snoozed:{action:'snooze',until:Date.now()+86400000}},recommendationMemory:{revision:'one',people:Object.fromEntries(ids.map(id=>[id,memoryPerson(id,{relationship:['closer','weaker'].includes(id)?id:'neutral',notBefore:id==='deferred'?'2099-01-01':null})]))}};
+ const AI:any={run:async(_model:any,input:any)=>{const state=JSON.parse(input.input[1].content);return helperResponse(state.candidates?{matches:state.candidates.map((c:any)=>({...groundedProposal,candidate:c.candidate,anchorRefs:[],candidateRefs:[c.evidence[0].ref]})).reverse()}:helperAuditValue(input));}};
+ try{globalThis.fetch=groundedJev();const result=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI},g,'a','Needs nurse handoff validation.');assert.equal(result.considered,3);assert.deepEqual(result.results.map(r=>r.personId),['closer','neutral','weaker']);assert.ok(result.results.every(r=>r.score===3),'relationship preference must not rewrite evidence fit scores');}finally{globalThis.fetch=previous;}
+});
+
+test('helper route rejects a candidate memory change even when the selected brief is explicit',async()=>{
+ const {helperRoute}=await import('../src/mail-routes');let revision='one';
+ const stub:any={bindOwner:async()=>{},graph:async()=>clinicGraph(),recommendationMemory:async()=>({revision,people:{}}),helperContext:async()=>{revision='two';return [];}};
+ const response=await helperRoute(new Request('https://people.test/api/people/helpers',{method:'POST',headers:{origin:'https://people.test'},body:JSON.stringify({personId:'a',brief:'Validate nurse handoffs.'})}),{MAIL:{getByName:()=>stub}} as any,'owner');
+ assert.equal(response.status,409);assert.deepEqual(await response.json(),{error:'person_context_conflict'});
+});
+
+test('shared introduction explanations use only shared sources and discard unsupported pair prose',async()=>{
+ const previous=globalThis.fetch,g:any=fixture();g.source='workspace';g.themeSignals.forEach((s:any)=>s.visibility='firm');g.recommendationMemory={revision:'private',people:{a:memoryPerson('a',{text:'SECRET OWNER NOTE'})}};g.viewerPrivateContext={b:[{summary:'SECRET PRIVATE EXCERPT'}]};g.themeSignals.push({...g.themeSignals[0],visibility:'private',summary:'SECRET PRIVATE SIGNAL',observedAt:new Date().toISOString()});
+ const proposal={...groundedProposal,reason:'PERSON_A builds creative interfaces. PERSON_B researches interface workflows for artists.',conversation:'Which artist workflows could inform the creative interface?'};
+ let supported=true,audits=0;const AI:any={run:async(_model:any,input:any)=>{assert.doesNotMatch(JSON.stringify(input),/SECRET/);if(input.text.format.schema.properties.matches)return helperResponse({matches:[proposal]});audits++;return helperResponse(helperAuditValue(input,{grounded:supported,attributed:true,specific:supported,reason:'Both shared passages establish the proposed interface conversation.'}));}};
+ try{globalThis.fetch=groundedJev();const valid=await rankIntroductions({TYPESAFE_API_KEY:'test',AI} as any,g);assert.equal(valid.suggestions.length,1);assert.equal((valid.suggestions[0] as any).conversation,proposal.conversation);assert.equal(valid.suggestions[0].reason,'Ada builds creative interfaces. Bo researches interface workflows for artists.');assert.equal(audits,1);
+  supported=false;const rejected=await rankIntroductions({TYPESAFE_API_KEY:'test',AI} as any,g);assert.deepEqual(rejected.suggestions,[]);
+ }finally{globalThis.fetch=previous;}
+});
+
+test('relationship memory keeps full passages within explanation input limits for several detailed candidates',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');const previous=globalThis.fetch;
+ const fill=(size:number)=>'Nurses described clinic handoff workflows. '.repeat(Math.ceil(size/42)).slice(0,size);
+ const ids=['a','b','c','d','e','f','g'];const people=Object.fromEntries(ids.map(id=>[id,memoryPerson(id,{company:fill(160),building:fill(600),needs:fill(600),offers:fill(600),interests:Array(8).fill(fill(80)),text:fill(1000),entries:Array.from({length:10},(_,i)=>({id:String(i),text:fill(2000),sourceKind:'text',createdAt:Date.now()-i}))})]));
+ const g:any={nodes:ids.map(id=>({id,name:id})),themeSignals:ids.slice(1).flatMap(id=>[helperSignal(id,id+'-one',fill(1200)),helperSignal(id,id+'-two','Another observation. '+fill(1170))]),recommendationMemory:{revision:'one',people}};
+ try{globalThis.fetch=groundedJev();const result=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI:helperAI()},g,'a','');assert.equal(result.status,'ready');assert.equal(result.results.length,1);}finally{globalThis.fetch=previous;}
+});
+
+test('private recommendation routes reject feedback changes during graph loading',async()=>{
+ const {helperRoute}=await import('../src/mail-routes'),{ownerLensRoute}=await import('../src/owner-lens-routes');
+ for(const kind of ['helper','owner'] as const){let revision='one';
+  const stub:any={bindOwner:async()=>{},recommendationMemory:async()=>({revision,people:{}}),graph:async()=>{revision='two';return clinicGraph();},helperContext:async()=>[],getOwnerLens:async()=>({fields:{focus:'Clinic scheduling.',needs:'Nurse handoff validation.',offers:''}})};
+  const path=kind==='helper'?'/api/people/helpers':'/api/lens/matches',body=kind==='helper'?{personId:'a',brief:'Nurse handoff validation.'}:{};
+  const response=await (kind==='helper'?helperRoute:ownerLensRoute)(new Request('https://people.test'+path,{method:'POST',headers:{origin:'https://people.test'},body:JSON.stringify(body)}),{MAIL:{getByName:()=>stub}} as any,'owner');
+  assert.equal(response.status,409,kind+' must read the baseline revision before the graph');
+ }
 });

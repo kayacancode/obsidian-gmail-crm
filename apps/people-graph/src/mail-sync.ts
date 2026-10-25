@@ -4,6 +4,7 @@ import {collectGranolaOwnerPassages,collectGranolaMeetingTopics} from './granola
 import {extractMailContext,GMAIL_CONTEXT_VERSION,isOnlyMailLogistics,type MailFact} from './gmail-context';
 import {rankHelperBrief} from './helper-brief';
 import {PersonContextStore,validContextPerson,validPersonContextInput,type SavePersonContext} from './person-context';
+import {RelationshipMemoryStore,validSaveRelationshipMemory,validCaptureRelationshipMemory,validMemoryEmail,relationshipDelta,type SaveRelationshipMemory,type CaptureRelationshipMemory,type RecommendationMemory} from './relationship-memory';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
 import {DurableObject} from 'cloudflare:workers';
@@ -36,11 +37,13 @@ interface Pending {verifier:string;cookie:string;expires:number;range:Range;owne
 interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[];titles:string[]}
 interface ConnectionOriginResult {status:'found'|'not_found'|'disabled'|'unavailable';reason?:string;origin?:{introducerName:string;observedAt:string;subject:string;quote:string;url:string};connection?:{direction:'sent'|'received';observedAt:string;subject:string;quote:string;url:string}}
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
-interface GraphPersonNode {directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
+interface GraphPersonNode {manual?:boolean;memoryEligible?:boolean;sources?:string[];directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
  private personContextStore?:PersonContextStore;
+ private relationshipStore?:RelationshipMemoryStore;
+ private memoryStore(){return this.relationshipStore??=new RelationshipMemoryStore(this.ctx.storage);}
  async verifySchedulingKickoff(messageId:string,agentAddress:string){
   schedulingMessageId(messageId);
   const owner=await this.ctx.storage.get<string>('owner'),key=this.env.MAIL_TOKEN_KEY,secret=this.env.GOOGLE_CLIENT_SECRET;
@@ -750,7 +753,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    if(typeof delta!=='number'||!Number.isFinite(delta))return null;
    const base=emailScore(row.sent,row.received,(checkedAt-row.last)/86_400_000).combined;
    if(!Number.isFinite(base))return null;
-   const score=Math.max(0,Math.min(100,base+delta));
+   const score=Math.max(0,Math.min(100,base+delta+relationshipDelta(this.memoryStore().fields(id).relationship)));
    const name=(row.name.includes('@')?email.split('@')[0]:row.name).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,100)||email.split('@')[0];
    return {owner,email,name,score,checkedAt,sourceUpdatedAt:Math.min(...completions)};
   }catch{return null;} // Corrupt or unavailable contact evidence always falls back to intake.
@@ -764,7 +767,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   try{
    const contact=await this.bookingContact(email);if(contact)return {...contact,status:'matched'};
    // Never turn a failed exact lookup (stale, corrupt, capped, or partially synced) into a miss.
-   if(this.ctx.storage.sql.exec('SELECT 1 FROM contributions WHERE email=? LIMIT 1',email).toArray().length||this.ctx.storage.sql.exec('SELECT 1 FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return unknown;
+   if(this.memoryStore().hasManual(email)||this.ctx.storage.sql.exec('SELECT 1 FROM contributions WHERE email=? LIMIT 1',email).toArray().length||this.ctx.storage.sql.exec('SELECT 1 FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return unknown;
    if(this.ctx.storage.sql.exec("SELECT 1 FROM granola_identity WHERE (attendee_email=? OR contact_email=?) AND status='confirmed' LIMIT 1",email,email).toArray().length)return {...unknown,status:'ambiguous'};
    const source=this.bookingSourceSnapshot(owner);
    return source.ready?{owner,email,status:'not_found',checkedAt:source.checkedAt,sourceUpdatedAt:source.sourceUpdatedAt}:unknown;
@@ -788,12 +791,12 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  /** Resolves an opaque node id back to the contact email, the way retrievalScope does. */
  private async emailForPerson(personId:string){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;
-  for(const row of this.graphContacts())if(await opaque(owner,row.email,this.env.TOKEN_SECRET)===personId)return row.email;
+  for(const row of [...this.graphContacts(),...this.memoryStore().manualPeople()])if(await opaque(owner,row.email,this.env.TOKEN_SECRET)===personId)return row.email;
   return null;
  }
  private personContextFor(email:string|null){
   // Hashing yields; a disconnect may have removed this exact identity in the meantime.
-  if(!email||!this.graphContacts().some(row=>row.email===email))throw Error('unknown_person');
+  if(!email||!this.graphContacts().some(row=>row.email===email)&&!this.memoryStore().hasManual(email))throw Error('unknown_person');
   return this.personContextStore??=new PersonContextStore(this.ctx.storage);
  }
  async getPersonContext(personId:string){
@@ -805,6 +808,61 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!validPersonContextInput(input))throw Error('invalid_request');
   const email=await this.emailForPerson(input.personId);
   return this.personContextFor(email).save(input);
+ }
+ async getRelationshipMemory(personId:string){
+  if(!validContextPerson(personId))throw Error('invalid_request');
+  this.personContextFor(await this.emailForPerson(personId));return this.memoryStore().get(personId);
+ }
+ async saveRelationshipMemory(input:SaveRelationshipMemory){
+  if(!validSaveRelationshipMemory(input)||input.pointPersonId===input.personId)throw Error('invalid_request');
+  const personEmail=await this.emailForPerson(input.personId);
+  if(input.pointPersonId)this.personContextFor(await this.emailForPerson(input.pointPersonId));
+  this.personContextFor(personEmail);
+  return this.memoryStore().save(input);
+ }
+ async relationshipMemoryForEmail(email:string){
+  if(!validMemoryEmail(email))throw Error('invalid_request');
+  email=email.toLowerCase();const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
+  const id=await opaque(owner,email,this.env.TOKEN_SECRET);
+  if(!this.graphContacts().some(r=>r.email===email)&&!this.memoryStore().hasManual(email))return null;
+  return this.memoryStore().get(id);
+ }
+ async captureRelationshipMemory(input:CaptureRelationshipMemory){
+  if(!validCaptureRelationshipMemory(input))throw Error('invalid_request');
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
+  const email=input.email.toLowerCase();
+  if(new Set([owner,...this.rows().map(a=>a.email),...this.granola().ownEmails()]).has(email))throw Error('invalid_request');
+  const personId=await opaque(owner,email,this.env.TOKEN_SECRET);
+  return this.memoryStore().capture(personId,{...input,email},!this.graphContacts().some(p=>p.email===email));
+ }
+ async deleteRelationshipEntry(input:{personId:string;entryId:string;revision:string|null}){
+  if(!input||Object.keys(input).sort().join(',')!=='entryId,personId,revision'||!validContextPerson(input.personId))throw Error('invalid_request');
+  this.personContextFor(await this.emailForPerson(input.personId));return this.memoryStore().remove(input);
+ }
+ async recommendationMemory():Promise<RecommendationMemory>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
+  const store=this.memoryStore(),wanted=new Set(store.ids()),people:RecommendationMemory['people']={};
+  const identities=[...new Set([...this.graphContacts().map(p=>p.email),...store.manualPeople().map(p=>p.email)])].sort();
+  const resolved=await Promise.all(identities.map(async email=>({email,id:await opaque(owner,email,this.env.TOKEN_SECRET)})));
+  // Hashing yielded: discard identities withdrawn by a concurrent disconnect.
+  const current=new Set([...this.graphContacts().map(p=>p.email),...store.manualPeople().map(p=>p.email)]);
+  for(const {email,id} of resolved)if(current.has(email)&&wanted.has(id)){
+   const memory=store.get(id);
+   // Display keeps ten entries; matching uses the five latest, with full passages intact.
+   people[id]={...memory,entries:memory.entries.slice(0,5)};
+  }
+  const feedback=this.ctx.storage.sql.exec<{person_id:string;data:string}>('SELECT person_id,data FROM person_feedback ORDER BY person_id').toArray();
+  // Source consent and evidence also invalidate in-flight searches even when the contact
+  // remains. Use persisted values, never generated graph timestamps, to keep reads stable.
+  const sources={
+   accounts:this.rows().map(a=>({email:a.email,revision:a.revision,contextEnabled:a.contextEnabled,status:a.status})).sort((a,b)=>a.email.localeCompare(b.email)),
+   gmail:this.ctx.storage.sql.exec('SELECT account,message,person,observed,facts,version FROM gmail_context ORDER BY account,message').toArray(),
+   signals:this.ctx.storage.sql.exec('SELECT id,account,person_id,visibility,content_hash,summary FROM theme_signals ORDER BY id').toArray(),
+   granola:[...this.granola().ownerLensVersions()].sort(([a],[b])=>a.localeCompare(b)),
+  };
+  const fingerprint=JSON.stringify({people,feedback,sources,identities:resolved.filter(r=>current.has(r.email)).map(r=>r.id)});
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(fingerprint));
+  return {revision:Array.from(new Uint8Array(digest),v=>v.toString(16).padStart(2,'0')).join(''),people};
  }
  /**
   * Outreach draft for one person from their own visible evidence. The prompt carries the
@@ -1123,11 +1181,17 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  }
  async graph(){const owner=await this.ctx.storage.get<string>('owner');if(!owner)return null;const accounts=this.rows();
   const shared=this.sharedPeople();
-  if(!accounts.length&&!this.granola().status().connected&&!shared.size)return null;
+  if(!accounts.length&&!this.granola().status().connected&&!shared.size&&!this.memoryStore().manualPeople().length)return null;
   const rows=this.graphContacts();
   const photos=new Map(this.ctx.storage.sql.exec<{email:string;url:string}>('SELECT email,MAX(url) AS url FROM contact_photos GROUP BY email').toArray().map(p=>[p.email,p.url]));
-  const nodes:GraphPersonNode[]=await Promise.all(rows.map(async r=>({directRelationship:true,directLastContact:new Date(r.last).toISOString(),id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,contactActivity:{sent:Math.max(0,r.sent-r.meetings),received:Math.max(0,r.received-r.meetings),meetings:r.meetings},...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
+  const nodes:GraphPersonNode[]=await Promise.all(rows.map(async r=>({memoryEligible:true,directRelationship:true,directLastContact:new Date(r.last).toISOString(),id:await opaque(owner,r.email,this.env.TOKEN_SECRET),photoUrl:photos.get(r.email)||null,name:r.name.includes('@')?r.email.split('@')[0]:r.name,company:r.email.split('@')[1],companySource:'email_domain',lastContact:new Date(r.last).toISOString(),meetings:r.meetings,lastMeeting:r.lastMeeting?new Date(r.lastMeeting).toISOString():null,contactActivity:{sent:Math.max(0,r.sent-r.meetings),received:Math.max(0,r.received-r.meetings),meetings:r.meetings},...emailScore(r.sent,r.received,(Date.now()-r.last)/86400000)})));
   const idMap=new Map(rows.map((r,i)=>[r.email,nodes[i].id]));
+  for(const person of this.memoryStore().manualPeople())if(!idMap.has(person.email)&&nodes.length<MAX_GRAPH_NODES){
+   nodes.push({id:person.person_id,name:person.name,company:'',companySource:'owner',manual:true,memoryEligible:true,sources:['manual'],directRelationship:false,directLastContact:null,lastContact:null,lastMeeting:null,photoUrl:null,meetings:0,contactActivity:{sent:0,received:0,meetings:0},...emailScore(0,0,3650)});
+   idMap.set(person.email,person.person_id);
+  }
+  const memoryEligible=new Set(idMap.values());
+
   // Shared people are looked up by id below; at the caps that is 1500 × 1500 with `find`.
   const nodeById=new Map(nodes.map(node=>[node.id,node]));
   // Shared people join the owner's own graph: a person both sides know keeps one node and
@@ -1161,6 +1225,12 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const personFeedback:Record<string,PersonFeedback>={};
   const feedbackRows=new Map(this.ctx.storage.sql.exec<{person_id:string;data:string}>('SELECT person_id,data FROM person_feedback').toArray().map(r=>[r.person_id,JSON.parse(r.data) as PersonFeedback]));
   for(const node of nodes){const feedback=feedbackRows.get(node.id);if(feedback){personFeedback[node.id]=feedback;Object.assign(node,{baseCombined:node.combined,feedbackDelta:feedback.delta});node.combined=Math.max(0,Math.min(100,node.combined+feedback.delta));}}
+  for(const node of nodes)if(memoryEligible.has(node.id)){
+   const memory=this.memoryStore().fields(node.id),delta=relationshipDelta(memory.relationship);
+   Object.assign(node,{notBefore:memory.notBefore,pointPersonId:memory.pointPersonId});
+   if(memory.company){node.company=memory.company;node.companySource='owner';}
+   if(delta){const base=(node as GraphPersonNode & {baseCombined?:number}).baseCombined??node.combined;Object.assign(node,{baseCombined:base,relationshipDelta:delta});node.combined=Math.max(0,Math.min(100,base+(feedbackRows.get(node.id)?.delta||0)+delta));}
+  }
   const activity=[...activityMap.values(),...calendar].sort((a,b)=>Date.parse(b.at)-Date.parse(a.at));
   const stamps=[...accounts.map(a=>Math.max(a.lastSync,a.job?.lastRun||0)),this.granola().status().lastSync,this.sharedMeta().refreshedAt];
   // A Granola-only first sync has no stamps yet; the epoch would read as a 1970 graph.

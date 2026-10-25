@@ -22,11 +22,12 @@ try{
   const {mountGraph}=await import('/relationship-graph/graph.mjs');
   const date=new Date(Date.now()-86400000).toISOString();
   window.notes={};window.calls=[];window.failSave=false;window.conflict=false;window.holdLoad=false;
-  const data={source:'email_accounts',nodes:[{id:'a',name:'Angelica',type:'person',directRelationship:true,strength:50,combined:60},{id:'m',name:'Max',type:'person',directRelationship:true,strength:40,combined:50},{id:'s',name:'Shared Person',type:'person',directRelationship:false,via:['other@example.test']}],edges:[],themes:[{id:'t',canonicalName:'Strategy'}],themeSignals:[
+  const data={source:'email_accounts',personFeedback:{a:{action:'boost',delta:10,at:Date.now()}},nodes:[{id:'a',name:'Angelica',type:'person',directRelationship:true,strength:50,combined:60},{id:'m',name:'Max',type:'person',directRelationship:true,strength:40,combined:50},{id:'manual',name:'Offline Contact',type:'person',directRelationship:false,manual:true,memoryEligible:true,sources:['manual']},{id:'s',name:'Shared Person',type:'person',directRelationship:false,via:['other@example.test']}],edges:[],themes:[{id:'t',canonicalName:'Strategy'}],themeSignals:[
    {id:'generic',personId:'a',summary:'Activity involving business planning and strategy'},
    {id:'useful',personId:'a',summary:'Testing clinic scheduling with three nursing teams.'}
   ].map(s=>({...s,themeId:'t',sourceType:'gmail_body_derived',visibility:'private',observedAt:date,ingestedAt:date,confidence:1,evidenceRef:s.id,contentHash:s.id,extractorVersion:'test'}))};
   window.mount=()=>{window.graph?.destroy();document.body.replaceChildren();const root=document.createElement('main');document.body.append(root);window.graph=mountGraph(root,{graph:data,
+   onPersonFeedback:async()=>({...data,personFeedback:{}}),
    onGetPersonContext:async personId=>{if(window.holdLoad&&personId==='a')await new Promise(resolve=>window.releaseLoad=resolve);return window.notes[personId]||{personId,text:'',revision:null,updatedAt:null};},
    onSavePersonContext:async input=>{window.calls.push(input);if(window.failSave)throw Error('offline');if(window.conflict)throw Object.assign(Error('person_context_conflict'),{status:409});return window.notes[input.personId]={...input,revision:'r'+window.calls.length,updatedAt:Date.now()};},
    onFindHelpers:async(id,brief)=>{const note=window.notes[id]?.text;return {checked:true,status:'ready',automatic:!brief&&!note,brief:brief||note||'',contextSource:brief?'brief':note?'saved_note':'automatic',considered:1,available:1,results:[{personId:'m',reason:'Max can discuss testing nurse handoffs.',conversation:'Which handoff assumptions should they test?',evidence:[{summary:'Ran moderated usability interviews with hospital nurses.',date,sourceType:'granola',ref:'m1'}],anchorEvidence:[]}]};}
@@ -61,14 +62,16 @@ try{
  await page.getByRole('button',{name:'Close details',exact:true}).click();await page.evaluate(()=>window.graph.select('s'));assert.equal(await page.getByRole('heading',{name:'Your context',exact:true}).count(),0);
  await page.getByRole('button',{name:'Close details',exact:true}).click();await open('Max');await page.getByRole('button',{name:'Add context',exact:true}).click();
  const mobileText='Building a privacy tool for small teams. Looking for design partners.';await page.getByRole('textbox',{name:'Your context about Max',exact:true}).fill(mobileText);
- await page.locator('.rg-person-context textarea').evaluate(input=>{input.focus();input.setSelectionRange(9,16);});
+ await page.getByRole('textbox',{name:'Your context about Max',exact:true}).evaluate(input=>{input.focus();input.setSelectionRange(9,16);});
  await page.evaluate(()=>window.graph.setRelevance(null));
  assert.deepEqual(await page.evaluate(()=>({label:document.activeElement.getAttribute('aria-label'),start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd})),{label:'Your context about Max',start:9,end:16},'background relevance refresh preserves typing focus and selection');
  await page.locator('.rg-person-context').scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/person-context-desktop.png'});
  await page.setViewportSize({width:390,height:844});
  await page.locator('.rg-person-context').scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/person-context-mobile.png'});
  assert.equal(await page.getByRole('textbox',{name:'Your context about Max',exact:true}).inputValue(),mobileText,'canvas resizing preserves the active note draft');
- assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert.deepEqual(errors,[]);
+ assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.getByRole('button',{name:'Close details',exact:true}).click();await page.evaluate(()=>window.graph.select('manual'));await page.getByRole('button',{name:'Add context',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Close details',exact:true}).click();await page.evaluate(()=>{window.holdLoad=false;window.graph.select('a');});await page.getByRole('button',{name:'Undo person feedback',exact:true}).click();await page.getByText('Person feedback cleared.',{exact:true}).waitFor();assert.equal(await page.getByRole('heading',{name:'Angelica',exact:true}).count(),1,'clearing feedback keeps the selected profile open');assert.deepEqual(errors,[]);
  console.log('PASS private person context: save/reopen/remove, errors/conflicts, selected-person isolation, provenance and mobile');
 }catch(error){failure=error;}finally{if(browser)await new Promise(resolve=>{const timer=setTimeout(resolve,5000);browser.close().catch(()=>{}).finally(()=>{clearTimeout(timer);resolve();});});server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 if(failure)console.error(failure);process.exit(failure?1:0);

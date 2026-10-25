@@ -65,5 +65,14 @@ await test('private person context uses production SQLite Durable Object RPC and
    const saved=await api('/api/people/context',{personId:setup.personId,text:'Saved through unchanged production export.',revision:read.value.revision});assert.equal(saved.status,200,JSON.stringify(saved));
    assert.deepEqual((await api('/api/people/context?personId='+setup.personId)).value,saved.value);
   });
+  await t.test('structured memory survives real RPC and legacy edits without erasing fields',async()=>{
+   const read=await api('/api/people/memory?personId='+setup.personId);assert.equal(read.status,200,JSON.stringify(read));
+   const {updatedAt,entries,...input}=read.value;
+   const saved=await api('/api/people/memory',{...input,building:'Clinic handoff tool',needs:'Nurse design partners',relationship:'closer'});assert.equal(saved.status,200,JSON.stringify(saved));
+   const legacy=await api('/api/people/context',{personId:setup.personId,text:'Met in person.',revision:saved.value.revision});assert.equal(legacy.status,200);
+   await mf.setOptions({...options,scriptPath:join(dir,'production.mjs')});
+   const reloaded=await api('/api/people/memory?personId='+setup.personId);assert.equal(reloaded.value.building,'Clinic handoff tool');assert.equal(reloaded.value.text,'Met in person.');assert.equal(reloaded.value.revision,legacy.value.revision);
+   assert.equal((await api('/api/people/memory',{...input,building:'Stale'})).status,409);
+  });
  }finally{if(mf)await mf.dispose();await rm(dir,{recursive:true,force:true});}
 });

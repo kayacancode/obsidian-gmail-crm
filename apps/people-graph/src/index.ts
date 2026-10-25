@@ -9,6 +9,8 @@ import {completeBookingSignIn} from './booking-verification';
 export {BookingCoordinator} from './booking-coordinator';
 import {ownerLensRoute} from './owner-lens-routes';
 import {personContextRoute} from './person-context-routes';
+import {relationshipMemoryRoute} from './relationship-memory-routes';
+import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-agent';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
@@ -92,6 +94,16 @@ export default {
 				if ("error" in user) return json({ error: user.error }, 401);
 				return await mailRoute(request, env, user.email);
 			}
+
+            if(pathname.startsWith('/api/people/integrations')){
+                const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+                return await peopleMemoryOwnerRoute(request,env,user.email);
+            }
+            if(pathname.startsWith('/api/people-agent/')||pathname==='/api/people-mcp')return await peopleMemoryAgentRoute(request,env);
+            if(pathname.startsWith('/api/people/memory')){
+                const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+                return await relationshipMemoryRoute(request,env,user.email);
+            }
             if (pathname === "/api/people/feedback") {
                 const user=await requireGoogleUser(request,env);
                 if("error" in user)return json({error:user.error},401);
@@ -267,7 +279,7 @@ export async function requireGoogleUser(
 	const token = bearer(request);
 	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
 	// Scheduling credentials are scoped to our API; never send them to Google.
-	if (token.startsWith("sched_")) return {error:"invalid_token"};
+	if (token.startsWith("sched_") || token.startsWith("people_")) return {error:"invalid_token"};
 
 	let resp:Response,info:{aud?:string;email?:string;email_verified?:string|boolean};
 	try{

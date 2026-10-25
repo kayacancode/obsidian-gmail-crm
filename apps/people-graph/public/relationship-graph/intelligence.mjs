@@ -106,6 +106,7 @@ export function attentionDigest(graph, feedback={}, now=new Date()) {
   const signals=ownSignals(graph.themeSignals||[]).filter(s=>s.sourceType!=='gmail_subject' && inWindow(s.observedAt,'month',now));
   for(const person of graph.nodes) {
     if(person.permission==='denied'||person.identityResolved===false||person.permissionConflict)continue;
+    if(graph.source!=='workspace'&&person.notBefore&&person.notBefore>new Date(now).toISOString().slice(0,10))continue;
     const choice=graph.personFeedback?.[person.id];
     if(choice?.action==='suppress'||(choice?.action==='snooze'&&choice.until>+now))continue;
     const upcoming=(graph.activity||[]).filter(e=>e.kind==='calendar'&&e.status==='accepted'&&e.acceptedPersonIds?.includes(person.id)&&inWindow(e.at,'upcoming',now)).sort((a,b)=>Date.parse(a.at)-Date.parse(b.at));
@@ -118,7 +119,8 @@ export function attentionDigest(graph, feedback={}, now=new Date()) {
       if(choice?.action==='boost'&&items.every(s=>Date.parse(s.observedAt)<=choice.at))return;
       const state=feedback[id];
       if(state && (['done','dismiss'].includes(state.action)||(state.action==='snooze'&&state.until>+now)))return;
-      suggestions.push({id,personId:person.id,name:person.name,kind,title,reason,evidence:items,latest:Math.max(...items.map(s=>Date.parse(s.observedAt)))});
+      const point=graph.source!=='workspace'&&graph.nodes.find(node=>node.id===person.pointPersonId&&!['denied','conflicted'].includes(node.permission)&&!node.permissionConflict&&node.identityResolved!==false);
+      suggestions.push({id,personId:person.id,name:person.name,kind,title,reason:reason+(point?' Check with '+point.name+' first.':''),evidence:items,latest:Math.max(...items.map(s=>Date.parse(s.observedAt)))});
     };
     if(upcoming.length){const e=upcoming[0];add('upcoming','Prepare for an upcoming event','You both accepted this calendar invitation. Attendance is not verified; review your recent context before the event.',[{id:e.id,observedAt:e.at,summary:e.title,source:'Google Calendar · accepted invitation',provenance:e.url?{canonicalUrl:e.url}:undefined}]);}
     for(const s of evidence) {

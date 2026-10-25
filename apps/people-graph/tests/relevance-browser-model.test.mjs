@@ -8,6 +8,13 @@ import { evidenceLines } from '../public/relationship-graph/graph.mjs';
 
 const NOW = '2026-09-14T12:00:00.000Z';
 
+test('private manual memory controls survive graph normalization with bounded preferences',()=>{
+ const person={id:'manual-a',name:'Ada',manual:true,memoryEligible:true,directRelationship:false,sources:['manual'],relationshipDelta:10,notBefore:'2026-12-01',pointPersonId:'jordan'};
+ const node=normalizeGraph({nodes:[person],edges:[]}).nodes[0];
+ assert.equal(node.manual,true);assert.equal(node.memoryEligible,true);assert.deepEqual(node.sources,['manual']);assert.equal(node.relationshipDelta,10);assert.equal(node.notBefore,'2026-12-01');assert.equal(node.pointPersonId,'jordan');
+ const bad=normalizeGraph({nodes:[{...person,relationshipDelta:99,notBefore:'soon',pointPersonId:'x'.repeat(201)}],edges:[]}).nodes[0];assert.equal(bad.relationshipDelta,0);assert.equal(bad.notBefore,null);assert.equal(bad.pointPersonId,null);
+});
+
 test('final wave browser retains safe public provenance and rejects unsafe navigation',()=>{
  const input=graphFixture(),s=input.themeSignals.find(s=>s.visibility==='public');
  const provenance={canonicalUrl:'https://example.com/research',publisherHost:'example.com',observedAt:NOW,retrievedAt:NOW,timeBasis:'observed'};

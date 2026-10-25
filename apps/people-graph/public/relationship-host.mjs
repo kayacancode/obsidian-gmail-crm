@@ -8,6 +8,11 @@ const EMPTY_STATE = Object.freeze({ phase: 'idle', account: null, graph: null, s
 // to:null when it does not hold, but this is not trusted client input: re-check here too.
 const MAILTO_SAFE = /^[^\s?&#%/<>"']+@[^\s?&#%/<>"']+$/;
 
+export function personDeepLinkId(graph,href){
+ const values=new URL(href).searchParams.getAll('person');if(values.length!==1||!/^[A-Za-z0-9:_-]{1,200}$/.test(values[0]))return null;
+ const person=graph?.nodes?.find(node=>node.id===values[0]&&(node.type===undefined||node.type==='person')&&!['denied','conflicted'].includes(node.permission)&&!node.permissionConflict&&node.identityResolved!==false&&node.identityStatus!=='unresolved');return person?.id||null;
+}
+
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
     const abort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
@@ -152,11 +157,14 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
   function personalContextScope(personId){
     if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to use private context.');
     const node=state.graph.nodes?.find(node=>node.id===personId&&(node.type===undefined||node.type==='person'));
-    if(!node||node.directRelationship===false||node.via?.length&&node.directRelationship!==true)throw Error('Select a person in your own network.');
+    if(!node||node.memoryEligible!==true&&(node.directRelationship===false||node.via?.length&&node.directRelationship!==true))throw Error('Select a person in your own network.');
     return context();
   }
-  async function getPersonContext(personId){return request('/api/people/context?personId='+encodeURIComponent(personId),{},personalContextScope(personId));}
-  async function savePersonContext({personId,text,revision}){return request('/api/people/context',{body:{personId,text,revision}},personalContextScope(personId));}
+  async function getPersonContext(personId){return request('/api/people/memory?personId='+encodeURIComponent(personId),{},personalContextScope(personId));}
+  async function savePersonContext(input){const {personId,text,revision,company,building,needs,offers,interests,pointPersonId,notBefore,relationship}=input;return request('/api/people/memory',{body:{personId,text,revision,company,building,needs,offers,interests,pointPersonId,notBefore,relationship}},personalContextScope(personId));}
+  async function structurePersonContext(personId,text){return request('/api/people/memory/structure',{body:{text}},personalContextScope(personId));}
+  async function removePersonContextEntry({personId,entryId,revision}){return request('/api/people/memory/entry',{method:'DELETE',body:{personId,entryId,revision}},personalContextScope(personId));}
+  async function refreshPersonMemoryGraph(personId){const ctx=personalContextScope(personId);try{const data=await request('/api/graph',{},ctx);if(data.graph)publish({graph:data.graph,workflowMessage:''});}catch(error){if(error.name!=='AbortError')publish({workflowMessage:'Context saved. Reload the network to update its scores.'});}}
   async function connectionOrigin(personId,signal){
     if(state.phase!=='ready'||state.source==='obsidian'||workspacePath()||state.graph?.source!=='email_accounts')throw Error('Switch to My network to find your introductions.');
     if(!state.graph.nodes?.some(node=>node.id===personId&&(node.type===undefined||node.type==='person')))throw Error('Select a person in your network.');
@@ -413,7 +421,7 @@ export function createRelationshipController({ fetchImpl = fetch, origin = locat
     signOut,
     requestPushToken,
     async personFeedback(personId,action){const ctx=context();await request('/api/people/feedback',{body:{personId,action}},ctx);const data=await request('/api/graph',{},ctx);if(data.graph){publish({graph:data.graph});}return data.graph;},
-    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, getPersonContext, savePersonContext, connectionOrigin, loadOwnerLens, updateOwnerLens, findOwnerMatches,
+    loadRelevance, loadEvidence, loadRetrievalAccounts, previewRetrieval, previewPublicSource, submitFeedback, draftNote, searchNetwork, helperPeople, getPersonContext, savePersonContext, structurePersonContext, removePersonContextEntry, refreshPersonMemoryGraph, connectionOrigin, loadOwnerLens, updateOwnerLens, findOwnerMatches,
     confirmRetrieval: (preview, windowDays = 30) => confirm(preview, 'retrieval', windowDays),
     confirmPublicSource: preview => confirm(preview, 'public'),
     pollRetrieval: id => pollJob(id, 'retrieval'),
@@ -436,6 +444,7 @@ async function startBrowserApp() {
   let graphInstance = null;
   let mountedAccount = null;
   let mountedGraph = null;
+  let appliedPersonLink = null;
   let trailOwner = null;
   let signInSetup = null;
   let renderedEnvelope = null;
@@ -805,6 +814,10 @@ async function startBrowserApp() {
       onFindHelpers:(personId,brief)=>controller.helperPeople(personId,brief),
       onGetPersonContext:personId=>controller.getPersonContext(personId),
       onSavePersonContext:input=>controller.savePersonContext(input),
+      onStructurePersonContext:(personId,text)=>controller.structurePersonContext(personId,text),
+      onRemovePersonContextEntry:input=>controller.removePersonContextEntry(input),
+      onPersonMemorySaved:personId=>void controller.refreshPersonMemoryGraph(personId),
+      onSelect:({node})=>{if(!node?.id)return;const url=new URL(location.href);url.searchParams.set('person',node.id);history.replaceState(null,'',url.pathname+url.search);const current=controller.getState();appliedPersonLink=[current.account,current.source,node.id].join(':');},
       onMergePeople:(sourceId,targetId)=>controller.mergePeople(sourceId,targetId),
       onConfirmRelationship:(personId,confirmed)=>controller.confirmRelationship(personId,confirmed),
       onExcludeContribution:async personId=>{const source=controller.getState().source,account=controller.getState().account;await controller.excludeContribution(personId);document.querySelector('#contribution-undo')?.remove();const toast=document.createElement('div');toast.id='contribution-undo';toast.setAttribute('role','status');Object.assign(toast.style,{position:'fixed',bottom:'24px',left:'24px',zIndex:200,background:'#fff',padding:'16px',border:'1px solid #ddd',borderRadius:'12px',boxShadow:'0 4px 20px #0002'});toast.append('Removed from your shared contribution. ');const undo=document.createElement('button');undo.textContent='Undo';undo.onclick=async()=>{undo.disabled=true;try{await controller.excludeContribution(personId,true,source,account);toast.remove();}catch{undo.disabled=false;undo.textContent='Retry undo';}};toast.append(undo);document.body.append(toast);},
@@ -815,6 +828,8 @@ async function startBrowserApp() {
       onDraftNote: (personId,memberId) => openDraftNote(personId,memberId) });
     else if (mountedGraph !== state.graph) {clearNetworkSearch();graphInstance.setGraph(state.graph,{preserveFocus:state.graph.source==='workspace'&&mountedGraph?.workspaceId===state.graph.workspaceId&&mountedGraph?.revision===state.graph.revision});}
     mountedGraph = state.graph;
+    const linkedPerson=personDeepLinkId(state.graph,location.href),personLink=[state.account,state.source,linkedPerson].join(':');
+    if(linkedPerson&&personLink!==appliedPersonLink){appliedPersonLink=personLink;graphInstance.select(linkedPerson);}
     if(state.relevanceEnvelope && renderedEnvelope !== state.relevanceEnvelope){renderedEnvelope=state.relevanceEnvelope;graphInstance.setRelevance(renderedEnvelope,state.lens);}
     renderSessionTrails();
     status.textContent = state.workflowMessage || (state.retrievalJob?.status === 'running' ? `Retrieving context · ${state.retrievalJob.processed ?? 0} messages processed` : graphSourceLabel(state.graph));

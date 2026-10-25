@@ -860,7 +860,9 @@ export function mountGraph(element, options = {}) {
       const contact = directContact(node);
       scores.append(make('p','rg-source',contact ? `Your last recorded contact: ${contact.slice(0,10)}` : 'No dated direct contact in this data.'));
       if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`Activity strength: ${Math.round(node.strength)} · recency: ${Math.round(node.momentum)}${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
+      if(node.relationshipDelta)scores.append(make('p','rg-source',`${node.relationshipDelta>0?'+':''}${node.relationshipDelta} from your private relationship judgment.`));
       if(graph.personFeedback?.[node.id]){const undo=button('Undo person feedback','person-feedback','rg-text-button');undo.dataset.nodeId=node.id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy||!callbacks.onPersonFeedback;scores.append(undo);}
+      if(personFeedbackMessage){const status=make('p','rg-source',personFeedbackMessage);status.setAttribute('role','status');scores.append(status);}
       if(graph.source!=='workspace')panel.append(scores);
       if(graph.source==='workspace'){
         const section=make('section','rg-profile-section');section.append(make('h3','','Team relationships'));
@@ -887,11 +889,12 @@ export function mountGraph(element, options = {}) {
         }
         panel.append(routes);
       }
-      if(connectionOriginEnabled&&node.directRelationship!==false&&(!node.via?.length||node.directRelationship===true)&&typeof options.onGetPersonContext==='function'&&typeof options.onSavePersonContext==='function'){
+      if(connectionOriginEnabled&&(node.memoryEligible===true||node.directRelationship!==false&&(!node.via?.length||node.directRelationship===true))&&typeof options.onGetPersonContext==='function'&&typeof options.onSavePersonContext==='function'){
         // Canvas/layout updates must not replace an active text editor and lose its draft.
-        if(privateContextEditor?.personId!==node.id){const entry={personId:node.id,element:null,onSaved:null};entry.element=personContextEditor(document,{person:node,onLoad:options.onGetPersonContext,onSave:options.onSavePersonContext,onSaved:()=>entry.onSaved?.()});privateContextEditor=entry;}
+        if(privateContextEditor?.personId!==node.id){const entry={personId:node.id,element:null,onSaved:null};entry.element=personContextEditor(document,{person:node,people:graph.nodes,onLoad:options.onGetPersonContext,onSave:options.onSavePersonContext,onStructure:options.onStructurePersonContext?text=>options.onStructurePersonContext(node.id,text):undefined,onRemoveEntry:options.onRemovePersonContextEntry,onSaved:value=>entry.onSaved?.(value)});privateContextEditor=entry;}
         privateContextEditor.onSaved=()=>{
-          if(!helpers?.isConnected)return;const open=helpers.open,next=helperSection(document,graph,node.id,options.onFindHelpers);helpers.replaceWith(next);helpers=next;next.open=open;
+          if(helpers?.isConnected){const open=helpers.open,next=helperSection(document,graph,node.id,options.onFindHelpers,{onExplore:selectNode});helpers.replaceWith(next);helpers=next;next.open=open;}
+          options.onPersonMemorySaved?.(node.id);
         };panel.insertBefore(privateContextEditor.element,scores.parentNode===panel?scores:null);
       }
       const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[]).filter(signal=>signal.sourceType!=='gmail_subject'&&!/^(?:Activity involving\b|Recorded topic:|Subject metadata matched\b)/i.test((signal.summary||'').trim()))},node.id);
@@ -925,7 +928,7 @@ export function mountGraph(element, options = {}) {
       next.append(nextButton);
     }
     panel.append(next);
-    if(node.type==='person'){helpers=helperSection(document,graph,node.id,options.onFindHelpers);panel.append(helpers);}
+    if(node.type==='person'){helpers=helperSection(document,graph,node.id,options.onFindHelpers,{onExplore:selectNode});panel.append(helpers);}
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
     panel.append(actions);
@@ -1760,7 +1763,7 @@ export function mountGraph(element, options = {}) {
     if(action==='person-feedback') {
       if(personFeedbackBusy||!callbacks.onPersonFeedback)return;
       personFeedbackBusy=true;personFeedbackMessage='Saving…';render();
-      Promise.resolve(callbacks.onPersonFeedback(target.dataset.nodeId,target.dataset.feedback)).then(next=>{if(destroyed)return;if(next){graph=normalizeGraph(next);rebuildIndexes();}personFeedbackMessage='Saved. You can undo this in Reviewed people.';}).catch(error=>{if(!destroyed)personFeedbackMessage=error.serverMessage||'Could not save. Your choice was not applied; try again.';}).finally(()=>{personFeedbackBusy=false;if(!destroyed){panelMode='digest';render();}});return;
+      Promise.resolve(callbacks.onPersonFeedback(target.dataset.nodeId,target.dataset.feedback)).then(next=>{if(destroyed)return;if(next){graph=normalizeGraph(next);rebuildIndexes();}personFeedbackMessage=target.dataset.feedback==='clear'?'Person feedback cleared.':'Saved. You can undo this in Reviewed people.';}).catch(error=>{if(!destroyed)personFeedbackMessage=error.serverMessage||'Could not save. Your choice was not applied; try again.';}).finally(()=>{personFeedbackBusy=false;if(!destroyed)render();});return;
     }
     if(action==='attention-feedback'||action==='attention-reset') {
       if(action==='attention-reset')attentionFeedback={};
