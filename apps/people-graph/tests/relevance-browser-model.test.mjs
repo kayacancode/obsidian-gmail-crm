@@ -8,6 +8,13 @@ import { evidenceLines } from '../public/relationship-graph/graph.mjs';
 
 const NOW = '2026-09-14T12:00:00.000Z';
 
+test('private manual memory controls survive graph normalization with bounded preferences',()=>{
+ const person={id:'manual-a',name:'Ada',manual:true,memoryEligible:true,directRelationship:false,sources:['manual'],relationshipDelta:10,notBefore:'2026-12-01',pointPersonId:'jordan'};
+ const node=normalizeGraph({nodes:[person],edges:[]}).nodes[0];
+ assert.equal(node.manual,true);assert.equal(node.memoryEligible,true);assert.deepEqual(node.sources,['manual']);assert.equal(node.relationshipDelta,10);assert.equal(node.notBefore,'2026-12-01');assert.equal(node.pointPersonId,'jordan');
+ const bad=normalizeGraph({nodes:[{...person,relationshipDelta:99,notBefore:'soon',pointPersonId:'x'.repeat(201)}],edges:[]}).nodes[0];assert.equal(bad.relationshipDelta,0);assert.equal(bad.notBefore,null);assert.equal(bad.pointPersonId,null);
+});
+
 test('final wave browser retains safe public provenance and rejects unsafe navigation',()=>{
  const input=graphFixture(),s=input.themeSignals.find(s=>s.visibility==='public');
  const provenance={canonicalUrl:'https://example.com/research',publisherHost:'example.com',observedAt:NOW,retrievedAt:NOW,timeBasis:'observed'};
@@ -327,4 +334,31 @@ test('shared people keep the owners who shared them, bounded, and shared_via edg
   // owners is not: see the twenty-first-owner case below, which trims instead of throwing.
   assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: 'owner@example.test' }], edges: [] }), /via/i);
   assert.throws(() => normalizeGraph({ nodes: [{ id: 'a', name: 'Ada', via: ['x'.repeat(321)] }], edges: [] }), /via/i);
+});
+
+test('typed connections preserve source evidence without inventing a personal relationship',()=>{
+ const provenance={sourceType:'gmail',sourceId:'thread-123',title:'An introduction',url:'https://mail.google.com/mail/u/0/#all/thread-123'};
+ const input={nodes:[{id:'julian',name:'Julian'},{id:'nicole',name:'Nicole'}],edges:[{id:'intro',source:'julian',target:'nicole',type:'intro',kind:'cooccurrence',confidence:.95,direction:'source_to_target',provenance,observedAt:'2026-10-20',evidence:[{id:'mail',type:'intro',title:'Introduction',text:'Julian introduced Nicole.',date:'2026-10-20',confidence:.9,direction:'source_to_target',provenance}]},{id:'mixed',source:'nicole',target:'julian',types:['shared_email','shared_meeting']}]};
+ const g=normalizeGraph({...input,edges:normalizeGraph(input).edges}),intro=g.edges[0];
+ assert.deepEqual(intro.types,['introduced']);assert.equal(intro.label,'Intro');
+ assert.equal(intro.kind,'cooccurrence','an extracted introduction does not confirm a personal relationship');
+ assert.equal(intro.confidence,.95);assert.equal(intro.direction,'source_to_target');assert.equal(intro.provenance.sourceId,'thread-123');
+ assert.equal(intro.evidence[0].type,'introduced');assert.equal(intro.evidence[0].confidence,.9);assert.equal(intro.evidence[0].provenance.sourceType,'gmail');
+ assert.equal(g.edges[1].label,'Shared email · Meeting');assert.equal(g.edges[1].kind,'cooccurrence');
+});
+
+test('connection metadata drops malformed values and unsafe source links',()=>{
+ const g=normalizeGraph({nodes:[{id:'a',name:'A'},{id:'b',name:'B'}],edges:[{source:'a',target:'b',types:['shared_email'],confidence:2,direction:'guess',provenance:{sourceType:4,sourceId:{secret:true},url:'javascript:alert(1)',unexpected:'discard'},evidence:[{type:'made_up',confidence:-1,direction:'guess',provenance:{url:'data:text/html,unsafe'}}]}]});
+ const e=g.edges[0];assert.equal(e.kind,'cooccurrence');assert.equal(e.label,'Shared email');assert.equal(e.direction,null);assert.equal(e.confidence,null);assert.equal(e.provenance,null);assert.equal(e.evidence[0].type,null);assert.equal(e.evidence[0].provenance,null);
+});
+
+test('merged identity aliases keep only canonical targets in the visible graph',()=>{
+ const g=normalizeGraph({nodes:[{id:'canonical',name:'Julian',mergedProfiles:[{id:'old',name:'Julian Ruune',company:'Studio'}]}],edges:[],personAliases:{old:'canonical',missing:'hidden',canonical:'canonical'}});
+ assert.deepEqual(g.personAliases,{old:'canonical'});assert.deepEqual(g.nodes[0].mergedProfiles,[{id:'old',name:'Julian Ruune',company:'Studio'}]);
+});
+
+test('connection lists never infer direction or expose excluded neighbor identities',async()=>{
+ const {incidentConnections}=await import('../public/relationship-graph/connections.mjs');
+ const graph={nodes:[{id:'a',name:'A'},{id:'b',name:'B'},{id:'hidden',name:'Hidden',permission:'denied'}],edges:[{id:'email',source:'a',target:'b',types:['shared_email']},{id:'private',source:'a',target:'hidden'}]};
+ const connections=incidentConnections(graph,'a');assert.equal(connections.length,1);assert.equal(connections[0].person.id,'b');assert.equal(connections[0].direction,null);
 });

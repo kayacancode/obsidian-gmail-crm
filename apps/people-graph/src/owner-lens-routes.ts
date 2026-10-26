@@ -34,11 +34,12 @@ export async function ownerLensRoute(request:Request,env:MailEnv,owner:string){
    const lens=await stub.getOwnerLens();
    // Pending inferred updates are never used as a search request.
    if(!Object.values(lens.fields).some(value=>value.trim()))return json(await rankOwnerLens(env,{nodes:[]},lens.fields));
-   const graph=await stub.graph(),helperContext=await stub.helperContext();
-   const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext},lens.fields);
+   const recommendationMemory=await stub.recommendationMemory(),graph=await stub.graph(),helperContext=await stub.helperContext();
+   const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext,recommendationMemory},lens.fields);
    // A profile edit or source withdrawal in another tab supersedes an in-flight search.
    const current=await stub.getOwnerLens();
    if(['focus','needs','offers'].some(key=>current.fields[key as keyof typeof current.fields]!==lens.fields[key as keyof typeof lens.fields]))return json({error:'owner_lens_conflict'},409);
+   if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)return json({error:'person_context_conflict'},409);
    return json(result);
   }
   if(request.method==='GET')return json(await stub.getOwnerLens());

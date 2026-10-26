@@ -9,7 +9,7 @@ const fields={focus:'Building a clinic scheduling tool.',needs:'Validate nurse s
 const lens=()=>({revision:'rev',enabled:false,granolaEnabled:false,fields,updatedAt:null,suggestions:[],sources:[],honcho:{configured:false,status:'disabled',lastSync:null}});
 async function fixture(){
  const calls:string[]=[];let value:any=lens();
- const stub:any={bindOwner:async()=>calls.push('bind'),getOwnerLens:async()=>{calls.push('get');if(value instanceof Error)throw value;return value;},updateOwnerLens:async(input:any)=>{calls.push('save');assert.equal(input.revision,'rev');if(value instanceof Error)throw value;return value;},graph:async()=>{calls.push('graph');return {nodes:[],themeSignals:[]};},helperContext:async()=>[]};
+ const stub:any={bindOwner:async()=>calls.push('bind'),getOwnerLens:async()=>{calls.push('get');if(value instanceof Error)throw value;return value;},updateOwnerLens:async(input:any)=>{calls.push('save');assert.equal(input.revision,'rev');if(value instanceof Error)throw value;return value;},graph:async()=>{calls.push('graph');return {nodes:[],themeSignals:[]};},helperContext:async()=>[],recommendationMemory:async()=>({revision:'empty',people:{}})};
  const env:any={TOKEN_SECRET:'test',GOOGLE_CLIENT_ID:'test',MAIL:{getByName(owner:string){assert.equal(owner,'owner@example.test');calls.push('owner');return stub;}}};
  const cookie=sessionCookie(await makeSession('owner@example.test','test')).split(';')[0];
  const request=(path:string,body?:any,options:any={})=>worker.fetch(new Request('https://people.test'+path,{method:body===undefined?'GET':'POST',headers:{cookie,...(body===undefined?{}:{origin:'https://people.test'}),...options.headers},...(body===undefined?{}:{body:JSON.stringify(body)}),...options}),env);
@@ -81,3 +81,12 @@ test('empty owner fields perform no model calls and shared graphs cannot supply 
  const result=await f.request('/api/lens',{action:'granola',revision:'rev',enabled:true});assert.equal(result.status,503);assert.equal((await result.json() as any).error,'owner_lens_updating');assert.deepEqual(f.calls,['owner','bind','get']);
  f.set(new TypeError('The RPC receiver does not implement the method "setOwnerLensGranolaEnabled"'));assert.equal((await f.request('/api/lens',{action:'granola',revision:'rev',enabled:true})).status,503);
  });
+
+test('owner lens candidate memory is consumed privately and invalidates results when changed',async()=>{
+ const f=await fixture();let revision='one';
+ f.stub.graph=async()=>({nodes:[{id:'b',name:'Max'}],themeSignals:[]});
+ f.stub.recommendationMemory=async()=>({revision,people:{b:{personId:'b',text:'Max interviews nurses about clinic handoffs.',revision:'b-one',updatedAt:Date.now(),company:'',building:'',needs:'',offers:'',interests:[],relationship:'neutral',pointPersonId:null,notBefore:null,entries:[]}}});
+ const first=await f.request('/api/lens/matches',{});assert.equal(first.status,200);const body:any=await first.json();assert.equal(body.considered,1,'saved context must make this candidate eligible even without imported passages');
+ f.stub.helperContext=async()=>{revision='two';return [];};
+ const changed=await f.request('/api/lens/matches',{});assert.equal(changed.status,409);assert.deepEqual(await changed.json(),{error:'person_context_conflict'});
+});

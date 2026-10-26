@@ -37,13 +37,13 @@ const TYPE_LABELS = new Map([
   ['relationship', 'relationship'],
   ['worked_with', 'worked with'],
   ['met', 'met'],
-  ['introduced', 'introduced'],
-  ['introduced_by', 'introduced by'],
+  ['introduced', 'Intro'],
+  ['introduced_by', 'Intro'],
   ['collaborated', 'collaborated'],
   ['cooccurrence', 'co-occurrence'],
   ['co_recipient', 'co-recipient'],
-  ['shared_email', 'shared email'],
-  ['shared_meeting', 'shared meeting'],
+  ['shared_email', 'Shared email'],
+  ['shared_meeting', 'Meeting'],
   ['shared_via', 'shared via'],
   ['wiki_link', 'wiki link'],
   ['text_mention', 'text mention'],
@@ -173,7 +173,12 @@ function normalizeNode(raw, index) {
     photoUrl: photoUrl(raw.photoUrl ?? raw.photo),
     mergedProfiles:Array.isArray(raw.mergedProfiles)?raw.mergedProfiles.filter(p=>p&&typeof p.id==='string'&&typeof p.name==='string').slice(0,500).map(p=>({id:p.id,name:p.name,company:optionalString(p.company)})):[],
     identityMatchReady:raw.identityMatchReady===true,
-    sources:Array.isArray(raw.sources)?raw.sources.filter(s=>['web','obsidian'].includes(s)):[],
+    sources:Array.isArray(raw.sources)?raw.sources.filter(s=>['web','obsidian','manual'].includes(s)):[],
+    manual:raw.manual===true,
+    memoryEligible:raw.memoryEligible===true,
+    relationshipDelta:[-10,0,10].includes(raw.relationshipDelta)?raw.relationshipDelta:0,
+    notBefore:typeof raw.notBefore==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(raw.notBefore)&&Number.isFinite(Date.parse(raw.notBefore))&&new Date(raw.notBefore).toISOString().slice(0,10)===raw.notBefore?raw.notBefore:null,
+    pointPersonId:typeof raw.pointPersonId==='string'&&/^[A-Za-z0-9:_-]{1,200}$/.test(raw.pointPersonId)?raw.pointPersonId:null,
     photoPosition: optionalString(raw.photoPosition),
     viewerScore:raw.viewerScore&&Number.isFinite(raw.viewerScore.score)&&Number.isFinite(raw.viewerScore.base)&&[-10,0,10].includes(raw.viewerScore.delta)?{score:raw.viewerScore.score,base:raw.viewerScore.base,delta:raw.viewerScore.delta}:null,
     relationships: Array.isArray(raw.relationships)?raw.relationships.slice(0,20).map(r=>({memberId:String(r.memberId||''),...(r.calendarActivity&&['invited','bothAccepted','upcoming'].every(k=>Number.isSafeInteger(r.calendarActivity[k])&&r.calendarActivity[k]>=0)?{calendarActivity:{invited:r.calendarActivity.invited,bothAccepted:r.calendarActivity.bothAccepted,upcoming:r.calendarActivity.upcoming,lastInvite:optionalString(r.calendarActivity.lastInvite),nextInvite:optionalString(r.calendarActivity.nextInvite)}}:{}),...(Number.isSafeInteger(r.completedIntroductions)&&r.completedIntroductions>=0?{completedIntroductions:r.completedIntroductions}:{}),memberName:String(r.memberName||''),...(Number.isFinite(Date.parse(r.confirmedAt))?{confirmedAt:r.confirmedAt}:{}),score:Number.isFinite(r.score)?r.score:null,scoreVersion:String(r.scoreVersion||'unknown'),...(r.publishedScore&&['strength','momentum','combined'].every(k=>Number.isFinite(r.publishedScore[k])&&r.publishedScore[k]>=0&&r.publishedScore[k]<=100)?{publishedScore:{strength:r.publishedScore.strength,momentum:r.publishedScore.momentum,combined:r.publishedScore.combined}}:{}),observedAt:optionalString(r.observedAt),...(r.activity&&['sent','received','meetings'].every(k=>Number.isSafeInteger(r.activity[k])&&r.activity[k]>=0)?{activity:{version:1,sent:r.activity.sent,received:r.activity.received,meetings:r.activity.meetings,lastEmail:optionalString(r.activity.lastEmail),lastMeeting:optionalString(r.activity.lastMeeting)}}:{}),...(Array.isArray(r.inboxes)?{inboxes:r.inboxes.filter(v=>typeof v==='string').slice(0,20)}:{}),lastContact:optionalString(r.lastContact),evidenceCategory:optionalString(r.evidenceCategory)})):[],
@@ -202,6 +207,7 @@ function normalizeNode(raw, index) {
 }
 
 function legacyKind(raw) {
+  if (['personal', 'cooccurrence', 'interpretation'].includes(raw.kind)) return raw.kind;
   const values = [raw.kind, ...(Array.isArray(raw.types) ? raw.types : [])]
     .filter((value) => typeof value === 'string')
     .map((value) => value.toLowerCase());
@@ -211,10 +217,29 @@ function legacyKind(raw) {
   return values.some((value) => PERSONAL_TYPES.has(value)) ? 'personal' : 'cooccurrence';
 }
 
+function connectionType(value) {
+  if(typeof value!=='string')return null;
+  const type=({intro:'introduced',meeting:'shared_meeting'})[value.toLowerCase()]||value.toLowerCase();
+  return TYPE_LABELS.has(type)?type:null;
+}
+function connectionMetadata(raw) {
+  const p=raw.provenance,provenance={};
+  if(p&&typeof p==='object'&&!Array.isArray(p)){
+    for(const key of ['source','sourceType','sourceId','evidenceRef','title','introducerName','introducerPersonId'])if(typeof p[key]==='string'&&p[key].trim())provenance[key]=p[key].trim().slice(0,500);
+    const url=navigationUrl(p.url??p.canonicalUrl);if(url)provenance.url=url;
+    if(typeof p.observedAt==='string'&&Number.isFinite(Date.parse(p.observedAt)))provenance.observedAt=p.observedAt;
+  }
+  return {confidence:Number.isFinite(raw.confidence)&&raw.confidence>=0&&raw.confidence<=1?raw.confidence:null,
+    direction:['source_to_target','target_to_source','undirected'].includes(raw.direction)?raw.direction:null,
+    provenance:Object.keys(provenance).length?provenance:null};
+}
+
 function normalizeEvidence(raw, edgeId, index, inheritedOwner = null) {
   requireRecord(raw, `Evidence ${index} on edge ${edgeId}`);
   return {
     id: optionalString(raw.id, `${edgeId}:evidence:${index + 1}`),
+    type:connectionType(raw.type),
+    ...connectionMetadata(raw),
     title: optionalString(raw.title, ''),
     text: optionalString(raw.text ?? raw.context ?? raw.excerpt, ''),
     url: navigationUrl(raw.url ?? raw.sourceUrl),
@@ -240,18 +265,18 @@ function normalizeEdge(raw, index) {
   const evidenceInput = raw.evidence
     ? raw.evidence
     : contexts.map((text) => ({ text, date: raw.date ?? raw.eventDate }));
-  const rawTypes = (raw.types ?? [])
-    .filter((value) => typeof value === 'string' && value.trim());
-  const recognizedLabel = [raw.kind, ...rawTypes]
+  const rawTypes = [...(raw.types ?? []),raw.type,...evidenceInput.map(e=>e.type)].map(connectionType).filter(Boolean);
+  const recognizedLabel = (rawTypes.length ? rawTypes : [raw.kind])
     .filter((value) => typeof value === 'string')
     .map((value) => TYPE_LABELS.get(value.toLowerCase()))
-    .find(Boolean);
+    .filter(Boolean);
 
   return {
     id,
     source,
     target,
-    label: optionalString(raw.label, recognizedLabel ?? 'unspecified'),
+    ...connectionMetadata(raw),
+    label: optionalString(raw.label, [...new Set(recognizedLabel)].join(' · ') || 'Recorded connection'),
     kind: legacyKind(raw),
     owner,
     visibility: optionalString(raw.visibility),
@@ -500,13 +525,14 @@ export function normalizeGraph(input, { maxBytes = DEFAULT_MAX_BYTES } = {}) {
 
   const suppliedMeta = input.meta === undefined ? {} : requireRecord(input.meta, 'Graph meta');
   return {
-    source:input.source==='workspace'?'workspace':null,
+    source:['workspace','email_accounts','obsidian'].includes(input.source)?input.source:null,
     workspaceName:optionalString(input.workspaceName),
     workspaceId:optionalString(input.workspaceId),revision:Number.isSafeInteger(input.revision)?input.revision:0,
     members:Array.isArray(input.members)?input.members.map(m=>({id:String(m.id),name:String(m.name),isMe:m.isMe===true})):[],
     introductionSuggestions:Array.isArray(input.introductionSuggestions)?input.introductionSuggestions.filter(p=>Array.isArray(p.personIds)&&p.personIds.length===2&&p.personIds.every(id=>nodeIds.has(id))&&Array.isArray(p.evidence)).slice(0,12):[],
     sourceCoverage:Array.isArray(input.coverage?.sources)?input.coverage.sources:[],
     viewerPrivateContext:input.source==='workspace'?Object.fromEntries(Object.entries(input.viewerPrivateContext||{}).filter(([id,records])=>nodeIds.has(id)&&Array.isArray(records)).slice(0,2000).map(([id,records])=>[id,records.filter(r=>r&&typeof r.summary==='string'&&typeof r.observedAt==='string'&&Number.isFinite(Date.parse(r.observedAt))).slice(0,10).map(r=>({summary:r.summary.slice(0,1000),observedAt:r.observedAt,sourceType:optionalString(r.sourceType),title:optionalString(r.title)}))])):{},
+    personAliases:input.personAliases&&typeof input.personAliases==='object'&&!Array.isArray(input.personAliases)?Object.fromEntries(Object.entries(input.personAliases).filter(([from,to])=>typeof to==='string'&&nodeIds.has(to)&&from!==to).slice(0,10000)):{},
     nodes,
     edges,
     activity: (Array.isArray(input.activity) ? input.activity : []).filter(e=>e && ['email','meeting','calendar'].includes(e.kind) && Number.isFinite(Date.parse(e.at)) && Array.isArray(e.personIds)).map(e=>({id:String(e.id),kind:e.kind,at:e.at,end:optionalString(e.end),allDay:e.allDay===true,status:e.status==='accepted'?'accepted':'invited',url:typeof e.url==='string'&&e.url.startsWith('https://calendar.google.com/')?e.url:null,acceptedPersonIds:Array.isArray(e.acceptedPersonIds)?e.acceptedPersonIds.filter(id=>nodeIds.has(id)):[],title:String(e.title||''),source:String(e.source||''),personIds:e.personIds.filter(id=>nodes.some(n=>n.id===id))})),

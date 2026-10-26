@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {resolve,sep,extname} from 'node:path';
+const publicRoot=fileURLToPath(new URL('../public/',import.meta.url));
+const server=createServer(async(req,res)=>{const pathname=new URL(req.url,'http://local').pathname;if(pathname==='/'){res.end('<html><body></body></html>');return;}const path=resolve(publicRoot,'.'+pathname);if(!path.startsWith(publicRoot)){res.writeHead(404).end();return;}try{res.setHeader('content-type',({'.mjs':'text/javascript','.css':'text/css'})[extname(path)]||'text/html');res.end(await readFile(path));}catch{res.writeHead(404).end();}});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+try{
+ const page=await browser.newPage({viewport:{width:1200,height:850}}),errors=[];page.setDefaultTimeout(4000);page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(('http://127.0.0.1:'+server.address().port)+'/');
+ await page.setContent('<link rel="stylesheet" href="/relationship-graph/graph.css"><link rel="stylesheet" href="/relationship-host.css"><link rel="stylesheet" href="/atlas.css"><div id="map" style="width:1100px"></div>');
+ await page.evaluate(async()=>{
+  const {mountGraph}=await import('/relationship-graph/graph.mjs');
+  const r=memberId=>({memberId,score:100,evidenceCategory:'email',activity:{sent:2,received:2,meetings:0}});
+  window.graph={source:'workspace',workspaceId:'team',members:[{id:'me',name:'Me',isMe:true},{id:'other',name:'Other'}],nodes:[{id:'julian',name:'Julian Ruune',relationships:[r('other')]},{id:'nicole',name:'Nicole',relationships:[r('me')]},{id:'denied',name:'Hidden person',permission:'denied',relationships:[r('other')]}],edges:[{id:'intro',source:'nicole',target:'julian',type:'intro',direction:'source_to_target',confidence:.9,kind:'cooccurrence',evidence:[{id:'mail',type:'intro',title:'Introduction from Nicole',date:'2026-10-20',provenance:{sourceType:'gmail',introducerName:'Nicole',sourceId:'thread-123',url:'https://mail.google.com/mail/u/0/#all/thread-123'}}]},{id:'email',source:'julian',target:'nicole',types:['shared_email'],evidence:[{title:'Shared thread',date:'2026-10-18'}]},{id:'hidden',source:'julian',target:'denied',types:['shared_email']}]};
+  document.body.classList.add('shared-simple');window.viewer=mountGraph(document.querySelector('#map'),{graph:window.graph,simpleShared:true});
+ });
+ assert.equal(await page.getByRole('button',{name:'Explore Nicole',exact:true}).count(),0,'discovery excludes existing direct contacts initially');
+ await page.getByRole('button',{name:'Explore Julian Ruune',exact:true}).click();
+ assert.equal(await page.getByRole('button',{name:'Explore Nicole',exact:true}).count(),1,'selected person reveals an incident neighbor');
+ assert.equal(await page.getByRole('button',{name:'Explore Hidden person',exact:true}).count(),0,'selection never reveals denied identities');
+ for(let i=0;i<3;i++)await page.getByRole('button',{name:'Zoom out',exact:true}).click();
+ assert.ok(await page.locator('.rg-edge-label[data-edge-id="intro"]').isVisible(),'selected edge labels survive overview zoom');
+ const introLabel=await page.locator('.rg-edge-label[data-edge-id="intro"]').boundingBox(),emailLabel=await page.locator('.rg-edge-label[data-edge-id="email"]').boundingBox();assert.ok(introLabel.y+introLabel.height<=emailLabel.y||emailLabel.y+emailLabel.height<=introLabel.y,'different evidence types between the same people remain individually readable');
+ await page.locator('.rg-edge-label[data-edge-id="intro"]').click();
+ const intro=page.locator('.sh-detail .rg-connection[data-edge-id="intro"]');
+ assert.equal(await intro.getAttribute('open'),'');assert.match(await intro.innerText(),/Incoming/);assert.match(await intro.innerText(),/Introduction from Nicole/);assert.match(await intro.innerText(),/2026-10-20/);assert.match(await intro.innerText(),/gmail/);
+ assert.equal(await intro.getByRole('link',{name:'Open source'}).getAttribute('href'),'https://mail.google.com/mail/u/0/#all/thread-123');
+ assert.match(await page.locator('.sh-detail [aria-label="Connections"]').innerText(),/Shared email/);
+ await page.evaluate(()=>{window.viewer.setSearchAnswer({query:'Julian',results:[{personId:'julian'}]});window.viewer.select('julian');});
+ assert.equal(await page.getByRole('button',{name:'Explore Nicole',exact:true}).count(),1,'neighbors survive result-only search');
+ await page.locator('.sh-detail [aria-label="Connections"]').getByRole('button',{name:'Open Nicole',exact:true}).first().click();
+ assert.equal(await page.locator('.sh-detail h2').first().innerText(),'Nicole');
+ await page.locator('.rg-edge-label[data-edge-id="intro"]').click();assert.match(await page.locator('.sh-detail .rg-connection[data-edge-id="intro"]').innerText(),/Outgoing/);
+ await page.screenshot({path:'/tmp/typed-connections-shared.png'});
+ await page.evaluate(async()=>{
+  document.body.classList.remove('shared-simple');window.viewer.destroy();document.querySelector('#map').replaceChildren();
+  const {mountGraph}=await import('/relationship-graph/graph.mjs');
+  const graph={...window.graph,source:'email_accounts',personAliases:{old_julian:'julian'},nodes:window.graph.nodes.filter(n=>n.id!=='denied').map(n=>({...n,memoryEligible:true,mergedProfiles:n.id==='julian'?[{id:'old_julian',name:'Julian’s old profile',company:'Old studio'}]:[]})),edges:window.graph.edges.filter(e=>e.id!=='hidden')};
+  window.viewer=mountGraph(document.querySelector('#map'),{graph,onMergePeople:async()=>{},onUnmergePeople:async()=>{},onGetPersonContext:async()=>({text:'Current note',aliasMemories:[{personId:'old_julian',text:'Original note from the other record',company:'Old studio',building:'A creative tool',needs:'Design partners',offers:'Art direction',interests:['Generative tools'],entries:[{text:'Very old source note',createdAt:1700000000000}]}]}),onSavePersonContext:async()=>({})});
+  window.viewer.select('old_julian');
+ });
+ await page.getByText('Current note',{exact:true}).waitFor();
+ assert.equal(await page.getByText('Duplicate profiles',{exact:true}).count(),1,'owner identity corrections remain available after normalization');
+ await page.getByText('Context from combined profiles',{exact:true}).click();
+ assert.match(await page.locator('.rg-alias-context').innerText(),/Original note from the other record/);assert.match(await page.locator('.rg-alias-context').innerText(),/Julian’s old profile/);assert.match(await page.locator('.rg-alias-context').innerText(),/Design partners/);assert.match(await page.locator('.rg-alias-context').innerText(),/Very old source note/);
+ assert.deepEqual(errors,[]);console.log('Typed connections: selection, permissions, labels, source inspection, inverse direction and search passed');
+}finally{await browser.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}

@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import {attentionDigest, activityTimeline, inWindow, dailyDigest, connectionSummary, introductionCandidates, directContact} from '../public/relationship-graph/intelligence.mjs';
 
 const now = new Date('2026-09-23T12:00:00Z');
+test('private memory pauses recommendations and routes through a selected point person',()=>{
+ const graph={nodes:[{id:'a',name:'Ada',notBefore:'2026-09-24',pointPersonId:'j'},{id:'j',name:'Jordan'}],activity:[],themeSignals:[{id:'q',personId:'a',sourceType:'granola',visibility:'private',observedAt:'2026-09-22',evidenceRef:'n1',summary:'Can you introduce Ada?'}]};
+ assert.equal(attentionDigest(graph,{},now).length,0);
+ graph.nodes[0].notBefore='2026-09-23';const item=attentionDigest(graph,{},now)[0];assert.equal(item.personId,'a');assert.match(item.reason,/Check with Jordan first/);assert.equal(item.kind,'question');
+ graph.nodes[1].permission='denied';assert.doesNotMatch(attentionDigest(graph,{},now)[0].reason,/Jordan/);
+});
 test('time windows reject missing, future and prior-week activity',()=>{
   assert.equal(inWindow(null,'week',now),false);
   assert.equal(inWindow('2026-09-24','week',now),false);

@@ -1,4 +1,7 @@
+import {renderPersonIdentity} from './person-identity.mjs';
+import {connectionSection,incidentConnections} from './connections.mjs';
 import {helperSection} from './helper-suggestions.mjs';
+import {personContextEditor} from './person-context.mjs';
 import {sharedHome,sharedHomePersonAllowed} from './shared-home.mjs';
 import {weeklyContext,weeklyPanel} from './weekly-context.mjs';
 import {discoveryCards,readinessPanel} from './shared-discovery.mjs';
@@ -128,6 +131,7 @@ export function mountGraph(element, options = {}) {
   let nodeIndex;
   let edgesByNode;
   let selectedId = null;
+  let privateContextEditor=null;
   let timeWindow = 'all';
   let topicsOpen = false;
   let walkHistory=[];
@@ -273,7 +277,7 @@ export function mountGraph(element, options = {}) {
   function clearContact(){contactFocus=null;suggestionPopup?.destroy();suggestionPopup=null;contactOverlay?.destroy();contactOverlay=null;contactLayer?.remove();contactLayer=null;routeStrip?.remove();routeStrip=null;root.dataset.contactFocus='false';delete element.dataset.walkOpen;for(const n of root.querySelectorAll('[data-contact-target]'))delete n.dataset.contactTarget;}
   function contactContainer(){contactLayer=document.createElement('div');contactLayer.className='nc-layer';element.append(contactLayer);return contactLayer;}
   function highlightContact(id){root.dataset.contactFocus='true';for(const n of root.querySelectorAll('.rg-node'))n.dataset.contactTarget=String(n.dataset.nodeId===id);const links=new Set((edgesByNode.get(id)||[]).map(e=>e.id));for(const e of root.querySelectorAll('.rg-edge'))e.dataset.contactTarget=String(links.has(e.dataset.edgeId));}
-  function showContact(id,continued=null,startIndex=0,suggestionContext=null){if(simpleShared()){homePerson=id;selectedId=id;render();const heading=root.querySelector('.sh-detail h2');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
+  function showContact(id,continued=null,startIndex=0,suggestionContext=null){id=graph.personAliases?.[id]||id;if(simpleShared()){homePerson=id;selectedId=id;render();const heading=root.querySelector('.sh-detail h2');heading?.setAttribute('tabindex','-1');heading?.focus();return;}const card=contactCard(graph,id,searchAnswer);if(!card)return;if(!continued)walkBackStack=[];clearContact();highlightContact(id);
     options.onPersonFocus?.(id);
     const walk=continued||personWalk(graph,id,pathGraph),container=contactContainer();
 
@@ -415,7 +419,7 @@ export function mountGraph(element, options = {}) {
     return {mutual,connected};
   }
 
-  function canvasMatches(){
+  function baseCanvasMatches(){
     const matches=searchGraph(relevanceGraph,query).filter(n=>!simpleShared()||sharedHomePersonAllowed(n));
     if(simpleShared()&&searchAnswer){const ids=new Set(searchAnswer.results.map(r=>r.personId));return matches.filter(n=>ids.has(n.id));}
     if(graph.source!=='workspace')return matches;
@@ -424,6 +428,17 @@ export function mountGraph(element, options = {}) {
     const introduction=activeThemeId.startsWith('__intro:')?introductionCards.find(p=>p.id===activeThemeId.slice(8)):null;
     const ids=introduction?new Set(introduction.personIds):activeThemeId==='__connections'?sharedConnectionIds().connected:new Set(rankedThemes().find(t=>t.themeId===activeThemeId)?.nodeIds||[]);
     return matches.filter(n=>ids.has(n.id));
+  }
+
+  function canvasMatches(){
+    const matches=baseCanvasMatches();
+    if(!selectedId)return matches;
+    const allowed=n=>graph.source==='workspace'?sharedHomePersonAllowed(n):!['denied','conflicted'].includes(n.permission)&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved';
+    const selected=graph.nodes.find(n=>n.id===selectedId&&allowed(n));
+    if(!selected)return matches;
+    const nodes=new Map(matches.map(n=>[n.id,n]));nodes.set(selected.id,selected);
+    for(const {person} of incidentConnections(graph,selectedId,allowed))nodes.set(person.id,person);
+    return [...nodes.values()];
   }
 
   function promotedThemes() {
@@ -581,6 +596,7 @@ export function mountGraph(element, options = {}) {
     const scale = layout.fitScale * camera.zoom;
     canvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
     canvas.dataset.detail = String(panelMode==='topic' || data.isPath || scale >= .8);
+    canvas.dataset.selected=String(Boolean(selectedId));
     let scene = canvas;
     if (!data.isPath) {
       const viewport = make('div', 'rg-map-viewport');
@@ -669,6 +685,9 @@ export function mountGraph(element, options = {}) {
       }
     });
     const bridgeIds=graph.source==='workspace'?sharedConnectionIds().mutual:new Set();
+    const parallelLabels=new Map(),pairLabels=new Map();
+    for(const edge of data.edges){const pair=JSON.stringify([edge.source,edge.target].sort());if(!pairLabels.has(pair))pairLabels.set(pair,[]);pairLabels.get(pair).push(edge.id);}
+    for(const ids of pairLabels.values())ids.forEach((id,i)=>parallelLabels.set(id,i-(ids.length-1)/2));
     data.edges.forEach((edge, edgeIndex) => {
       const source = positions.get(edge.source);
       const target = positions.get(edge.target);
@@ -687,6 +706,7 @@ export function mountGraph(element, options = {}) {
       if (!selectedId && !data.isPath) return;
       const edgeButton = button(edge.label, 'inspect-edge', 'rg-edge-label');
       edgeButton.dataset.edgeId = edge.id;
+      edgeButton.style.setProperty('--edge-label-row',String(data.isPath?0:parallelLabels.get(edge.id)||0));
       edgeButton.dataset.uncertain = String(edge.kind !== 'personal');
       edgeButton.style.left = data.isPath ? `${((source.x + target.x) / 2) / 10}%` : `${(source.x + target.x) / 2}px`;
       edgeButton.style.top = data.isPath ? `${((source.y + target.y) / 2) / 7.8}%` : `${(source.y + target.y) / 2}px`;
@@ -832,6 +852,7 @@ export function mountGraph(element, options = {}) {
     const node = byId.get(selectedId);
     if (!node) return null;
     const panel = make('section', 'rg-context-panel');
+    let helpers;
     panel.setAttribute('aria-label', 'Selected item and connections');
     panel.append(button('×', 'close-panel', 'rg-close'));
     panel.lastElementChild.setAttribute('aria-label', 'Close details');
@@ -840,6 +861,7 @@ export function mountGraph(element, options = {}) {
     panel.append(portrait, make('p', 'rg-eyebrow', node.type), make('h2', '', node.name));
     if(node.type==='person'){
       panel.append(renderConnectionOrigin(node));
+      if(graph.source!=='workspace'){const identity=renderPersonIdentity({graph,person:node,onMergePeople:options.onMergePeople,onUnmergePeople:options.onUnmergePeople});if(identity)panel.append(identity);}
     }
     const walkStart=button('Explore from here','walk-person','rg-text-button');walkStart.dataset.nodeId=node.id;panel.append(walkStart);
     if (node.description) panel.append(make('p', 'rg-copy', node.description));
@@ -857,7 +879,9 @@ export function mountGraph(element, options = {}) {
       const contact = directContact(node);
       scores.append(make('p','rg-source',contact ? `Your last recorded contact: ${contact.slice(0,10)}` : 'No dated direct contact in this data.'));
       if(Number.isFinite(node.combined))scores.append(make('p','rg-source',`Activity strength: ${Math.round(node.strength)} · recency: ${Math.round(node.momentum)}${node.feedbackDelta ? ` · ${node.feedbackDelta>0?'+':''}${node.feedbackDelta} from your feedback (base ${Math.round(node.baseCombined)})`:''}`));
+      if(node.relationshipDelta)scores.append(make('p','rg-source',`${node.relationshipDelta>0?'+':''}${node.relationshipDelta} from your private relationship judgment.`));
       if(graph.personFeedback?.[node.id]){const undo=button('Undo person feedback','person-feedback','rg-text-button');undo.dataset.nodeId=node.id;undo.dataset.feedback='clear';undo.disabled=personFeedbackBusy||!callbacks.onPersonFeedback;scores.append(undo);}
+      if(personFeedbackMessage){const status=make('p','rg-source',personFeedbackMessage);status.setAttribute('role','status');scores.append(status);}
       if(graph.source!=='workspace')panel.append(scores);
       if(graph.source==='workspace'){
         const section=make('section','rg-profile-section');section.append(make('h3','','Team relationships'));
@@ -884,7 +908,15 @@ export function mountGraph(element, options = {}) {
         }
         panel.append(routes);
       }
-      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[]).filter(signal=>signal.sourceType!=='gmail_subject')},node.id);
+      if(connectionOriginEnabled&&(node.memoryEligible===true||node.directRelationship!==false&&(!node.via?.length||node.directRelationship===true))&&typeof options.onGetPersonContext==='function'&&typeof options.onSavePersonContext==='function'){
+        // Canvas/layout updates must not replace an active text editor and lose its draft.
+        if(privateContextEditor?.personId!==node.id){const entry={personId:node.id,element:null,onSaved:null};entry.element=personContextEditor(document,{person:node,people:graph.nodes,onLoad:options.onGetPersonContext,onSave:options.onSavePersonContext,onStructure:options.onStructurePersonContext?text=>options.onStructurePersonContext(node.id,text):undefined,onRemoveEntry:options.onRemovePersonContextEntry,onSaved:value=>entry.onSaved?.(value)});privateContextEditor=entry;}
+        privateContextEditor.onSaved=()=>{
+          if(helpers?.isConnected){const open=helpers.open,next=helperSection(document,graph,node.id,options.onFindHelpers,{onExplore:selectNode});helpers.replaceWith(next);helpers=next;next.open=open;}
+          options.onPersonMemorySaved?.(node.id);
+        };panel.insertBefore(privateContextEditor.element,scores.parentNode===panel?scores:null);
+      }
+      const context=personContext({...graph,themeSignals:graph.source==='workspace'?relevanceGraph.themeSignals:ownSignals(relevanceGraph.themeSignals??[]).filter(signal=>signal.sourceType!=='gmail_subject'&&!/^(?:Activity involving\b|Recorded topic:|Subject metadata matched\b)/i.test((signal.summary||'').trim()))},node.id);
       if(context.length){const notes=make('section','rg-profile-section');notes.append(make('h3','','Recent context'));for(const e of context.slice(0,3))notes.append(contextBlock(document,e));notes.append(make('p','rg-source','Note context is separate from contact activity; a mention does not confirm attendance.'));panel.insertBefore(notes,scores.parentNode===panel?scores:null);}
       panel.append(button(`Find a path from ${node.name.split(/\s+/)[0]} ↗`, 'start-path', 'rg-person-action'));
       if (typeof callbacks.onRetrievePreview === 'function') panel.append(button('Retrieve more context', 'retrieve-person-context', 'rg-theme-action'));
@@ -901,21 +933,9 @@ export function mountGraph(element, options = {}) {
         panel.append(badge);
       }
     }
-    const next = make('div', 'rg-next');
-    const seen = new Set();
-    for (const edge of edgesByNode.get(node.id) ?? []) {
-      const id = other(edge, node.id);
-      if (seen.has(id) || seen.size >= 8) continue;
-      seen.add(id);
-      const nextButton = button('', 'select-node');
-      nextButton.dataset.nodeId = id;
-      const text = make('span');
-      text.append(make('strong', '', byId.get(id).name), make('small', '', edge.label));
-      nextButton.append(text, make('span', '', '↗'));
-      next.append(nextButton);
-    }
-    panel.append(next);
-    if(node.type==='person')panel.append(helperSection(document,graph,node.id,options.onFindHelpers));
+    const connections=connectionSection(document,graph,node.id,{allowed:n=>!['denied','conflicted'].includes(n.permission)&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved',onPerson:selectNode,selectedEdgeId});
+    if(connections)panel.append(connections);
+    if(node.type==='person'){helpers=helperSection(document,graph,node.id,options.onFindHelpers,{onExplore:selectNode});panel.append(helpers);}
     const actions = make('div', 'rg-actions');
     actions.append(button('Save trail', 'save-trail'), button('Canvas ↗', 'close-panel'));
     panel.append(actions);
@@ -1445,12 +1465,14 @@ export function mountGraph(element, options = {}) {
   }
 
   function render(focusAction = null) {
+    if(privateContextEditor?.personId!==selectedId||panelMode!=='node')privateContextEditor=null;
     if (destroyed) return;
     refreshRelevance();
     root.dataset.profileOpen = String(Boolean(panelMode && !pathState));
     root.dataset.demo = String(demoEnabled());
     root.dataset.workspace = String(graph.source==='workspace');
     const focusedSearch=simpleShared()&&document.activeElement?.matches('.sh-search input')?{start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd}:null;
+    const contextFocus=privateContextEditor?.element.contains(document.activeElement)?{element:document.activeElement,start:document.activeElement.selectionStart,end:document.activeElement.selectionEnd,direction:document.activeElement.selectionDirection,scrollTop:document.activeElement.scrollTop}:null;
     root.replaceChildren();
     root.dataset.simpleShared=String(simpleShared());
     if(simpleShared()){
@@ -1465,7 +1487,7 @@ export function mountGraph(element, options = {}) {
       const controls=make('nav','sh-map-controls');controls.setAttribute('aria-label','Map controls');
       controls.append(button('−','zoom-out'),button('+','zoom-in'),button('Fit','fit'));controls.children[0].setAttribute('aria-label','Zoom out');controls.children[1].setAttribute('aria-label','Zoom in');
       const all=make('button','',guidedOverview?'Show all people':'Focused view');all.type='button';all.onclick=()=>{guidedOverview=!guidedOverview;homePerson=null;selectedId=null;camera={x:0,y:0,zoom:1};render();};controls.append(all);canvas.append(controls);stage.append(canvas);
-      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,onFindHelpers:options.onFindHelpers,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
+      if(homePerson&&byId.has(homePerson))stage.append(sharedHome(document,graph,{answer:searchAnswer,selectedId:homePerson,compact:true,selectedEdgeId,onPerson:id=>showContact(id),onFindHelpers:options.onFindHelpers,onMerge:options.onMergePeople,onBack:()=>{const id=homePerson;homePerson=null;selectedId=null;render();[...root.querySelectorAll('.rg-node')].find(node=>node.dataset.nodeId===id)?.focus({preventScroll:true});},onIntro:options.onIntroductionRequest?(card,memberId)=>showIntroduction({card,memberId}):undefined}));
       root.append(stage);
       if(focusedSearch){const input=root.querySelector('.sh-search input');input?.focus({preventScroll:true});input?.setSelectionRange(focusedSearch.start,focusedSearch.end);}
       return;
@@ -1582,9 +1604,15 @@ export function mountGraph(element, options = {}) {
       root.append(status);
     }
     if (focusAction) root.querySelector(`[data-action="${focusAction}"]`)?.focus();
+    else if(contextFocus?.element.isConnected){
+      contextFocus.element.focus({preventScroll:true});
+      if(typeof contextFocus.start==='number')contextFocus.element.setSelectionRange(contextFocus.start,contextFocus.end,contextFocus.direction);
+      contextFocus.element.scrollTop=contextFocus.scrollTop;
+    }
   }
 
   function selectNode(id, { notify = true } = {}) {
+    id=graph.personAliases?.[id]||id;
     if(byId.get(id)?.memberId)return;
     if (destroyed || !byId.has(id)) return;
     if(graph.source==='workspace'&&graph.members.length&&!pathState){showContact(id);return;}
@@ -1706,7 +1734,7 @@ export function mountGraph(element, options = {}) {
       const layout=cameraLayout,scale=layout.fitScale*camera.zoom;
       cameraScene.style.transform=`translate(${(layout.usableWidth-layout.worldWidth*scale)/2+camera.x}px, ${(layout.usableHeight-layout.worldHeight*scale)/2+camera.y}px) scale(${scale})`;
       cameraCanvas.style.setProperty('--map-scale',String(Math.max(.1,scale)));
-      cameraCanvas.dataset.detail=String(scale>=.8);
+      cameraCanvas.dataset.detail=String(panelMode==='topic'||Boolean(currentRoute())||scale>=.8);
       const label=root.querySelector('.rg-zoom-value');if(label)label.textContent=`${Math.round(scale*100)}%`;
       if(focusAction)root.querySelector(`[data-action="${focusAction}"]`)?.focus({preventScroll:true});
     });
@@ -1743,7 +1771,7 @@ export function mountGraph(element, options = {}) {
     if(action==='person-feedback') {
       if(personFeedbackBusy||!callbacks.onPersonFeedback)return;
       personFeedbackBusy=true;personFeedbackMessage='Saving…';render();
-      Promise.resolve(callbacks.onPersonFeedback(target.dataset.nodeId,target.dataset.feedback)).then(next=>{if(destroyed)return;if(next){graph=normalizeGraph(next);rebuildIndexes();}personFeedbackMessage='Saved. You can undo this in Reviewed people.';}).catch(error=>{if(!destroyed)personFeedbackMessage=error.serverMessage||'Could not save. Your choice was not applied; try again.';}).finally(()=>{personFeedbackBusy=false;if(!destroyed){panelMode='digest';render();}});return;
+      Promise.resolve(callbacks.onPersonFeedback(target.dataset.nodeId,target.dataset.feedback)).then(next=>{if(destroyed)return;if(next){graph=normalizeGraph(next);rebuildIndexes();}personFeedbackMessage=target.dataset.feedback==='clear'?'Person feedback cleared.':'Saved. You can undo this in Reviewed people.';}).catch(error=>{if(!destroyed)personFeedbackMessage=error.serverMessage||'Could not save. Your choice was not applied; try again.';}).finally(()=>{personFeedbackBusy=false;if(!destroyed)render();});return;
     }
     if(action==='attention-feedback'||action==='attention-reset') {
       if(action==='attention-reset')attentionFeedback={};
@@ -2019,6 +2047,7 @@ export function mountGraph(element, options = {}) {
     },
     setGraph(nextGraph, {preserveFocus=false}={}) {
       if (destroyed) return;
+      privateContextEditor=null;
       clearConnectionOrigins();
       connectionOriginEnabled=nextGraph.source==='email_accounts';
       const previousFocus=preserveFocus?contactFocus:null;

@@ -27,6 +27,7 @@
 .rg-node[data-answer-match='true'] .rg-portrait { outline:1px solid var(--rg-orange); outline-offset:3px; }
 .rg-profile-portrait { width:110px; height:125px; margin-bottom:20px; }
 .rg-profile-section { border-top:1px solid var(--rg-line); margin:18px 0; padding-top:14px; }
+.rg-person-context label{display:block;line-height:1.5}.rg-person-context textarea{display:block;box-sizing:border-box;width:100%;min-height:130px;margin:10px 0 5px;padding:12px;border:1px solid var(--rg-line);border-radius:8px;background:var(--rg-background);color:var(--rg-foreground);font:inherit;font-size:14px;line-height:1.5;resize:vertical}.rg-context-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}.rg-context-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:12px}.rg-context-actions button{min-height:38px}.rg-context-save{border:0;border-radius:8px;background:#303f31;color:#fff!important;padding:10px 16px}.rg-context-actions button:disabled{opacity:.5;cursor:default}.rg-context-status{font-size:12px;line-height:1.5}.rg-context-status button{display:block;margin-top:8px}
 .rg-profile-score { font:32px/1.2 Georgia,serif; margin:8px 0; }
 .rg-how-you-know { margin:0 0 18px; overflow-wrap:anywhere; }
 .rg-connection-line { margin:0 0 5px; font-size:14px; line-height:1.5; color:var(--rg-foreground); }
@@ -1033,3 +1034,18 @@
 .rg-helper-refine>summary{font-size:13px;font-weight:500;color:#56624f}
 .rg-helper-refine form{margin-top:12px}
 .rg-helper-card>details>summary{font-size:13px;color:#56624f}
+.rg-memory-fields{margin:16px 0;border-top:1px solid var(--rg-line,#e2e5dd);padding-top:12px}.rg-memory-fields summary{cursor:pointer;font-size:14px;font-weight:600}.rg-memory-fields label{margin-top:14px}.rg-person-context .rg-memory-fields textarea{min-height:80px}.rg-person-context input,.rg-person-context select{display:block;box-sizing:border-box;width:100%;min-width:0;max-width:100%;padding:10px;margin:8px 0;border:1px solid var(--rg-line,#d7ddd2);border-radius:8px;background:var(--rg-background,#fff);color:inherit;font:inherit;font-size:14px}.rg-memory-facts{margin:16px 0}.rg-memory-facts dt{font-size:12px;font-weight:600;color:#56624f;margin-top:12px}.rg-memory-facts dd{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px;line-height:1.6}.rg-memory-updates{margin-top:20px}.rg-memory-updates summary{cursor:pointer}.rg-memory-updates article{margin-top:14px;padding-top:12px;border-top:1px solid var(--rg-line,#e2e5dd)}.rg-memory-updates small,.rg-memory-updates button{display:block;margin-top:8px}.rg-context-actions small{flex-basis:100%}.rg-person-context form{max-width:100%;min-width:0}.rg-helper-actions{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}.rg-helper-copy-status{font-size:12px;color:#56624f}
+
+.rg-connections { margin-block: 18px; }
+.rg-connection { border-top: 1px solid #8883; padding: 12px 0; overflow-wrap: anywhere; }
+.rg-connection summary { cursor: pointer; font-size: 14px; line-height: 1.5; }
+.rg-connection-evidence { padding: 10px 0; font-size: 13px; }
+.rg-connection-evidence + .rg-connection-evidence { border-top: 1px solid #8882; }
+.rg-connection-evidence .rg-source { font-size: 12px; }
+.rg-canvas[data-selected='true'] .rg-edge-label { display: block; }
+.rg-canvas[data-path='false'] .rg-edge-label {
+  font-size: calc(11px / var(--map-scale, 1));
+  max-width: calc(180px / var(--map-scale, 1));
+  padding: calc(5px / var(--map-scale, 1)) calc(7px / var(--map-scale, 1));
+  transform: translate(-50%, -50%) translateY(calc(var(--edge-label-row, 0) * 32px / var(--map-scale, 1)));
+}
