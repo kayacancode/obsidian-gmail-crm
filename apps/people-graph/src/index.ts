@@ -1,3 +1,5 @@
+import {cliRoute} from './cli-routes';
+import {loadPeopleNetwork} from './people-service';
 import {schedulingMachineRoute} from './scheduling-routes';
 import {schedulingEmail} from './scheduling-email';
 import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
@@ -61,6 +63,11 @@ export default {
 		const { pathname } = url;
 
 		try {
+            if(pathname.startsWith('/api/cli/')){
+                const browser=['/api/cli/device/approve','/api/cli/device/preview','/api/cli/devices','/api/cli/devices/revoke'].includes(pathname);
+                const auth=browser?await requireGoogleUser(request,env):null;
+                return await cliRoute(request,env,auth&&'email' in auth?auth.email:null);
+            }
 			if(pathname.startsWith('/api/scheduling/'))return await schedulingMachineRoute(request,env,ctx);
 			if(pathname.startsWith('/api/public/booking/'))return await bookingPublicRoute(request,env);
 			if(pathname==='/api/booking'||pathname.startsWith('/api/booking/')){
@@ -241,24 +248,8 @@ async function getGraph(request: Request, env: Env): Promise<Response> {
 	const auth = await requireGoogleUser(request, env);
 	if ("error" in auth) return json({ error: auth.error }, 401);
 
-	if (new URL(request.url).searchParams.get("source") !== "obsidian") {
-		// Shared people come from other owners' objects, so the viewer's cached copy is brought
-		// up to date here, before the graph is read. It never throws and never blocks for long.
-		await refreshShares(env, auth.email);
-		const snapshot = await env.MAIL.getByName(auth.email).graph();
-        const graph=snapshot?repairLegacyGmailContext(snapshot):null;
-		if (graph && (graph as {nodes?:unknown[]}).nodes?.length) return json({ account: auth.email, graph });
-		if(new URL(request.url).searchParams.get("source")==="web")return json({account:auth.email,graph:null});
-	}
-	const row = await env.DB.prepare("SELECT json, updated_at FROM graphs WHERE email = ?")
-		.bind(auth.email)
-		.first<{ json: string; updated_at: number }>();
-
-	if (!row) return json({ graph: null, account: auth.email });
-	let graph:PushedGraphPayload|null;try{graph=normalizePushedGraph(JSON.parse(row.json));}catch{return json({error:"invalid_graph"},500);}
-	if(!graph)return json({error:"invalid_graph"},500);
-	const stub=env.MAIL.getByName(auth.email);await stub.bindOwner(auth.email);
-	return json({account:auth.email,updatedAt:row.updated_at,graph:await stub.augmentPushedGraph(graph,'my')});
+	try{return json(await loadPeopleNetwork(env,auth.email,new URL(request.url).searchParams.get('source')??undefined));}
+	catch(error){if(error instanceof Error&&error.message==='invalid_graph')return json({error:'invalid_graph'},500);throw error;}
 }
 
 async function verifyPushToken(token: string | null, env: Env): Promise<string | null> {
@@ -284,7 +275,7 @@ export async function requireGoogleUser(
 	const token = bearer(request);
 	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
 	// Scheduling credentials are scoped to our API; never send them to Google.
-	if (token.startsWith("sched_") || token.startsWith("people_")) return {error:"invalid_token"};
+	if (token.startsWith("sched_") || token.startsWith("people_") || token.startsWith("pgd1_")) return {error:"invalid_token"};
 
 	let resp:Response,info:{aud?:string;email?:string;email_verified?:string|boolean};
 	try{

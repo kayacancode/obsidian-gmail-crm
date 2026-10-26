@@ -117,47 +117,43 @@ Each person page gets rewritten with:
 
 ## PeopleGraph CLI
 
-PeopleGraph is the agent-facing CLI for querying the Gmail CRM contact cache without scraping Obsidian markdown.
+PeopleGraph is the agent-facing CLI for hosted People graph reads, private context, and local Gmail CRM contact caches. See [agent onboarding](people-agent-onboarding.md) for credentials and supported platforms.
 
-Install from the Homebrew tap:
+From this checkout, install the pinned release and explicitly choose a skill destination:
 
 ```bash
-brew tap kayacancode/tap
-brew install peoplegraph
+bash scripts/install-peoplegraph.sh --skill codex
+~/.local/bin/peoplegraph version
 ```
 
 Example commands:
 
 ```bash
-peoplegraph who-knows --company acme
-peoplegraph find-person "Jane Doe"
-peoplegraph score jane@example.com
-peoplegraph contact-card jane@example.com
-peoplegraph suggest-duplicates --limit 10
+peoplegraph --local who-knows --company acme
+peoplegraph --local find-person "Jane Doe"
+peoplegraph --local score jane@example.com
+peoplegraph --local contact-card jane@example.com
+peoplegraph --local suggest-duplicates --limit 10
 ```
 
-The CLI auto-discovers the active Gmail CRM cache when run near a vault, or you can set `PEOPLEGRAPH_CACHE` / pass `--cache`.
+Local mode discovers the active Gmail CRM cache when run near a vault, or you can set `PEOPLEGRAPH_CACHE` / pass `--cache`. `--local` selects that cache even when the CLI has a saved web login. To work on unreleased Rust changes, run `npm run build:peoplegraph` and use `./crates/peoplegraph/target/release/peoplegraph` directly.
 
 ### Botwick / OpenClaw source-of-truth setup
 
 Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. That machine owns the source-of-truth `.obsidian/plugins/gmail-crm/contact-index.json`.
 
-1. Install PeopleGraph from the in-repo binary. Do **not** use `brew install peoplegraph`
-   or `scripts/install-peoplegraph.sh` on this machine — both resolve to published releases
-   that lag the repo (the install script currently serves 0.3.4), and running a stale binary
-   here silently reintroduces already-fixed swipe and dedup bugs:
+1. Install the pinned platform-appropriate release. The installer verifies checksums and
+   replaces the executable safely, including on macOS:
 
    ```bash
-   cd ~/obsidian-gmail-crm && git pull
-   rm -f ~/.local/bin/peoplegraph
-   cp bin/peoplegraph ~/.local/bin/peoplegraph
-   codesign --force --sign - ~/.local/bin/peoplegraph
+   bash scripts/install-peoplegraph.sh
    hash -r
-   peoplegraph version   # confirm this matches the repo before continuing
+   peoplegraph version   # confirm the intended release before continuing
    ```
 
-   Replace the file rather than overwriting in place; overwriting a signed binary that is
-   in use gets it killed by macOS (`zsh: killed peoplegraph`).
+   For an unreleased change, build from source as above. Do not assume the committed
+   `bin/peoplegraph` matches this machine's architecture. Keep local jobs on explicit
+   local cache access; a browser login and a private People key are separate options.
 
 2. In Obsidian, run the plugin sync commands so the cache is current:
 
@@ -173,7 +169,7 @@ Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. 
    export PEOPLEGRAPH_TOKEN="$(openssl rand -hex 32)"
    echo "$PEOPLEGRAPH_TOKEN"
 
-   peoplegraph --cache "$PEOPLEGRAPH_CACHE" serve --bind 127.0.0.1:8787
+   peoplegraph --local --cache "$PEOPLEGRAPH_CACHE" serve --bind 127.0.0.1:8787
    ```
 
 4. Configure Botwick/OpenClaw to call the local server:

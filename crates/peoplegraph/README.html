@@ -105,6 +105,7 @@
   </style>
 </head>
 <body>
+<section style="max-width:1000px;margin:2rem auto;padding:1rem"><h2>Your People network, from the terminal</h2><p>Run <code>peoplegraph login</code>, approve the code in your browser, then <code>peoplegraph find-person "Ada"</code>. No separate query server or Gmail setup is needed. Use <code>--local</code> for your Obsidian cache.</p><p><a href="../../docs/peoplegraph-web-login.md">Web login and local-mode guide</a></p></section>
   <main>
     <header>
       <h1>PeopleGraph CLI</h1>
@@ -123,29 +124,42 @@
 brew install peoplegraph</code></pre>
       <p>Pass an explicit cache path, set <code>PEOPLEGRAPH_CACHE</code>, or run from a vault that contains <code>.obsidian/plugins/gmail-crm/contact-index.json</code>.</p>
       <pre><code>peoplegraph describe
-peoplegraph --cache /path/to/contact-index.json find-person "Maya Rivera"
-peoplegraph --cache /path/to/contact-index.json score maya.rivera@disney.com
-peoplegraph --cache /path/to/contact-index.json who-knows --company Disney
-peoplegraph --cache /path/to/contact-index.json get-neighbors maya.rivera@disney.com
-peoplegraph --cache /path/to/contact-index.json get-edges --from maya.rivera@disney.com --to sam.lee@example.org
-peoplegraph --cache /path/to/contact-index.json contact-card maya.rivera@disney.com
-peoplegraph --cache /path/to/contact-index.json suggest-duplicates --limit 25 --min-confidence 0.82
-peoplegraph --cache /path/to/contact-index.json import-cache --source kaya /path/to/kaya/contact-index.json
-peoplegraph --cache /path/to/contact-index.json suggest-external-merges --source kaya --limit 25
-peoplegraph --cache /path/to/contact-index.json apply-external-merge --source kaya --primary maya.rivera@disney.com --external maya@disney.com
-peoplegraph --cache /path/to/contact-index.json dismiss-external-merge --source kaya --primary maya.rivera@disney.com --external maya@disney.com --reason not_same_person
-peoplegraph --cache /path/to/contact-index.json merge-queue --status pending --limit 25
-peoplegraph --cache /path/to/contact-index.json apply-merge maya.rivera@disney.com maya@disney.com
-peoplegraph --cache /path/to/contact-index.json dismiss-merge maya.rivera@disney.com maya@disney.com --reason not_duplicate
-peoplegraph --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
+peoplegraph --local --cache /path/to/contact-index.json find-person "Maya Rivera"
+peoplegraph --local --cache /path/to/contact-index.json score maya.rivera@disney.com
+peoplegraph --local --cache /path/to/contact-index.json who-knows --company Disney
+peoplegraph --local --cache /path/to/contact-index.json get-neighbors maya.rivera@disney.com
+peoplegraph --local --cache /path/to/contact-index.json get-edges --from maya.rivera@disney.com --to sam.lee@example.org
+peoplegraph --local --cache /path/to/contact-index.json contact-card maya.rivera@disney.com
+peoplegraph --local --cache /path/to/contact-index.json suggest-duplicates --limit 25 --min-confidence 0.82
+peoplegraph --local --cache /path/to/contact-index.json import-cache --source kaya /path/to/kaya/contact-index.json
+peoplegraph --local --cache /path/to/contact-index.json suggest-external-merges --source kaya --limit 25
+peoplegraph --local --cache /path/to/contact-index.json apply-external-merge --source kaya --primary maya.rivera@disney.com --external maya@disney.com
+peoplegraph --local --cache /path/to/contact-index.json dismiss-external-merge --source kaya --primary maya.rivera@disney.com --external maya@disney.com --reason not_same_person
+peoplegraph --local --cache /path/to/contact-index.json merge-queue --status pending --limit 25
+peoplegraph --local --cache /path/to/contact-index.json apply-merge maya.rivera@disney.com maya@disney.com
+peoplegraph --local --cache /path/to/contact-index.json dismiss-merge maya.rivera@disney.com maya@disney.com --reason not_duplicate
+peoplegraph --local --cache /path/to/contact-index.json propose-merge maya.rivera@disney.com maya@disney.com</code></pre>
       <p>All commands emit a stable JSON object on stdout. Query commands are read-only; merge and import commands intentionally update local sidecar or cache metadata.</p>
+    </section>
+
+    <section>
+      <h2>Your saved Lens and relationship context</h2>
+      <p>Set <code>PEOPLEGRAPH_WEB_URL</code> to your hosted People origin and <code>PEOPLEGRAPH_WEB_TOKEN</code> to your People integration credential. Each command also accepts <code>--url &lt;https-origin&gt;</code>.</p>
+      <pre><code>peoplegraph lens
+peoplegraph matches
+peoplegraph search "clinical design partners" --limit 20
+peoplegraph connection --from person-123 --to ada@example.com
+peoplegraph helpers --person-id person-123
+peoplegraph memory lookup --email ada@example.com</code></pre>
+      <p>These commands use your confirmed saved Lens, matches and source-backed relationship evidence from People. Search accepts 1–200 characters and a limit of 1–50 (default 20). Resolve names with search, then supply exact IDs or emails to connection; helpers requires an exact person ID. The CLI preserves the returned evidence and never guesses an identity.</p>
+      <p>Private Lens and memory commands require the explicit People integration credential. Device credentials from <code>peoplegraph login</code> retain read-only graph access. Private requests have no local-cache or legacy-remote fallback, reject <code>--local</code>, <code>--remote</code>, <code>--host</code>, <code>--token</code> and <code>--cache</code>, and return structured errors on conflicts or failed requests. Run <code>peoplegraph describe</code> for the agent-readable command and authentication contract.</p>
     </section>
 
     <section>
       <h2>Remote Query Mode</h2>
       <p>Run this on the machine that has Botwick's source-of-truth <code>contact-index.json</code>:</p>
       <pre><code>export PEOPLEGRAPH_TOKEN="use-a-long-random-token"
-peoplegraph --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
+peoplegraph --local --cache /path/to/contact-index.json serve --bind 127.0.0.1:8787</code></pre>
       <p>Then query from a client with the same token:</p>
       <pre><code>peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" who-knows --company Disney
 peoplegraph --remote --host http://127.0.0.1:8787 --token "$PEOPLEGRAPH_TOKEN" find-person "Jane Doe"
