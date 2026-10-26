@@ -75,7 +75,7 @@ test('People MCP advertises only authorized tools and rechecks revocation per re
  const list={jsonrpc:'2.0',id:1,method:'tools/list',params:{}};
  const response=await f.request('/api/people-mcp',key.token,list,headers);assert.equal(response.status,200);
  const raw=await response.text(),data=JSON.parse(raw.includes('data: ')?raw.split('\n').find(line=>line.startsWith('data: '))!.slice(6):raw);
- assert.deepEqual(data.result.tools.map((tool:any)=>tool.name),['lookup_relationship_memory']);
+ assert.deepEqual(data.result.tools.map((tool:any)=>tool.name),['lookup_relationship_memory','get_people_lens','recommend_people','find_people','explain_connection','suggest_connections']);
  await f.management('/'+key.credential.id+'/revoke',{});
  assert.equal((await f.request('/api/people-mcp',key.token,list,headers)).status,401);
 });

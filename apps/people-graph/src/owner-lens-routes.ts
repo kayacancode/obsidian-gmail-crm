@@ -1,6 +1,6 @@
 import type {MailEnv} from './mail-sync';
 import {boundedJSON} from './bounded-json';
-import {rankOwnerLens} from './helper-brief';
+import {savedPeopleMatches} from './people-intelligence';
 
 const json=(body:unknown,status=200)=>Response.json(body,{status,headers:{'cache-control':'no-store'}});
 const updating=()=>json({error:'owner_lens_updating',message:'The Granola update is still reaching your account. Please try again in a moment.'},503);
@@ -30,18 +30,7 @@ export async function ownerLensRoute(request:Request,env:MailEnv,owner:string){
  }
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
  try{
-  if(matches){
-   const lens=await stub.getOwnerLens();
-   // Pending inferred updates are never used as a search request.
-   if(!Object.values(lens.fields).some(value=>value.trim()))return json(await rankOwnerLens(env,{nodes:[]},lens.fields));
-   const recommendationMemory=await stub.recommendationMemory(),graph=await stub.graph(),helperContext=await stub.helperContext();
-   const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext,recommendationMemory},lens.fields);
-   // A profile edit or source withdrawal in another tab supersedes an in-flight search.
-   const current=await stub.getOwnerLens();
-   if(['focus','needs','offers'].some(key=>current.fields[key as keyof typeof current.fields]!==lens.fields[key as keyof typeof lens.fields]))return json({error:'owner_lens_conflict'},409);
-   if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)return json({error:'person_context_conflict'},409);
-   return json(result);
-  }
+  if(matches)return json(await savedPeopleMatches(env,stub));
   if(request.method==='GET')return json(await stub.getOwnerLens());
   switch(body.action){
    case 'save':return json(await stub.updateOwnerLens({revision:body.revision,fields:body.fields}));
@@ -60,7 +49,7 @@ export async function ownerLensRoute(request:Request,env:MailEnv,owner:string){
   if(body?.action==='granola'&&error instanceof TypeError&&code.includes('setOwnerLensGranolaEnabled')&&/not a function|does not implement|not implemented|does not exist/.test(code))return updating();
   const kind=error instanceof Error?error.name:'unknown';
   console.warn(JSON.stringify({event:'owner_lens_route_failure',action:body?.action??'read',kind,method:['setOwnerLensGranolaEnabled','setGranolaEnabled','reconcileGranola','scheduleNextAlarm'].find(name=>code.includes(name))??'unknown',category:/not a function|does not implement|not implemented|does not exist/.test(code)?'method_unavailable':/SQLITE|SQL|table|column/.test(code)?'storage':/serializ|clone/.test(code)?'serialization':code==='owner_lens_conflict'?'conflict':'other'}));
-  if(code==='owner_lens_conflict')return json({error:code},409);
+  if(['owner_lens_conflict','person_context_conflict'].includes(code))return json({error:code},409);
   if(['invalid_owner_lens','invalid_request'].includes(code))return json({error:code},400);
   if(code==='owner_lens_disabled')return json({error:code},409);
   if(code==='owner_lens_suggestion_missing')return json({error:code},404);

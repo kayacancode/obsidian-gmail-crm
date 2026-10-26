@@ -165,15 +165,19 @@ Calendar data feeds into the strength score (up to 20 bonus points) and can over
 
 ## PeopleGraph CLI (optional)
 
-The plugin works on its own, but a companion CLI — `peoplegraph` — lets you (and your coding agents) query the contact index from the terminal: fuzzy person lookup, relationship scores, "who do I know at X", reconnect candidates, and duplicate/merge review.
+The plugin works on its own. The companion `peoplegraph` CLI can query your local contact index, read your hosted People graph, or use an explicitly connected People key for private context. The [agent onboarding guide](people-agent-onboarding.md) covers these separate access choices.
 
-Install the latest release binary:
+Install the versioned binary and explicitly choose an agent skill destination:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/main/scripts/install-peoplegraph.sh | bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.12/install-peoplegraph.sh \
+  -o install-peoplegraph.sh
+bash install-peoplegraph.sh --skill claude
+~/.local/bin/peoplegraph version
 ```
 
-This installs the binary to `~/.local/bin/peoplegraph` and an agent skill to `~/.claude/skills/peoplegraph/` so Claude Code and similar agents know how to drive it. The CLI auto-discovers `contact-index.json` in your Obsidian vault; override with `--cache <path>` or `PEOPLEGRAPH_CACHE`. Run `peoplegraph --help` or `peoplegraph describe` for the full command surface.
+This verifies release checksums, installs the binary to `~/.local/bin/peoplegraph`, and installs the skill plus offline guides to `~/.claude/skills/peoplegraph/`. Choose `--skill codex`, `--skill agents`, or `--skill-dir <path>` for another destination; omit skill options for only the binary. For the vault cache, use `peoplegraph --local`; override discovery with `--cache <path>` or `PEOPLEGRAPH_CACHE`. Run `peoplegraph describe` for the installed command surface. Installing the CLI does not connect or grant access to a web account.
 
 ## Commands
 

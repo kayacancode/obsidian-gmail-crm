@@ -1,11 +1,10 @@
 //! Explicit hosted People memory client. The legacy local-cache server is unchanged.
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::{Value, json};
-use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct MemoryArgs {
@@ -61,22 +60,6 @@ struct CaptureArgs {
 enum SourceKind {
     Text,
     VoiceTranscript,
-}
-
-fn origin(value: &str) -> Result<String, &'static str> {
-    let parsed: ureq::http::Uri = value.trim().parse().map_err(|_| "invalid_web_url")?;
-    let authority = parsed.authority().ok_or("invalid_web_url")?;
-    let host = authority.host();
-    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
-    if authority.as_str().contains('@')
-        || parsed.query().is_some()
-        || !matches!(parsed.path(), "" | "/")
-        || !(parsed.scheme_str() == Some("https")
-            || parsed.scheme_str() == Some("http") && loopback)
-    {
-        return Err("invalid_web_url");
-    }
-    Ok(format!("{}://{}", parsed.scheme_str().unwrap(), authority))
 }
 
 fn text_length(value: &str) -> usize {
@@ -146,32 +129,11 @@ fn save_payload(path: &PathBuf) -> Result<Value, &'static str> {
 
 pub(crate) fn run(args: &MemoryArgs, start: Instant) -> super::Response {
     let fail = |kind: &str, message: &str| super::fail("memory", kind, message.to_string(), start);
-    let target = args
-        .url
-        .clone()
-        .or_else(|| env::var("PEOPLEGRAPH_WEB_URL").ok());
-    let Some(target) = target else {
-        return fail(
-            "web_url_missing",
-            "Set PEOPLEGRAPH_WEB_URL or pass memory --url <https-origin>.",
-        );
+    // Authenticate before opening a private file or waiting for stdin.
+    let client = match super::people_client::configure(args.url.as_deref()) {
+        Ok(client) => client,
+        Err((kind, message)) => return fail(kind, message),
     };
-    let target = match origin(&target) {
-        Ok(value) => value,
-        Err(error) => {
-            return fail(
-                error,
-                "Use an HTTPS origin without credentials, path or query; HTTP is allowed only on localhost.",
-            );
-        }
-    };
-    let token = env::var("PEOPLEGRAPH_WEB_TOKEN").unwrap_or_default();
-    if token.trim().is_empty() {
-        return fail(
-            "web_token_missing",
-            "Set PEOPLEGRAPH_WEB_TOKEN to a People integration credential.",
-        );
-    }
     let (path, payload) = match &args.command {
         MemoryCommand::Lookup { email } => (
             format!(
@@ -181,10 +143,7 @@ pub(crate) fn run(args: &MemoryArgs, start: Instant) -> super::Response {
             None,
         ),
         MemoryCommand::Capture(input) => match capture_payload(input) {
-            Ok(body) => (
-                "/api/people-agent/capture".to_string(),
-                Some(body.to_string()),
-            ),
+            Ok(body) => ("/api/people-agent/capture".to_string(), Some(body)),
             Err(error) => {
                 return fail(
                     error,
@@ -193,10 +152,7 @@ pub(crate) fn run(args: &MemoryArgs, start: Instant) -> super::Response {
             }
         },
         MemoryCommand::Save { file } => match save_payload(file) {
-            Ok(profile) => (
-                "/api/people-agent/save".to_string(),
-                Some(profile.to_string()),
-            ),
+            Ok(profile) => ("/api/people-agent/save".to_string(), Some(profile)),
             Err(error) => {
                 return fail(
                     error,
@@ -205,85 +161,5 @@ pub(crate) fn run(args: &MemoryArgs, start: Instant) -> super::Response {
             }
         },
     };
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .max_redirects(0)
-        .timeout_global(Some(Duration::from_secs(30)))
-        .build()
-        .into();
-    let url = format!("{target}{path}");
-    let response = if let Some(body) = payload {
-        agent
-            .post(&url)
-            .header("authorization", format!("Bearer {}", token.trim()))
-            .header("content-type", "application/json")
-            .send(body.as_str())
-    } else {
-        agent
-            .get(&url)
-            .header("authorization", format!("Bearer {}", token.trim()))
-            .call()
-    };
-    let mut response = match response {
-        Ok(response) => response,
-        Err(_) => {
-            return fail(
-                "web_request_failed",
-                "The People service could not be reached.",
-            );
-        }
-    };
-    let status = response.status().as_u16();
-    let text = match response
-        .body_mut()
-        .with_config()
-        .limit(1_000_000)
-        .read_to_string()
-    {
-        Ok(text) => text,
-        Err(_) => {
-            return fail(
-                "web_response_invalid",
-                "The People service returned an unreadable response.",
-            );
-        }
-    };
-    let data: Value = match serde_json::from_str(&text) {
-        Ok(data) => data,
-        Err(_) => {
-            return fail(
-                "web_response_invalid",
-                "The People service did not return JSON.",
-            );
-        }
-    };
-    if !(200..300).contains(&status) {
-        let supplied = data.get("error").and_then(Value::as_str).unwrap_or("");
-        let allowed = [
-            "people_memory_unauthorized",
-            "insufficient_scope",
-            "unknown_person",
-            "not_found",
-            "idempotency_conflict",
-            "relationship_memory_conflict",
-            "person_context_conflict",
-            "capture_conflict",
-            "memory_capacity",
-            "invalid_request",
-            "rate_limited",
-        ];
-        return fail(
-            if allowed.contains(&supplied) {
-                supplied
-            } else {
-                "web_request_failed"
-            },
-            &format!("People request failed (HTTP {status}); no local cache was changed."),
-        );
-    }
-    super::ok(
-        "memory",
-        data,
-        json!({"ms":super::elapsed_ms(start),"backend":"people_web"}),
-    )
+    client.request("memory", &path, payload, start)
 }

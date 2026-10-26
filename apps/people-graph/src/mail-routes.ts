@@ -1,4 +1,4 @@
-import {rankHelperBrief,memoryBrief} from './helper-brief';
+import {selectedPeopleHelpers} from './people-intelligence';
 import {b64,bytes,digest,opaque} from './mail-model';
 import type {MailEnv} from './mail-sync';
 import {boundedJSON} from './bounded-json';
@@ -112,21 +112,6 @@ export async function helperRoute(request:Request,env:MailEnv,owner:string){
  if(typeof body?.personId!=='string'||typeof body?.brief!=='string'||body.brief.length>1000)return json({error:'invalid_request'},400);
  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
  try{
-  let recommendationMemory=await stub.recommendationMemory();
-  const explicit=body.brief.trim();
-  // A supplied brief or saved report already defines the search. Refresh otherwise,
-  // then establish the source revision before graph reads so the refresh is not a conflict.
-  if(!explicit&&!memoryBrief(recommendationMemory.people[body.personId])){
-   await stub.refreshHelperContext(body.personId);
-   recommendationMemory=await stub.recommendationMemory();
-  }
-  const graph=await stub.graph();if(!graph?.nodes.some(node=>node.id===body.personId))return json({error:'invalid_request'},400);
-  const brief=explicit||memoryBrief(recommendationMemory.people[body.personId]),contextSource=explicit?'brief':brief?'saved_note':'automatic';
-  const helperContext=await stub.helperContext();
-  const result=await rankHelperBrief(env,{...graph,helperContext,recommendationMemory},body.personId,explicit);
-  // Candidate context and routing/timing preferences matter even with an explicit brief.
-  // Identity withdrawal, edits and removals supersede every in-flight recommendation.
-  if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)return json({error:'person_context_conflict'},409);
-  return json({...result,contextSource,brief});
- }catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);throw error;}
+  return json(await selectedPeopleHelpers(env,stub,body.personId,body.brief));
+ }catch(error){if(error instanceof Error&&error.message==='invalid_request')return json({error:'invalid_request'},400);if(error instanceof Error&&error.message==='person_context_conflict')return json({error:'person_context_conflict'},409);throw error;}
 }

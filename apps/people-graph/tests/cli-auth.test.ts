@@ -1,0 +1,30 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
+import {deviceRoute,authenticateDevice} from '../src/cli-auth';
+function fixture(){const sql=new DatabaseSync(':memory:');sql.exec(readFileSync('migrations/20260922_cli_devices.sql','utf8'));sql.exec(readFileSync('migrations/20260922_cli_devices.sql','utf8'));const db:any={prepare(q:string){let args:any[]=[];return {bind(...v:any[]){args=v;return this;},async first(){return sql.prepare(q).get(...args)??null;},async all(){return {results:sql.prepare(q).all(...args)};},async run(){return {meta:sql.prepare(q).run(...args)};}};},async batch(items:any[]){sql.exec('BEGIN');try{const r=[];for(const item of items)r.push(await item.run());sql.exec('COMMIT');return r;}catch(e){sql.exec('ROLLBACK');throw e;}}};return {env:{DB:db,TOKEN_SECRET:'secret'} as any,sql};}
+const req=(path:string,body:any={},token?:string)=>new Request('https://people.test/api/cli/'+path,{method:'POST',headers:{origin:'https://people.test','content-type':'application/json','cf-connecting-ip':'127.0.0.1',...(token?{authorization:'Bearer '+token}:{})},body:JSON.stringify(body)});
+test('device approval binds owner and token is one-use, hashed, revocable and scoped',async()=>{const {env,sql}=fixture();const start=await (await deviceRoute(req('device/start',{deviceName:'My Mac'}),env,null)).json() as any;assert.equal(start.interval,5);assert.ok(!start.verificationUri.includes(start.pollSecret));assert.equal((await deviceRoute(req('device/approve',{userCode:start.userCode}),env,null)).status,401);assert.equal((await deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:'owner@test'}),env,'owner@test')).status,200);assert.equal((await deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:'other@test'}),env,'other@test')).status,400);const result=await (await deviceRoute(req('device/poll',start),env,null)).json() as any;assert.ok(result.token.startsWith('pgd1_'));assert.equal(result.owner,'owner@test');assert.equal(sql.prepare('select token_hash from cli_devices').get()?.token_hash===result.token,false);const auth=await authenticateDevice(req('v1/query',{},result.token),env);assert.equal(auth?.owner,'owner@test');assert.equal((await deviceRoute(req('device/poll',start),env,null)).status,400);assert.equal((await deviceRoute(req('devices/revoke',{id:auth!.deviceId}),env,'other@test')).status,404);await deviceRoute(req('logout',{},result.token),env,null);assert.equal(await authenticateDevice(req('v1/query',{},result.token),env),null);});
+test('device exchange rejects foreign origins, expired challenges, bad secrets, rapid polling and excess starts',async()=>{const {env,sql}=fixture();const start=await (await deviceRoute(req('device/start',{deviceName:'Mac'}),env,null)).json() as any;const foreign=req('device/approve',{userCode:start.userCode});foreign.headers.set('origin','https://evil.test');assert.equal((await deviceRoute(foreign,env,'owner@test')).status,403);assert.equal((await deviceRoute(req('device/poll',{...start,pollSecret:'wrong'}),env,null)).status,400);assert.equal((await deviceRoute(req('device/poll',start),env,null)).status,202);assert.equal((await deviceRoute(req('device/poll',start),env,null)).status,429);sql.prepare('UPDATE cli_challenges SET expires_at=0').run();assert.equal((await deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:'owner@test'}),env,'owner@test')).status,400);for(let i=0;i<9;i++)await deviceRoute(req('device/start',{deviceName:'Mac'}),env,null);assert.equal((await deviceRoute(req('device/start',{deviceName:'Mac'}),env,null)).status,429);});
+
+test('approval refuses a browser account change and token never reaches Google verification',async()=>{
+ const {env}=fixture();const start=await (await deviceRoute(req('device/start',{deviceName:'Mac'}),env,null)).json() as any;
+ assert.equal((await deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:'old@test'}),env,'new@test')).status,409);
+ const {requireGoogleUser}=await import('../src/index');const old=globalThis.fetch;let called=false;globalThis.fetch=async()=>{called=true;throw Error('must not call Google');};try{assert.ok('error' in await requireGoogleUser(req('x',{},'pgd1_'+'a'.repeat(64)),env));assert.equal(called,false);}finally{globalThis.fetch=old;}
+});
+
+test('concurrent approval and redemption produce exactly one credential',async()=>{
+ const {env,sql}=fixture();const start=await (await deviceRoute(req('device/start',{deviceName:'Mac'}),env,null)).json() as any;
+ const approvals=await Promise.all(['one@test','two@test'].map(owner=>deviceRoute(req('device/approve',{userCode:start.userCode,expectedOwner:owner}),env,owner)));assert.deepEqual(approvals.map(r=>r.status).sort(),[200,400]);
+ // Real D1 batches serialize; use a lock to model the same database transaction boundary.
+ const batch=env.DB.batch.bind(env.DB);let tail=Promise.resolve();env.DB.batch=(items:any[])=>{const next=tail.then(()=>batch(items));tail=next.catch(()=>{});return next;};
+ const redeemed=await Promise.all([deviceRoute(req('device/poll',start),env,null),deviceRoute(req('device/poll',start),env,null)]);assert.deepEqual(redeemed.map(r=>r.status).sort(),[200,400]);assert.equal(sql.prepare('SELECT count(*) AS n FROM cli_devices').get()?.n,1);
+});
+test('device credential cannot authorize any website-only API',async()=>{
+ const {env}=fixture();const {default:worker}=await import('../src/index');
+ for(const path of ['/api/token','/api/graph','/api/people/draft','/api/people/search','/api/accounts','/api/granola','/api/cli/devices']){
+  const response=await worker.fetch(new Request('https://people.test'+path,{headers:{authorization:'Bearer pgd1_'+'a'.repeat(64)}}),env);assert.equal(response.status,401,path);
+ }
+ const push=await worker.fetch(new Request('https://people.test/api/push',{method:'POST',headers:{authorization:'Bearer pgd1_'+'a'.repeat(64)},body:'{}'}),env);assert.equal(push.status,401);
+});

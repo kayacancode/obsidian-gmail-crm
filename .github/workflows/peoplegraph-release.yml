@@ -9,8 +9,34 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check tag and package version
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, tomllib
+          with open('crates/peoplegraph/Cargo.toml', 'rb') as source:
+              version = tomllib.load(source)['package']['version']
+          assert os.environ['GITHUB_REF_NAME'] == f'peoplegraph-v{version}', 'CLI tag must match Cargo.toml'
+          installer = pathlib.Path('scripts/install-peoplegraph.sh').read_text()
+          assert re.search(r'^VERSION="([0-9.]+)"$', installer, re.M).group(1) == version, 'Installer default must match CLI release'
+          PY
+      - name: Verify installer and CLI
+        run: |
+          bash -n scripts/install-peoplegraph.sh
+          node --test scripts/install-peoplegraph.test.mjs
+          cargo test --locked --manifest-path crates/peoplegraph/Cargo.toml
+
   build:
     name: Build ${{ matrix.name }}
+    needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -41,7 +67,7 @@ jobs:
 
       - name: Build
         working-directory: crates/peoplegraph
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Rename binary
         run: |
@@ -65,7 +91,7 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare binaries
+      - name: Prepare binaries, skill, guides, and checksums
         run: |
           mkdir -p release
           for dir in artifacts/*/; do
@@ -74,10 +100,18 @@ jobs:
             chmod +x "release/$name"
           done
           cp skills/peoplegraph/SKILL.md release/peoplegraph-SKILL.md
+          cp skills/gmail-crm/SKILL.md release/gmail-crm-SKILL.md
+          cp docs/people-agent-onboarding.md docs/people-memory-integration.md docs/peoplegraph-web-login.md release/
+          cp scripts/install-peoplegraph.sh release/
+          cd release
+          sha256sum * > SHA256SUMS
+          sha256sum --check SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
+          make_latest: false
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: release/*

@@ -10,7 +10,7 @@
     "db:init": "wrangler d1 execute people-graph --file ./schema.sql",
     "db:init:remote": "wrangler d1 execute people-graph --remote --file ./schema.sql",
     "smoke": "bash scripts/smoke.sh",
-    "test": "node --test tests/booking-calendar.test.mjs tests/owner-lens.test.mjs tests/shared-home.test.mjs tests/weekly-context.test.mjs tests/shared-discovery.test.mjs tests/topic-context.test.mjs tests/person-suggestions.test.mjs tests/guided-network.test.mjs tests/person-walk.test.mjs tests/shared-paths.test.mjs tests/contact-sheet.test.mjs tests/introduction-client.test.mjs tests/intelligence.test.mjs tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
+    "test": "node --test tests/cli-approval.test.mjs tests/booking-calendar.test.mjs tests/owner-lens.test.mjs tests/shared-home.test.mjs tests/weekly-context.test.mjs tests/shared-discovery.test.mjs tests/topic-context.test.mjs tests/person-suggestions.test.mjs tests/guided-network.test.mjs tests/person-walk.test.mjs tests/shared-paths.test.mjs tests/contact-sheet.test.mjs tests/introduction-client.test.mjs tests/intelligence.test.mjs tests/model.test.mjs tests/lab.test.mjs tests/relationship-host.test.mjs tests/relevance-browser-model.test.mjs tests/meeting-preview.test.mjs && node tests/run-mail.mjs",
     "test:intelligence-browser": "node tests/intelligence-browser.mjs",
     "test:relationship-host": "node --test tests/relationship-host.test.mjs",
     "test:relationship-browser": "node tests/relationship-browser.mjs",
@@ -45,7 +45,10 @@
     "test:weekly-browser": "node tests/weekly-context-browser.mjs",
     "test:shared-home-browser": "node tests/shared-home-browser.mjs",
     "test:owner-lens-browser": "node tests/owner-lens-browser.mjs",
-    "test:booking": "node --test tests/booking-runtime.mjs && node tests/booking-browser.mjs && node tests/scheduling-browser.mjs"
+    "test:booking": "node --test tests/booking-runtime.mjs && node tests/booking-browser.mjs && node tests/scheduling-browser.mjs",
+    "test:cli-browser": "node tests/cli-browser.mjs",
+    "test:cli-integration": "node tests/cli-integration.mjs",
+    "test:agent-onboarding-browser": "node tests/agent-onboarding-browser.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260602.1",

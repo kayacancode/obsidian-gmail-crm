@@ -18,10 +18,11 @@ People brings together **Gmail activity, Google Calendar invitations, and option
 | --- | --- | --- |
 | **Web app** | Personal graphs, shared networks, Discover, and introduction requests | A configured People deployment and a Google account |
 | **Obsidian plugin** | Markdown people pages and a CRM inside your vault | Obsidian desktop and your own Google OAuth credentials |
-| **PeopleGraph CLI** | Querying a local contact index from a terminal or coding agent | A plugin-generated contact index; Rust to build from source |
+| **PeopleGraph CLI / agent skill** | Graph questions, private relationship context, and evidence-backed recommendations | Browser login for graph reads; a People key for private context; optional local Obsidian cache |
 
 - [Web app setup and deployment](apps/people-graph/README.md)
 - [Obsidian installation, commands, and scoring guide](docs/obsidian-plugin.md)
+- [Connect Codex, Claude, or another agent](docs/people-agent-onboarding.md)
 - [Privacy and data handling](PRIVACY.md)
 
 ## What you can do
@@ -49,6 +50,16 @@ Open the [hosted web app](https://people-graph.kayarjones901.workers.dev/) or yo
 Obsidian and Granola are optional. Connecting Google does not require installing a browser extension or Gmail add-on.
 
 **For self-hosting:** follow the [web deployment guide](apps/people-graph/README.md#setup-once). You need your own Cloudflare resources and Google web OAuth client. The checked-in deployment identifiers belong to the maintainer; replace them before deploying. Google OAuth testing/publication settings can limit who is allowed to connect.
+
+## Use People with an agent
+
+Install **PeopleGraph 0.3.12** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+
+Run `peoplegraph login` for read-only access to your visible web graph. For your saved People Lens, recommendations, connections, and private memory, create a separate People key in **Accounts → Integrations** and configure `PEOPLEGRAPH_WEB_URL` and `PEOPLEGRAPH_WEB_TOKEN`. Enable write access only for clients you want to save context. Compatible MCP clients can use `/api/people-mcp` with a custom bearer header; REST clients use `/api/people-agent`.
+
+Try “Who could help with my saved needs, and why?”, “What connects Maya and Sam?”, or “Remember this note for Maya.” The agent distinguishes confirmed saved context from inferred suggestions, resolves ambiguous people, and reports the evidence behind recommendations. These People tools do not send email or schedule meetings. Scheduling is a separate opt-in integration.
+
+**Obsidian plugin 0.9.5** is optional and keeps the local vault workflow available. Installing or updating it does not grant an agent access to your private web account.
 
 ## What each source contributes
 
@@ -120,7 +131,7 @@ npm run build:peoplegraph
 ./crates/peoplegraph/target/release/peoplegraph --help
 ```
 
-The CLI queries a local plugin contact index. It does not require the shared web app.
+The CLI supports hosted graph login, explicit private People commands, and local plugin contact indexes. Use `--local` to choose the vault cache when a web login is saved. See the [agent guide](docs/people-agent-onboarding.md), [web login guide](docs/peoplegraph-web-login.md), and [private API contract](docs/people-memory-integration.md).
 
 ## Repository map
 

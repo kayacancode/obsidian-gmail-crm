@@ -262,6 +262,7 @@ export class MailSync extends DurableObject<MailEnv>{
  granolaIdentities():{suggestions:GranolaIdentitySuggestion[]}{return {suggestions:this.granola().identitySuggestions()};}
  async granolaIdentity(attendeeEmail:string,decision:'confirm'|'dismiss'):Promise<{suggestions:GranolaIdentitySuggestion[]}>{return {suggestions:await this.granola().resolveIdentity(attendeeEmail,decision)};}
  private active(a:Account){return this.get(a.email)?.job?.generation===a.job?.generation;}
+ async resolveOwnEmail(email:string):Promise<string|null>{const owner=await this.ctx.storage.get<string>('owner');if(!owner||!this.graphContacts().some(r=>r.email===email))return null;return opaque(owner,email,this.env.TOKEN_SECRET);}
  private async google(url:string,access:string){const r=await fetch(url,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});if(!r.ok){await r.body?.cancel();const e=new Error(r.status===401?'reconnect_required':r.status===403?'gmail_access_denied':`gmail_${r.status}`);throw e;}return readBoundedJSON(r,2_000_000);}
  async alarm(){
   const now=Date.now();if(await this.ownerLens().retryCleanup(now)){await this.scheduleNextAlarm();return;}for(const a of this.rows()){if(a.status==='connected'&&a.nextSync<=now)await this.start(a.email,undefined,false);}
@@ -950,6 +951,14 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    gmail:this.ctx.storage.sql.exec('SELECT account,message,person,observed,facts,version FROM gmail_context ORDER BY account,message').toArray(),
    signals:this.ctx.storage.sql.exec('SELECT id,account,person_id,visibility,content_hash,summary FROM theme_signals ORDER BY id').toArray(),
    granola:[...this.granola().ownerLensVersions()].sort(([a],[b])=>a.localeCompare(b)),
+   // Names-only shares have no theme signals. Fingerprint the same bounded metadata
+   // projection used by graph(), including consent level, so withdrawal invalidates
+   // an in-flight read even when no private context changed. Refresh time is not evidence.
+   shared:{
+    people:[...this.sharedPeople().values()].sort((a,b)=>a.email.localeCompare(b.email)),
+    edges:this.sharedEdgeRows().sort((a,b)=>a.a.localeCompare(b.a)||a.b.localeCompare(b.b)),
+    scopes:this.ctx.storage.sql.exec('SELECT owner,level FROM shared_meta ORDER BY owner LIMIT 20').toArray(),
+   },
   };
   const fingerprint=JSON.stringify({people,feedback,sources,personMerges:this.personMergeStore().get(),identities:resolved.filter(r=>current.has(r.email)).map(r=>r.id)});
   const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(fingerprint));
