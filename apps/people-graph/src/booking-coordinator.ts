@@ -83,7 +83,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   }
   const settings=await this.schedulingSettings(owner),now=Date.now(),window=schedulingWindow(valid,settings,now);
   await this.store.limit(`scheduling:prepare:${owner}`,50,86400000);
-  const decision=await assessMeetingRequest(this.env,settings,valid.email,{project:'',purpose:valid.context});
+  const decision=await assessMeetingRequest(this.env,settings,valid.email,{project:'',purpose:valid.context},true,{knownContactScheduling:true});
   const recommendation=requestRecommendation(decision,valid);
   const record:BookingRequestRecord={id:crypto.randomUUID(),owner,email:valid.email,name:valid.name||valid.email,project:'',purpose:'Owner-authorized meeting.',projectUrl:'',referrer:'',createdAt:now,updatedAt:now,status:'pending_approval',slotStart:null,slotEnd:null,eventId:null,idempotencyKey:key,
    decision,
@@ -96,7 +96,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   if(!['pending_approval','needs_new_slot'].includes(r.status))return schedulingResult(r);
   const s=await this.schedulingSettings(owner);await this.store.limit(`scheduling:refresh:${owner}`,100,3600000);
   const saved=r.scheduling!;if(saved.approval?.policyRevision!==s.revision)delete saved.approval;
-  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)});saved.assessmentVersion=1;
+  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)},true,{knownContactScheduling:true});saved.assessmentVersion=1;
   delete saved.contextAssessmentPending;
   saved.recommendation=requestRecommendation(r.decision,saved.input);
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
@@ -112,7 +112,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   // Preserve received evidence before model/Calendar work. A retry resumes the
   // same reply; owner review can still inspect it after a provider failure.
   await this.store.update(r);
-  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)});saved.assessmentVersion=1;
+  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)},true,{knownContactScheduling:true});saved.assessmentVersion=1;
   delete saved.contextAssessmentPending;
   saved.recommendation=requestRecommendation(r.decision,saved.input);
   if(r.decision.fit.fit==='needs_context'&&(saved.contextReplies?.length??0)>=2)saved.recommendation.summary='More context was requested twice. Review the conversation before offering times.';
@@ -152,7 +152,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   if(saved.offer.expiresAt<=Date.now())throw Error('offer_expired');
   const slot=saved.offer.slots.find(value=>value.id===confirmation.slotId);if(!slot)throw Error('offer_changed');
   if(saved.approval?.policyRevision!==s.revision){
-   r.decision=decideBooking(s,r.email,r.decision.fit,await lookupBookingPerson(this.env,owner,r.email));
+   r.decision=decideBooking(s,r.email,r.decision.fit,await lookupBookingPerson(this.env,owner,r.email),{knownContactScheduling:true});
    saved.recommendation=requestRecommendation(r.decision,saved.input);
    if(schedulingRequiresReview(r,s.revision)){saved.offer=null;r.updatedAt=Date.now();await this.store.update(r);return schedulingResult(r,s.revision);}
   }

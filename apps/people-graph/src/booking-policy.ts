@@ -63,7 +63,8 @@ export function validateBookingSubmission(input:unknown):BookingSubmission{
 export function validateReturningBookingNote(input:unknown):string{return boundedText(input===undefined?'':input,2000,'note');}
 
 /** Called only after the route has established verified inbox control. */
-export function decideBooking(settings:BookingSettings,email:string,fit:BookingFit,people:BookingPeopleContext):BookingDecision{
+export interface BookingDecisionOptions {knownContactScheduling?:boolean}
+export function decideBooking(settings:BookingSettings,email:string,fit:BookingFit,people:BookingPeopleContext,options:BookingDecisionOptions={}):BookingDecision{
  const decision:BookingDecision={tier:'review',reasons:[],uncertainties:[],fit,people,policyRevision:settings.revision};
  if(!['matched','not_found'].includes(people.status))decision.uncertainties.push(people.reason||'The relationship source could not be verified.');
  if(fit.fit==='uncertain')decision.uncertainties.push('Thesis fit could not be established reliably.');
@@ -79,8 +80,8 @@ export function decideBooking(settings:BookingSettings,email:string,fit:BookingF
  }
  if(decision.uncertainties.length){decision.reasons.push('Owner review is required because context is uncertain.');return decision;}
  if(settings.vipEmails.includes(normalized)){decision.tier='priority';decision.reasons.push('The verified email is on the owner’s VIP list.');}
- else if(fit.fit==='catch_up'){
-  if(settings.returningContactsEnabled&&Number.isInteger(settings.returningScoreThreshold)&&settings.returningScoreThreshold>=1&&settings.returningScoreThreshold<=100&&people.status==='matched'&&Number.isInteger(people.score)&&people.score!>=settings.returningScoreThreshold&&people.score!<=100){decision.tier='priority';decision.reasons.push('The verified email matches a fresh strong relationship eligible for an ordinary catch-up.');}
+ else if(fit.fit==='catch_up'||fit.fit==='needs_context'&&options.knownContactScheduling===true){
+  if(settings.returningContactsEnabled&&Number.isInteger(settings.returningScoreThreshold)&&settings.returningScoreThreshold>=1&&settings.returningScoreThreshold<=100&&people.status==='matched'&&Number.isInteger(people.score)&&people.score!>=settings.returningScoreThreshold&&people.score!<=100){decision.tier='priority';decision.reasons.push(fit.fit==='catch_up'?'The verified email matches a fresh strong relationship eligible for an ordinary catch-up.':'You delegated scheduling with a verified strong connection; no additional questionnaire is needed to arrange this conversation.');}
   else{decision.fit={...fit,fit:'needs_context'};decision.reasons.push('A specific meeting purpose is needed before offering times.');}
  }
  else if(fit.fit==='needs_context')decision.reasons.push('A specific meeting purpose is needed before offering times.');

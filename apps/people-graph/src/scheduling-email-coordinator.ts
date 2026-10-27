@@ -16,10 +16,11 @@ interface Conversation {
  id:string;owner:string;peer:string;gmailId:string;subject:string;kickoffMessageId:string;requestId:string|null;
  guests?:string[];participants?:GroupParticipant[];
  groupReply?:{hash:string;replyAddress:string;messageIds:string[]};
- status:'awaiting_context'|'assessing_context'|'awaiting_review'|'offered'|'confirming'|'booked'|'closed'|'needs_attention';offer:SchedulingOffer|null;timezone:string;
+ status:'awaiting_context'|'assessing_context'|'awaiting_relationship'|'awaiting_review'|'offered'|'confirming'|'booked'|'closed'|'needs_attention';offer:SchedulingOffer|null;timezone:string;
  capabilityHash:string|null;replyAddress:string|null;latestMessageId:string|null;
  contextCapability?:{hash:string;replyAddress:string;expiresAt:number;messageId:string|null}|null;contextRounds?:number;contextReviewReason?:string;
  pendingContext?:{context:string;evidenceId:string;key:string};
+ relationshipRetry?:{attempts:number;nextAttempt:number;deadline:number;key:string;result:SchedulingResult};
  selection?:SchedulingConfirmation&{start:string;end:string};attempts:number;lastInbound:string;
 }
 interface GroupParticipant {email:string;hash:string;replyAddress:string;messageIds:string[];latestInboundOrder?:number;choice?:{slotId:string;evidenceId:string}}
@@ -279,6 +280,51 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
  }
  private cancelPrivateCopies(thread:Conversation){this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NOT NULL AND json_extract(data,'$.replyTo')!=?",thread.id,thread.groupReply?.replyAddress??'');}
  private rememberParent(ids:string[],id:string){const unique=[...new Set([...ids,id])];return unique.length>30?[unique[0],...unique.slice(-29)]:unique;}
+ private relationshipUnavailable(result:SchedulingResult):boolean {
+  return ['pending_approval','needs_new_slot'].includes(result.status)&&result.requiresReview===true&&result.decision?.people.status==='unavailable'&&result.decision.people.retryable===true;
+ }
+ private async deferRelationship(thread:Conversation,result:SchedulingResult,key:string){
+  const now=Date.now();
+  thread.relationshipRetry??={attempts:0,nextAttempt:now+60000,deadline:now+300000,key,result};
+  thread.relationshipRetry.result=result;
+  if(thread.relationshipRetry.attempts>=3||now>thread.relationshipRetry.deadline){
+   this.review(thread,result,'I retried the relationship lookup, but it is still unavailable. Please review this request before I offer times.');return;
+  }
+  thread.status='awaiting_relationship';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.contextCapability=null;thread.selection=undefined;thread.participants=undefined;thread.groupReply=undefined;
+  this.ctx.storage.transactionSync(()=>{
+   this.save(thread);
+   this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready'",thread.id);
+  });
+  await this.ctx.storage.setAlarm(Math.min(thread.relationshipRetry.nextAttempt,now+60000));
+ }
+ private async retryRelationship(thread:Conversation){
+  const retry=thread.relationshipRetry;if(!retry||!thread.requestId||retry.nextAttempt>Date.now())return;
+  let refreshing=false;
+  try{
+   // A read recovers an assessment committed before a lost RPC response and
+   // respects approvals or cancellation performed through another channel.
+   const current=await this.core(thread.owner).getScheduling(thread.owner,thread.requestId);
+   if(!this.relationshipUnavailable(current)){await this.offer(thread,current,retry.key);return;}
+   if(retry.attempts>=3||Date.now()>retry.deadline){await this.deferRelationship(thread,current,retry.key);return;}
+   // Consume the budget before remote work so restarts cannot repeat an attempt
+   // indefinitely. The request and original evidence stay in BookingCoordinator.
+   retry.attempts++;retry.nextAttempt=Date.now()+120000;this.save(thread);refreshing=true;
+   await this.offer(thread,await this.core(thread.owner).refreshScheduling(thread.owner,thread.requestId),retry.key);
+  }catch{
+   const current=this.thread(thread.id);if(!current||current.status!=='awaiting_relationship'||!current.relationshipRetry)return;
+   if(refreshing)try{
+    const recovered=await this.core(current.owner).getScheduling(current.owner,current.requestId!);
+    if(!this.relationshipUnavailable(recovered)){await this.offer(current,recovered,current.relationshipRetry.key);return;}
+    current.relationshipRetry.result=recovered;
+   }catch{/* Keep the bounded durable retry if the result cannot be recovered. */}
+   // A failed preflight read also consumes an attempt; failed refreshes already
+   // consumed theirs. Keep the prior result only for the owner-only diagnosis.
+   if(current.relationshipRetry.attempts===retry.attempts&&current.relationshipRetry.nextAttempt<=Date.now()){
+    current.relationshipRetry.attempts++;current.relationshipRetry.nextAttempt=Date.now()+120000;
+   }
+   await this.deferRelationship(current,current.relationshipRetry.result,current.relationshipRetry.key);
+  }
+ }
  private async assessContext(thread:Conversation){
   if(!thread.pendingContext||!thread.requestId)return;
   try{
@@ -358,13 +404,15 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   }
   if(result.status==='booking'){thread.status='confirming';thread.attempts++;if(thread.attempts>=8)thread.status='needs_attention';this.save(thread);return;}
   if(result.needsContext===true&&['pending_approval','needs_new_slot'].includes(result.status)){await this.offer(thread,result,key);return;}
-  if(result.requiresReview===true){this.review(thread,result);return;}
+  if(result.requiresReview===true){await this.offer(thread,result,key);return;}
   if(result.status==='needs_new_slot'||result.status==='pending_approval'){
    await this.offer(thread,result.offer?result:await this.core(thread.owner).refreshScheduling(thread.owner,thread.requestId!),key);return;
   }
   thread.status='closed';thread.capabilityHash=null;this.save(thread);
  }
  private async offer(thread:Conversation,result:SchedulingResult,key:string,clarify=false){
+  if(this.relationshipUnavailable(result)){await this.deferRelationship(thread,result,key);return;}
+  thread.relationshipRetry=undefined;
   if(terminalSchedulingStatuses.has(result.status)){
    thread.status='closed';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.contextCapability=null;thread.pendingContext=undefined;thread.contextReviewReason=undefined;thread.selection=undefined;thread.participants=undefined;thread.groupReply=undefined;thread.attempts=0;
    this.ctx.storage.transactionSync(()=>{
@@ -414,6 +462,9 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   const thread=JSON.parse(matches[0].data) as Conversation;if(thread.owner!==owner)throw Error('wrong_owner');
   this.config(owner);
   const result=await this.core(owner).getScheduling(owner,requestId);
+  if(['confirming','booked','needs_attention'].includes(thread.status))return {status:thread.status};
+  if(this.relationshipUnavailable(result)){await this.deferRelationship(thread,result,thread.id+':approved');await this.flush(owner);return {status:this.thread(thread.id)?.status??thread.status};}
+  thread.relationshipRetry=undefined;
   // An explicit approval supersedes the pending reply, while an unfinished
   // assessment must retain its evidence for the alarm's idempotent retry.
   if(thread.status==='assessing_context'&&!this.resolvedContextResult(result))return {status:thread.status};
@@ -470,6 +521,7 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   const config=schedulingEmailConfiguration(this.env);if(!config)return;
   await this.retrySenderVerification(config.owner);
   for(const row of this.rows<InboxRow>("SELECT id,data,attempts FROM scheduling_email_inbox WHERE status='queued' ORDER BY received LIMIT 5"))await this.process(config.owner,row);
+  for(const row of this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.status')='awaiting_relationship' LIMIT 5"))await this.retryRelationship(JSON.parse(row.data) as Conversation);
   for(const row of this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.status')='assessing_context' LIMIT 5"))await this.assessContext(JSON.parse(row.data) as Conversation);
   for(const row of this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.status')='confirming' LIMIT 5")){
    const thread=JSON.parse(row.data) as Conversation;
@@ -480,12 +532,12 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
    }catch{thread.attempts++;if(thread.attempts>=8)thread.status='needs_attention';this.save(thread);}
   }
   await this.flush(config.owner);
-  const pending=this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status IN ('queued','awaiting_auth')")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status') IN ('confirming','assessing_context')")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")[0].n;
+  const pending=this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status IN ('queued','awaiting_auth')")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status') IN ('confirming','assessing_context','awaiting_relationship')")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")[0].n;
   if(pending)await this.ctx.storage.setAlarm(Date.now()+60000);
  });}
  async diagnostics(owner:string):Promise<{pending:number;deliveryUnknown:number;needsAttention:number}>{return this.serial(async()=>{
   if(schedulingAddress(this.env.BOOKING_OWNER_EMAIL??'')!==owner)throw Error('wrong_owner');
   const count=(sql:string)=>this.rows<{n:number}>(sql)[0].n;
-  return {pending:count("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status IN ('queued','awaiting_auth')")+count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")+count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status') IN ('confirming','assessing_context')"),deliveryUnknown:count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='unknown'"),needsAttention:count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status')='needs_attention'")+count("SELECT COUNT(*) AS n FROM scheduling_email_threads t WHERE json_extract(t.data,'$.status')='offered' AND EXISTS(SELECT 1 FROM scheduling_email_inbox i WHERE i.status='auth_failed' AND json_extract(i.data,'$.envelopeTo')=json_extract(t.data,'$.groupReply.replyAddress'))")};
+  return {pending:count("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status IN ('queued','awaiting_auth')")+count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")+count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status') IN ('confirming','assessing_context','awaiting_relationship')"),deliveryUnknown:count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='unknown'"),needsAttention:count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status')='needs_attention'")+count("SELECT COUNT(*) AS n FROM scheduling_email_threads t WHERE json_extract(t.data,'$.status')='offered' AND EXISTS(SELECT 1 FROM scheduling_email_inbox i WHERE i.status='auth_failed' AND json_extract(i.data,'$.envelopeTo')=json_extract(t.data,'$.groupReply.replyAddress'))")};
  });}
 }

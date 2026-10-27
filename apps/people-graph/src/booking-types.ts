@@ -15,6 +15,8 @@ export interface BookingPeopleContext {
  status:'matched'|'not_found'|'ambiguous'|'stale'|'unavailable';
  name?:string; email?:string; lastContact?:string|null; score?:number; lastSync?:string;
  reason:string;
+ /** Private source diagnostics; only known transient failures may be retried. */
+ reasonCode?:string;retryable?:boolean;
 }
 export interface BookingSubmission {name:string;project:string;purpose:string;projectUrl:string;referrer:string}
 export interface BookingVisitorIdentity {email:string;subject:string;emailAuthoritative:boolean}

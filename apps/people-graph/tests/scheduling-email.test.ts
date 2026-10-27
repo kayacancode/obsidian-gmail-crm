@@ -136,6 +136,78 @@ test('review and weak decisions send only the owner a private explanation and re
   const thread=JSON.parse((f.db.prepare('SELECT data FROM scheduling_email_threads').get() as any).data);assert.equal(thread.status,'awaiting_review');assert.equal(thread.capabilityHash,null);assert.equal(thread.offer,null);
  }
 });
+const retryableRelationshipResult=()=>({...reviewResult(),decision:{...reviewResult().decision,people:{status:'unavailable',retryable:true,reason:'My Network is completing a sync.'}}});
+test('relationship retry waits without email and recovers one offer across restart without preparing again',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();let preparations=0,refreshes=0;
+ core.prepareScheduling=async()=>{preparations++;return retryableRelationshipResult();};core.getScheduling=async()=>retryableRelationshipResult();
+ core.refreshScheduling=async(o:string,id:string)=>{assert.equal(o,owner);assert.equal(id,'request-one');refreshes++;return {...result(),requiresReview:false,needsContext:false};};
+ await f.service.receive(owner,incoming());assert.equal(f.sent.length,0);assert.equal(readConversation(f).status,'awaiting_relationship');assert.equal((await f.service.diagnostics(owner)).pending,1);
+ await f.restart().alarm();assert.equal(refreshes,0,'early alarms do not retry');
+ now+=60000;await f.restart().alarm();assert.equal(refreshes,1);assert.equal(preparations,1);assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[peer]);assert.doesNotMatch(f.sent[0].text,/PRIVATE|sync/i);
+ await f.restart().alarm();await f.restart().receive(owner,incoming());assert.equal(refreshes,1);assert.equal(preparations,1);assert.equal(f.sent.length,1);assert.equal(f.confirmed.length,0);
+});
+test('relationship retry has a durable bounded budget and escalates only once after exhaustion',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();let refreshes=0;core.prepareScheduling=core.getScheduling=async()=>retryableRelationshipResult();core.refreshScheduling=async()=>{refreshes++;return retryableRelationshipResult();};
+ await f.service.receive(owner,incoming());await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,0);
+ for(const elapsed of [60000,120000]){now+=elapsed;await f.restart().alarm();assert.equal(f.sent.length,0);}
+ now+=120000;await f.restart().alarm();assert.equal(refreshes,3);assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);assert.match(f.sent[0].text,/retried.*relationship lookup/i);assert.equal(readConversation(f).status,'awaiting_review');
+ await f.restart().resumeApproved(owner,'request-one');now+=60000;await f.restart().alarm();assert.equal(refreshes,3);assert.equal(f.sent.length,1);assert.equal(f.confirmed.length,0);
+});
+test('relationship retry observes cancellation or decline before refresh and sends nothing',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ for(const status of ['cancelled','declined']){
+  const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>retryableRelationshipResult();await f.service.receive(owner,incoming());
+  core.getScheduling=async()=>({...result(status),offer:null,requiresReview:false});now+=60000;await f.restart().alarm();assert.equal(f.refreshes(),0);assert.equal(f.sent.length,0);assert.equal(readConversation(f).status,'closed');assert.equal((await f.service.diagnostics(owner)).pending,0);
+ }
+});
+test('relationship retry is only for an explicitly transient source failure and does not bypass review',async t=>{
+ for(const people of [{status:'unavailable',reason:'Source configuration is invalid.'},{status:'ambiguous',retryable:true,reason:'Multiple identities.'},{status:'stale',retryable:true,reason:'Source is stale.'}]){
+  const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>({...retryableRelationshipResult(),decision:{...reviewResult().decision,people}});
+  await f.service.receive(owner,incoming());assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);await f.restart().alarm();assert.equal(f.refreshes(),0);
+ }
+});
+test('relationship retry honors owner approval while duplicate resumes keep the delivered offer',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>retryableRelationshipResult();await f.service.receive(owner,incoming());
+ core.getScheduling=async()=>({...retryableRelationshipResult(),requiresReview:false,needsContext:false,offer:structuredClone(offer)});
+ await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[peer]);const address=f.sent[0].replyTo;
+ now+=60000;await f.restart().alarm();await f.restart().resumeApproved(owner,'request-one');assert.equal(f.refreshes(),0);assert.equal(f.sent.length,1);assert.equal(f.sent[0].replyTo,address);assert.equal(f.confirmed.length,0);
+});
+test('relationship retry replaces queued stale offers and never confirms their old capability',async t=>{
+ const f=fixture(t),core=f.env.BOOKING.getByName();await f.service.receive(owner,incoming());const prior=f.sent[0];f.sent.length=0;
+ f.db.prepare("UPDATE scheduling_email_outbox SET status='ready',message_id=NULL").run();core.getScheduling=async()=>retryableRelationshipResult();
+ await f.restart().resumeApproved(owner,'request-one');assert.equal(f.sent.length,0);assert.equal(readConversation(f).capabilityHash,null);
+ await f.restart().receive(owner,incoming({messageId:'<old-offer@example.com>',from:peer,envelopeTo:prior.replyTo,to:[prior.replyTo],cc:[owner],inReplyTo:'<outbound-1@cloudflare.net>',text:'Option 1 works'}));assert.equal(f.confirmed.length,0);assert.equal(f.sent.length,0);
+});
+test('relationship retry transport failures exhaust safely and never lose the original request',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>retryableRelationshipResult();core.getScheduling=async()=>retryableRelationshipResult();let refreshes=0;
+ core.refreshScheduling=async()=>{refreshes++;throw Error('interrupted after core save');};await f.service.receive(owner,incoming());
+ for(const elapsed of [60000,120000,120000]){now+=elapsed;await f.restart().alarm();}
+ assert.equal(refreshes,3);assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);assert.equal(readConversation(f).requestId,'request-one');assert.equal(f.confirmed.length,0);
+});
+test('relationship retry recovers a saved assessment after a lost refresh response without another refresh',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();let current:any=retryableRelationshipResult(),refreshes=0;
+ core.prepareScheduling=async()=>current;core.getScheduling=async()=>current;
+ core.refreshScheduling=async()=>{refreshes++;current={...result(),requiresReview:false,needsContext:false};throw Error('lost response after persistence');};
+ await f.service.receive(owner,incoming());now+=60000;await f.restart().alarm();assert.equal(f.sent.length,1);
+ now+=120000;await f.restart().alarm();assert.equal(refreshes,1);assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[peer]);assert.equal(f.confirmed.length,0);
+});
+test('relationship retry also bounds failed reads and does not classify them as absent contacts',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>retryableRelationshipResult();let reads=0;
+ core.getScheduling=async()=>{reads++;throw Error('read unavailable');};await f.service.receive(owner,incoming());
+ for(const elapsed of [60000,120000,120000]){now+=elapsed;await f.restart().alarm();}
+ assert.equal(reads,3);assert.equal(f.refreshes(),0);assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);assert.match(f.sent[0].text,/relationship lookup/);assert.doesNotMatch(f.sent[0].text,/not know|weak fit|no contact/i);
+});
+test('relationship retry keeps a permanent review private after the source recovers',async t=>{
+ let now=Date.now();t.mock.method(Date,'now',()=>now);
+ const f=fixture(t),core=f.env.BOOKING.getByName();core.prepareScheduling=async()=>retryableRelationshipResult();core.getScheduling=async()=>retryableRelationshipResult();core.refreshScheduling=async()=>reviewResult('async');
+ await f.service.receive(owner,incoming());now+=60000;await f.restart().alarm();assert.equal(f.sent.length,1);assert.deepEqual(f.sent[0].to,[owner]);assert.equal(readConversation(f).status,'awaiting_review');assert.equal(readConversation(f).relationshipRetry,undefined);assert.equal(f.confirmed.length,0);
+});
 test('strong assessed offers use canonical context and keep private assessment away from the counterpart',async t=>{
  const f=fixture(t),mail=f.env.MAIL.getByName();let context='';f.env.MAIL.getByName=()=>({...mail,verifySchedulingKickoff:async()=>({...await mail.verifySchedulingKickoff(),context:'Untrusted canonical purpose: our shared project proposal.'})});
  f.env.BOOKING.getByName().prepareScheduling=async(_o:string,input:any)=>{context=input.context;return {...result(),requiresReview:false,decision:{...reviewResult().decision,tier:'priority'}};};

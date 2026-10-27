@@ -267,3 +267,28 @@ test('booking fallback uses exact fresh My Network evidence only when Rust is un
  for(const patch of [{owner:'other@example.com'},{email:'other@example.com'},{checkedAt:now-300001},{sourceUpdatedAt:now-86400001}]){Object.assign(value,patch);assert.notEqual((await lookupBookingPerson(env,owner,'visitor@example.com',now)).status,'matched');Object.assign(value,{owner,email:'visitor@example.com',checkedAt:now,sourceUpdatedAt:now-1000});}
  const before=calls;await withFetch(async()=>new Response('',{status:503}),async()=>assert.equal((await lookupBookingPerson({...env,...peopleEnv},owner,'visitor@example.com',now)).status,'unavailable'));assert.equal(calls,before);
 });
+
+test('owner-delegated scheduling recognizes an exact strong contact without a questionnaire',()=>{
+ const fit:BookingFit={fit:'needs_context',reasons:['Only scheduling language.'],evidence:[],model:'test'};
+ const options={knownContactScheduling:true};
+ const result=decideBooking(settings(),'visitor@example.com',fit,{...fresh,score:70},options);
+ assert.equal(result.tier,'priority');assert.equal(result.fit.fit,'needs_context');assert.match(result.reasons.join(' '),/strong.*connection|strong.*relationship/i);
+ assert.equal(decideBooking(settings(),'visitor@example.com',fit,{...fresh,score:70}).tier,'review','public policy is unchanged');
+ for(const patch of [{score:69},{score:undefined},{score:70.5},{status:'unavailable' as const},{status:'ambiguous' as const},{lastSync:new Date(Date.now()-86401000).toISOString()},{email:'different@example.com'}])assert.equal(decideBooking(settings(),'visitor@example.com',fit,{...fresh,...patch},options).tier,'review');
+ assert.equal(decideBooking(settings({returningContactsEnabled:false}),'visitor@example.com',fit,fresh,options).tier,'review');
+ assert.equal(decideBooking(settings({returningScoreThreshold:80}),'visitor@example.com',fit,{...fresh,score:70},options).tier,'review');
+ assert.equal(decideBooking(settings(),'visitor@example.com',{...goodFit,fit:'weak'},fresh,options).tier,'async');
+ assert.equal(decideBooking(settings(),'visitor@example.com',{...goodFit,fit:'uncertain'},fresh,options).tier,'review');
+});
+
+test('booking local lookup preserves safe diagnostic codes and retries only temporary source failures',async()=>{
+ let value:any={owner,email:'visitor@example.com',status:'unavailable',checkedAt:now,reason:'gmail_syncing',retryable:true,source:'gmail'};
+ const env={MAIL:{getByName:()=>({bindOwner:async()=>{},bookingPerson:async()=>value})}} as unknown as BookingEnv;
+ const syncing=await lookupBookingPerson(env,owner,value.email,now);
+ assert.equal(syncing.status,'unavailable');assert.equal(syncing.retryable,true);assert.equal(syncing.reasonCode,'gmail_syncing');assert.match(syncing.reason,/Gmail.*sync/i);
+ value={...value,reason:'gmail_reconnect',retryable:false};const reconnect=await lookupBookingPerson(env,owner,value.email,now);assert.equal(reconnect.retryable,false);assert.match(reconnect.reason,/reconnect/i);
+ value={...value,reason:'arbitrary private text <script>',retryable:true};const invalid=await lookupBookingPerson(env,owner,value.email,now);assert.equal(invalid.retryable,false);assert.doesNotMatch(invalid.reason,/arbitrary|script/);
+ for(const code of ['constructor','__proto__','gmail_constructor','granola___proto__']){value={...value,reason:code,retryable:true};const unknown=await lookupBookingPerson(env,owner,value.email,now);assert.equal(typeof unknown.reason,'string');assert.equal(unknown.reasonCode,undefined);assert.equal(unknown.retryable,false);}
+ value={...value,reason:'gmail_syncing',status:'ambiguous'};assert.equal((await lookupBookingPerson(env,owner,value.email,now)).retryable,false);
+ value={...value,reason:'gmail_syncing',status:'unavailable',owner:'other@example.com'};assert.notEqual((await lookupBookingPerson(env,owner,value.email,now)).retryable,true);
+});

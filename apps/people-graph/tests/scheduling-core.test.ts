@@ -56,7 +56,7 @@ test('scheduling context reply reassesses once and preserves original preparatio
  assert.equal(cal.writes.length,0);
 });
 test('scheduling context is bounded and cannot change authority or keep an unlimited clarification loop',async t=>{
- t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);calendar(t);source(f.env);const r=await contextRequest(f);
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);calendar(t);source(f.env,{owner,email:visitor.email,name:'Visitor',score:20,checkedAt:now,sourceUpdatedAt:now-1000});const r=await contextRequest(f);
  f.env.AI.run=async()=>({output_text:JSON.stringify({fit:'needs_context',reasons:['No meeting purpose yet.'],evidence:[]})});
  for(const bad of [{context:'hello',evidenceId:'x',email:'other@example.com'},{context:'x'.repeat(1501),evidenceId:'x'},{context:'',evidenceId:'x'}])await assert.rejects((f.service as any).addSchedulingContext(owner,r.id,bad),/invalid_/);
  const first=await (f.service as any).addSchedulingContext(owner,r.id,{context:'Could we get coffee sometime?',evidenceId:'first'});assert.equal(first.needsContext,true);
@@ -325,4 +325,17 @@ test('group scheduling rejects untrusted channels and invalid attendee sets befo
   await assert.rejects(f.service.prepareScheduling(owner,{...input,attendees} as any,emailAuthority),/invalid_/);
  }
  assert.equal((await f.store.requests(owner)).length,0);
+});
+
+test('owner-delegated known contact keeps questionnaire bypass through prepare refresh and confirmation',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);
+ await f.store.saveSettings({...f.settings,vipEmails:[]},f.settings.revision);
+ f.env.MAIL.getByName=()=>({bindOwner:async()=>{},bookingSourceStatus:async()=>({owner,ready:true,checkedAt:now,sourceUpdatedAt:now-1000}),bookingPerson:async()=>({owner,email:visitor.email,status:'matched',name:'Known guest',score:70,checkedAt:now,sourceUpdatedAt:now-1000})});
+ f.env.AI.run=async()=>({output_text:JSON.stringify({fit:'needs_context',reasons:['Only scheduling language.'],evidence:[]})});
+ const prepared=await f.service.prepareScheduling(owner,{...input,context:'Please find us some time for next week.'},{channel:'owner_email',evidenceId:'owner-mail'});
+ assert.equal(prepared.decision?.tier,'priority');assert.equal(prepared.needsContext,false);assert.equal(prepared.requiresReview,false);assert.equal(prepared.offer?.slots.length,3);
+ const refreshed=await f.service.refreshScheduling(owner,prepared.requestId);assert.equal(refreshed.needsContext,false);assert.ok(refreshed.offer);
+ const slot=refreshed.offer!.slots[0];
+ const confirmed=await f.service.confirmScheduling(owner,prepared.requestId,{revision:refreshed.offer!.revision,slotId:slot.id,evidenceId:'guest-choice'});
+ assert.equal(confirmed.status,'booked');assert.equal(cal.writes.length,1);
 });

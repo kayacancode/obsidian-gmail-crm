@@ -13,11 +13,13 @@ import {tmpdir} from 'node:os';
 const fixture=`
 import worker from './src/index';
 import {BookingCoordinator as Coordinator} from './src/booking-coordinator';
+import {MailSync} from './src/mail-sync';
+import {lookupBookingPerson} from './src/booking-people';
 import {SchedulingEmailCoordinator as EmailCoordinator} from './src/scheduling-email-coordinator';
 import {BookingStore} from './src/booking-store';
 import {defaultBookingSettings} from './src/booking-policy';
 import {makeSession,sessionCookie} from './src/session';
-import {seal} from './src/mail-model';
+import {seal,opaque} from './src/mail-model';
 import {bookingCalendarBusy} from './src/booking-providers';
 import {bookingReadiness} from './src/booking-coordinator';
 import {verifyReceivedSchedulingGuestReply} from './src/scheduling-gmail';
@@ -28,6 +30,7 @@ export class TestSchedulingEmailCoordinator extends EmailCoordinator {
  constructor(ctx,env){super(ctx,emailWrap(env));}
  restartForTest(){this.ctx.abort('email fixture restart');}
  async alarmForTest(){await this.ctx.storage.deleteAlarm();await this.alarm();}
+ relationshipDueForTest(requestId){const thread=this.stateForTest(requestId)[0];thread.relationshipRetry.nextAttempt=0;this.ctx.storage.sql.exec('UPDATE scheduling_email_threads SET data=? WHERE id=?',JSON.stringify(thread),thread.id);}
  stateForTest(requestId){return this.ctx.storage.sql.exec("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.requestId')=?",requestId).toArray().map(row=>JSON.parse(row.data));}
  authStateForTest(envelopeTo){return envelopeTo?this.ctx.storage.sql.exec('SELECT id,attempts,length(raw) AS bytes,received FROM scheduling_email_auth_inbox WHERE envelope_to=?',envelopeTo).toArray():this.ctx.storage.sql.exec('SELECT id,attempts,length(raw) AS bytes,received FROM scheduling_email_auth_inbox').toArray();}
  outboxForTest(requestId){const thread=this.stateForTest(requestId)[0];return this.ctx.storage.sql.exec('SELECT id,status,data FROM scheduling_email_outbox WHERE thread=?',thread.id).toArray().map(row=>({...row,data:JSON.parse(row.data)}));}
@@ -40,14 +43,44 @@ export class TestSchedulingEmailCoordinator extends EmailCoordinator {
   }
  }
 }
+function localSourceEnv(env){return {...emailWrap(env,'__booking_sent','__booking_send_unknown'),MAIL:env.MAIL_REAL,PEOPLEGRAPH_HOST:undefined,PEOPLEGRAPH_TOKEN:undefined,PEOPLEGRAPH_OWNER_EMAIL:undefined};}
+export class TestMailSync extends MailSync {
+ async seedForTest(input){
+  await this.bindOwner(owner);const now=Date.now(),email=input.email||'james-runtime@example.com',account={email:owner,grant:'sealed-fixture',revision:'completed-runtime',status:'connected',lastSync:now-1000,nextSync:now+3600000,error:'',range:'all',job:{generation:'completed-runtime',range:'all',query:'',pending:[],hasMore:false,processed:11,started:now-1000,retries:0,lastRun:now-500,nextAttempt:0,photosDone:true},...input.account};
+  this.ctx.storage.sql.exec('INSERT OR REPLACE INTO accounts VALUES (?,?)',owner,JSON.stringify(account));
+  this.ctx.storage.sql.exec('DELETE FROM contributions WHERE email=?',email);
+  for(let i=0;i<11;i++)this.ctx.storage.sql.exec('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)',owner,'known-contact-runtime:'+email+':'+i,email,'James Runtime',now-7*86400000,'Private conversation',i<4?1:0,i<4?0:1);
+  return {email,id:await opaque(owner,email,this.env.TOKEN_SECRET),lastSync:account.lastSync};
+ }
+ async restartForTest(){this.ctx.abort('mail fixture restart');}
+}
+export class TestLocalBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,localSourceEnv(env));}}
+export class TestLocalSchedulingEmailCoordinator extends TestSchedulingEmailCoordinator {constructor(ctx,env){super(ctx,{...env,BOOKING:env.BOOKING_LOCAL});}}
 export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,emailWrap(env,'__booking_sent','__booking_send_unknown'));} restartForTest(){this.ctx.abort('fixture restart');} async alarmForTest(){await this.ctx.storage.deleteAlarm();await this.alarm();} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
-export default {async fetch(request,env){env=wrap(env);const url=new URL(request.url),store=new BookingStore(env.DB);
+export default {async fetch(request,env){env=wrap(env);const url=new URL(request.url),store=new BookingStore(env.DB);if(url.searchParams.get('local')==='1')env={...env,BOOKING:env.BOOKING_LOCAL,SCHEDULING_EMAIL:env.SCHEDULING_EMAIL_LOCAL};
  if(url.pathname==='/fixture'){await store.init();await env.DB.prepare('CREATE TABLE IF NOT EXISTS fixture_control(key TEXT,body TEXT)').run();
  const settings={...defaultBookingSettings(owner),displayName:'Test host',slug:'test-host',thesis:'I meet founders building new interfaces for AI agents.',revision:1,enabled:true,weekdays:[0,1,2,3,4,5],startTime:'09:00',endTime:'17:00'};
  await store.saveSettings(settings,0);
  await store.saveCalendar({owner,email:owner,connectedAt:Date.now(),grant:await seal(JSON.stringify({owner,email:owner,refreshToken:'fixture-refresh',scopes:['openid','email','https://www.googleapis.com/auth/calendar.events','https://www.googleapis.com/auth/calendar.freebusy']}),env.MAIL_TOKEN_KEY)});
  return Response.json({cookie:sessionCookie(await makeSession(owner,env.TOKEN_SECRET)),settings});}
+ if(url.pathname==='/fixture/mail-source'){
+  const input=await request.json(),source=env.MAIL_REAL.getByName(owner);await source.bindOwner(owner);
+  if(input.action==='seed')return Response.json(await source.seedForTest(input));
+  if(input.action==='graph')return Response.json(await source.graph());
+  if(input.action==='contact')return Response.json(await source.bookingContact(input.email));
+  if(input.action==='lookup')return Response.json(await lookupBookingPerson(localSourceEnv(env),owner,input.email));
+  if(input.action==='restart'){try{await source.restartForTest();}catch{}return Response.json({ok:true});}
+  return Response.json(await source.bookingPerson(input.email));
+ }
+ if(url.pathname==='/fixture/local-scheduling'){
+  const input=await request.json(),coordinator=env.BOOKING_LOCAL.getByName(owner);
+  try{if(input.action==='prepare')return Response.json(await coordinator.prepareScheduling(owner,input.input,{channel:'owner_email',evidenceId:input.evidenceId}));
+   if(input.action==='refresh')return Response.json(await coordinator.refreshScheduling(owner,input.id));
+   if(input.action==='confirm')return Response.json(await coordinator.confirmScheduling(owner,input.id,input.selection));
+  }catch(error){return Response.json({error:error.message},{status:409});}
+ }
  if(url.pathname==='/fixture/email'){const input=await request.json();let rejection=null;const bytes=new TextEncoder().encode(input.raw);await worker.email({to:input.to,from:input.from,rawSize:bytes.length,raw:new ReadableStream({start(controller){controller.enqueue(bytes);controller.close();}}),setReject(reason){rejection=reason;}},emailWrap(env));return Response.json({rejection});}
+ if(url.pathname==='/fixture/email-relationship-due'){await env.SCHEDULING_EMAIL.getByName(owner).relationshipDueForTest(url.searchParams.get('requestId'));return Response.json({ok:true});}
  if(url.pathname==='/fixture/email-alarm'){await env.SCHEDULING_EMAIL.getByName(owner).alarmForTest();return Response.json({ok:true});}
  if(url.pathname==='/fixture/booking-alarm'){await env.BOOKING.getByName(owner).alarmForTest();return Response.json({ok:true});}
  if(url.pathname==='/fixture/email-legacy-group'){const {requestId,participants,queuedCopies}=await request.json();await env.SCHEDULING_EMAIL.getByName(owner).legacyGroupForTest(requestId,participants,queuedCopies);return Response.json({ok:true});}
@@ -77,7 +110,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
  try{
   await build({stdin:{contents:fixture,resolveDir:process.cwd(),loader:'ts'},bundle:true,format:'esm',platform:'browser',external:['cloudflare:workers','cloudflare:email','node:*'],plugins:[{name:'node-builtins',setup(b){b.onResolve({filter:/^(?:buffer|string_decoder)$/},args=>({path:args.path,namespace:'node-shim'}));b.onLoad({filter:/.*/,namespace:'node-shim'},args=>({contents:`export * from 'node:${args.path}'; import builtin from 'node:${args.path}'; export default builtin;`,loader:'js'}));}}],outfile:join(dir,'worker.mjs')});
   const scopes='openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy';
-  mf=new Miniflare({modules:true,modulesRoot:dir,scriptPath:join(dir,'worker.mjs'),compatibilityDate:'2025-05-01',compatibilityFlags:['nodejs_compat','enable_nodejs_http_modules'],assets:{directory:join(process.cwd(),'public'),binding:'ASSETS',routerConfig:{invoke_user_worker_ahead_of_assets:true,has_user_worker:true}},d1Databases:{DB:'booking-test'},durableObjects:{BOOKING:{className:'TestBookingCoordinator',useSQLite:true},SCHEDULING_EMAIL:{className:'TestSchedulingEmailCoordinator',useSQLite:true}},bindings:{GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-client-secret',TOKEN_SECRET:'test-session-secret',MAIL_TOKEN_KEY:'test-encryption',APP_ORIGIN:'https://people.test',BOOKING_OWNER_EMAIL:'owner@example.com',PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'test-source-secret',PEOPLEGRAPH_OWNER_EMAIL:'owner@example.com'},outboundService:async req=>{
+  mf=new Miniflare({modules:true,modulesRoot:dir,scriptPath:join(dir,'worker.mjs'),compatibilityDate:'2025-05-01',compatibilityFlags:['nodejs_compat','enable_nodejs_http_modules'],assets:{directory:join(process.cwd(),'public'),binding:'ASSETS',routerConfig:{invoke_user_worker_ahead_of_assets:true,has_user_worker:true}},d1Databases:{DB:'booking-test'},durableObjects:{SCHEDULING_EMAIL_LOCAL:{className:'TestLocalSchedulingEmailCoordinator',useSQLite:true},MAIL_REAL:{className:'TestMailSync',useSQLite:true},BOOKING_LOCAL:{className:'TestLocalBookingCoordinator',useSQLite:true},BOOKING:{className:'TestBookingCoordinator',useSQLite:true},SCHEDULING_EMAIL:{className:'TestSchedulingEmailCoordinator',useSQLite:true}},bindings:{GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-client-secret',TOKEN_SECRET:'test-session-secret',MAIL_TOKEN_KEY:'test-encryption',APP_ORIGIN:'https://people.test',BOOKING_OWNER_EMAIL:'owner@example.com',PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'test-source-secret',PEOPLEGRAPH_OWNER_EMAIL:'owner@example.com'},outboundService:async req=>{
    const u=new URL(req.url);
    if(u.hostname==='cloudflare-dns.com'&&u.pathname==='/dns-query'){const name=u.searchParams.get('name');assert.equal(u.searchParams.get('type'),'TXT');if(dkimUnavailable)return Response.json({Status:2});return Response.json({Status:0,TC:false,Question:[{name,type:16}],Answer:['runtime._domainkey.example.com','workspace._domainkey.example-com.20251104.gappssmtp.com','arc._domainkey.google.com'].includes(name)?[{name,type:16,data:'"v=DKIM1; k=rsa; p='+dkimResponseKey+'"'}]:[]});}
    if(u.hostname==='gmail.googleapis.com'&&u.pathname.startsWith('/gmail/v1/users/me/messages')){
@@ -127,6 +160,8 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   const setup=await api('/fixture'),ownerCookie=setup.value.cookie.split(';')[0];let settings=setup.value.settings;
   const sql=async(sql,args=[])=> (await api('/fixture/sql',{method:'POST',data:{sql,args}})).value.results;
   const prefix='/api/public/booking/test-host';
+  const mailSource=(action,data={})=>api('/fixture/mail-source',{method:'POST',data:{action,...data}});
+  const localScheduling=(action,data={})=>api('/fixture/local-scheduling',{method:'POST',data:{action,...data}});
   const visitorIPs=new Map();
   const setModel=async(value)=>{await sql("DELETE FROM fixture_control WHERE key='__model'");if(value)await sql("INSERT INTO fixture_control(key,body) VALUES('__model',?)",[JSON.stringify(value)]);};
   const matchedPurpose='I build interfaces that help people work with AI agents and would like product feedback.';
@@ -824,6 +859,47 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const renewed=await visitor('visitor@example.com');assert.equal((await api(prefix+'/requests/'+first.id,{cookie:renewed})).value.request.status,'cancelled');
   });
 
+  await t.test('real MailSync RPC finds the same strong email-only contact shown in My Network',async()=>{
+   const seeded=await mailSource('seed');assert.equal(seeded.res.status,200,JSON.stringify(seeded.value));
+   const email=seeded.value.email,found=await mailSource('person',{email});
+   assert.equal(found.res.status,200,JSON.stringify(found.value));assert.equal(found.value.status,'matched',JSON.stringify(found.value));assert.equal(found.value.owner,'owner@example.com');assert.equal(found.value.email,email);assert.equal(found.value.score,70);assert.equal(found.value.sourceUpdatedAt,seeded.value.lastSync);
+   const graph=await mailSource('graph'),node=graph.value.nodes.find(value=>value.id===seeded.value.id);assert.ok(node);assert.deepEqual(node.contactActivity,{sent:4,received:7,meetings:0});assert.equal(node.combined,found.value.score);
+   await mailSource('restart');
+   const contact=await mailSource('contact',{email}),lookup=await mailSource('lookup',{email});assert.equal(contact.value.score,70,JSON.stringify(contact.value));assert.equal(lookup.value.status,'matched',JSON.stringify(lookup.value));assert.equal(lookup.value.score,70);
+   assert.equal((await mailSource('person',{email:'unknown-runtime@example.com'})).value.status,'not_found');
+   await mailSource('seed',{email,account:{status:'syncing'}});const incomplete=await mailSource('person',{email});assert.equal(incomplete.value.status,'unavailable');assert.equal(incomplete.value.reason,'gmail_syncing');assert.equal(incomplete.value.retryable,true);assert.equal(incomplete.value.score,undefined);
+   await mailSource('seed',{email});
+  });
+  await t.test('actual email coordinator waits through incomplete My Network sync and sends one offer after restart',async()=>{
+   const peer='known-retry-runtime@example.com',id='<known-retry-runtime@example.com>',agent='scheduling@agent.test',before=inserts,mailBefore=(await sentEmail()).length;
+   await mailSource('seed',{email:peer,account:{status:'syncing'}});await setModel({fit:'needs_context',reasons:['No project or meeting topic was supplied.'],evidence:[]});
+   try{
+    await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__kickoff:'+id,JSON.stringify({gmailId:'runtime-known-retry',messageId:id,owner:'owner@example.com',from:'owner@example.com',to:[peer],cc:[agent],subject:'Find a time',text:'Please find us a time to meet.',context:'Please find us a time to meet.',receivedAt:Date.now()})]);
+    const kickoff=await emailPayload({id,from:'owner@example.com',to:agent,cc:peer,text:'Please find us a time to meet.'});await api('/fixture/email?local=1',{method:'POST',data:kickoff});
+    const records=await sql('SELECT data FROM booking_requests WHERE email=?',[peer]);assert.equal(records.length,1);const record=JSON.parse(records[0].data),state=async()=>(await api('/fixture/email-state?local=1&requestId='+record.id)).value[0];
+    assert.equal(record.decision.people.reasonCode,'gmail_syncing');assert.equal((await state()).status,'awaiting_relationship');assert.equal((await sentEmail()).length,mailBefore);assert.equal(inserts,before);
+    await api('/fixture/email-restart?local=1');await api('/fixture/email-alarm?local=1');assert.equal((await state()).relationshipRetry.attempts,0,'an early alarm keeps the persisted backoff');
+    await mailSource('seed',{email:peer});await api('/fixture/email-relationship-due?local=1&requestId='+record.id);const resumed=await api('/fixture/email-alarm?local=1');assert.equal(resumed.res.status,200,JSON.stringify(resumed.value));
+    const offers=(await sentEmail()).slice(mailBefore);assert.equal(offers.length,1);assert.deepEqual(offers[0].to,[peer]);assert.deepEqual(offers[0].cc,['owner@example.com']);assert.match(offers[0].text,/available times/i);assert.doesNotMatch(offers[0].text,/sync|score|review|thesis/i);
+    assert.equal((await state()).status,'offered');assert.equal((await state()).relationshipRetry,undefined);const refreshed=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(refreshed.decision.people.score,70);assert.equal(refreshed.decision.tier,'priority');
+    await api('/fixture/email-restart?local=1');await api('/fixture/email-alarm?local=1');await api('/fixture/email?local=1',{method:'POST',data:kickoff});assert.equal((await sentEmail()).length,mailBefore+1);assert.equal((await sql('SELECT data FROM booking_requests WHERE email=?',[peer])).length,1);assert.equal(inserts,before,'recovery offers times without silently booking');
+   }finally{await setModel(null);}
+  });
+  await t.test('owner-delegated scheduling uses an actual 70-point My Network contact without asking for a purpose',async()=>{
+   const email='known-delegation-runtime@example.com',before=inserts;
+   await mailSource('seed',{email});await setModel({fit:'needs_context',reasons:['No project or meeting topic was supplied.'],evidence:[]});
+   try{
+    const prepared=await localScheduling('prepare',{input:{email,context:'Please find us time to meet next week.',idempotencyKey:'runtime_local_known_delegation'},evidenceId:'<local-known-owner-delegation@example.com>'});
+    assert.equal(prepared.res.status,200,JSON.stringify(prepared.value));assert.equal(prepared.value.decision.people.status,'matched',JSON.stringify(prepared.value));assert.equal(prepared.value.decision.people.score,70);assert.equal(prepared.value.decision.fit.fit,'needs_context');assert.equal(prepared.value.decision.tier,'priority');assert.equal(prepared.value.requiresReview,false);assert.ok(prepared.value.offer?.slots.length);assert.equal(inserts,before);
+    const refreshed=await localScheduling('refresh',{id:prepared.value.requestId});assert.equal(refreshed.value.requiresReview,false,JSON.stringify(refreshed.value));assert.ok(refreshed.value.offer?.slots.length);
+    const selection={revision:refreshed.value.offer.revision,slotId:refreshed.value.offer.slots[0].id,evidenceId:'<local-known-choice@example.com>'};
+    await mailSource('seed',{email,account:{status:'syncing'}});
+    const pending=await localScheduling('confirm',{id:prepared.value.requestId,selection});assert.equal(pending.value.requiresReview,true,JSON.stringify(pending.value));assert.equal(pending.value.offer,null);assert.equal(inserts,before,'a previously strong contact must be reverified before booking');
+    await mailSource('seed',{email});const recovered=await localScheduling('refresh',{id:prepared.value.requestId});assert.equal(recovered.value.requiresReview,false,JSON.stringify(recovered.value));assert.ok(recovered.value.offer?.slots.length);
+    const accepted={revision:recovered.value.offer.revision,slotId:recovered.value.offer.slots[0].id,evidenceId:'<local-known-refreshed-choice@example.com>'},booked=await localScheduling('confirm',{id:prepared.value.requestId,selection:accepted});assert.equal(booked.value.status,'booked',JSON.stringify(booked.value));assert.equal(inserts,before+1);
+    const retry=await localScheduling('confirm',{id:prepared.value.requestId,selection:accepted});assert.equal(retry.value.status,'booked');assert.equal(inserts,before+1);
+   }finally{await setModel(null);}
+  });
   await t.test('public intake and machine scheduling share saved-thesis assessment across strong, weak and uncertain evidence',async()=>{
    const token=await machineCredential(),before=inserts;
    const weakPurpose='I would like to discuss wholesale garden tools and retail pricing.';
