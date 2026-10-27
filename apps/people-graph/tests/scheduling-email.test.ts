@@ -91,8 +91,8 @@ test('requested alternatives rotate capability and current revision while old re
  await f.service.receive(owner,{...reply,messageId:'<stale@example.com>',text:'Option 1 works'});assert.equal(f.confirmed.length,0);
  await f.service.receive(owner,{...reply,messageId:'<fresh@example.com>',envelopeTo:f.sent[1].replyTo,to:[f.sent[1].replyTo],inReplyTo:'<outbound-2@cloudflare.net>',text:'Option 1 works'});assert.equal(f.confirmed[0].revision,'revision-two');
 });
-test('unsupported owner constraints or multiple peers produce owner-only clarification without preparing',async t=>{
- for(const patch of [{text:'Please find a time next week, only afternoons.'},{to:[peer,'extra@example.com'] }]){
+test('unsupported owner constraints or excessive guests produce owner-only clarification without preparing',async t=>{
+ for(const patch of [{text:'Please find a time next week, only afternoons.'},{to:[peer,'a@example.com','b@example.com','c@example.com','d@example.com','e@example.com'] }]){
   const f=fixture(t),mail=f.env.MAIL.getByName();f.env.MAIL.getByName=()=>({...mail,verifySchedulingKickoff:async()=>({...await mail.verifySchedulingKickoff(),...patch})});
   await f.service.receive(owner,incoming());assert.equal(f.prepares(),0);assert.deepEqual(f.sent[0].to,[owner]);assert.deepEqual(f.sent[0].cc,[]);
  }
@@ -346,4 +346,134 @@ test('expired or unresolved offer projections cannot replace frozen context evid
   const f=fixture(t),core=f.env.BOOKING.getByName();let current:any=contextResult();core.prepareScheduling=async()=>contextResult();core.getScheduling=async()=>current;core.addSchedulingContext=async()=>{throw Error('transport interrupted');};await f.service.receive(owner,incoming());await f.service.receive(owner,contextReply(f.sent[0]));
   current={...result(),offer:offered,requiresReview:false,needsContext:false,contextQuestion:null};assert.deepEqual(await f.restart().resumeApproved(owner,'request-one'),{status:'assessing_context'});await f.restart().alarm();assert.equal(f.sent.length,1);assert.equal(readConversation(f).status,'assessing_context');assert.equal(readConversation(f).pendingContext.evidenceId,'<context-1@example.com>');
  }
+});
+
+test('raw parser accepts matching address display names but rejects address impersonation',async()=>{
+ const raw=(from:string)=>`From: ${from}\r\nTo: ${agent}\r\nMessage-ID: <name@example.com>\r\nContent-Type: text/plain\r\n\r\nOption 1 works`;
+ assert.equal((await parseSchedulingEmail(raw('"peer@example.com" <peer@example.com>'),agent)).from,peer);
+ await assert.rejects(parseSchedulingEmail(raw('"owner@example.com" <peer@example.com>'),agent),/mailbox/);
+});
+function groupFixture(t:TestContext){
+ const f=fixture(t),mail=f.env.MAIL.getByName();
+ f.env.MAIL.getByName=()=>({...mail,verifySchedulingKickoff:async()=>({...await mail.verifySchedulingKickoff(),cc:[agent,'second@example.com']})});
+ return f;
+}
+function groupReply(to:string,from:string,parent:string,id:string,text='Option 1 works'){
+ return incoming({messageId:`<${id}@example.com>`,envelopeTo:to,from,to:[to],cc:[owner],inReplyTo:parent,text});
+}
+test('group waits for every guest and keeps original offer reply valid after acknowledgements and restart',async t=>{
+ const f=groupFixture(t);let attendees:string[]=[];
+ const prepare=f.env.BOOKING.getByName().prepareScheduling;
+ f.env.BOOKING.getByName().prepareScheduling=async(o:string,input:any,a:any)=>{attendees=input.attendees;return prepare(o,input,a);};
+ await f.service.receive(owner,incoming());
+ assert.deepEqual(attendees,[peer,'second@example.com']);assert.equal(f.sent.length,2);
+ assert.deepEqual(f.sent[0].to,[peer]);assert.deepEqual(f.sent[1].to,['second@example.com']);
+ assert.notEqual(f.sent[0].replyTo,f.sent[1].replyTo);
+ assert.doesNotMatch(JSON.stringify(f.sent),/PRIVATE/);
+ const a=f.sent[0].replyTo,b=f.sent[1].replyTo;
+ await f.service.receive(owner,groupReply(a,'second@example.com','<outbound-1@cloudflare.net>','impersonation'));
+ assert.equal(f.confirmed.length,0);assert.equal(f.sent.length,2);
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','first'));
+ assert.equal(f.confirmed.length,0);assert.match(f.sent.at(-1).text,/waiting/i);
+ // Guest two's original offer is still current after guest one's status email.
+ await f.restart().receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','second'));
+ assert.equal(f.confirmed.length,1);assert.equal(f.confirmed[0].slotId,'slot-one');
+ assert.deepEqual(f.sent.at(-1).to,[peer,'second@example.com']);assert.deepEqual(f.sent.at(-1).cc,[owner]);assert.match(f.sent.at(-1).text,/booked/i);
+ await f.restart().receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','duplicate-selection'));
+ assert.equal(f.confirmed.length,1);
+});
+test('group conflicting choices never book and a later same-option reply resolves consensus',async t=>{
+ const f=groupFixture(t);await f.service.receive(owner,incoming());assert.equal(f.sent.length,2);
+ const a=f.sent[0].replyTo,b=f.sent[1].replyTo;
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','first'));
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','different','Option 2 works'));
+ assert.equal(f.confirmed.length,0);assert.match(f.sent.at(-1).text,/different|same option/i);
+ await f.restart().receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','changed','Option 2 works'));
+ assert.equal(f.confirmed.length,1);assert.equal(f.confirmed[0].slotId,'slot-two');
+});
+test('group refresh resets every agreement and invalidates all old reply capabilities',async t=>{
+ const f=groupFixture(t);await f.service.receive(owner,incoming());assert.equal(f.sent.length,2);
+ const a=f.sent[0].replyTo,b=f.sent[1].replyTo;
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','first'));
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','refresh','Other options please'));
+ f.env.BOOKING.getByName().getScheduling=async()=>({...result(),offer:{...offer,revision:'revision-two'}});
+ const newOffers=f.sent.slice(-2),start=f.sent.length-1;
+ assert.notEqual(newOffers[0].replyTo,a);assert.notEqual(newOffers[1].replyTo,b);
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','stale'));
+ assert.equal(f.confirmed.length,0);
+ await f.service.receive(owner,groupReply(newOffers[1].replyTo,'second@example.com',`<outbound-${start+1}@cloudflare.net>`,'new-second'));
+ assert.equal(f.confirmed.length,0);
+ await f.service.receive(owner,groupReply(newOffers[0].replyTo,peer,`<outbound-${start}@cloudflare.net>`,'new-first'));
+ assert.equal(f.confirmed.length,1);assert.equal(f.confirmed[0].revision,'revision-two');
+});
+
+test('group confirmation receipt recovers after storage interruption without losing the booked result',async t=>{
+ const f=groupFixture(t);await f.service.receive(owner,incoming());
+ const a=f.sent[0].replyTo,b=f.sent[1].replyTo;
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','first'));
+ const exec=f.ctx.storage.sql.exec;let fail=true;
+ f.ctx.storage.sql.exec=(sql:string,...args:any[])=>{
+  if(fail&&sql.startsWith('INSERT OR IGNORE INTO scheduling_email_outbox')&&String(args[0]).endsWith(':booked')){fail=false;throw Error('storage interrupted');}
+  return exec(sql,...args);
+ };
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','second'));
+ assert.equal(f.sent.filter(message=>message.text.startsWith('The meeting is booked')).length,0);
+ await f.restart().alarm();
+ assert.equal(f.sent.filter(message=>message.text.startsWith('The meeting is booked')).length,1);
+ await f.restart().alarm();
+ assert.equal(f.sent.filter(message=>message.text.startsWith('The meeting is booked')).length,1);
+});
+
+test('group clarification and repeated owner approval preserve votes and the original offer parent',async t=>{
+ const f=groupFixture(t);await f.service.receive(owner,incoming());
+ const a=f.sent[0].replyTo,b=f.sent[1].replyTo;
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','first'));
+ await f.restart().resumeApproved(owner,'request-one');
+ assert.equal(f.sent.length,4);
+ for(let i=0;i<21;i++){
+  const parent=i===0?'<outbound-2@cloudflare.net>':`<outbound-${f.sent.length}@cloudflare.net>`;
+  await f.service.receive(owner,groupReply(b,'second@example.com',parent,`clarify-${i}`,'Maybe'));
+ }
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','second'));
+ assert.equal(f.confirmed.length,1);
+});
+test('group delivery bookkeeping never records sent without its reply parent after a storage failure',async t=>{
+ const f=groupFixture(t),exec=f.ctx.storage.sql.exec;let fail=true;
+ f.ctx.storage.sql.exec=(sql:string,...args:any[])=>{
+  if(fail&&f.sent.length===1&&sql.startsWith('INSERT INTO scheduling_email_threads')){fail=false;throw Error('parent storage interrupted');}
+  return exec(sql,...args);
+ };
+ await f.service.receive(owner,incoming());
+ const row=f.db.prepare("SELECT status,message_id FROM scheduling_email_outbox WHERE json_extract(data,'$.to[0]')=?").get(peer) as any;
+ assert.equal(row.status,'unknown');assert.equal(row.message_id,null);
+ assert.equal((await f.restart().diagnostics(owner)).deliveryUnknown,1);
+ await f.restart().alarm();assert.equal(f.sent.filter(message=>message.to[0]===peer).length,1);
+});
+
+test('group retries cannot overwrite a newer guest choice or clear it with an older refresh',async t=>{
+ for(const oldText of ['Option 1 works','Other options please']){
+  const f=groupFixture(t);await f.service.receive(owner,incoming());const a=f.sent[0].replyTo,b=f.sent[1].replyTo,core=f.env.BOOKING.getByName();
+  const method=oldText.startsWith('Option')?'getScheduling':'refreshScheduling',normal=core[method];let fail=true;
+  core[method]=async(...args:any[])=>{if(fail){fail=false;throw Error('temporary upstream failure');}return normal(...args);};
+  await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','old',oldText));
+  await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','new','Option 2 works'));
+  await f.restart().alarm();
+  assert.equal(f.refreshes(),0);
+  await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','second','Option 1 works'));
+  assert.equal(f.confirmed.length,0);
+  await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','second-new','Option 2 works'));
+  assert.equal(f.confirmed.length,1);assert.equal(f.confirmed[0].slotId,'slot-two');
+ }
+});
+test('a pending changed guest choice immediately withdraws their previous agreement',async t=>{
+ const f=groupFixture(t);await f.service.receive(owner,incoming());const a=f.sent[0].replyTo,b=f.sent[1].replyTo,core=f.env.BOOKING.getByName();
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','first'));
+ const normal=core.getScheduling;let fail=true;
+ core.getScheduling=async()=>{if(fail){fail=false;throw Error('temporary upstream failure');}return normal();};
+ await f.service.receive(owner,groupReply(a,peer,'<outbound-1@cloudflare.net>','changed','Option 2 works'));
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','second'));
+ assert.equal(f.confirmed.length,0);
+ await f.restart().alarm();assert.equal(f.confirmed.length,0);
+ await f.service.receive(owner,groupReply(b,'second@example.com','<outbound-2@cloudflare.net>','changed-second','Option 2 works'));
+ assert.equal(f.confirmed.length,1);assert.equal(f.confirmed[0].slotId,'slot-two');
 });

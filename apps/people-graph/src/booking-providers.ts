@@ -186,10 +186,14 @@ export async function findBookingEvent(env:BookingEnv,record:BookingCalendarReco
 export async function createBookingEvent(env:BookingEnv,record:BookingCalendarRecord,request:BookingRequestRecord,settings:BookingSettings):Promise<{id:string}> {
  if(request.owner!==record.owner||settings.owner!==record.owner||request.status!=='booking'||!request.eventId||request.eventId!==await bookingEventId(request.id))throw Error('booking_calendar_invalid_request');
  const range=interval(request.slotStart,request.slotEnd),attendee=email(request.email);
+ const guestInput=request.scheduling?.input.attendees??[attendee];
+ if(!Array.isArray(guestInput)||guestInput.length<1||guestInput.length>5)throw Error('booking_calendar_invalid_request');
+ const guests=[...new Set(guestInput.map(email))];
+ if(!guests.includes(attendee)||(guests.length>1&&(guests.includes(record.owner)||request.scheduling?.authority.channel!=='owner_email')))throw Error('booking_calendar_invalid_request');
  if(Date.parse(range.end)-Date.parse(range.start)!==settings.durationMinutes*60_000)throw Error('booking_calendar_invalid_time');
  try{new Intl.DateTimeFormat('en',{timeZone:settings.timezone});}catch{throw Error('booking_calendar_invalid_time');}
  const name=safeText(request.name,120),host=safeText(settings.displayName,120);
- const event={id:request.eventId,summary:safeText(`${host||'Meeting'} with ${name||attendee}`,250),description:html(`Name: ${name}\nProject: ${safeText(request.project,1200)}\nPurpose: ${safeText(request.purpose,1200)}`),start:{dateTime:range.start,timeZone:settings.timezone},end:{dateTime:range.end,timeZone:settings.timezone},attendees:[{email:attendee}],visibility:'private',transparency:'opaque',guestsCanInviteOthers:false,guestsCanModify:false,guestsCanSeeOtherGuests:false};
+ const event={id:request.eventId,summary:safeText(`${host||'Meeting'} with ${name||attendee}`,250),description:html(`Name: ${name}\nProject: ${safeText(request.project,1200)}\nPurpose: ${safeText(request.purpose,1200)}`),start:{dateTime:range.start,timeZone:settings.timezone},end:{dateTime:range.end,timeZone:settings.timezone},attendees:guests.map(email=>({email})),visibility:'private',transparency:'opaque',guestsCanInviteOthers:false,guestsCanModify:false,guestsCanSeeOtherGuests:false};
  const access=await calendarAccess(env,record);
  try{
   const response=await provider(CALENDAR_URL+'/calendars/primary/events?sendUpdates=all',{method:'POST',headers:authorization(access),body:JSON.stringify(event)});

@@ -10,10 +10,16 @@ function instant(input:unknown):string{
  return new Date(value).toISOString();
 }
 export function validateSchedulingInput(input:unknown):SchedulingInput{
- const value=object(input),allowed=['email','name','context','instructions','timezone','windowStart','windowEnd','idempotencyKey'];
+ const value=object(input),allowed=['email','attendees','name','context','instructions','timezone','windowStart','windowEnd','idempotencyKey'];
  if(Object.keys(value).some(key=>!allowed.includes(key)))throw Error('invalid_request');
  const idempotencyKey=text(value.idempotencyKey,100,'request_key',16);if(!/^[A-Za-z0-9_-]+$/.test(idempotencyKey))throw Error('invalid_request_key');
  const result:SchedulingInput={email:normalizeBookingEmail(value.email),context:text(value.context,8000,'context'),idempotencyKey};
+ if(value.attendees!==undefined){
+  if(!Array.isArray(value.attendees)||value.attendees.length<1||value.attendees.length>5)throw Error('invalid_attendees');
+  const others=[...new Set(value.attendees.map(normalizeBookingEmail))].filter(email=>email!==result.email).sort();
+  if(others.length>4)throw Error('invalid_attendees');
+  result.attendees=[result.email,...others];
+ }
  if(value.name!==undefined)result.name=text(value.name,120,'name');
  if(value.instructions!==undefined)result.instructions=text(value.instructions,2000,'instructions');
  if(value.timezone!==undefined){const timezone=text(value.timezone,100,'timezone',1);try{new Intl.DateTimeFormat('en',{timeZone:timezone});}catch{throw Error('invalid_timezone');}result.timezone=timezone;}
@@ -56,13 +62,13 @@ export function schedulingRequiresReview(record:BookingRequestRecord,currentRevi
  const saved=record.scheduling;if(!saved||!['pending_approval','needs_new_slot'].includes(record.status))return false;
  if(saved.assessmentVersion!==1||saved.settingsRevision!==record.decision.policyRevision||(currentRevision!==undefined&&saved.settingsRevision!==currentRevision))return true;
  if(saved.approval?.policyRevision===saved.settingsRevision)return false;
- if(saved.contextAssessmentPending)return true;
+ if(saved.contextAssessmentPending||(saved.input.attendees?.length??1)>1)return true;
  const sync=Date.parse(record.decision.people.lastSync||'');
  return record.decision.tier!=='priority'||!Number.isFinite(sync)||sync>now||now-sync>86400000;
 }
 export function schedulingContextRequested(record:BookingRequestRecord,currentRevision?:number):boolean{
  const saved=record.scheduling;
- if(!saved||!['pending_approval','needs_new_slot'].includes(record.status)||saved.contextAssessmentPending||saved.assessmentVersion!==1||saved.settingsRevision!==record.decision.policyRevision||(currentRevision!==undefined&&saved.settingsRevision!==currentRevision)||saved.approval?.policyRevision===saved.settingsRevision||(saved.contextReplies?.length??0)>=2)return false;
+ if(!saved||(saved.input.attendees?.length??1)>1||!['pending_approval','needs_new_slot'].includes(record.status)||saved.contextAssessmentPending||saved.assessmentVersion!==1||saved.settingsRevision!==record.decision.policyRevision||(currentRevision!==undefined&&saved.settingsRevision!==currentRevision)||saved.approval?.policyRevision===saved.settingsRevision||(saved.contextReplies?.length??0)>=2)return false;
  const people=record.decision.people;
  return record.decision.tier!=='priority'&&record.decision.fit.fit==='needs_context'&&record.decision.uncertainties.length===0&&['matched','not_found'].includes(people.status)&&(people.status!=='matched'||people.email===record.email);
 }

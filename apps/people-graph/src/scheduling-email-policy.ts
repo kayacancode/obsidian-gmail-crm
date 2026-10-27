@@ -20,8 +20,10 @@ export function schedulingMailboxes(value:string):string[] {
  const parsed=addressParser(value);
  if(!parsed.length||parsed.length>12)throw Error('invalid_email_mailbox');
  return parsed.map(item=>{
-  if(item.group||!item.address||item.name.includes('@'))throw Error('invalid_email_mailbox');
-  return schedulingAddress(item.address);
+  if(item.group||!item.address)throw Error('invalid_email_mailbox');
+  const address=schedulingAddress(item.address);
+  if(item.name.includes('@')&&schedulingAddress(item.name)!==address)throw Error('invalid_email_mailbox');
+  return address;
  });
 }
 export function schedulingMessageId(value:string):string {
@@ -49,10 +51,15 @@ export function isSchedulingKickoff(text:string):boolean {
  return /(?:^|\n)\s*(?:(?:agent|scheduling|scheduler|assistant|hi|hey|hello),\s*)?(?:(?:(?:can|could|would|will) you\s+)?please\s+|(?:can|could|would|will) you\s+)?(?:(?:schedule|book|set up)\b[^\n]{0,80}\b(?:meeting|call|time|chat|us)\b|find\s+(?:(?:us|me)\s+)?(?:(?:a|some)\s+)?(?:time|times)\b)/i.test(fresh);
 }
 export function schedulingCounterpart(message:{from:string;to:string[];cc:string[]},owner:string,agent:string):string {
- if(message.from!==owner||![...message.to,...message.cc].includes(agent))throw Error('invalid_owner_kickoff');
- const peers=[...new Set([...message.to,...message.cc].filter(address=>address!==owner&&address!==agent))];
+ const peers=schedulingParticipants(message,owner,agent);
  if(peers.length!==1)throw Error('scheduling_requires_one_counterpart');
  return peers[0];
+}
+export function schedulingParticipants(message:{from:string;to:string[];cc:string[]},owner:string,agent:string):string[] {
+ if(message.from!==owner||![...message.to,...message.cc].includes(agent))throw Error('invalid_owner_kickoff');
+ const peers=[...new Set([...message.to,...message.cc].map(schedulingAddress).filter(address=>address!==owner&&address!==agent))];
+ if(!peers.length||peers.length>5)throw Error('invalid_scheduling_participants');
+ return peers;
 }
 export function parseOwnerSchedulingWindow(text:string,timezone:string,now=Date.now()):{kind:'ready';window:{windowStart?:string;windowEnd?:string}}|{kind:'clarify'} {
  const authored=authoredSchedulingText(text),weeks=authored.match(/\b(this|next) week\b/gi)??[];

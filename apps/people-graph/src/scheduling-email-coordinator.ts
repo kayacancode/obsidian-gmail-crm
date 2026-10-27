@@ -4,7 +4,7 @@ import {BookingStore} from './booking-store';
 import {digest} from './mail-model';
 import {schedulingEmailConfiguration} from './scheduling-email';
 import {schedulingContextQuestion} from './scheduling-policy';
-import {authoredSchedulingText,parseSchedulingChoice,schedulingAddress,schedulingCounterpart,schedulingMessageId,schedulingOfferText,schedulingSlotText,parseOwnerSchedulingWindow,type SchedulingInboundEmail,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
+import {authoredSchedulingText,parseSchedulingChoice,schedulingAddress,schedulingParticipants,schedulingMessageId,schedulingOfferText,schedulingSlotText,parseOwnerSchedulingWindow,type SchedulingInboundEmail,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
 import type {SchedulingConfirmation,SchedulingInput,SchedulingOffer,SchedulingResult} from './scheduling-types';
 
 export interface SchedulingEmailEnv extends BookingEnv {
@@ -13,12 +13,14 @@ export interface SchedulingEmailEnv extends BookingEnv {
 }
 interface Conversation {
  id:string;owner:string;peer:string;gmailId:string;subject:string;kickoffMessageId:string;requestId:string|null;
+ guests?:string[];participants?:GroupParticipant[];
  status:'awaiting_context'|'assessing_context'|'awaiting_review'|'offered'|'confirming'|'booked'|'closed'|'needs_attention';offer:SchedulingOffer|null;timezone:string;
  capabilityHash:string|null;replyAddress:string|null;latestMessageId:string|null;
  contextCapability?:{hash:string;replyAddress:string;expiresAt:number;messageId:string|null}|null;contextRounds?:number;contextReviewReason?:string;
  pendingContext?:{context:string;evidenceId:string;key:string};
  selection?:SchedulingConfirmation&{start:string;end:string};attempts:number;lastInbound:string;
 }
+interface GroupParticipant {email:string;hash:string;replyAddress:string;messageIds:string[];latestInboundOrder?:number;choice?:{slotId:string;evidenceId:string}}
 type InboxRow={id:string;data:string;attempts:number};
 type OutboxRow={id:string;thread:string;data:string};
 type Outgoing={from:string;to:string[];cc:string[];subject:string;text:string;replyTo?:string;headers:Record<string,string>};
@@ -75,10 +77,11 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   const canonical:VerifiedSchedulingKickoff=await mail.verifySchedulingKickoff(input.messageId,config.address);
   if(canonical.owner!==owner||canonical.from!==owner)throw Error('invalid_owner_kickoff');
   if(this.rows<{id:string}>('SELECT id FROM scheduling_email_threads WHERE gmail_id=?',canonical.gmailId).length)return;
-  let peer:string;
-  try{peer=schedulingCounterpart(canonical,owner,config.address);}catch{
-   this.ownerClarification(owner,inboxId,canonical,'Please start a scheduling thread with exactly one counterpart and the scheduling agent.');return;
+  let guests:string[];
+  try{guests=schedulingParticipants(canonical,owner,config.address);}catch{
+   this.ownerClarification(owner,inboxId,canonical,'Please include one to five guests and the scheduling agent. Everyone in To and Cc will be invited.');return;
   }
+  const peer=guests[0];
   const settings=await new BookingStore(this.env.DB).settings(owner);if(!settings)throw Error('scheduling_settings_unavailable');
   const window=parseOwnerSchedulingWindow(canonical.text,settings.timezone);
   if(window.kind==='clarify'){
@@ -88,10 +91,10 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   // Freeze evidence and the interpreted window before the remote core call. A
   // retry after an uncertain response must keep exactly the same request even
   // if the optional Gmail context fetch later fails or settings have changed.
-  this.ctx.storage.sql.exec('INSERT OR IGNORE INTO scheduling_email_preparations(id,data) VALUES(?,?)',id,JSON.stringify({email:peer,context:canonical.context??canonical.text,timezone:settings.timezone,...window.window,idempotencyKey:id}));
+  this.ctx.storage.sql.exec('INSERT OR IGNORE INTO scheduling_email_preparations(id,data) VALUES(?,?)',id,JSON.stringify({email:peer,...(guests.length>1?{attendees:guests}:{}),context:canonical.context??canonical.text,timezone:settings.timezone,...window.window,idempotencyKey:id}));
   const prepared=JSON.parse(this.rows<{data:string}>('SELECT data FROM scheduling_email_preparations WHERE id=?',id)[0].data) as SchedulingInput;
   const result=await this.core(owner).prepareScheduling(owner,prepared,{channel:'owner_email',evidenceId:canonical.gmailId});
-  const thread:Conversation={id,owner,peer,gmailId:canonical.gmailId,subject:canonical.subject,kickoffMessageId:canonical.messageId,requestId:result.requestId,status:'offered',offer:null,timezone:result.timezone,capabilityHash:null,replyAddress:null,latestMessageId:null,attempts:0,lastInbound:canonical.messageId};
+  const thread:Conversation={id,owner,peer,guests:prepared.attendees??[peer],gmailId:canonical.gmailId,subject:canonical.subject,kickoffMessageId:canonical.messageId,requestId:result.requestId,status:'offered',offer:null,timezone:result.timezone,capabilityHash:null,replyAddress:null,latestMessageId:null,attempts:0,lastInbound:canonical.messageId};
   await this.offer(thread,result,inboxId);
  }
  private ownerClarification(owner:string,inboxId:string,canonical:VerifiedSchedulingKickoff,text:string){
@@ -100,6 +103,8 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
  }
  private async participant(owner:string,inboxId:string,input:SchedulingInboundEmail){
   const config=this.config(owner),token=input.envelopeTo.split('@')[0].slice('scheduling+'.length),hash=await digest(token);
+  const group=this.rows<{data:string}>("SELECT t.data FROM scheduling_email_threads t, json_each(t.data,'$.participants') p WHERE json_extract(p.value,'$.hash')=? LIMIT 1",hash)[0];
+  if(group){await this.groupParticipant(JSON.parse(group.data) as Conversation,inboxId,input,hash);return;}
   const contextFound=this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.contextCapability.hash')=?",hash)[0];
   if(contextFound){
    const thread=JSON.parse(contextFound.data) as Conversation,capability=thread.contextCapability!;
@@ -135,6 +140,79 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   thread.status='confirming';thread.capabilityHash=null;thread.attempts=0;this.save(thread);
   await this.ctx.storage.setAlarm(Date.now()+30000);
   await this.confirm(thread,inboxId);
+ }
+ private groupText(thread:Conversation,result:SchedulingResult,clarify=false):string {
+  return `Meeting with ${[thread.owner,...thread.guests!].join(', ')}. Each guest receives their own copy of these options. I’ll book only after every guest chooses the same option.\n\n${schedulingOfferText(result,clarify)}`;
+ }
+ private groupMessage(thread:Conversation,participant:GroupParticipant,text:string):Outgoing {
+  // Each capability goes only to its guest and the owner. Giving all guests a
+  // shared token would let one guest satisfy another guest's From check.
+  return {...this.outgoing(thread,text,false),to:[participant.email],replyTo:participant.replyAddress};
+ }
+ private async groupOffer(thread:Conversation,result:SchedulingResult,key:string,clarify:boolean){
+  const outboxId=key+':offer:'+(result.offer?.revision??'none');
+  if(this.rows<{id:string}>('SELECT id FROM scheduling_email_outbox WHERE id=?',outboxId+':guest:0').length)return;
+  const same=thread.status==='offered'&&thread.offer?.revision===result.offer?.revision&&thread.participants?.length===thread.guests!.length;
+  if(!same){
+   thread.participants=result.offer?await Promise.all(thread.guests!.map(async email=>{
+    const token=Array.from(crypto.getRandomValues(new Uint8Array(24)),b=>b.toString(16).padStart(2,'0')).join('');
+    return {email,hash:await digest(token),replyAddress:`scheduling+${token}@${this.config(thread.owner).replyDomain}`,messageIds:[]};
+   })):undefined;
+  }
+  thread.offer=result.offer;thread.timezone=result.timezone;thread.status=result.offer?'offered':'closed';thread.selection=undefined;thread.attempts=0;
+  thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.contextCapability=null;thread.pendingContext=undefined;thread.contextReviewReason=undefined;
+  this.ctx.storage.transactionSync(()=>{
+   this.save(thread);
+   if(!same)this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NOT NULL",thread.id);
+   if(thread.participants)thread.participants.forEach((participant,i)=>this.queue(outboxId+':guest:'+i,thread.id,this.groupMessage(thread,participant,this.groupText(thread,result,clarify))));
+   else this.queue(outboxId+':guest:0',thread.id,this.outgoing(thread,schedulingOfferText(result),false));
+  });
+ }
+ private async groupParticipant(thread:Conversation,inboxId:string,input:SchedulingInboundEmail,hash:string){
+  const participant=thread.participants?.find(value=>value.hash===hash),config=this.config(thread.owner);
+  if(!participant||thread.status!=='offered'||!thread.offer||input.from!==participant.email||input.envelopeTo!==participant.replyAddress||!input.inReplyTo||!participant.messageIds.includes(input.inReplyTo))return;
+  const allowed=new Set([thread.owner,participant.email,config.address,participant.replyAddress]);
+  if([...input.to,...input.cc].some(address=>!allowed.has(address)))return;
+  if(this.rows<{n:number}>('SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE thread=?',thread.id)[0].n>=80){thread.status='needs_attention';thread.participants=undefined;this.save(thread);return;}
+  const order=this.rows<{sequence:number}>('SELECT rowid AS sequence FROM scheduling_email_inbox WHERE id=?',inboxId)[0]?.sequence;
+  if(!order||order<(participant.latestInboundOrder??0))return;
+  const choice=parseSchedulingChoice(input.text,thread.offer);
+  if(order>(participant.latestInboundOrder??0)){
+   participant.latestInboundOrder=order;
+   // A newer changed choice withdraws the previous agreement immediately,
+   // before an availability read can fail or be retried out of arrival order.
+   if(choice.kind!=='clarify')participant.choice=undefined;
+   this.save(thread);
+  }
+  thread.lastInbound=input.messageId;
+  if(thread.offer.expiresAt<=Date.now()){await this.offer(thread,await this.core(thread.owner).refreshScheduling(thread.owner,thread.requestId!),inboxId);return;}
+  if(choice.kind==='refresh'){await this.offer(thread,await this.core(thread.owner).refreshScheduling(thread.owner,thread.requestId!),inboxId);return;}
+  // The owner's approval and policy may have changed since options were sent.
+  const current=await this.core(thread.owner).getScheduling(thread.owner,thread.requestId!);
+  if(current.requiresReview||current.needsContext||!current.offer||current.offer.revision!==thread.offer.revision||!['pending_approval','needs_new_slot'].includes(current.status)){
+   await this.offer(thread,current,inboxId);return;
+  }
+  if(choice.kind==='clarify'){
+   this.ctx.storage.transactionSync(()=>{
+    this.save(thread);this.queue(inboxId+':clarify',thread.id,this.groupMessage(thread,participant,this.groupText(thread,current,true)));
+   });return;
+  }
+  participant.choice={slotId:choice.slotId,evidenceId:input.messageId};
+  const agreed=thread.participants!.every(value=>value.choice?.slotId===choice.slotId);
+  if(agreed){
+   const slot=thread.offer.slots.find(value=>value.id===choice.slotId)!;
+   thread.selection={revision:thread.offer.revision,slotId:slot.id,evidenceId:input.messageId,start:slot.start,end:slot.end};
+   thread.status='confirming';thread.attempts=0;this.save(thread);
+   await this.ctx.storage.setAlarm(Date.now()+30000);await this.confirm(thread,inboxId);return;
+  }
+  const waiting=thread.participants!.filter(value=>!value.choice).map(value=>value.email);
+  const choices=thread.participants!.filter(value=>value.choice).map(value=>`${value.email}: Option ${thread.offer!.slots.findIndex(slot=>slot.id===value.choice!.slotId)+1}`).join('\n');
+  const status=waiting.length?`Waiting for ${waiting.join(', ')} to choose a time.`:'You chose different options. Please choose the same option so I can book for everyone.';
+  const text=`${choices}\n\n${status} Nothing is booked yet.\n\n${this.groupText(thread,current)}`;
+  this.ctx.storage.transactionSync(()=>{
+   this.save(thread);
+   thread.participants!.forEach((value,i)=>this.queue(inboxId+':waiting:'+i,thread.id,this.groupMessage(thread,value,text)));
+  });
  }
  private async assessContext(thread:Conversation){
   if(!thread.pendingContext||!thread.requestId)return;
@@ -189,7 +267,7 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   if(!thread.selection||!thread.requestId)return;
   try{
    const {revision,slotId,evidenceId}=thread.selection;
-   const result=await this.core(thread.owner).confirmScheduling(thread.owner,thread.requestId,{revision,slotId,evidenceId});
+   const result=await this.core(thread.owner).confirmScheduling(thread.owner,thread.requestId,{revision,slotId,evidenceId},{channel:'owner_email',evidenceId});
    await this.reconciled(thread,result,key);
   }catch(error){
    if(error instanceof Error&&error.message==='request_closed'){thread.status='needs_attention';thread.capabilityHash=null;this.save(thread);return;}
@@ -198,14 +276,20 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
    }
    // The booking service may have persisted an intent before transport failed.
    // Retain the same selection and evidence for its stable event reconciliation.
-   thread.attempts++;if(thread.attempts>=8)thread.status='needs_attention';this.save(thread);
+   // A failed receipt transaction may have rolled back a tentative booked
+   // state. Recover the persisted confirming selection, never save that draft.
+   const current=this.thread(thread.id)??thread;
+   current.attempts++;if(current.attempts>=8)current.status='needs_attention';this.save(current);
   }
  }
  private async reconciled(thread:Conversation,result:SchedulingResult,key:string){
   if(result.status==='booked'){
-   thread.status='booked';thread.capabilityHash=null;this.save(thread);
+   thread.status='booked';thread.capabilityHash=null;thread.participants=undefined;
    const selected=thread.selection;if(!selected)return;
-   this.queue(thread.id+':booked',thread.id,this.outgoing(thread,`The meeting is booked for ${schedulingSlotText(selected.start,selected.end,thread.timezone)}. Please see the calendar invitation.`,false));return;
+   this.ctx.storage.transactionSync(()=>{
+    this.save(thread);
+    this.queue(thread.id+':booked',thread.id,this.outgoing(thread,`The meeting is booked for ${schedulingSlotText(selected.start,selected.end,thread.timezone)}. Please see the calendar invitation.`,false));
+   });return;
   }
   if(result.status==='booking'){thread.status='confirming';thread.attempts++;if(thread.attempts>=8)thread.status='needs_attention';this.save(thread);return;}
   if(result.needsContext===true&&['pending_approval','needs_new_slot'].includes(result.status)){await this.offer(thread,result,key);return;}
@@ -217,7 +301,7 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
  }
  private async offer(thread:Conversation,result:SchedulingResult,key:string,clarify=false){
   if(terminalSchedulingStatuses.has(result.status)){
-   thread.status='closed';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.contextCapability=null;thread.pendingContext=undefined;thread.contextReviewReason=undefined;thread.selection=undefined;thread.attempts=0;
+   thread.status='closed';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.contextCapability=null;thread.pendingContext=undefined;thread.contextReviewReason=undefined;thread.selection=undefined;thread.participants=undefined;thread.attempts=0;
    this.ctx.storage.transactionSync(()=>{
     this.save(thread);
     this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready'",thread.id);
@@ -227,8 +311,12 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   // selected revision and slot. Another channel may have reserved a different
   // time while the refresh was in flight. Only confirm() may acknowledge it.
   if(result.status==='booking'||result.status==='booked'){thread.status='needs_attention';thread.capabilityHash=null;this.save(thread);return;}
-  if(result.needsContext===true&&['pending_approval','needs_new_slot'].includes(result.status)){await this.askContext(thread,result);return;}
+  if(result.needsContext===true&&['pending_approval','needs_new_slot'].includes(result.status)){
+   if((thread.guests?.length??1)>1){this.review(thread,result);return;}
+   await this.askContext(thread,result);return;
+  }
   if(result.requiresReview===true){this.review(thread,result);return;}
+  if((thread.guests?.length??1)>1){await this.groupOffer(thread,result,key,clarify);return;}
   const outboxId=key+':offer:'+(result.offer?.revision??'none');
   if(this.rows<{id:string}>('SELECT id FROM scheduling_email_outbox WHERE id=?',outboxId).length)return;
   thread.offer=result.offer;thread.timezone=result.timezone;thread.status=result.offer?'offered':'closed';thread.selection=undefined;thread.attempts=0;
@@ -244,10 +332,10 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
  private review(thread:Conversation,result:SchedulingResult,contextReason?:string){
   const config=this.config(thread.owner),url=new URL('/booking',this.env.APP_ORIGIN);url.searchParams.set('request',thread.requestId!);
   if(url.protocol!=='https:')throw Error('scheduling_email_invalid_origin');
-  thread.status='awaiting_review';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.selection=undefined;thread.attempts=0;
+  thread.status='awaiting_review';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.selection=undefined;thread.participants=undefined;thread.attempts=0;
   thread.contextCapability=null;thread.pendingContext=undefined;
-  const reasons=[...(contextReason?[contextReason]:[]),...(result.decision?.reasons??[]),...(result.decision?.uncertainties??[])].filter(value=>typeof value==='string').slice(0,8).map(value=>value.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,600));
-  const text=`The meeting request with ${thread.peer} needs your review before I offer times.\n\n${reasons.length?reasons.map(reason=>'• '+reason).join('\n'):'There is not enough confirmed context to offer times automatically.'}\n\nReview the request in Booking and choose “Offer times anyway” if you want to proceed:\n${url.href}`;
+  const reasons=[...(contextReason?[contextReason]:[]),...((thread.guests?.length??1)>1?['Please approve offering times to this group. The current relationship assessment covers the first guest.']:[]),...(result.decision?.reasons??[]),...(result.decision?.uncertainties??[])].filter(value=>typeof value==='string').slice(0,8).map(value=>value.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,600));
+  const text=`The meeting request with ${(thread.guests??[thread.peer]).join(', ')} needs your review before I offer times.\n\n${reasons.length?reasons.map(reason=>'• '+reason).join('\n'):'There is not enough confirmed context to offer times automatically.'}\n\nReview the request in Booking and choose “Offer times anyway” if you want to proceed:\n${url.href}`;
   this.ctx.storage.transactionSync(()=>{
    this.save(thread);
    this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NOT NULL",thread.id);
@@ -271,20 +359,22 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   // authority on whether fresh eligible times can reopen that conversation.
   const availableAgain=thread.status==='closed'&&['pending_approval','needs_new_slot'].includes(result.status)&&!!result.offer;
   if(['confirming','booked','needs_attention'].includes(thread.status)||thread.status==='closed'&&!availableAgain)return {status:thread.status};
-  const existing=thread.status==='offered'&&thread.offer?.revision===result.offer?.revision&&thread.replyAddress
+  const groupExisting=thread.status==='offered'&&thread.offer?.revision===result.offer?.revision&&thread.participants?.length;
+  const existing=groupExisting?[{status:'group'}]:thread.status==='offered'&&thread.offer?.revision===result.offer?.revision&&thread.replyAddress
    ?this.rows<{status:string}>("SELECT status FROM scheduling_email_outbox WHERE thread=? AND json_extract(data,'$.replyTo')=?",thread.id,thread.replyAddress):[];
   if(!existing.length)await this.offer(thread,result,thread.id+':approved');
   // Do not send a review notice left queued by a restart after approval.
   if(thread.status==='offered')this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NULL",thread.id);
   await this.ctx.storage.setAlarm(Date.now()+30000);await this.flush(owner);
   const replyAddress=thread.contextCapability?.replyAddress??thread.replyAddress;
+  if(thread.participants?.some(participant=>this.rows<{id:string}>("SELECT id FROM scheduling_email_outbox WHERE thread=? AND status='unknown' AND json_extract(data,'$.replyTo')=?",thread.id,participant.replyAddress).length))throw Error('scheduling_email_delivery_unknown');
   if(replyAddress&&this.rows<{id:string}>("SELECT id FROM scheduling_email_outbox WHERE thread=? AND status='unknown' AND json_extract(data,'$.replyTo')=?",thread.id,replyAddress).length)throw Error('scheduling_email_delivery_unknown');
   return {status:this.thread(thread.id)?.status??thread.status};
  });}
  private subject(value:string){return 'Re: '+value.replace(/^(?:re:\s*)+/i,'').replace(/[\r\n\x00-\x1f\x7f]/g,'').slice(0,150);}
  private outgoing(thread:Conversation,text:string,reply:boolean):Outgoing {
   const config=this.config(thread.owner),references=[thread.kickoffMessageId,thread.lastInbound].filter((id,i,ids)=>ids.indexOf(id)===i).join(' ');
-  return {from:config.address,to:[thread.peer],cc:[thread.owner],subject:this.subject(thread.subject),text,...(reply&&thread.replyAddress?{replyTo:thread.replyAddress}:{}),headers:{'In-Reply-To':thread.lastInbound,'References':references,'Auto-Submitted':'auto-replied'}};
+  return {from:config.address,to:thread.guests??[thread.peer],cc:[thread.owner],subject:this.subject(thread.subject),text,...(reply&&thread.replyAddress?{replyTo:thread.replyAddress}:{}),headers:{'In-Reply-To':thread.lastInbound,'References':references,'Auto-Submitted':'auto-replied'}};
  }
  private queue(id:string,thread:string,message:Outgoing){this.ctx.storage.sql.exec("INSERT OR IGNORE INTO scheduling_email_outbox(id,thread,data,status) VALUES(?,?,?,'ready')",id,thread,JSON.stringify(message));}
  private async flush(owner:string){
@@ -295,9 +385,16 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
     const message=JSON.parse(row.data) as Outgoing;if(message.from!==config.address)throw Error('sender_configuration_changed');
     const result=await this.env.SCHEDULING_EMAIL_SEND!.send(message);
     const messageId=schedulingMessageId(result.messageId.startsWith('<')?result.messageId:'<'+result.messageId+'>');
-    this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='sent',message_id=? WHERE id=?",messageId,row.id);
-    const thread=this.thread(row.thread);if(thread&&thread.status==='offered'&&message.replyTo===thread.replyAddress&&message.to.includes(thread.peer)){thread.latestMessageId=messageId;this.save(thread);}
-    if(thread?.status==='awaiting_context'&&thread.contextCapability&&message.replyTo===thread.contextCapability.replyAddress&&message.to.includes(thread.peer)){thread.contextCapability.messageId=messageId;this.save(thread);}
+    this.ctx.storage.transactionSync(()=>{
+     this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='sent',message_id=? WHERE id=?",messageId,row.id);
+     const thread=this.thread(row.thread);if(thread&&thread.status==='offered'&&message.replyTo===thread.replyAddress&&message.to.includes(thread.peer)){thread.latestMessageId=messageId;this.save(thread);}
+     const participant=thread?.status==='offered'?thread.participants?.find(value=>value.replyAddress===message.replyTo&&message.to.length===1&&message.to[0]===value.email):undefined;
+     if(thread&&participant){
+      const ids=[...new Set([...participant.messageIds,messageId])];
+      participant.messageIds=ids.length>20?[ids[0],...ids.slice(-19)]:ids;this.save(thread);
+     }
+     if(thread?.status==='awaiting_context'&&thread.contextCapability&&message.replyTo===thread.contextCapability.replyAddress&&message.to.includes(thread.peer)){thread.contextCapability.messageId=messageId;this.save(thread);}
+    });
    }catch{this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='unknown' WHERE id=?",row.id);}
   }
  }

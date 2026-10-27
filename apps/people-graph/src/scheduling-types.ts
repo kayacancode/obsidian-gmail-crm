@@ -4,6 +4,8 @@ import type {BookingDecision,BookingRequestStatus,BookingSlot} from './booking-t
 export interface SchedulingAuthority {channel:'owner_api'|'owner_email';evidenceId:string}
 export interface SchedulingInput {
  email:string;name?:string;context:string;instructions?:string;timezone?:string;
+ /** Frozen guest set from the verified owner email; primary email is included. */
+ attendees?:string[];
  windowStart?:string;windowEnd?:string;idempotencyKey:string;
 }
 export interface SchedulingConfirmation {revision:string;slotId:string;evidenceId:string}

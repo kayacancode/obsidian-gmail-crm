@@ -59,6 +59,39 @@ test('canonical context includes only the same owner-peer thread at or before ki
  assert.doesNotMatch(verified.context??'',/UNRELATED|EXTRA|FUTURE|WRONG|OVERSIZED|quoted instructions/);assert.ok((verified.context?.length??0)<=8000);
  assert.equal(f.urls.find(url=>url.pathname.includes('/threads/'))?.pathname,'/gmail/v1/users/me/threads/thread-one');
 });
+function groupThreadOptions(messages:any[]){
+ const kickoff=message({threadId:'thread-one'});
+ kickoff.payload.headers.find((header:any)=>header.name==='Cc').value='"second@example.com" <second@example.com>, '+agent;
+ return threadOptions(messages,kickoff);
+}
+test('canonical group context preserves each authorized participant’s attribution',async()=>{
+ const f=groupThreadOptions([
+  threadMessage('prior-first','FIRST participant builds scientific infrastructure.','peer@example.com',owner+', second@example.com'),
+  threadMessage('prior-second','SECOND participant handles privacy engineering.','second@example.com',owner+', peer@example.com'),
+  threadMessage('prior-owner','OWNER wants to discuss the prototype.',owner,'peer@example.com, second@example.com'),
+ ]);
+ const verified=await verifySentSchedulingKickoff(f.opts),context=verified.context??'';
+ assert.match(context,/Participant <peer@example\.com> message[^\n]*\nFIRST participant/);
+ assert.match(context,/Participant <second@example\.com> message[^\n]*\nSECOND participant/);
+ assert.match(context,/Owner message[^\n]*\nOWNER wants/);
+ assert.deepEqual(verified.to,['peer@example.com']);assert.deepEqual(verified.cc,['second@example.com',agent]);
+});
+test('canonical group context excludes outsiders, hidden recipients, private participant messages and forwarded claims',async()=>{
+ const hidden=threadMessage('hidden','HIDDEN evidence','second@example.com',owner);
+ hidden.payload.headers.push({name:'Bcc',value:'hidden@example.com'});
+ const unsent={...threadMessage('unsent-owner','UNSENT evidence',owner,'second@example.com'),labelIds:['INBOX']};
+ const f=groupThreadOptions([
+  threadMessage('valid','VALID evidence','second@example.com',owner+', peer@example.com'),
+  threadMessage('outsider','OUTSIDER evidence','outsider@example.com',owner+', peer@example.com, second@example.com'),
+  threadMessage('extra-recipient','EXTRA recipient evidence','second@example.com',owner+', outsider@example.com'),
+  threadMessage('private','PRIVATE evidence','peer@example.com','second@example.com'),
+  threadMessage('forwarded','A short authored explanation.\n---------- Forwarded message ---------\nFORWARDED claim from an outsider','second@example.com',owner),
+  hidden,unsent,
+ ]);
+ const verified=await verifySentSchedulingKickoff(f.opts),context=verified.context??'';
+ assert.match(context,/VALID evidence/);assert.match(context,/A short authored explanation/);
+ assert.doesNotMatch(context,/OUTSIDER|EXTRA|PRIVATE|FORWARDED|HIDDEN|UNSENT/);
+});
 test('canonical context is bounded and unavailable or malformed threads preserve only the verified kickoff',async()=>{
  const large=threadOptions(Array.from({length:12},(_,i)=>threadMessage('prior-'+i,'purpose '+i+' '+ 'a'.repeat(2000))));const result=await verifySentSchedulingKickoff(large.opts);assert.ok(result.context);assert.ok(result.context!.length<=8000);
  for(const response of [()=>new Response('unavailable',{status:503}),()=>Response.json({id:'another-thread',messages:[]}),()=>Response.json({id:'thread-one',messages:[threadMessage('prior','missing kickoff')]})]){

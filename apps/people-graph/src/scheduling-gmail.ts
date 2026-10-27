@@ -1,6 +1,6 @@
 import {boundedJSON} from './bounded-json';
 import type {GmailMessage,GmailPart} from './mail-model';
-import {authoredSchedulingText,isSchedulingKickoff,schedulingAddress,schedulingCounterpart,schedulingHeader,schedulingMailboxes,schedulingMessageId,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
+import {authoredSchedulingText,isSchedulingKickoff,schedulingAddress,schedulingParticipants,schedulingHeader,schedulingMailboxes,schedulingMessageId,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
 
 interface VerificationOptions {owner:string;agentAddress:string;messageId:string;accessToken:string;current:()=>boolean;fetch?:typeof fetch;now?:number}
 export interface VerifiedBookingApproval extends VerifiedSchedulingKickoff {inReplyTo:string|null}
@@ -25,7 +25,7 @@ function canonicalSchedulingText(message:GmailMessage):string {
 }
 async function canonicalThreadContext(canonical:GmailMessage,verified:VerifiedSchedulingKickoff,agent:string,read:(url:URL)=>Promise<unknown>):Promise<string|undefined>{
  const threadId=canonical.threadId;if(!threadId||! /^[A-Za-z0-9_-]{1,200}$/.test(threadId))return;
- const peer=schedulingCounterpart(verified,verified.owner,agent),url=new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`);
+ const participants=schedulingParticipants(verified,verified.owner,agent),authors=new Set([verified.owner,...participants]),allowedRecipients=new Set([...authors,agent]),url=new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`);
  url.searchParams.set('format','full');url.searchParams.set('fields','id,messages(id,threadId,labelIds,internalDate,payload)');
  const thread=await read(url) as {id?:string;messages?:(GmailMessage&{labelIds?:string[]})[]};
  if(thread.id!==threadId||!Array.isArray(thread.messages)||thread.messages.length>40||thread.messages.filter(message=>message.id===verified.gmailId&&message.threadId===threadId).length!==1)return;
@@ -36,11 +36,12 @@ async function canonicalThreadContext(canonical:GmailMessage,verified:VerifiedSc
    if(!message.id||seen.has(message.id)||message.id===verified.gmailId||message.threadId!==threadId||!Number.isFinite(date)||date<=0||date>verified.receivedAt||message.labelIds?.includes('DRAFT'))continue;
    seen.add(message.id);
    const from=schedulingMailboxes(schedulingHeader(headers,'from')),to=schedulingMailboxes(schedulingHeader(headers,'to')),cc=schedulingMailboxes(schedulingHeader(headers,'cc'));
-   if(from.length!==1||![verified.owner,peer].includes(from[0])||schedulingHeader(headers,'bcc'))continue;
-   const recipients=[...to,...cc];if(!recipients.length||recipients.some(address=>address!==verified.owner&&address!==peer)||!recipients.includes(from[0]===verified.owner?peer:verified.owner))continue;
+   if(from.length!==1||!authors.has(from[0])||schedulingHeader(headers,'bcc'))continue;
+   const recipients=[...to,...cc];if(!recipients.length||recipients.some(address=>!allowedRecipients.has(address)))continue;
+   if(from[0]===verified.owner?!recipients.some(address=>participants.includes(address)):!recipients.includes(verified.owner))continue;
    if(from[0]===verified.owner&&!message.labelIds?.includes('SENT'))continue;
    const text=canonicalSchedulingText(message);if(!text)continue;
-   relevant.push({date,id:message.id,role:from[0]===verified.owner?'Owner':'Counterpart',text});
+   relevant.push({date,id:message.id,role:from[0]===verified.owner?'Owner':participants.length===1?'Counterpart':`Participant <${from[0]}>`,text});
   }catch{/* Invalid, oversized or attachment-only messages add no evidence. */}
  }
  if(!relevant.length)return;

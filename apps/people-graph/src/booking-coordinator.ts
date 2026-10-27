@@ -24,6 +24,11 @@ export async function bookingReadiness(env:BookingEnv,owner:string):Promise<Book
 }
 export function publicBookingRequest(r:BookingRequestRecord){return {id:r.id,status:r.status,slotStart:r.slotStart,slotEnd:r.slotEnd,intakeKind:r.intakeKind==='returning'?'returning':'standard',...(r.proposedTimes?{proposedTimes:{timezone:r.proposedTimes.timezone,revision:r.proposedTimes.revision,slots:r.proposedTimes.slots.map(slot=>({start:slot.start,end:slot.end}))}}:{}),...(r.slotSource?{slotSource:r.slotSource}:{})};}
 const uncertainEmail=()=>({status:'unavailable' as const,reason:'Google has not established authority over this email address. The owner must review this request.'});
+function requestRecommendation(decision:BookingDecision,input:SchedulingInput){
+ const recommendation=schedulingRecommendation(decision,input.instructions);
+ if((input.attendees?.length??1)>1)recommendation.reasons.unshift('Review this group meeting before offering times. A strong connection with one guest does not establish a connection with every guest.');
+ return recommendation;
+}
 function verifiedVisitor(visitor:BookingVisitorIdentity):BookingVisitorIdentity{
  if(!visitor||typeof visitor.subject!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(visitor.subject)||typeof visitor.emailAuthoritative!=='boolean')throw Error('verification_required');
  return {email:normalizeBookingEmail(visitor.email),subject:visitor.subject,emailAuthoritative:visitor.emailAuthoritative};
@@ -68,7 +73,8 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
  });}
  async prepareScheduling(owner:string,input:SchedulingInput,authority:SchedulingAuthority):Promise<SchedulingResult>{return this.serial(owner,async()=>{
   const verified=validateSchedulingAuthority(authority),valid=validateSchedulingInput(input);
-  if(valid.email===owner)throw Error('invalid_email');
+  if(valid.email===owner||valid.attendees?.includes(owner))throw Error('invalid_email');
+  if((valid.attendees?.length??1)>1&&verified.channel!=='owner_email')throw Error('invalid_authority');
   const key='scheduling:'+verified.channel+':'+valid.idempotencyKey;
   const previous=await this.store.prior(owner,valid.email,key);
   if(previous){
@@ -78,7 +84,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   const settings=await this.schedulingSettings(owner),now=Date.now(),window=schedulingWindow(valid,settings,now);
   await this.store.limit(`scheduling:prepare:${owner}`,50,86400000);
   const decision=await assessMeetingRequest(this.env,settings,valid.email,{project:'',purpose:valid.context});
-  const recommendation=schedulingRecommendation(decision,valid.instructions);
+  const recommendation=requestRecommendation(decision,valid);
   const record:BookingRequestRecord={id:crypto.randomUUID(),owner,email:valid.email,name:valid.name||valid.email,project:'',purpose:'Owner-authorized meeting.',projectUrl:'',referrer:'',createdAt:now,updatedAt:now,status:'pending_approval',slotStart:null,slotEnd:null,eventId:null,idempotencyKey:key,
    decision,
    scheduling:{authority:verified,input:valid,timezone:valid.timezone||settings.timezone,settingsRevision:settings.revision,assessmentVersion:1,...window,offer:null,recommendation}};
@@ -92,7 +98,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   const saved=r.scheduling!;if(saved.approval?.policyRevision!==s.revision)delete saved.approval;
   r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)});saved.assessmentVersion=1;
   delete saved.contextAssessmentPending;
-  saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+  saved.recommendation=requestRecommendation(r.decision,saved.input);
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
  });}
  async addSchedulingContext(owner:string,id:string,input:unknown):Promise<SchedulingResult>{return this.serial(owner,async()=>{
@@ -108,7 +114,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   await this.store.update(r);
   r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)});saved.assessmentVersion=1;
   delete saved.contextAssessmentPending;
-  saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+  saved.recommendation=requestRecommendation(r.decision,saved.input);
   if(r.decision.fit.fit==='needs_context'&&(saved.contextReplies?.length??0)>=2)saved.recommendation.summary='More context was requested twice. Review the conversation before offering times.';
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
  });}
@@ -123,8 +129,14 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   delete saved.contextAssessmentPending;
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
  });}
- async confirmScheduling(owner:string,id:string,input:SchedulingConfirmation):Promise<SchedulingResult>{return this.serial(owner,async()=>{
+ async confirmScheduling(owner:string,id:string,input:SchedulingConfirmation,authority?:SchedulingAuthority):Promise<SchedulingResult>{return this.serial(owner,async()=>{
   const confirmation=validateSchedulingConfirmation(input),r=await this.requiredScheduling(owner,id),saved=r.scheduling!;
+  // Only the email adapter can attest that every frozen guest chose this slot.
+  // REST/MCP callers cannot turn one person's choice into group consent.
+  if((saved.input.attendees?.length??1)>1){
+   const verified=validateSchedulingAuthority(authority);
+   if(verified.channel!=='owner_email'||verified.evidenceId!==confirmation.evidenceId||saved.authority.channel!=='owner_email')throw Error('invalid_authority');
+  }
   if(['booked','booking'].includes(r.status)){
    if(saved.confirmation?.revision!==confirmation.revision||saved.confirmation?.slotId!==confirmation.slotId)throw Error('request_closed');
    if(r.status==='booked')return schedulingResult(r);
@@ -135,13 +147,13 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   const s=await this.schedulingSettings(owner);
   if(saved.settingsRevision!==s.revision)throw Error('settings_changed');
   if(saved.assessmentVersion!==1)throw Error('assessment_required');
-  if(saved.approval?.policyRevision!==s.revision&&r.decision.tier!=='priority')throw Error('assessment_required');
+  if(saved.approval?.policyRevision!==s.revision&&(r.decision.tier!=='priority'||(saved.input.attendees?.length??1)>1))throw Error('assessment_required');
   if(!saved.offer||saved.offer.revision!==confirmation.revision)throw Error('offer_changed');
   if(saved.offer.expiresAt<=Date.now())throw Error('offer_expired');
   const slot=saved.offer.slots.find(value=>value.id===confirmation.slotId);if(!slot)throw Error('offer_changed');
   if(saved.approval?.policyRevision!==s.revision){
    r.decision=decideBooking(s,r.email,r.decision.fit,await lookupBookingPerson(this.env,owner,r.email));
-   saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+   saved.recommendation=requestRecommendation(r.decision,saved.input);
    if(schedulingRequiresReview(r,s.revision)){saved.offer=null;r.updatedAt=Date.now();await this.store.update(r);return schedulingResult(r,s.revision);}
   }
   if(!(await this.available(s,r,slot.start)).some(value=>value.start===slot.start&&value.end===slot.end)){

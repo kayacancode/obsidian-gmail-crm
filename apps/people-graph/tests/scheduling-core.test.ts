@@ -282,3 +282,47 @@ test('shared assessment readiness recognizes only a fresh complete local relatio
  sourceOwner='other@example.com';assert.equal((await bookingReadiness(f.env,owner)).people,false);sourceOwner=owner;
  f.env.PEOPLEGRAPH_HOST='https://configured.test';assert.equal((await bookingReadiness(f.env,owner)).people,false);
 });
+
+test('group scheduling requires owner review even when the primary guest is a strong contact',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);
+ const group={...input,attendees:[' SECOND@example.com ',visitor.email,'second@example.com']};
+ const emailAuthority={channel:'owner_email' as const,evidenceId:'<group-kickoff@example.com>'};
+ const result=await f.service.prepareScheduling(owner,group,emailAuthority);
+ assert.equal(result.requiresReview,true);assert.equal(result.needsContext,false);assert.equal(result.offer,null);
+ assert.match(result.recommendation.reasons.join(' '),/group|all.*guests/i);
+ const stored=(await f.store.request(owner,result.requestId))!;
+ assert.deepEqual((stored.scheduling!.input as any).attendees,[visitor.email,'second@example.com']);
+ assert.equal(cal.writes.length,0);
+ assert.ok(!JSON.stringify(publicBookingRequest(stored)).includes('second@example.com'));
+ assert.deepEqual(await f.service.prepareScheduling(owner,{...group,attendees:[visitor.email,'second@example.com']},emailAuthority),result);
+ await assert.rejects(f.service.prepareScheduling(owner,{...group,attendees:[visitor.email,'third@example.com']},emailAuthority),/idempotency_conflict/);
+ const approved=await f.service.approveScheduling(owner,result.requestId,1);assert.ok(approved.offer);assert.equal(approved.requiresReview,false);
+ const refreshed=await f.service.refreshScheduling(owner,result.requestId);assert.ok(refreshed.offer);
+ assert.deepEqual((await f.store.request(owner,result.requestId))!.scheduling!.input,stored.scheduling!.input);
+ await f.store.saveSettings({...f.settings,revision:2},1);
+ const changed=await f.service.refreshScheduling(owner,result.requestId);assert.equal(changed.requiresReview,true);assert.equal(changed.offer,null);
+});
+test('group scheduling books all frozen guests once only through the verified email confirmation path',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);
+ const emailAuthority={channel:'owner_email' as const,evidenceId:'<group-booking@example.com>'};
+ const result=await f.service.prepareScheduling(owner,{...input,attendees:[visitor.email,'second@example.com']} as any,emailAuthority);
+ const approved=await f.service.approveScheduling(owner,result.requestId,1),offer=approved.offer!;
+ const confirmation={revision:offer.revision,slotId:offer.slots[0].id,evidenceId:'group-consensus'};
+ await assert.rejects(f.service.confirmScheduling(owner,result.requestId,confirmation),/invalid_authority/);
+ await assert.rejects((f.service as any).confirmScheduling(owner,result.requestId,confirmation,{channel:'owner_api',evidenceId:confirmation.evidenceId}),/invalid_authority/);
+ assert.equal(cal.writes.length,0);
+ const confirmationAuthority={channel:'owner_email',evidenceId:confirmation.evidenceId};
+ const booked=await (f.service as any).confirmScheduling(owner,result.requestId,confirmation,confirmationAuthority);assert.equal(booked.status,'booked');
+ assert.equal(cal.writes.length,1);assert.deepEqual(cal.writes[0].attendees,[{email:visitor.email},{email:'second@example.com'}]);
+ assert.doesNotMatch(JSON.stringify(cal.writes),/SECRET|PRIVATE|UNCONFIRMED/);
+ assert.equal((await (f.service as any).confirmScheduling(owner,result.requestId,confirmation,confirmationAuthority)).status,'booked');assert.equal(cal.writes.length,1);
+});
+test('group scheduling rejects untrusted channels and invalid attendee sets before persistence',async t=>{
+ const f=await schedulingFixture(t);calendar(t);
+ const emailAuthority={channel:'owner_email' as const,evidenceId:'<group-invalid@example.com>'};
+ await assert.rejects(f.service.prepareScheduling(owner,{...input,attendees:[visitor.email,'other@example.com']} as any,authority),/invalid_authority/);
+ for(const attendees of [[],['not-an-email'],[owner],[visitor.email,...Array.from({length:5},(_,i)=>'guest'+i+'@example.com')],['guest\r\n@example.com'],{}]){
+  await assert.rejects(f.service.prepareScheduling(owner,{...input,attendees} as any,emailAuthority),/invalid_/);
+ }
+ assert.equal((await f.store.requests(owner)).length,0);
+});
