@@ -20,9 +20,9 @@ import {bookingCalendarBusy} from './src/booking-providers';
 import {bookingReadiness} from './src/booking-coordinator';
 const owner='owner@example.com';
 function wrap(env){return {...env,AI:{async run(model,input){await env.DB.prepare("INSERT INTO fixture_control(key,body) VALUES('__model_call',?)").bind(JSON.stringify(input)).run();const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(scopedOwner){return {bindOwner:async()=>{},verifySchedulingKickoff:async(messageId,agentAddress)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__kickoff:'+messageId).first();if(!row)throw Error('invalid_owner_kickoff');return JSON.parse(row.body);},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}}),bookingContact:async(email)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__contact:'+scopedOwner+':'+email).first();if(!row)return null;const value=JSON.parse(row.body);if(value.fail)throw Error('private source failure');return value;}}}}};}
-function emailWrap(env){return {...wrap(env),SCHEDULING_EMAIL_ADDRESS:'scheduling@agent.test',SCHEDULING_EMAIL_REPLY_DOMAIN:'agent.test',SCHEDULING_EMAIL_SEND:{async send(message){const id='<'+crypto.randomUUID()+'@mail.test>';await env.DB.prepare('INSERT INTO fixture_control(key,body) VALUES(?,?)').bind('__sent',JSON.stringify({...message,messageId:id})).run();const failure=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__email_send_unknown' ORDER BY rowid DESC LIMIT 1").first();if(failure?.body==='true')throw Error('ambiguous provider response');return {messageId:id};}}};}
+function emailWrap(env,sentKey='__sent',failureKey='__email_send_unknown'){return {...wrap(env),SCHEDULING_EMAIL_ADDRESS:'scheduling@agent.test',SCHEDULING_EMAIL_REPLY_DOMAIN:'agent.test',SCHEDULING_EMAIL_SEND:{async send(message){const id='<'+crypto.randomUUID()+'@mail.test>';await env.DB.prepare('INSERT INTO fixture_control(key,body) VALUES(?,?)').bind(sentKey,JSON.stringify({...message,messageId:id})).run();const failure=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind(failureKey).first();if(failure?.body==='true')throw Error('ambiguous provider response');return {messageId:id};}}};}
 export class TestSchedulingEmailCoordinator extends EmailCoordinator {constructor(ctx,env){super(ctx,emailWrap(env));} restartForTest(){this.ctx.abort('email fixture restart');} stateForTest(requestId){return this.ctx.storage.sql.exec("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.requestId')=?",requestId).toArray().map(row=>JSON.parse(row.data));}}
-export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,wrap(env));} restartForTest(){this.ctx.abort('fixture restart');} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
+export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,emailWrap(env,'__booking_sent','__booking_send_unknown'));} restartForTest(){this.ctx.abort('fixture restart');} async alarmForTest(){await this.ctx.storage.deleteAlarm();await this.alarm();} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
 export default {async fetch(request,env){env=wrap(env);const url=new URL(request.url),store=new BookingStore(env.DB);
  if(url.pathname==='/fixture'){await store.init();await env.DB.prepare('CREATE TABLE IF NOT EXISTS fixture_control(key TEXT,body TEXT)').run();
  const settings={...defaultBookingSettings(owner),displayName:'Test host',slug:'test-host',thesis:'I meet founders building new interfaces for AI agents.',revision:1,enabled:true,weekdays:[0,1,2,3,4,5],startTime:'09:00',endTime:'17:00'};
@@ -31,6 +31,7 @@ export default {async fetch(request,env){env=wrap(env);const url=new URL(request
  return Response.json({cookie:sessionCookie(await makeSession(owner,env.TOKEN_SECRET)),settings});}
  if(url.pathname==='/fixture/email'){const input=await request.json();let rejection=null;const bytes=new TextEncoder().encode(input.raw);await worker.email({to:input.to,from:input.from,rawSize:bytes.length,raw:new ReadableStream({start(controller){controller.enqueue(bytes);controller.close();}}),setReject(reason){rejection=reason;}},emailWrap(env));return Response.json({rejection});}
  if(url.pathname==='/fixture/email-alarm'){await env.SCHEDULING_EMAIL.getByName(owner).alarm();return Response.json({ok:true});}
+ if(url.pathname==='/fixture/booking-alarm'){await env.BOOKING.getByName(owner).alarmForTest();return Response.json({ok:true});}
  if(url.pathname==='/fixture/email-state')return Response.json(await env.SCHEDULING_EMAIL.getByName(owner).stateForTest(url.searchParams.get('requestId')));
  if(url.pathname==='/fixture/email-restart'){try{await env.SCHEDULING_EMAIL.getByName(owner).restartForTest();}catch{}return Response.json({ok:true});}
  if(url.pathname==='/fixture/readiness'){const key=url.searchParams.get('missing');return Response.json(await bookingReadiness({...env,...(key?{[key]:undefined}:{})},owner));}
@@ -101,6 +102,22 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   async function machineRequest(token,path,data){const res=await mf.dispatchFetch('https://people.test/api/scheduling'+path,{method:data===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token,...(data===undefined?{}:{'Content-Type':'application/json'})},...(data===undefined?{}:{body:JSON.stringify(data)})});return {res,value:await res.json()};}
   async function incomingEmail({id,from,to,cc='owner@example.com',reply,text}){return api('/fixture/email',{method:'POST',data:{to,from,raw:['From: '+from,'To: '+to,'Cc: '+cc,'Message-ID: '+id,'Subject: Meet',...(reply?['In-Reply-To: '+reply]:[]),'Content-Type: text/plain; charset=utf-8','',''+text].join('\r\n')}});}
   const sentEmail=async()=> (await sql("SELECT body FROM fixture_control WHERE key='__sent' ORDER BY rowid")).map(row=>JSON.parse(row.body));
+  const sentBookingEmail=async()=> (await sql("SELECT body FROM fixture_control WHERE key='__booking_sent' ORDER BY rowid")).map(row=>JSON.parse(row.body));
+  const bookingReviewURL=id=>'https://people.test/booking?request='+encodeURIComponent(id);
+  const bookingNotices=async id=>(await sentBookingEmail()).filter(message=>message.text.includes(bookingReviewURL(id)));
+  async function flushBookingEmail(){const result=await api('/fixture/booking-alarm');assert.equal(result.res.status,200,JSON.stringify(result.value));}
+  function assertBookingNotice(message,r,times){
+   assert.ok(message,'an owner review email was sent');
+   assert.deepEqual(Array.isArray(message.to)?message.to:[message.to],['owner@example.com']);assert.deepEqual(message.cc||[],[]);assert.deepEqual(message.bcc||[],[]);
+   assert.equal(message.from,'scheduling@agent.test');assert.ok(message.subject);assert.ok(message.text.includes(bookingReviewURL(r.id)));
+   for(const value of [r.name,r.email,r.project,r.purpose,r.projectUrl,r.referrer,settings.timezone])if(value)assert.ok(message.text.includes(value),'review email includes '+value);
+   for(const slot of times)for(const value of [slot.start,slot.end]){
+    const date=new Date(value),day=new Intl.DateTimeFormat('en-US',{timeZone:settings.timezone,month:'short',day:'numeric',year:'numeric'}).format(date),time=new Intl.DateTimeFormat('en-US',{timeZone:settings.timezone,hour:'numeric',minute:'2-digit'}).format(date);
+    assert.ok(message.text.includes(day),'review email includes date '+day);assert.ok(message.text.replaceAll('\u202f',' ').includes(time.replaceAll('\u202f',' ')),'review email includes time '+time);
+   }
+   assert.doesNotMatch(message.text,/fixture-refresh|fixture-access|test-session-secret/);
+   const link=new URL(message.text.match(/https:\/\/people\.test\/booking\?request=[^\s<>"']+/)[0]);assert.equal(link.searchParams.get('request'),r.id);assert.deepEqual([...link.searchParams.keys()],['request']);
+  }
   async function startSignIn(email,claims={},data={}){
    const x=await api(prefix+'/sign-in',{method:'POST',data});assert.equal(x.res.status,200,JSON.stringify(x.value));
    const auth=new URL(x.value.url),browser=x.res.headers.get('set-cookie').split(';')[0],code=crypto.randomUUID();
@@ -127,7 +144,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    for(const key of ['GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','MAIL_TOKEN_KEY','TOKEN_SECRET'])assert.equal((await api('/fixture/readiness?missing='+key)).value.signIn,false);
    for(const endpoint of ['/challenge','/verify'])assert.equal((await api(prefix+endpoint,{method:'POST',data:{}})).res.status,404);
    assert.equal((await api(prefix+'/sign-in',{method:'POST',origin:'https://evil.test',data:{}})).res.status,403);
-   const legacy=await api('/fixture/legacy-outbox');assert.equal(legacy.value.alarm,null);
+   const legacy=await api('/fixture/legacy-outbox');assert.equal(legacy.value.alarm,null);assert.deepEqual(await sentBookingEmail(),[],'deprecated visitor outbox stays inert even when the owner-alert sender is configured');
   });
   await t.test('Google callback binds browser, expires, cannot replay, and cannot create an owner session',async()=>{
    const c=await startSignIn('wrong@example.com');
@@ -285,6 +302,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    sourceMissing=false;const r2=await submit(cookie),s2=(await api(prefix+'/slots?requestId='+r2.id,{cookie})).value.slots[0];
    const booked=await api(prefix+'/requests/'+r2.id+'/slot',{method:'POST',cookie,data:{start:s2.start}});assert.equal(booked.value.request.status,'booked',JSON.stringify(booked.value));assert.equal(inserts,before+1);
    await sql("DELETE FROM fixture_control WHERE key='__model'");settings=(await api('/api/booking/settings',{method:'POST',cookie:ownerCookie,data:{...settings,autoBookPriority:false}})).value.settings;
+   await flushBookingEmail();assert.deepEqual(await bookingNotices(r2.id),[],'automatically booked priority requests do not send a pending-review alert');
   });
   await t.test('active reservations are not hidden by a large history inbox',async()=>{
    const r=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[first.id]))[0].data);
@@ -310,9 +328,51 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const result=await api('/api/booking/requests/'+first.id+'/cancel',{method:'POST',cookie:ownerCookie});assert.equal(result.value.request.status,'cancelled');assert.equal(events.get(result.value.request.eventId).status,'cancelled');
    const publicState=await api(prefix+'/requests/'+first.id,{cookie:visitorCookie});assert.equal(publicState.value.request.status,'cancelled');assert.equal(JSON.stringify(publicState.value).includes('decision'),false);
   });
+  await t.test('public slot choice queues one owner review alert with context and an authenticated review link',async()=>{
+   const cookie=visitorCookie,key=crypto.randomUUID(),r=await submit(cookie,key),before=inserts;
+   await flushBookingEmail();assert.deepEqual(await bookingNotices(r.id),[],'questionnaire submission alone does not notify the owner');
+   const selected=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots[0],path=prefix+'/requests/'+r.id+'/slot';
+   const chosen=await api(path,{method:'POST',cookie,data:{start:selected.start}});assert.equal(chosen.res.status,200,JSON.stringify(chosen.value));assert.equal(chosen.value.request.status,'pending_approval');assert.equal(inserts,before);
+   assert.deepEqual(await bookingNotices(r.id),[],'sending email is deferred from the visitor selection response');
+   await api('/fixture/restart');await flushBookingEmail();
+   const notices=await bookingNotices(r.id);assert.equal(notices.length,1,'the durable notification survives restart');
+   const saved=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[r.id]))[0].data);assertBookingNotice(notices[0],saved,[selected]);
+   assert.match(notices[0].text,/approval|review/i);assert.match(notices[0].text,/not confirmed|not yet confirmed|not booked|not reserved/i);
+   const repeated=await api(path,{method:'POST',cookie,data:{start:selected.start}});assert.equal(repeated.res.status,200);assert.equal((await submit(cookie,key)).id,r.id);
+   await api('/fixture/restart');await flushBookingEmail();await flushBookingEmail();assert.equal((await bookingNotices(r.id)).length,1,'duplicate choice, questionnaire retry, repeated alarms and restarts never resend');
+   const page=await mf.dispatchFetch(bookingReviewURL(r.id),{redirect:'manual'});assert.equal(page.status,200);assert.doesNotMatch(await page.text(),/visitor@example\.com/,'the deep link alone cannot disclose request details');
+   assert.equal((await api('/api/booking?request='+r.id)).res.status,401);assert.equal((await api('/api/booking?request='+r.id,{cookie})).res.status,401);
+   for(const action of ['approve','decline']){
+    const endpoint='/api/booking/requests/'+r.id+'/'+action;
+    assert.equal((await api(endpoint,{cookie:ownerCookie})).res.status,404,'review links cannot approve or decline through GET');
+    assert.equal((await api(endpoint,{method:'POST'})).res.status,401);
+    assert.equal((await api(endpoint,{method:'POST',cookie})).res.status,401);
+    for(const origin of ['https://evil.test',''])assert.equal((await api(endpoint,{method:'POST',cookie:ownerCookie,origin})).res.status,403,'owner changes require the same origin');
+   }
+   assert.equal((await api(prefix+'/requests/'+r.id,{cookie})).value.request.status,'pending_approval');assert.equal(inserts,before);
+   const approved=await api('/api/booking/requests/'+r.id+'/approve',{method:'POST',cookie:ownerCookie});assert.equal(approved.res.status,200,JSON.stringify(approved.value));assert.equal(approved.value.request.status,'booked');assert.equal(inserts,before+1);
+   await flushBookingEmail();assert.equal((await bookingNotices(r.id)).length,1,'owner approval does not repeat the pending-review email');
+  });
   function proposalInput(days,hour=22){const date=new Date(Date.now()+days*86400000);date.setUTCHours(hour,0,0,0);return {timezone:'UTC',times:[date.toISOString().slice(0,16)]};}
   async function propose(cookie,r,input){const response=await api(prefix+'/requests/'+r.id+'/proposals',{method:'POST',cookie,data:input});assert.equal(response.res.status,200,JSON.stringify(response.value));return response.value.request;}
   async function approveProposal(r,start=r.proposedTimes.slots[0].start){return api('/api/booking/requests/'+r.id+'/approve-proposal',{method:'POST',cookie:ownerCookie,data:{start,revision:r.proposedTimes.revision}});}
+  await t.test('suggested alternatives notify only the owner once per changed proposal and preserve review controls',async()=>{
+   const cookie=visitorCookie,r=await submit(cookie),before=inserts,firstInput=proposalInput(16);
+   firstInput.times.push(proposalInput(17).times[0]);
+   const firstSet=await propose(cookie,r,firstInput);await flushBookingEmail();
+   let notices=await bookingNotices(r.id);assert.equal(notices.length,1);assert.equal(inserts,before);
+   let saved=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[r.id]))[0].data);assertBookingNotice(notices[0],saved,firstSet.proposedTimes.slots);assert.ok(notices[0].text.includes('UTC'),'original visitor timezone remains visible');
+   assert.match(notices[0].text,/suggested|alternative/i);assert.equal(firstSet.slotStart,null);
+   const duplicate=await propose(cookie,r,firstInput);assert.equal(duplicate.proposedTimes.revision,firstSet.proposedTimes.revision);
+   await api('/fixture/restart');await flushBookingEmail();assert.equal((await bookingNotices(r.id)).length,1,'same proposal does not resend across restart');
+   const nextInput=proposalInput(19),changed=await propose(cookie,r,nextInput);assert.notEqual(changed.proposedTimes.revision,firstSet.proposedTimes.revision);
+   await api('/fixture/restart');await flushBookingEmail();notices=await bookingNotices(r.id);assert.equal(notices.length,2,'a changed proposal sends a new review alert');
+   saved=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[r.id]))[0].data);assertBookingNotice(notices[1],saved,changed.proposedTimes.slots);assert.equal(inserts,before);
+   const endpoint='/api/booking/requests/'+r.id+'/approve-proposal',body={start:changed.proposedTimes.slots[0].start,revision:changed.proposedTimes.revision};
+   assert.equal((await api(endpoint,{cookie:ownerCookie})).res.status,404);assert.equal((await api(endpoint,{method:'POST',data:body})).res.status,401);assert.equal((await api(endpoint,{method:'POST',cookie:ownerCookie,origin:'https://evil.test',data:body})).res.status,403);
+   const declined=await api('/api/booking/requests/'+r.id+'/decline',{method:'POST',cookie:ownerCookie});assert.equal(declined.res.status,200);assert.equal(declined.value.request.status,'declined');assert.equal(inserts,before);
+   await flushBookingEmail();assert.equal((await bookingNotices(r.id)).length,2);
+  });
   await t.test('visitor proposals use Google ownership and origin checks, survive resume, and remain unreserved',async()=>{
    const email='suggestions@example.com',cookie=await visitor(email),r=await submit(cookie),input=proposalInput(12),path=prefix+'/requests/'+r.id+'/proposals',before=inserts;
    assert.equal((await api(path,{method:'POST',data:input})).res.status,401);

@@ -32,7 +32,8 @@ export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:str
   if(request.method==='GET'&&path==='/api/booking'){
    const [settings,requests,readiness,calendar]=await Promise.all([store.settings(owner),store.requests(owner),bookingReadiness(env,owner),store.calendar(owner)]);
    let lens=null;try{const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);const saved=await stub.getOwnerLens();lens=saved.fields;}catch{}
-   return json({account:{email:owner},settings:settings||defaultBookingSettings(owner),requests,readiness,lens,calendar:calendar?{email:calendar.email}:null});
+   const notifications=await env.BOOKING.getByName(owner).notificationStatus(owner);
+   return json({account:{email:owner},settings:settings||defaultBookingSettings(owner),requests,readiness,lens,notifications,calendar:calendar?{email:calendar.email}:null});
   }
   if(request.method!=='POST')return json({error:'not_found'},404);origin(request);
   if(env.BOOKING_OWNER_EMAIL?.toLowerCase()!==owner)throw Error('booking_unavailable');

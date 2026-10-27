@@ -38,5 +38,6 @@ export interface BookingReadiness {signIn:boolean;calendar:boolean;people:boolea
 export interface BookingEnv extends MailEnv {
  DB:D1Database; BOOKING:DurableObjectNamespace<BookingCoordinator>;
  BOOKING_OWNER_EMAIL?:string;
+ SCHEDULING_EMAIL_ADDRESS?:string; SCHEDULING_EMAIL_SEND?:SendEmail;
  PEOPLEGRAPH_HOST?:string; PEOPLEGRAPH_TOKEN?:string; PEOPLEGRAPH_OWNER_EMAIL?:string;
 }

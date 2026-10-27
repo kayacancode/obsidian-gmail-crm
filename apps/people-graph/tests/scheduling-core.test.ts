@@ -15,7 +15,7 @@ export async function schedulingFixture(t:TestContext){
  const sqlite=new DatabaseSync(':memory:'),durable=new DatabaseSync(':memory:');t.after(()=>{sqlite.close();durable.close();});
  const db:any={prepare(sql:string){let args:any[]=[];const stmt:any={bind(...values:any[]){args=values;return stmt;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes)}};},async first(){return sqlite.prepare(sql).get(...args)??null;},async all(){return {results:sqlite.prepare(sql).all(...args)};}};return stmt;},async batch(statements:any[]){return Promise.all(statements.map(statement=>statement.run()));}};
  let alarms=0;
- const ctx={storage:{sql:{exec(sql:string,...args:any[]){const rows=durable.prepare(sql).all(...args);return {toArray:()=>rows};}},setAlarm:async()=>{alarms++;}}};
+ const ctx={storage:{sql:{exec(sql:string,...args:any[]){const rows=durable.prepare(sql).all(...args);return {toArray:()=>rows};}},setAlarm:async()=>{alarms++;},deleteAlarm:async()=>{}}};
  const env:any={DB:db,GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',MAIL_TOKEN_KEY:'test-key',TOKEN_SECRET:'test-session',BOOKING_OWNER_EMAIL:owner,AI:{run:async()=>({output_text:JSON.stringify({fit:fit.fit,reasons:fit.reasons,evidence:['SECRET CONTEXT']})})}};
  const store=new BookingStore(db);await store.init();
  const settings={...defaultBookingSettings(owner),revision:1,enabled:true,autoBookPriority:true,slug:'test-host',thesis:'Meet founders building infrastructure and durable memory for AI agents.',vipEmails:[visitor.email]};
@@ -177,7 +177,7 @@ test('scheduling uncertain writes preserve one event across expiry, policy chang
  assert.equal((await f.service.confirmScheduling(owner,r.requestId,confirmation)).status,'booking');
  const saved=await f.store.request(owner,r.requestId);assert.equal(saved?.status,'booking');assert.ok(saved?.eventId);
  clock=offer.expiresAt+1;await f.store.saveSettings({...f.settings,revision:2,enabled:false},1);
- const ctx={storage:{sql:{exec(sql:string,...args:any[]){return {toArray:()=>f.durable.prepare(sql).all(...args)};}},setAlarm:async()=>{}}};
+ const ctx={storage:{sql:{exec(sql:string,...args:any[]){return {toArray:()=>f.durable.prepare(sql).all(...args)};}},setAlarm:async()=>{},deleteAlarm:async()=>{}}};
  const restarted=new BookingCoordinator(ctx as any,f.env);
  assert.equal((await restarted.confirmScheduling(owner,r.requestId,confirmation)).status,'booking');assert.equal(cal.writes.length,1);
  cal.found=true;assert.equal((await restarted.confirmScheduling(owner,r.requestId,confirmation)).status,'booked');assert.equal(cal.writes.length,1);

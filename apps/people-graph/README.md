@@ -281,3 +281,11 @@ The hosted shared network opens with “You + [other members]”, one search fie
 Run `npm run test:shared-home-browser` against a static server at `TEST_ORIGIN` (default `http://127.0.0.1:4198`) for the complete hosted layout, search, detail/back, resize, and mobile checks.
 
 Shared profiles also show “Your private context” when the signed-in viewer has their own linked evidence. This viewer-only response field is separate from shared signals and is excluded from shared search, recommendations, introduction drafts, and exports. It does not change contribution settings.
+
+## Booking request email alerts
+
+When a visitor selects a time through the public booking link or suggests alternatives, People emails the configured booking owner. The alert includes their name, email, project, meeting purpose, requested times in the owner's timezone, and the private assessment. **Review request** opens that request in Booking, where the owner can approve or decline. Google sign-in stays on the request page; opening an email link never approves a meeting.
+
+Alerts use the existing `SCHEDULING_EMAIL_SEND` binding and `SCHEDULING_EMAIL_ADDRESS`, with `BOOKING_OWNER_EMAIL` as the only recipient and `APP_ORIGIN` for the review link. No additional sender domain is required for a deployment that already has scheduling email enabled. Booking → Requests shows the notification destination and any delivery failures or unknown outcomes. Confirmed automatic bookings continue to use Calendar invitations; questionnaire submissions without a selected or proposed time do not send approval alerts.
+
+The owner's coordinator keeps a separate durable notification outbox, checks that a request still needs approval before sending, and deduplicates repeat selections and delivery attempts. Explicit rate/quota rejections retry with backoff. An ambiguous provider result is shown as uncertain and is not automatically resent. Legacy verification-email records stay inert. The outbox is additive SQLite state; no D1 schema migration or backfill of historical requests is needed.
