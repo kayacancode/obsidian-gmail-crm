@@ -23,7 +23,7 @@
 - [x] Gmail: extend canonical context to the frozen group, attribute each sender, exclude outsider and Bcc evidence. Permit exact same-address display names while continuing to reject mismatched address names.
 - [x] Email coordinator: accept bounded groups; persist per-guest capabilities, acceptable parent message IDs and selections; send individual offers and waiting/conflict responses; retain votes for the same revision; reset on replacement; require consensus before core confirmation. Make final booking state and confirmation queue atomic.
 - [x] Runtime: verify two guests, owner review, separate capabilities, wrong sender/capability rejection, conflicting selections, restarts, refresh invalidation, one Calendar event and one final confirmation.
-- [ ] Run full unit, runtime, typecheck and browser verification; independent review; deploy with existing configuration; report the exact next step for the real thread.
+- [x] Run full unit, runtime, typecheck and browser verification; independent review; deploy with existing configuration; report the exact next step for the real thread.
 
 ## Review focus
 
@@ -36,3 +36,5 @@
 ## Verification
 
 Full suite: 168 frontend and 1014 backend tests passed. Runtime: 53 passed. Booking and scheduling browser suites, typecheck, and deployment dry run passed. Independent review reproduced a stale-retry race; regression tests now prove newer guest selections withdraw old agreement before external reads and older retries cannot overwrite them. Final review found no remaining blockers.
+
+Deployed version `1e3af207-453e-46c4-b39e-a38a81548f7e`; production booking script matches the validated source byte-for-byte. Implementation commit `dafa6b2` pushed on `codex/scheduling-context-fixes` in draft PR #14. Original Limma request received an owner-only rejection under the old one-guest limit; the user must send a fresh request with both guests, then approve offering group times in Booking. No live guest email or Calendar booking was sent from this development session.
