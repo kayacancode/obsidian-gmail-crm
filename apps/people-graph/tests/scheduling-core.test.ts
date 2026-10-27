@@ -5,6 +5,7 @@ import {BookingCoordinator,publicBookingRequest} from '../src/booking-coordinato
 import {BookingStore} from '../src/booking-store';
 import {defaultBookingSettings,decideBooking} from '../src/booking-policy';
 import {seal} from '../src/mail-model';
+import {validateSchedulingInput} from '../src/scheduling-policy';
 import type {BookingRequestRecord,BookingVisitorIdentity} from '../src/booking-types';
 const owner='owner@example.com';
 const visitor:BookingVisitorIdentity={email:'visitor@example.com',subject:'a'.repeat(43),emailAuthoritative:true};
@@ -29,6 +30,61 @@ export async function schedulingFixture(t:TestContext){
 const now=Date.parse('2026-10-23T12:00:00Z');
 const input={email:visitor.email,name:'Visitor',context:'SECRET CONTEXT',instructions:'SECRET INSTRUCTIONS',idempotencyKey:'scheduling_test_key'};
 const authority={channel:'owner_api' as const,evidenceId:'credential-1'};
+async function contextRequest(f:Awaited<ReturnType<typeof schedulingFixture>>){
+ await f.store.saveSettings({...f.settings,vipEmails:[]},f.settings.revision);
+ const r=f.record({decision:{tier:'review',reasons:['Ask what they want to discuss.'],uncertainties:[],fit:{fit:'needs_context' as any,reasons:['Missing meeting purpose.'],evidence:[],model:'test'},people:{status:'matched',email:visitor.email,score:20,lastSync:new Date(now-1000).toISOString(),reason:'Exact contact.'},policyRevision:1},scheduling:{authority,input:{...input,context:'Could we meet?'},timezone:f.settings.timezone,settingsRevision:1,assessmentVersion:1,windowStart:new Date(now).toISOString(),windowEnd:new Date(now+7*86400000).toISOString(),offer:null,recommendation:{summary:'More context is needed.',reasons:[],uncertainties:[]}}});
+ r.scheduling!.input=validateSchedulingInput(r.scheduling!.input);r.idempotencyKey='scheduling:owner_api:'+r.scheduling!.input.idempotencyKey;await f.store.add(r);return r;
+}
+test('scheduling missing purpose asks a neutral question without exposing private assessment or times',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);
+ const r=await contextRequest(f),result=await f.service.getScheduling(owner,r.id);
+ assert.equal((result as any).needsContext,true);assert.equal(result.requiresReview,true);assert.equal(result.offer,null);
+ assert.equal(result.replyText,(result as any).contextQuestion);assert.match(result.replyText,/what.*discuss/i);assert.doesNotMatch(result.replyText,/score|weak|thesis|contact/i);assert.equal(cal.writes.length,0);
+ r.decision.people.lastSync=new Date(now-86400001).toISOString();await f.store.update(r);assert.equal((await f.service.getScheduling(owner,r.id) as any).needsContext,false);
+ r.decision.people.lastSync=new Date(now).toISOString();r.decision.uncertainties=['Source unavailable'];await f.store.update(r);assert.equal((await f.service.getScheduling(owner,r.id) as any).needsContext,false);
+});
+test('scheduling context reply reassesses once and preserves original preparation and window',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);const r=await contextRequest(f),calls:any[]=[];
+ f.env.AI.run=async(_model:any,payload:any)=>{calls.push(payload);return {output_text:JSON.stringify({fit:'strong',reasons:['Relevant agent memory project.'],evidence:['durable memory for AI agents']})};};
+ const reply={context:'I build durable memory for AI agents and want feedback on retrieval quality.',evidenceId:'<context-reply@example.com>'};
+ const result=await (f.service as any).addSchedulingContext(owner,r.id,reply);assert.ok(result.offer?.slots.length);assert.equal(result.needsContext,false);assert.equal(result.requiresReview,false);assert.equal(calls.length,1);
+ const saved=(await f.store.request(owner,r.id))!;assert.deepEqual(saved.scheduling!.input,r.scheduling!.input);assert.deepEqual((saved.scheduling as any).contextReplies,[reply]);assert.equal(saved.scheduling!.windowEnd,r.scheduling!.windowEnd);
+ assert.match(JSON.stringify(calls[0]),/Could we meet/);assert.match(JSON.stringify(calls[0]),/durable memory for AI agents/);
+ assert.deepEqual(await (f.service as any).addSchedulingContext(owner,r.id,reply),result);assert.equal(calls.length,1);
+ await assert.rejects((f.service as any).addSchedulingContext(owner,r.id,{...reply,context:'different'}),/idempotency_conflict/);
+ assert.deepEqual(await f.service.prepareScheduling(owner,r.scheduling!.input,authority),result);
+ assert.equal(cal.writes.length,0);
+});
+test('scheduling context is bounded and cannot change authority or keep an unlimited clarification loop',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);calendar(t);source(f.env);const r=await contextRequest(f);
+ f.env.AI.run=async()=>({output_text:JSON.stringify({fit:'needs_context',reasons:['No meeting purpose yet.'],evidence:[]})});
+ for(const bad of [{context:'hello',evidenceId:'x',email:'other@example.com'},{context:'x'.repeat(1501),evidenceId:'x'},{context:'',evidenceId:'x'}])await assert.rejects((f.service as any).addSchedulingContext(owner,r.id,bad),/invalid_/);
+ const first=await (f.service as any).addSchedulingContext(owner,r.id,{context:'Could we get coffee sometime?',evidenceId:'first'});assert.equal(first.needsContext,true);
+ const second=await (f.service as any).addSchedulingContext(owner,r.id,{context:'Just wanted a meeting.',evidenceId:'second'});assert.equal(second.needsContext,false);assert.equal(second.requiresReview,true);assert.equal(second.offer,null);
+ await assert.rejects((f.service as any).addSchedulingContext(owner,r.id,{context:'Again',evidenceId:'third'}),/context_not_requested/);
+ const saved=(await f.store.request(owner,r.id))!;assert.equal((saved.scheduling as any).contextReplies.length,2);assert.deepEqual(saved.scheduling!.authority,authority);
+});
+test('scheduling second-day context refreshes relationship evidence before deciding',async t=>{
+ let clock=now;t.mock.method(Date,'now',()=>clock);const f=await schedulingFixture(t);calendar(t);source(f.env);const r=await contextRequest(f);
+ clock+=36*3600000;let calls=0;f.env.AI.run=async()=>{calls++;return {output_text:JSON.stringify({fit:'strong',reasons:['Relevant agent memory project.'],evidence:['durable memory for AI agents']})};};
+ const result=await (f.service as any).addSchedulingContext(owner,r.id,{context:'I build durable memory for AI agents.',evidenceId:'second-day'});
+ assert.equal(calls,1);assert.equal(result.requiresReview,false);assert.ok(result.offer);assert.ok(Date.parse(result.decision.people.lastSync)>now);
+});
+test('scheduling persists context before Calendar failure and recovers the same reply',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t);const cal=calendar(t);source(f.env);const r=await contextRequest(f),reply={context:'I build durable memory for AI agents.',evidenceId:'provider-failed'};
+ f.env.AI.run=async()=>({output_text:JSON.stringify({fit:'strong',reasons:['Relevant agent memory project.'],evidence:['durable memory for AI agents']})});
+ const provider=globalThis.fetch;t.mock.method(globalThis,'fetch',async(value:any,init:any)=>String(value).endsWith('/freeBusy')?new Response('',{status:503}):provider(value,init));
+ await assert.rejects((f.service as any).addSchedulingContext(owner,r.id,reply),/booking_provider_unavailable/);
+ const pending=(await f.store.request(owner,r.id))!;assert.deepEqual((pending.scheduling as any).contextReplies,[reply]);assert.equal((pending.scheduling as any).contextAssessmentPending,reply.evidenceId);
+ const view=await f.service.getScheduling(owner,r.id);assert.equal(view.requiresReview,true);assert.equal(view.needsContext,false);assert.equal(view.offer,null);
+ t.mock.method(globalThis,'fetch',provider);const recovered=await (f.service as any).addSchedulingContext(owner,r.id,reply);assert.ok(recovered.offer);assert.equal((await f.store.request(owner,r.id))!.scheduling!.contextAssessmentPending,undefined);assert.equal(cal.writes.length,0);
+});
+test('scheduling pending context retries cannot reopen a declined request',async t=>{
+ t.mock.method(Date,'now',()=>now);const f=await schedulingFixture(t),cal=calendar(t);source(f.env);const r=await contextRequest(f),reply={context:'Actual meeting topic.',evidenceId:'declined-pending'};
+ r.status='declined';(r.scheduling as any).contextReplies=[reply];(r.scheduling as any).contextAssessmentPending=reply.evidenceId;await f.store.update(r);
+ let calls=0;f.env.AI.run=async()=>{calls++;throw Error('Must not assess');};
+ const result=await (f.service as any).addSchedulingContext(owner,r.id,reply);assert.equal(result.status,'declined');assert.equal(result.offer,null);assert.equal(calls,0);assert.equal(cal.writes.length,0);
+});
 function calendar(t:TestContext){
  const state={busy:[] as {start:string;end:string}[],writes:[] as any[],uncertain:false,found:false};
  t.mock.method(globalThis,'fetch',async(value:any,init:any)=>{

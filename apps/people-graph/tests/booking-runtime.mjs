@@ -47,7 +47,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
  const googleCodes=new Map(),keys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
  const jwk=await crypto.subtle.exportKey('jwk',keys.publicKey),encode=value=>Buffer.from(value).toString('base64url');
  async function identity(claims){const now=Math.floor(Date.now()/1000),head=encode(JSON.stringify({alg:'RS256',kid:'fixture-key'})),body=encode(JSON.stringify({iss:'https://accounts.google.com',aud:'test-client',iat:now,exp:now+3600,email_verified:true,...claims})),signature=encode(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',keys.privateKey,new TextEncoder().encode(head+'.'+body)));return head+'.'+body+'.'+signature;}
- const events=new Map();let inserts=0,failInsert=false,failLookup=false,failDelete=false,sourceMissing=false,sourceState='matched',externalBusy=[];
+ const events=new Map();let inserts=0,failInsert=false,failLookup=false,failDelete=false,sourceMissing=false,sourceState='matched',sourceScore=40,externalBusy=[];
  try{
   await build({stdin:{contents:fixture,resolveDir:process.cwd(),loader:'ts'},bundle:true,format:'esm',platform:'browser',external:['cloudflare:workers','cloudflare:email','node:*'],outfile:join(dir,'worker.mjs')});
   const scopes='openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy';
@@ -56,7 +56,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    if(u.hostname==='source.test'){
     if(sourceState==='unavailable')return new Response(null,{status:503});
     const missing=sourceMissing||sourceState==='not_found';
-    return Response.json({ok:!missing,command:'score',stats:{user_email:'owner@example.com',last_sync:new Date(Date.now()-(sourceState==='stale'?2*86400000:1000)).toISOString(),matched:missing?0:1},...(missing?{error:{kind:'not_found'}}:{data:{email:u.searchParams.get('email'),name:'Visitor',score:{combined:40}}})},{status:missing?400:200});
+    return Response.json({ok:!missing,command:'score',stats:{user_email:'owner@example.com',last_sync:new Date(Date.now()-(sourceState==='stale'?2*86400000:1000)).toISOString(),matched:missing?0:1},...(missing?{error:{kind:'not_found'}}:{data:{email:u.searchParams.get('email'),name:'Visitor',score:{combined:sourceScore}}})},{status:missing?400:200});
    }
    if(u.pathname==='/oauth2/v3/certs')return Response.json({keys:[{...jwk,kid:'fixture-key',use:'sig',alg:'RS256'}]});
    if(u.hostname==='oauth2.googleapis.com'){
@@ -472,6 +472,37 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
      assert.equal(calls.length,2);for(const call of calls){const state=JSON.parse(call.input.find(message=>message.role==='user').content);assert.equal(state.thesis,settings.thesis);assert.equal(state.submission.purpose,scenario.purpose);}
      assert.equal(inserts,before,'assessment never creates a Calendar event');
     }
+   }finally{sourceState='matched';await setModel(null);}
+  });
+  await t.test('email catch-up gives strong contacts times and rechecks strength before booking',async()=>{
+   const agent='scheduling@agent.test',peer='catch-up-peer@example.com',id='<catch-up-kickoff@example.com>',purpose='It would be great to catch up over coffee.',before=inserts,mailBefore=(await sentEmail()).length;
+   sourceScore=95;sourceState='matched';await setModel({fit:'catch_up',reasons:['An ordinary catch-up.'],evidence:[purpose]});
+   try{
+    await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__kickoff:'+id,JSON.stringify({gmailId:'runtime-catch-up',messageId:id,owner:'owner@example.com',from:'owner@example.com',to:[peer],cc:[agent],subject:'Catch up',text:'Please find us a time.',context:purpose,receivedAt:Date.now()})]);
+    await incomingEmail({id,from:'owner@example.com',to:agent,cc:peer,text:'Please find us a time.'});
+    const offer=(await sentEmail()).at(-1);assert.equal((await sentEmail()).length,mailBefore+1);assert.deepEqual(offer.to,[peer]);assert.match(offer.text,/available times/i);
+    const record=JSON.parse((await sql('SELECT data FROM booking_requests WHERE email=?',[peer]))[0].data);assert.equal(record.decision.fit.fit,'catch_up');assert.equal(record.decision.tier,'priority');assert.equal(inserts,before);
+    sourceScore=10;await incomingEmail({id:'<catch-up-choice@example.com>',from:peer,to:offer.replyTo,reply:offer.messageId,text:'Option 1 works'});
+    assert.equal(inserts,before,'falling below the strong threshold cannot create a Calendar invitation');
+    const updated=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(updated.scheduling.offer,null);assert.equal(updated.decision.tier,'review');
+   }finally{sourceScore=40;sourceState='matched';await setModel(null);}
+  });
+  await t.test('email asks missing purpose, authenticates the answer, then offers and books exactly once',async()=>{
+   const agent='scheduling@agent.test',peer='context-loop-peer@example.com',id='<context-loop-kickoff@example.com>',initial='Could we meet next week?',before=inserts,mailBefore=(await sentEmail()).length;
+   sourceState='not_found';await setModel({fit:'needs_context',reasons:['A meeting topic is missing.'],evidence:[]});
+   try{
+    await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__kickoff:'+id,JSON.stringify({gmailId:'runtime-context-loop',messageId:id,owner:'owner@example.com',from:'owner@example.com',to:[peer],cc:[agent],subject:'Meet',text:'Please find us a time.',context:initial,receivedAt:Date.now()})]);
+    await incomingEmail({id,from:'owner@example.com',to:agent,cc:peer,text:'Please find us a time.'});
+    const question=(await sentEmail()).at(-1);assert.equal((await sentEmail()).length,mailBefore+1);assert.deepEqual(question.to,[peer]);assert.deepEqual(question.cc,['owner@example.com']);assert.match(question.text,/what.*discuss/i);assert.doesNotMatch(question.text,/weak|score|thesis|available times/i);assert.ok(question.replyTo);
+    const record=JSON.parse((await sql('SELECT data FROM booking_requests WHERE email=?',[peer]))[0].data);assert.equal(record.decision.fit.fit,'needs_context');assert.equal(record.scheduling.offer,null);assert.equal(inserts,before);
+    await incomingEmail({id:'<context-intruder@example.com>',from:'other@example.com',to:question.replyTo,reply:question.messageId,text:matchedPurpose});assert.equal((await sentEmail()).length,mailBefore+1);
+    await api('/fixture/email-restart');await setModel(strongModel());
+    const response={id:'<context-loop-answer@example.com>',from:peer,to:question.replyTo,reply:question.messageId,text:matchedPurpose};await incomingEmail(response);
+    const offer=(await sentEmail()).at(-1);assert.equal((await sentEmail()).length,mailBefore+2);assert.match(offer.text,/available times/i);assert.notEqual(offer.replyTo,question.replyTo);assert.equal(inserts,before);
+    const updated=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(updated.scheduling.input.context,initial);assert.deepEqual(updated.scheduling.contextReplies,[{context:matchedPurpose,evidenceId:response.id}]);assert.equal(updated.decision.tier,'priority');
+    await incomingEmail(response);assert.equal((await sentEmail()).length,mailBefore+2);
+    const selection={id:'<context-loop-choice@example.com>',from:peer,to:offer.replyTo,reply:offer.messageId,text:'Option 1 works'};await incomingEmail(selection);
+    assert.equal(inserts,before+1);assert.match((await sentEmail()).at(-1).text,/meeting is booked/i);await api('/fixture/email-restart');await incomingEmail(selection);assert.equal(inserts,before+1);
    }finally{sourceState='matched';await setModel(null);}
   });
   await t.test('email delegation without canonical purpose stays in owner review despite substantive spoofed SMTP content',async()=>{

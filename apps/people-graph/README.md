@@ -130,6 +130,16 @@ Run `npm run test:meeting-preview-browser` against the local development server 
 
 ## Development
 
+### Email scheduling and meeting context
+
+The scheduling agent evaluates the actual meeting purpose against the saved Booking thesis, verified relationship data and VIP list. An ordinary catch-up can qualify through an exact, fresh contact whose People score meets the returning-contact cutoff (70 by default). A specific business agenda is still assessed against the thesis, even if the message also says “catch up.”
+
+Missing purpose returns `needsContext: true` with a short public question in `replyText`. The email agent asks the fixed counterpart, accepts their authenticated reply, and reassesses before offering times. It asks at most twice, then returns to owner review. Context reply addresses expire after 48 hours; an explicit owner reassessment can replace an expired question within that limit. Replies remain saved if model or Calendar work fails. Source failures and model failures require private review rather than being treated as a mismatch or lack of context. Fit assessment has a bounded 60-second deadline.
+
+API clients check `needsContext` before `requiresReview` and append actual reply evidence with `POST /api/scheduling/requests/:id/context` using `{context, evidenceId}`. Context is limited to 1,500 characters and `evidenceId` is a stable identifier for that reply; retrying the same pair is idempotent. MCP exposes the same operation as `add_scheduling_context`. Only `replyText` is suitable for the counterpart; the decision and recommendation are private. Original participants and scheduling constraints cannot change through context text.
+
+For requests assessed before these changes, choose **Reassess request** in Booking. Public returning-contact requests that skip the questionnaire still require owner approval.
+
 ```sh
 npm run typecheck
 npm run smoke        # end-to-end against wrangler dev --local

@@ -2,23 +2,23 @@ import type {BookingEnv} from './booking-types';
 import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
 import type {SchedulingResult} from './scheduling-types';
 import {boundedJSON} from './bounded-json';
-import {validateSchedulingInput,validateSchedulingConfirmation} from './scheduling-policy';
+import {validateSchedulingInput,validateSchedulingConfirmation,validateSchedulingContext} from './scheduling-policy';
 import {authenticateScheduling,createSchedulingCredential,listSchedulingCredentials,revokeSchedulingCredential,requireSchedulingOwner,requireSchedulingScope,schedulingOrigin,schedulingScopes,type SchedulingPrincipal} from './scheduling-auth';
 import {schedulingMcpRoute} from './scheduling-mcp';
 import {schedulingEmailConfiguration} from './scheduling-email';
 
 export type SchedulingRouteEnv=SchedulingEmailEnv;
-export type SchedulingAction='prepare'|'refresh'|'confirm'|'get';
+export type SchedulingAction='prepare'|'refresh'|'confirm'|'get'|'context';
 export const schedulingInstructionsMessage='Free-text scheduling constraints are not supported. Omit instructions and use UTC windowStart/windowEnd with the owner’s saved rules; ask for clarification if the constraint cannot be represented.';
 export function schedulingJSON(data:unknown,status=200){return Response.json(data,{status,headers:{'cache-control':'no-store','referrer-policy':'no-referrer'}});}
 export function schedulingErrorCode(error:unknown){
  const code=error instanceof Error?error.message:'';
- const safe=['scheduling_unauthorized','scheduling_forbidden','insufficient_scope','invalid_origin','not_found','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required','booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','assessment_required','scheduling_email_delivery_unknown','idempotency_conflict','rate_limited','scheduling_failed'];
+ const safe=['scheduling_unauthorized','scheduling_forbidden','insufficient_scope','invalid_origin','not_found','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required','booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','assessment_required','context_not_requested','scheduling_email_delivery_unknown','idempotency_conflict','rate_limited','scheduling_failed'];
  return safe.includes(code)||/^invalid_[a-z_]{1,60}$/.test(code)?code:'scheduling_failed';
 }
 export function schedulingError(error:unknown){
  const code=schedulingErrorCode(error);
- const status=code==='scheduling_unauthorized'?401:['scheduling_forbidden','insufficient_scope','invalid_origin'].includes(code)?403:code==='not_found'?404:code==='rate_limited'?429:['booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','assessment_required','scheduling_email_delivery_unknown','idempotency_conflict'].includes(code)?409:['scheduling_failed','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required'].includes(code)?503:400;
+ const status=code==='scheduling_unauthorized'?401:['scheduling_forbidden','insufficient_scope','invalid_origin'].includes(code)?403:code==='not_found'?404:code==='rate_limited'?429:['booking_in_progress','request_closed','slot_unavailable','settings_changed','settings_conflict','offer_expired','offer_changed','assessment_required','context_not_requested','scheduling_email_delivery_unknown','idempotency_conflict'].includes(code)?409:['scheduling_failed','booking_unavailable','calendar_unavailable','booking_calendar_reconnect_required'].includes(code)?503:400;
  const response=schedulingJSON({error:code,...(code==='invalid_instructions'?{message:schedulingInstructionsMessage}:{})},status);if(status===401)response.headers.set('www-authenticate','Bearer realm="scheduling"');return response;
 }
 export async function schedulingBody(request:Request):Promise<Record<string,unknown>>{
@@ -41,13 +41,17 @@ export async function runSchedulingAction(env:BookingEnv,principal:SchedulingPri
   const selection=validateSchedulingConfirmation({...input,evidenceId:principal.credentialId});
   return env.BOOKING.getByName(principal.owner).confirmScheduling(principal.owner,requestId!,selection);
  }
+ if(action==='context'){
+  fields(input,['context','evidenceId']);
+  return env.BOOKING.getByName(principal.owner).addSchedulingContext(principal.owner,requestId!,validateSchedulingContext(input));
+ }
  fields(input,[]);
  const service=env.BOOKING.getByName(principal.owner);
  return action==='refresh'?service.refreshScheduling(principal.owner,requestId!):service.getScheduling(principal.owner,requestId!);
 }
 async function actionRoute(request:Request,env:BookingEnv,principal:SchedulingPrincipal,path:string){
  if(path==='/prepare'&&request.method==='POST')return schedulingJSON(await runSchedulingAction(env,principal,'prepare',await schedulingBody(request)));
- const match=path.match(/^\/requests\/([\w-]{1,100})(?:\/(refresh|confirm))?$/);
+ const match=path.match(/^\/requests\/([\w-]{1,100})(?:\/(refresh|confirm|context))?$/);
  if(match&&request.method===(match[2]?'POST':'GET'))return schedulingJSON(await runSchedulingAction(env,principal,(match[2]||'get') as SchedulingAction,match[2]?await schedulingBody(request):{},match[1]));
  return schedulingJSON({error:'not_found'},404);
 }

@@ -10,7 +10,7 @@ export interface BookingSettings {
  returningContactsEnabled:boolean; returningScoreThreshold:number;
 }
 export type BookingTier='priority'|'review'|'async';
-export interface BookingFit {fit:'strong'|'possible'|'weak'|'uncertain'; reasons:string[]; evidence:string[]; model:string}
+export interface BookingFit {fit:'strong'|'possible'|'weak'|'catch_up'|'needs_context'|'uncertain'; reasons:string[]; evidence:string[]; model:string}
 export interface BookingPeopleContext {
  status:'matched'|'not_found'|'ambiguous'|'stale'|'unavailable';
  name?:string; email?:string; lastContact?:string|null; score?:number; lastSync?:string;

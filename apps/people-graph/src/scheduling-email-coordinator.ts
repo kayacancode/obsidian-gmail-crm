@@ -3,7 +3,8 @@ import type {BookingEnv} from './booking-types';
 import {BookingStore} from './booking-store';
 import {digest} from './mail-model';
 import {schedulingEmailConfiguration} from './scheduling-email';
-import {parseSchedulingChoice,schedulingAddress,schedulingCounterpart,schedulingMessageId,schedulingOfferText,schedulingSlotText,parseOwnerSchedulingWindow,type SchedulingInboundEmail,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
+import {schedulingContextQuestion} from './scheduling-policy';
+import {authoredSchedulingText,parseSchedulingChoice,schedulingAddress,schedulingCounterpart,schedulingMessageId,schedulingOfferText,schedulingSlotText,parseOwnerSchedulingWindow,type SchedulingInboundEmail,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
 import type {SchedulingConfirmation,SchedulingInput,SchedulingOffer,SchedulingResult} from './scheduling-types';
 
 export interface SchedulingEmailEnv extends BookingEnv {
@@ -12,13 +13,16 @@ export interface SchedulingEmailEnv extends BookingEnv {
 }
 interface Conversation {
  id:string;owner:string;peer:string;gmailId:string;subject:string;kickoffMessageId:string;requestId:string|null;
- status:'awaiting_review'|'offered'|'confirming'|'booked'|'closed'|'needs_attention';offer:SchedulingOffer|null;timezone:string;
+ status:'awaiting_context'|'assessing_context'|'awaiting_review'|'offered'|'confirming'|'booked'|'closed'|'needs_attention';offer:SchedulingOffer|null;timezone:string;
  capabilityHash:string|null;replyAddress:string|null;latestMessageId:string|null;
+ contextCapability?:{hash:string;replyAddress:string;expiresAt:number;messageId:string|null}|null;contextRounds?:number;contextReviewReason?:string;
+ pendingContext?:{context:string;evidenceId:string;key:string};
  selection?:SchedulingConfirmation&{start:string;end:string};attempts:number;lastInbound:string;
 }
 type InboxRow={id:string;data:string;attempts:number};
 type OutboxRow={id:string;thread:string;data:string};
 type Outgoing={from:string;to:string[];cc:string[];subject:string;text:string;replyTo?:string;headers:Record<string,string>};
+const terminalSchedulingStatuses=new Set(['declined','cancelled','expired','async_submitted']);
 
 /** Per-owner durable conversations. BookingCoordinator remains the only calendar
  * writer. An accepted-but-unacknowledged email is deliberately never resent. */
@@ -96,6 +100,18 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
  }
  private async participant(owner:string,inboxId:string,input:SchedulingInboundEmail){
   const config=this.config(owner),token=input.envelopeTo.split('@')[0].slice('scheduling+'.length),hash=await digest(token);
+  const contextFound=this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.contextCapability.hash')=?",hash)[0];
+  if(contextFound){
+   const thread=JSON.parse(contextFound.data) as Conversation,capability=thread.contextCapability!;
+   if(thread.owner!==owner||thread.status!=='awaiting_context'||thread.pendingContext||capability.expiresAt<=Date.now()||input.envelopeTo!==capability.replyAddress||input.from!==thread.peer||!capability.messageId||input.inReplyTo!==capability.messageId)return;
+   const allowed=new Set([owner,thread.peer,config.address,capability.replyAddress]);if([...input.to,...input.cc].some(address=>!allowed.has(address)))return;
+   const context=authoredSchedulingText(input.text).slice(0,1500).trim();if(!context)return;
+   // Consume the capability and freeze this evidence before the remote call.
+   // Neither a duplicate nor a competing reply can replace an uncertain result.
+   thread.pendingContext={context,evidenceId:input.messageId,key:inboxId};thread.lastInbound=input.messageId;
+   thread.contextCapability=null;thread.status='assessing_context';thread.attempts=0;this.save(thread);
+   await this.ctx.storage.setAlarm(Date.now()+30000);await this.assessContext(thread);return;
+  }
   const found=this.rows<{data:string}>('SELECT data FROM scheduling_email_threads WHERE capability_hash=?',hash)[0];if(!found)return;
   const thread=JSON.parse(found.data) as Conversation;
   if(thread.owner!==owner||thread.status!=='offered'||!thread.offer||input.envelopeTo!==thread.replyAddress||input.from!==thread.peer||!thread.latestMessageId||input.inReplyTo!==thread.latestMessageId)return;
@@ -120,6 +136,55 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   await this.ctx.storage.setAlarm(Date.now()+30000);
   await this.confirm(thread,inboxId);
  }
+ private async assessContext(thread:Conversation){
+  if(!thread.pendingContext||!thread.requestId)return;
+  try{
+   const {context,evidenceId,key}=thread.pendingContext;
+   const result=await this.core(thread.owner).addSchedulingContext(thread.owner,thread.requestId,{context,evidenceId});
+   await this.offer(thread,result,key);
+  }catch{
+   // Reload after a failed transaction so a rolled-back offer cannot erase the
+   // frozen reply. The core deduplicates this evidence even after a timeout.
+   const current=this.thread(thread.id);if(!current||current.status!=='assessing_context'||!current.pendingContext)return;
+   // The owner may have approved while this RPC was interrupted, so the same
+   // evidence can now be refused even though the request is resolved. Recover
+   // that authoritative result before turning a transport failure into review.
+   try{
+    const result=await this.core(current.owner).getScheduling(current.owner,current.requestId!);
+    if(this.resolvedContextResult(result)){await this.offer({...current},result,current.pendingContext.key);return;}
+   }catch{/* Retain the frozen reply if either the read or queue write fails. */}
+   current.attempts++;
+   if(current.attempts>=3)this.contextReview(current,'I could not reassess the conversation after receiving more context. Please review the request before offering times.');
+   else this.save(current);
+  }
+ }
+ private resolvedContextResult(result:SchedulingResult):boolean{
+  if(terminalSchedulingStatuses.has(result.status))return true;
+  if(result.requiresReview!==false||result.needsContext!==false)return false;
+  if(result.status==='needs_new_slot'&&result.offer===null)return true;
+  return ['pending_approval','needs_new_slot'].includes(result.status)&&!!result.offer?.slots.length&&result.offer.expiresAt>Date.now();
+ }
+ private contextReview(thread:Conversation,reason:string,result?:SchedulingResult){
+  thread.contextReviewReason=reason;
+  this.review(thread,result??{requestId:thread.requestId!,status:'pending_approval',timezone:thread.timezone,offer:null,replyText:'',recommendation:{summary:reason,reasons:[reason],uncertainties:[]},requiresReview:true,needsContext:false,contextQuestion:null},reason);
+ }
+ private async askContext(thread:Conversation,result:SchedulingResult){
+  if(thread.contextReviewReason){this.contextReview(thread,thread.contextReviewReason,result);return;}
+  if(thread.status==='awaiting_context'&&thread.contextCapability&&thread.contextCapability.expiresAt>Date.now()&&!thread.pendingContext)return;
+  if((thread.contextRounds??0)>=2){this.contextReview(thread,'The conversation still needs your review after two requests for context.',result);return;}
+  const round=(thread.contextRounds??0)+1,outboxId=thread.id+':context:'+round;
+  if(this.rows<{id:string}>('SELECT id FROM scheduling_email_outbox WHERE id=?',outboxId).length)return;
+  const token=Array.from(crypto.getRandomValues(new Uint8Array(24)),b=>b.toString(16).padStart(2,'0')).join('');
+  thread.contextCapability={hash:await digest(token),replyAddress:`scheduling+${token}@${this.config(thread.owner).replyDomain}`,expiresAt:Date.now()+2*86400000,messageId:null};
+  thread.contextRounds=round;thread.status='awaiting_context';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.selection=undefined;thread.pendingContext=undefined;thread.attempts=0;
+  this.ctx.storage.transactionSync(()=>{
+   this.save(thread);
+   this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NOT NULL",thread.id);
+   // This public question is intentionally fixed; model diagnostics, policy,
+   // private relationship evidence and scores never enter counterpart mail.
+   this.queue(outboxId,thread.id,{...this.outgoing(thread,schedulingContextQuestion,false),replyTo:thread.contextCapability!.replyAddress});
+  });
+ }
  private async confirm(thread:Conversation,key:string){
   if(!thread.selection||!thread.requestId)return;
   try{
@@ -143,6 +208,7 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
    this.queue(thread.id+':booked',thread.id,this.outgoing(thread,`The meeting is booked for ${schedulingSlotText(selected.start,selected.end,thread.timezone)}. Please see the calendar invitation.`,false));return;
   }
   if(result.status==='booking'){thread.status='confirming';thread.attempts++;if(thread.attempts>=8)thread.status='needs_attention';this.save(thread);return;}
+  if(result.needsContext===true&&['pending_approval','needs_new_slot'].includes(result.status)){await this.offer(thread,result,key);return;}
   if(result.requiresReview===true){this.review(thread,result);return;}
   if(result.status==='needs_new_slot'||result.status==='pending_approval'){
    await this.offer(thread,result.offer?result:await this.core(thread.owner).refreshScheduling(thread.owner,thread.requestId!),key);return;
@@ -150,28 +216,42 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   thread.status='closed';thread.capabilityHash=null;this.save(thread);
  }
  private async offer(thread:Conversation,result:SchedulingResult,key:string,clarify=false){
+  if(terminalSchedulingStatuses.has(result.status)){
+   thread.status='closed';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.contextCapability=null;thread.pendingContext=undefined;thread.contextReviewReason=undefined;thread.selection=undefined;thread.attempts=0;
+   this.ctx.storage.transactionSync(()=>{
+    this.save(thread);
+    this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready'",thread.id);
+   });return;
+  }
   // A refresh/prepare result contains no proof that its booking is our exact
   // selected revision and slot. Another channel may have reserved a different
   // time while the refresh was in flight. Only confirm() may acknowledge it.
   if(result.status==='booking'||result.status==='booked'){thread.status='needs_attention';thread.capabilityHash=null;this.save(thread);return;}
+  if(result.needsContext===true&&['pending_approval','needs_new_slot'].includes(result.status)){await this.askContext(thread,result);return;}
   if(result.requiresReview===true){this.review(thread,result);return;}
   const outboxId=key+':offer:'+(result.offer?.revision??'none');
   if(this.rows<{id:string}>('SELECT id FROM scheduling_email_outbox WHERE id=?',outboxId).length)return;
   thread.offer=result.offer;thread.timezone=result.timezone;thread.status=result.offer?'offered':'closed';thread.selection=undefined;thread.attempts=0;
   thread.latestMessageId=null;thread.capabilityHash=null;thread.replyAddress=null;
+  thread.contextCapability=null;thread.pendingContext=undefined;thread.contextReviewReason=undefined;
   if(result.offer){const token=Array.from(crypto.getRandomValues(new Uint8Array(24)),b=>b.toString(16).padStart(2,'0')).join('');thread.capabilityHash=await digest(token);thread.replyAddress=`scheduling+${token}@${this.config(thread.owner).replyDomain}`;}
-  this.save(thread);this.queue(outboxId,thread.id,this.outgoing(thread,schedulingOfferText(result,clarify),true));
+  this.ctx.storage.transactionSync(()=>{
+   this.save(thread);
+   this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NOT NULL",thread.id);
+   this.queue(outboxId,thread.id,this.outgoing(thread,schedulingOfferText(result,clarify),true));
+  });
  }
- private review(thread:Conversation,result:SchedulingResult){
+ private review(thread:Conversation,result:SchedulingResult,contextReason?:string){
   const config=this.config(thread.owner),url=new URL('/booking',this.env.APP_ORIGIN);url.searchParams.set('request',thread.requestId!);
   if(url.protocol!=='https:')throw Error('scheduling_email_invalid_origin');
   thread.status='awaiting_review';thread.offer=null;thread.capabilityHash=null;thread.replyAddress=null;thread.latestMessageId=null;thread.selection=undefined;thread.attempts=0;
-  const reasons=[...(result.decision?.reasons??[]),...(result.decision?.uncertainties??[])].filter(value=>typeof value==='string').slice(0,8).map(value=>value.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,600));
+  thread.contextCapability=null;thread.pendingContext=undefined;
+  const reasons=[...(contextReason?[contextReason]:[]),...(result.decision?.reasons??[]),...(result.decision?.uncertainties??[])].filter(value=>typeof value==='string').slice(0,8).map(value=>value.replace(/[\x00-\x1f\x7f]/g,' ').slice(0,600));
   const text=`The meeting request with ${thread.peer} needs your review before I offer times.\n\n${reasons.length?reasons.map(reason=>'• '+reason).join('\n'):'There is not enough confirmed context to offer times automatically.'}\n\nReview the request in Booking and choose “Offer times anyway” if you want to proceed:\n${url.href}`;
   this.ctx.storage.transactionSync(()=>{
    this.save(thread);
    this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NOT NULL",thread.id);
-   this.queue(thread.id+':review:'+(result.decision?.policyRevision??'unknown'),thread.id,{from:config.address,to:[thread.owner],cc:[],subject:'Meeting request needs your review',text,headers:{'In-Reply-To':thread.kickoffMessageId,'References':thread.kickoffMessageId,'Auto-Submitted':'auto-replied'}});
+   this.queue(thread.id+':review:'+(contextReason?'context':result.decision?.policyRevision??'unknown'),thread.id,{from:config.address,to:[thread.owner],cc:[],subject:'Meeting request needs your review',text,headers:{'In-Reply-To':thread.kickoffMessageId,'References':thread.kickoffMessageId,'Auto-Submitted':'auto-replied'}});
   });
  }
  async resumeApproved(owner:string,requestId:string):Promise<{status:string}>{return this.serial(async()=>{
@@ -181,9 +261,12 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   const thread=JSON.parse(matches[0].data) as Conversation;if(thread.owner!==owner)throw Error('wrong_owner');
   this.config(owner);
   const result=await this.core(owner).getScheduling(owner,requestId);
+  // An explicit approval supersedes the pending reply, while an unfinished
+  // assessment must retain its evidence for the alarm's idempotent retry.
+  if(thread.status==='assessing_context'&&!this.resolvedContextResult(result))return {status:thread.status};
   // Approval has already been authenticated and persisted in BookingCoordinator.
   // A read may still require review after a policy change; never bypass it here.
-  if(result.requiresReview===true){this.review(thread,result);await this.flush(owner);return {status:'awaiting_review'};}
+  if(result.requiresReview===true&&result.needsContext!==true){this.review(thread,result);await this.flush(owner);return {status:'awaiting_review'};}
   // No availability also closes the email exchange. The core remains the
   // authority on whether fresh eligible times can reopen that conversation.
   const availableAgain=thread.status==='closed'&&['pending_approval','needs_new_slot'].includes(result.status)&&!!result.offer;
@@ -194,7 +277,8 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
   // Do not send a review notice left queued by a restart after approval.
   if(thread.status==='offered')this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='cancelled' WHERE thread=? AND status='ready' AND json_extract(data,'$.replyTo') IS NULL",thread.id);
   await this.ctx.storage.setAlarm(Date.now()+30000);await this.flush(owner);
-  if(thread.replyAddress&&this.rows<{id:string}>("SELECT id FROM scheduling_email_outbox WHERE thread=? AND status='unknown' AND json_extract(data,'$.replyTo')=?",thread.id,thread.replyAddress).length)throw Error('scheduling_email_delivery_unknown');
+  const replyAddress=thread.contextCapability?.replyAddress??thread.replyAddress;
+  if(replyAddress&&this.rows<{id:string}>("SELECT id FROM scheduling_email_outbox WHERE thread=? AND status='unknown' AND json_extract(data,'$.replyTo')=?",thread.id,replyAddress).length)throw Error('scheduling_email_delivery_unknown');
   return {status:this.thread(thread.id)?.status??thread.status};
  });}
  private subject(value:string){return 'Re: '+value.replace(/^(?:re:\s*)+/i,'').replace(/[\r\n\x00-\x1f\x7f]/g,'').slice(0,150);}
@@ -213,12 +297,14 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
     const messageId=schedulingMessageId(result.messageId.startsWith('<')?result.messageId:'<'+result.messageId+'>');
     this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='sent',message_id=? WHERE id=?",messageId,row.id);
     const thread=this.thread(row.thread);if(thread&&thread.status==='offered'&&message.replyTo===thread.replyAddress&&message.to.includes(thread.peer)){thread.latestMessageId=messageId;this.save(thread);}
+    if(thread?.status==='awaiting_context'&&thread.contextCapability&&message.replyTo===thread.contextCapability.replyAddress&&message.to.includes(thread.peer)){thread.contextCapability.messageId=messageId;this.save(thread);}
    }catch{this.ctx.storage.sql.exec("UPDATE scheduling_email_outbox SET status='unknown' WHERE id=?",row.id);}
   }
  }
  async alarm():Promise<void>{return this.serial(async()=>{
   const config=schedulingEmailConfiguration(this.env);if(!config)return;
   for(const row of this.rows<InboxRow>("SELECT id,data,attempts FROM scheduling_email_inbox WHERE status='queued' ORDER BY received LIMIT 5"))await this.process(config.owner,row);
+  for(const row of this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.status')='assessing_context' LIMIT 5"))await this.assessContext(JSON.parse(row.data) as Conversation);
   for(const row of this.rows<{data:string}>("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.status')='confirming' LIMIT 5")){
    const thread=JSON.parse(row.data) as Conversation;
    try{
@@ -228,12 +314,12 @@ export class SchedulingEmailCoordinator extends DurableObject<SchedulingEmailEnv
    }catch{thread.attempts++;if(thread.attempts>=8)thread.status='needs_attention';this.save(thread);}
   }
   await this.flush(config.owner);
-  const pending=this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status='queued'")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status')='confirming'")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")[0].n;
+  const pending=this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status='queued'")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status') IN ('confirming','assessing_context')")[0].n+this.rows<{n:number}>("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")[0].n;
   if(pending)await this.ctx.storage.setAlarm(Date.now()+60000);
  });}
  async diagnostics(owner:string):Promise<{pending:number;deliveryUnknown:number;needsAttention:number}>{return this.serial(async()=>{
   if(schedulingAddress(this.env.BOOKING_OWNER_EMAIL??'')!==owner)throw Error('wrong_owner');
   const count=(sql:string)=>this.rows<{n:number}>(sql)[0].n;
-  return {pending:count("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status='queued'")+count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")+count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status')='confirming'"),deliveryUnknown:count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='unknown'"),needsAttention:count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status')='needs_attention'")};
+  return {pending:count("SELECT COUNT(*) AS n FROM scheduling_email_inbox WHERE status='queued'")+count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='ready'")+count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status') IN ('confirming','assessing_context')"),deliveryUnknown:count("SELECT COUNT(*) AS n FROM scheduling_email_outbox WHERE status='unknown'"),needsAttention:count("SELECT COUNT(*) AS n FROM scheduling_email_threads WHERE json_extract(data,'$.status')='needs_attention'")};
  });}
 }

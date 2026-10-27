@@ -7,7 +7,7 @@ import {getReturningBookingContact} from './booking-returning';
 import {assessMeetingRequest} from './booking-assessment';
 import {bookingCalendarBusy,bookingEventId,findBookingEvent,createBookingEvent,cancelBookingEvent} from './booking-providers';
 import type {SchedulingAuthority,SchedulingConfirmation,SchedulingInput,SchedulingResult} from './scheduling-types';
-import {validateSchedulingInput,validateSchedulingAuthority,validateSchedulingConfirmation,schedulingWindow,schedulingOffer,schedulingResult,schedulingRequiresReview} from './scheduling-policy';
+import {validateSchedulingInput,validateSchedulingAuthority,validateSchedulingConfirmation,validateSchedulingContext,schedulingWindow,schedulingOffer,schedulingResult,schedulingRequiresReview,schedulingContextRequested,schedulingMeetingContext} from './scheduling-policy';
 import {schedulingRecommendation} from './scheduling-context';
 
 export async function bookingReadiness(env:BookingEnv,owner:string):Promise<BookingReadiness>{
@@ -81,8 +81,26 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   if(!['pending_approval','needs_new_slot'].includes(r.status))return schedulingResult(r);
   const s=await this.schedulingSettings(owner);await this.store.limit(`scheduling:refresh:${owner}`,100,3600000);
   const saved=r.scheduling!;if(saved.approval?.policyRevision!==s.revision)delete saved.approval;
-  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:saved.input.context});saved.assessmentVersion=1;
+  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)});saved.assessmentVersion=1;
+  delete saved.contextAssessmentPending;
   saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+  await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
+ });}
+ async addSchedulingContext(owner:string,id:string,input:unknown):Promise<SchedulingResult>{return this.serial(owner,async()=>{
+  const reply=validateSchedulingContext(input),r=await this.requiredScheduling(owner,id),s=await this.schedulingSettings(owner),saved=r.scheduling!;
+  const prior=saved.contextReplies?.find(value=>value.evidenceId===reply.evidenceId);
+  if(prior){if(prior.context!==reply.context)throw Error('idempotency_conflict');if(saved.contextAssessmentPending!==reply.evidenceId||!['pending_approval','needs_new_slot'].includes(r.status))return schedulingResult(r,s.revision);}
+  else if(!schedulingContextRequested(r,s.revision))throw Error('context_not_requested');
+  await this.store.limit(`scheduling:context:${owner}`,100,3600000);
+  if(!prior)saved.contextReplies=[...(saved.contextReplies??[]),reply];
+  saved.contextAssessmentPending=reply.evidenceId;saved.offer=null;r.updatedAt=Date.now();
+  // Preserve received evidence before model/Calendar work. A retry resumes the
+  // same reply; owner review can still inspect it after a provider failure.
+  await this.store.update(r);
+  r.decision=await assessMeetingRequest(this.env,s,r.email,{project:'',purpose:schedulingMeetingContext(saved)});saved.assessmentVersion=1;
+  delete saved.contextAssessmentPending;
+  saved.recommendation=schedulingRecommendation(r.decision,saved.input.instructions);
+  if(r.decision.fit.fit==='needs_context'&&(saved.contextReplies?.length??0)>=2)saved.recommendation.summary='More context was requested twice. Review the conversation before offering times.';
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
  });}
  /** Only authenticated owner UI routes expose this override, never an API/MCP tool. */
@@ -93,6 +111,7 @@ export class BookingCoordinator extends DurableObject<BookingEnv>{
   // A duplicate click keeps the current revision/capability usable.
   if(saved.approval?.policyRevision===s.revision&&saved.offer&&saved.offer.expiresAt>Date.now())return schedulingResult(r,s.revision);
   saved.approval={policyRevision:s.revision,approvedAt:Date.now()};
+  delete saved.contextAssessmentPending;
   await this.replaceSchedulingOffer(s,r);await this.store.update(r);return schedulingResult(r,s.revision);
  });}
  async confirmScheduling(owner:string,id:string,input:SchedulingConfirmation):Promise<SchedulingResult>{return this.serial(owner,async()=>{
