@@ -10,11 +10,13 @@ export interface BookingSettings {
  returningContactsEnabled:boolean; returningScoreThreshold:number;
 }
 export type BookingTier='priority'|'review'|'async';
-export interface BookingFit {fit:'strong'|'possible'|'weak'|'uncertain'; reasons:string[]; evidence:string[]; model:string}
+export interface BookingFit {fit:'strong'|'possible'|'weak'|'catch_up'|'needs_context'|'uncertain'; reasons:string[]; evidence:string[]; model:string}
 export interface BookingPeopleContext {
  status:'matched'|'not_found'|'ambiguous'|'stale'|'unavailable';
  name?:string; email?:string; lastContact?:string|null; score?:number; lastSync?:string;
  reason:string;
+ /** Private source diagnostics; only known transient failures may be retried. */
+ reasonCode?:string;retryable?:boolean;
 }
 export interface BookingSubmission {name:string;project:string;purpose:string;projectUrl:string;referrer:string}
 export interface BookingVisitorIdentity {email:string;subject:string;emailAuthoritative:boolean}
@@ -27,6 +29,7 @@ export interface BookingRequestRecord extends BookingSubmission {
  intakeKind?:'returning'|'standard';
  proposedTimes?:{timezone:string;slots:BookingSlot[];revision:string};
  slotSource?:'suggested'|'offered';
+ selectionRevision?:string;
  initialDecision?:BookingDecision;
  policySnapshot?:Omit<BookingSettings,'vipEmails'> & {vipMatch:boolean};
  scheduling?:SchedulingRecord;
@@ -38,5 +41,6 @@ export interface BookingReadiness {signIn:boolean;calendar:boolean;people:boolea
 export interface BookingEnv extends MailEnv {
  DB:D1Database; BOOKING:DurableObjectNamespace<BookingCoordinator>;
  BOOKING_OWNER_EMAIL?:string;
+ SCHEDULING_EMAIL_ADDRESS?:string; SCHEDULING_EMAIL_SEND?:SendEmail; SCHEDULING_EMAIL_REPLY_DOMAIN?:string;
  PEOPLEGRAPH_HOST?:string; PEOPLEGRAPH_TOKEN?:string; PEOPLEGRAPH_OWNER_EMAIL?:string;
 }

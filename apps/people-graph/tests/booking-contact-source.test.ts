@@ -156,3 +156,77 @@ test('booking source readiness requires every configured snapshot to be fresh an
  account(db,'other@example.com');granola(db,{job:{pending:['unfinished']}});assert.equal((await (service as any).bookingSourceStatus()).ready,false);
  granola(db);assert.equal((await (service as any).bookingSourceStatus()).ready,true);
 });
+
+test('booking exact lookup is independent of the visualization contact cap',async t=>{
+ const {db,service}=fixture(t);account(db);mail(db,OWNER,CONTACT,'Ada Chen','exact',5);
+ const expected=await service.bookingContact(CONTACT);assert.ok(expected);
+ const insert=db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)');
+ // Each decoy outranks Ada; even the mail aggregation has a separate 6,000 row cap.
+ db.exec('BEGIN');for(let i=0;i<6001;i++)insert.run(OWNER,'decoy'+i,`decoy${i}@example.com`,'Other contact',NOW-2000,'',20,20);db.exec('COMMIT');
+ assert.deepEqual(await service.bookingContact(CONTACT),expected);
+ assert.equal((await service.bookingPerson(CONTACT)).status,'matched');
+});
+
+test('booking lookup diagnoses incomplete contributing snapshots without accepting their partial score',async t=>{
+ const {db,service}=fixture(t);account(db);mail(db);granola(db);meeting(db);
+ granola(db,{status:'syncing',job:{phase:'fetch',pending:[{id:'unfinished'}]}});
+ let result=await service.bookingPerson(CONTACT) as any;
+ assert.equal(result.status,'unavailable');assert.equal(result.reason,'granola_syncing');assert.equal(result.retryable,true);assert.equal(result.source,'granola');assert.equal(result.score,undefined);
+ granola(db,{job:{phase:'fetch',pending:[{id:'unfinished'}]}});
+ result=await service.bookingPerson(CONTACT) as any;assert.equal(result.reason,'granola_incomplete');assert.equal(result.retryable,true);
+ granola(db);account(db,OWNER,{job:{pending:['unfinished'],hasMore:true}});
+ assert.equal(await service.bookingContact(CONTACT),null);
+ result=await service.bookingPerson(CONTACT) as any;assert.equal(result.reason,'gmail_incomplete');assert.equal(result.retryable,true);
+ account(db,OWNER,{status:'syncing'});result=await service.bookingPerson(CONTACT) as any;assert.equal(result.reason,'gmail_syncing');
+ account(db);assert.equal((await service.bookingPerson(CONTACT)).status,'matched');
+});
+
+test('booking lookup diagnostics distinguish stale, revoked, corrupt and alias evidence',async t=>{
+ const {db,service,secret}=fixture(t);account(db);mail(db);
+ for(const [patch,reason,retryable] of [
+  [{lastSync:NOW-DAY-1},'gmail_stale',true],
+  [{status:'reconnect'},'gmail_reconnect',false],
+  [{status:'error'},'gmail_error',true],
+  [{lastSync:0},'gmail_never_synced',true],
+  [{lastSync:NOW+1},'gmail_corrupt',false],
+ ] as const){account(db,OWNER,patch);const result=await service.bookingPerson(CONTACT) as any;assert.equal(result.status,'unavailable');assert.equal(result.reason,reason);assert.equal(result.retryable,retryable);}
+ db.prepare('UPDATE accounts SET data=?').run('{broken');assert.equal((await service.bookingPerson(CONTACT) as any).reason,'gmail_corrupt');
+ db.prepare('DELETE FROM accounts').run();assert.equal((await service.bookingPerson(CONTACT) as any).reason,'gmail_missing');
+ account(db);const id=await opaque(OWNER,CONTACT,secret);db.prepare('INSERT INTO person_feedback VALUES (?,?)').run(id,'{broken');
+ assert.equal((await service.bookingPerson(CONTACT) as any).reason,'corrupt_feedback');
+ db.prepare('DELETE FROM contributions').run();
+ db.prepare('INSERT INTO granola_identity (attendee_email,contact_email,attendee_name,contact_name,probability,status,updated_at,decided_by) VALUES (?,?,?,?,?,?,?,?)').run(CONTACT,'alias@example.com','Ada','Ada',1,'confirmed',NOW,'owner');
+ const alias=await service.bookingPerson(CONTACT) as any;assert.equal(alias.status,'ambiguous');assert.equal(alias.reason,'confirmed_alias');assert.equal(alias.retryable,false);
+});
+
+test('booking source misses expose the incomplete source and avoid misleading not-found results',async t=>{
+ const {db,service}=fixture(t);account(db);granola(db,{status:'syncing'});
+ let result=await service.bookingPerson(CONTACT) as any;assert.equal(result.status,'unavailable');assert.equal(result.reason,'granola_syncing');assert.equal(result.retryable,true);
+ const status=await service.bookingSourceStatus() as any;assert.equal(status.ready,false);assert.equal(status.reason,'granola_syncing');assert.equal(status.retryable,true);
+ granola(db);result=await service.bookingPerson(CONTACT) as any;assert.equal(result.status,'not_found');assert.equal(result.reason,undefined);
+});
+
+test('booking exact Granola lookup is not capped with graph attendee aggregation',async t=>{
+ const {db,service}=fixture(t);granola(db);const target='z-last@example.com';meeting(db,target);
+ const expected=await service.bookingContact(target);assert.ok(expected);
+ db.exec('BEGIN');for(let i=0;i<5001;i++)meeting(db,`a-decoy${i}@example.com`);db.exec('COMMIT');
+ assert.deepEqual(await service.bookingContact(target),expected);
+});
+
+test('booking exact identity ignores unrelated corrupt sources but a verified miss does not',async t=>{
+ const {db,service}=fixture(t);account(db);mail(db);account(db,'other@example.com');granola(db);
+ db.prepare('UPDATE accounts SET data=? WHERE email=?').run('{broken','other@example.com');
+ db.prepare('UPDATE granola_connection SET data=?').run('{broken');
+ assert.equal((await service.bookingPerson(CONTACT)).status,'matched');
+ assert.equal((await service.bookingPerson('missing@example.com') as any).reason,'gmail_corrupt');
+ meeting(db);assert.equal((await service.bookingPerson(CONTACT) as any).reason,'granola_corrupt');
+});
+
+test('booking source never treats a capped Granola sync as a complete fresh snapshot',async t=>{
+ const {db,service}=fixture(t);granola(db,{error:'note_cap_reached'});meeting(db);
+ const present=await service.bookingPerson(CONTACT) as any;
+ assert.equal(present.status,'unavailable');assert.equal(present.reason,'granola_incomplete');assert.equal(present.retryable,true);assert.equal(present.score,undefined);
+ const absent=await service.bookingPerson('missing@example.com') as any;
+ assert.equal(absent.status,'unavailable');assert.equal(absent.reason,'granola_incomplete');
+ assert.equal((await service.bookingSourceStatus()).ready,false);
+});

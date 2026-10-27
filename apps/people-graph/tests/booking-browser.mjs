@@ -17,6 +17,8 @@ const origin='http://127.0.0.1:'+server.address().port;
 try{
  browser=await chromium.launch({headless:true,timeout:30000,executablePath:process.env.CHROME_PATH||'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],calls=[];
+ const googleOwnerStub=`window.google={accounts:{id:{initialize(options){window.ownerSignIn=options.callback},renderButton(element){const button=document.createElement('button');button.textContent='Test owner Google sign in';button.onclick=()=>window.ownerSignIn({credential:'synthetic-owner-credential'});element.append(button)},disableAutoSelect(){}}}};`;
+ await page.route('https://accounts.google.com/gsi/client',route=>route.fulfill({contentType:'text/javascript',body:googleOwnerStub}));
  await page.addInitScript(()=>{Date.now=()=>Date.parse('2026-10-23T16:00:00Z');});
  page.setDefaultTimeout(4000);page.on('pageerror',error=>errors.push(error.message));
  let settings={owner:'kaya@example.test',revision:1,slug:'kaya',displayName:'Kaya Jones',intro:'A little context makes a better conversation.',thesis:'Applied AI for small teams',timezone:'America/New_York',durationMinutes:30,bufferMinutes:10,minNoticeHours:24,horizonDays:28,reviewDelayDays:7,dailyLimit:4,weeklyLimit:12,weekdays:[1,2,3,4,5],startTime:'09:00',endTime:'17:00',vipEmails:['sam@example.test'],enabled:false,autoBookPriority:false};
@@ -28,6 +30,8 @@ try{
  await page.route('**/api/**',async route=>{
   const req=route.request(),url=new URL(req.url()),path=url.pathname,body=req.method()==='POST'?req.postDataJSON():null;
   calls.push({path,body});const reply=(value,status=200)=>route.fulfill({status,json:value});
+  if(path==='/api/config')return reply({googleClientId:'fixture-client'});
+  if(path==='/api/session'){assert.equal(req.method(),'POST');assert.equal(req.headers().authorization,'Bearer synthetic-owner-credential');ownerStatus=200;return reply({ok:true});}
   if(path==='/api/booking')return reply(ownerStatus===200?{account:{email:settings.owner},settings,requests:[request],readiness:{signIn:ready&&signInReady,calendar:ready,people:true,pilot:true,issues:ready?[]:['Connect a booking calendar.']},lens:initialMainLens,calendar:ready?{email:settings.owner}:null}:{error:'Sign in required'},ownerStatus);
   if(path==='/api/lens'){if(failLens){failLens=false;return reply({error:'temporarily_unavailable'},503);}return reply(savedLens);}
   if(path==='/api/booking/settings'){saveCalls++;if(slugConflict){slugConflict=false;return reply({error:'slug_taken'},409);}if(failSave){failSave=false;return reply({error:'Please try again'},503);}if(conflict){conflict=false;settings={...settings,revision:2,intro:'Changed elsewhere'};return reply({error:'settings_changed'},409);}settings={...body,revision:settings.revision+1};return reply({settings});}
@@ -55,6 +59,14 @@ try{
   if(path.endsWith('/requests/visit-1'))return reply({request:{id:'visit-1',intakeKind:publicIntakeKind,status:statusValue,slotStart:'2026-11-04T15:00:00Z',slotEnd:'2026-11-04T15:30:00Z'},next:'pending_approval'});
   return reply({error:'Unexpected API call'},404);
  });
+ await page.goto(origin+'/booking?request=r1');
+ const linkedRequest=page.locator('[data-request-id="r1"]');await linkedRequest.waitFor();
+ assert.equal(await page.getByRole('tab',{name:'Requests',exact:true}).getAttribute('aria-selected'),'true','email review links open the request inbox');
+ assert.equal(await linkedRequest.evaluate(card=>document.activeElement===card),true,'email review links focus the matching request');
+ assert.equal(await linkedRequest.getByRole('button',{name:'Approve request',exact:true}).isVisible(),true);
+ assert.equal(await linkedRequest.getByRole('button',{name:'Decline request',exact:true}).isVisible(),true);
+ assert.match(await linkedRequest.innerText(),/An agent research studio/);assert.match(await linkedRequest.innerText(),/Compare deployment lessons/);
+ assert.equal(calls.filter(call=>call.path.startsWith('/api/booking/requests/')).length,0,'opening a review link never changes a request');
  await page.goto(origin+'/booking');
  await page.getByRole('tab',{name:'Requests',exact:true}).focus();await page.keyboard.press('ArrowRight');
  assert.equal(await page.getByRole('tab',{name:'Booking page',exact:true}).getAttribute('aria-selected'),'true','arrow keys navigate owner tabs');
@@ -160,6 +172,7 @@ try{
  await page.screenshot({path:'/tmp/people-booking-owner-desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});
  await page.route('https://accounts.google.com/**',route=>{
+  if(new URL(route.request().url()).pathname==='/gsi/client')return route.fulfill({contentType:'text/javascript',body:googleOwnerStub});
   if(new URL(route.request().url()).searchParams.get('state')==='booking-fixture')return route.fulfill({contentType:'text/html',body:'<h1>Calendar permission</h1>'});
   visitor={email:oauthEmail,identityKey:oauthIdentityKey};const callback=new URL('/book/kaya?signed_in=1',origin);if(oauthRequestId)callback.searchParams.set('request',oauthRequestId);
   return route.fulfill({status:302,headers:{location:callback.href}});
@@ -171,8 +184,18 @@ try{
  assert.equal(new URL(page.url()).hostname,'accounts.google.com','connected calendars can request a renewed OAuth grant');
  assert.equal(calls.filter(call=>call.path==='/api/booking/calendar/connect').length,1);
  assert.equal(calls.filter(call=>call.path==='/api/booking/calendar/disconnect').length,disconnectCalls,'reconnecting must not disconnect the existing grant first');
- ownerStatus=401;await page.goto(origin+'/booking');await page.getByRole('link',{name:'Sign in to People',exact:true}).waitFor();
+ request.status='pending_approval';ownerStatus=401;await page.goto(origin+'/booking?request=r1');await page.getByRole('heading',{name:'Your booking space is private.',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Meeting thesis',exact:true}).count(),0,'unauthenticated visitors cannot see owner forms');
+ assert.equal(await page.locator('[data-request-id="r1"]').count(),0,'an email review link still requires the owner session');
+ assert.equal(await page.getByRole('button',{name:'Approve request',exact:true}).count(),0);
+ assert.equal(await page.getByRole('button',{name:'Decline request',exact:true}).count(),0);
+ const reviewLocation=page.url(),actionsBeforeOwnerSignIn=calls.filter(call=>call.path.startsWith('/api/booking/requests/')).length;
+ await page.locator('#booking-signin').getByRole('button',{name:'Test owner Google sign in',exact:true}).click();
+ await page.getByRole('button',{name:'Approve request',exact:true}).waitFor();
+ assert.equal(page.url(),reviewLocation,'Google owner sign-in preserves the emailed review URL');
+ assert.equal(await page.locator('[data-request-id="r1"]').evaluate(card=>document.activeElement===card),true,'successful owner sign-in focuses the emailed request');
+ assert.equal(await page.getByRole('button',{name:'Decline request',exact:true}).isVisible(),true);
+ assert.equal(calls.filter(call=>call.path.startsWith('/api/booking/requests/')).length,actionsBeforeOwnerSignIn,'sign-in itself does not approve or decline the linked request');
  async function signIn({fail=false,recover=false,paused=false,empty=false,returning=false}={}){
   visitor=null;await page.goto(origin+'/book/kaya');
   if(paused)await page.getByRole('button',{name:'View an existing request',exact:true}).click();
@@ -550,7 +573,7 @@ try{
  await page.goto(origin+'/book/missing');await page.getByRole('heading',{name:'This booking page isn’t here',exact:true}).waitFor();
  assert.equal(await page.getByRole('textbox',{name:'Email',exact:true}).count(),0,'unknown booking links have no intake form');
  assert.deepEqual(errors,[],'pages execute without uncaught browser errors');
- console.log('Booking browser: owner settings, conflicts, readiness, review actions, private/public isolation, Google sign-in, draft recovery, returning contacts, eligibility fallback, month calendar, timezone/DST selection, refresh, request, slot recovery, paused-page recovery, suggested times, proposal drafts, precise owner approval, settings preservation, async, and mobile passed.');
+ console.log('Booking browser: owner settings, conflicts, readiness, email review deep links, review actions, private/public isolation, Google sign-in, draft recovery, returning contacts, eligibility fallback, month calendar, timezone/DST selection, refresh, request, slot recovery, paused-page recovery, suggested times, proposal drafts, precise owner approval, settings preservation, async, and mobile passed.');
 }catch(error){failure=error;}finally{
  // Some Chrome builds exit without acknowledging close; never strand the local fixture server.
  if(browser)await new Promise(resolve=>{const timeout=setTimeout(resolve,5000);browser.close().catch(()=>{}).finally(()=>{clearTimeout(timeout);resolve();});});

@@ -16,8 +16,8 @@ import type {MetadataInput} from './relevance-store';
 import type {RelevanceLens} from './relevance-model';
 import {canonicalThemeName,type Theme,type ThemeSignal} from './relevance-model';
 import {decodeGmailMessage} from './gmail-body';
-import {verifySentSchedulingKickoff} from './scheduling-gmail';
-import {schedulingMessageId} from './scheduling-email-policy';
+import {verifyReceivedSchedulingGuestReply,verifySentBookingApproval,verifySentSchedulingKickoff} from './scheduling-gmail';
+import {schedulingMessageId,type SchedulingInboundEmail} from './scheduling-email-policy';
 import {ThemeExtractor,THEME_MODEL,EXTRACTOR_VERSION,THEME_TOPICS} from './theme-extractor';
 import type {GmailMessage} from './mail-model';
 import type {RetrievalJob,RetrievalError} from './relevance-store';
@@ -38,6 +38,31 @@ interface Account {contextEnabled?:boolean;contextVersion?:number;contextError?:
 interface Pending {verifier:string;cookie:string;expires:number;range:Range;owner:string;redirect:string}
 interface SharedEdgeValue {a:string;b:string;weight:number;types:string[];contexts:string[];titles:string[]}
 interface ConnectionOriginResult {status:'found'|'not_found'|'disabled'|'unavailable';connectionsRevision?:string;reason?:string;origin?:{introducerName:string;observedAt:string;subject:string;quote:string;url:string};connection?:{direction:'sent'|'received';observedAt:string;subject:string;quote:string;url:string}}
+interface BookingLookupDiagnostic {reason:string;retryable:boolean;source:'gmail'|'granola'|'identity'|'storage'}
+interface BookingPersonResult {owner:string;email:string;status:'matched'|'not_found'|'ambiguous'|'unavailable';checkedAt:number;sourceUpdatedAt?:number;name?:string;score?:number;reason?:string;retryable?:boolean;source?:BookingLookupDiagnostic['source']}
+/** A completed snapshot is required: incremental rows must never masquerade as a score. */
+function bookingSourceCompletion(source:'gmail'|'granola',data:string|undefined,now:number):number|BookingLookupDiagnostic {
+ const fail=(suffix:string,retryable=false):BookingLookupDiagnostic=>({source,reason:source+'_'+suffix,retryable});
+ if(data===undefined)return fail('missing');
+ let value:{status?:unknown;lastSync?:unknown;job?:unknown;error?:unknown};
+ try{value=JSON.parse(data);if(!value||typeof value!=='object'||Array.isArray(value))return fail('corrupt');}catch{return fail('corrupt');}
+ if(value.status==='syncing')return fail('syncing',true);
+ if(value.status==='reconnect'||value.status==='reconnect_required')return fail('reconnect');
+ if(value.status==='error')return fail('error',true);
+ if(value.status!=='connected')return fail('corrupt');
+ // A capped run clears its job, but explicitly records that it omitted notes.
+ if(source==='granola'&&(value.job!==null||value.error==='note_cap_reached'))return fail('incomplete',true);
+ if(source==='gmail'&&value.job!=null){
+  if(typeof value.job!=='object'||Array.isArray(value.job))return fail('corrupt');
+  const job=value.job as {pending?:unknown;hasMore?:unknown};
+  if(!Array.isArray(job.pending)||typeof job.hasMore!=='boolean')return fail('corrupt');
+  if(job.pending.length||job.hasMore)return fail('incomplete',true);
+ }
+ if(value.lastSync===0)return fail('never_synced',true);
+ if(typeof value.lastSync!=='number'||!Number.isFinite(value.lastSync)||value.lastSync<=0||value.lastSync>now)return fail('corrupt');
+ if(value.lastSync<now-86_400_000)return fail('stale',true);
+ return value.lastSync;
+}
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
 interface GraphPersonNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;manual?:boolean;memoryEligible?:boolean;sources?:string[];directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
 export class MailSync extends DurableObject<MailEnv>{
@@ -88,6 +113,17 @@ export class MailSync extends DurableObject<MailEnv>{
   return {...(profile||memory),...memory,...(profile&&profile!==memory?{company:profile.company,building:profile.building,needs:profile.needs,offers:profile.offers,interests:profile.interests,relationship:profile.relationship}:{}),pointPersonId,notBefore,entries,aliasMemories};
  }
  async verifySchedulingKickoff(messageId:string,agentAddress:string){
+  return this.verifyOwnerEmail(messageId,agentAddress,verifySentSchedulingKickoff);
+ }
+ async verifyBookingApproval(messageId:string,replyAddress:string){
+  return this.verifyOwnerEmail(messageId,replyAddress,verifySentBookingApproval);
+ }
+ async verifySchedulingGuestReply(input:SchedulingInboundEmail):Promise<string|null>{
+  schedulingMessageId(input.messageId);
+  try{return await this.verifyOwnerEmail(input.messageId,input.envelopeTo,options=>verifyReceivedSchedulingGuestReply({...options,input}));}
+  catch(error){if(error instanceof Error&&error.message==='scheduling_grant_revoked')throw error;throw Error('scheduling_sender_auth_unavailable');}
+ }
+ private async verifyOwnerEmail<T>(messageId:string,agentAddress:string,verify:(options:Parameters<typeof verifySentSchedulingKickoff>[0])=>Promise<T>):Promise<T>{
   schedulingMessageId(messageId);
   const owner=await this.ctx.storage.get<string>('owner'),key=this.env.MAIL_TOKEN_KEY,secret=this.env.GOOGLE_CLIENT_SECRET;
   if(!owner||!key||!secret)throw Error('scheduling_gmail_unavailable');
@@ -100,7 +136,7 @@ export class MailSync extends DurableObject<MailEnv>{
   if(!response.ok){await response.body?.cancel();throw Error('scheduling_gmail_unavailable');}
   const token=await readBoundedJSON(response,32768) as {access_token?:string};
   if(!token.access_token||!current())throw Error('scheduling_grant_revoked');
-  const verified=await verifySentSchedulingKickoff({owner,agentAddress,messageId,accessToken:token.access_token,current});
+  const verified=await verify({owner,agentAddress,messageId,accessToken:token.access_token,current});
   if(!current()||await this.ctx.storage.get<string>('owner')!==owner)throw Error('scheduling_grant_revoked');
   return verified;
  }
@@ -787,74 +823,73 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  }
  /** Owner-only booking lookup: exact direct identity, adjusted My Network score, no evidence. */
  async bookingContact(email:string):Promise<{owner:string;email:string;name:string;score:number;checkedAt:number;sourceUpdatedAt:number}|null>{
-  if(typeof email!=='string')return null;
-  email=email.trim().toLowerCase();if(email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return null;
-  try{
-   const owner=await this.ctx.storage.get<string>('owner');if(!owner||owner===email)return null;
-   const id=await opaque(owner,email,this.env.TOKEN_SECRET);
-   const mailSources=this.ctx.storage.sql.exec<{account:string}>('SELECT DISTINCT account FROM contributions WHERE email=?',email).toArray();
-   // Confirmed aliases may affect the existing graph score, but recognition requires
-   // this authenticated address itself in direct mail or a visible attendee record.
-   if(!mailSources.length&&!this.ctx.storage.sql.exec('SELECT a.email FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return null;
-   // Do not await after reading the contact: disconnects and incremental sync writes must
-   // not replace its contributing sources between score and freshness checks.
-   const checkedAt=Date.now(),row=this.graphContacts().find(contact=>contact.email===email);if(!row)return null;
-   const completions:number[]=[];
-   const fresh=(lastSync:unknown):lastSync is number=>typeof lastSync==='number'&&Number.isFinite(lastSync)&&lastSync>0&&lastSync<=checkedAt&&lastSync>=checkedAt-86_400_000;
-   for(const source of mailSources){
-    const account=this.get(source.account);
-    // Gmail retains its completed job. Its connected status and lastSync (set only at
-    // completion) are authoritative; a syncing account may already contain partial rows.
-    if(!account||account.status!=='connected'||!fresh(account.lastSync))return null;
-    completions.push(account.lastSync);
-   }
-   if(row.meetings){
-    const source=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
-    const connection=source?JSON.parse(source.data) as {status?:unknown;lastSync?:unknown;job?:unknown}:null;
-    // A manual retry can restore connected while retaining an unfinished Granola job.
-    if(!connection||connection.status!=='connected'||connection.job!==null||!fresh(connection.lastSync))return null;
-    completions.push(connection.lastSync);
-   }
-   if(!completions.length)return null;
-   const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',id).toArray()[0];
-   const delta=feedback?(JSON.parse(feedback.data) as PersonFeedback).delta:0;
-   if(typeof delta!=='number'||!Number.isFinite(delta))return null;
-   const base=emailScore(row.sent,row.received,(checkedAt-row.last)/86_400_000).combined;
-   if(!Number.isFinite(base))return null;
-   const score=Math.max(0,Math.min(100,base+delta+relationshipDelta(this.memoryStore().fields(id).relationship)));
-   const name=(row.name.includes('@')?email.split('@')[0]:row.name).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,100)||email.split('@')[0];
-   return {owner,email,name,score,checkedAt,sourceUpdatedAt:Math.min(...completions)};
-  }catch{return null;} // Corrupt or unavailable contact evidence always falls back to intake.
+  const result=await this.bookingPerson(email);
+  if(result.status!=='matched')return null;
+  // Keep the returning-visitor contract deliberately narrow; diagnostics stay owner-only.
+  return {owner:result.owner,email:result.email,name:result.name!,score:result.score!,checkedAt:result.checkedAt,sourceUpdatedAt:result.sourceUpdatedAt!};
  }
- /** Exact owner-local relationship lookup, with a verified miss only after all sources finish. */
- async bookingPerson(email:string):Promise<{owner:string;email:string;status:'matched'|'not_found'|'ambiguous'|'unavailable';checkedAt:number;sourceUpdatedAt?:number;name?:string;score?:number}>{
-  const owner=await this.ctx.storage.get<string>('owner')||'',checkedAt=Date.now();
-  email=typeof email==='string'?email.trim().toLowerCase():'';
-  const unknown={owner,email,status:'unavailable' as const,checkedAt};
-  if(!owner||owner===email||email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return unknown;
+ /** Exact owner-local lookup. Graph display limits never determine relationship identity. */
+ async bookingPerson(email:string):Promise<BookingPersonResult>{
+  let owner='',checkedAt=Date.now();email=typeof email==='string'?email.trim().toLowerCase():'';
+  const fail=(reason:string,retryable=false,source:BookingLookupDiagnostic['source']='identity',status:'unavailable'|'ambiguous'='unavailable'):BookingPersonResult=>({owner,email,status,checkedAt,reason,retryable,source});
   try{
-   const contact=await this.bookingContact(email);if(contact)return {...contact,status:'matched'};
-   // Never turn a failed exact lookup (stale, corrupt, capped, or partially synced) into a miss.
-   if(this.memoryStore().hasManual(email)||this.ctx.storage.sql.exec('SELECT 1 FROM contributions WHERE email=? LIMIT 1',email).toArray().length||this.ctx.storage.sql.exec('SELECT 1 FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length)return unknown;
-   if(this.ctx.storage.sql.exec("SELECT 1 FROM granola_identity WHERE (attendee_email=? OR contact_email=?) AND status='confirmed' LIMIT 1",email,email).toArray().length)return {...unknown,status:'ambiguous'};
-   const source=this.bookingSourceSnapshot(owner);
-   return source.ready?{owner,email,status:'not_found',checkedAt:source.checkedAt,sourceUpdatedAt:source.sourceUpdatedAt}:unknown;
-  }catch{return unknown;}
+   owner=await this.ctx.storage.get<string>('owner')||'';
+   if(!owner)return fail('owner_unbound');
+   if(owner===email||email.length>320||!/^[^\s@]+@[^\s@]+$/.test(email))return fail('invalid_identity');
+   const id=await opaque(owner,email,this.env.TOKEN_SECRET);
+   // No await after this point: identity, contributions, feedback and source completion
+   // must all describe the same snapshot, even while a sync/disconnect is running.
+   checkedAt=Date.now();
+   const own=new Set(this.ctx.storage.sql.exec<{email:string}>('SELECT email FROM accounts').toArray().map(row=>row.email));own.add(owner);
+   const granolaSource=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
+   if(granolaSource){try{const address=JSON.parse(granolaSource.data)?.ownerEmail;if(typeof address==='string')own.add(address);}catch{/* A corrupt unrelated source cannot invalidate an exact Gmail contact. */}}
+   if(own.has(email))return fail('invalid_identity');
+   const mailSources=this.ctx.storage.sql.exec<{account:string}>('SELECT DISTINCT account FROM contributions WHERE email=?',email).toArray();
+   const rawAttendee=!!this.ctx.storage.sql.exec('SELECT 1 FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id WHERE a.email=? AND n.hidden=0 LIMIT 1',email).toArray().length;
+   const aliases=this.ctx.storage.sql.exec<{attendee_email:string;contact_email:string}>("SELECT attendee_email,contact_email FROM granola_identity WHERE (attendee_email=? OR contact_email=?) AND status='confirmed'",email,email).toArray();
+   if(!mailSources.length&&!rawAttendee){
+    if(aliases.length)return fail('confirmed_alias',false,'identity','ambiguous');
+    if(this.memoryStore().hasManual(email))return fail('manual_only');
+    const snapshot=this.bookingSourceSnapshot(owner);
+    return snapshot.ready?{owner,email,status:'not_found',checkedAt:snapshot.checkedAt,sourceUpdatedAt:snapshot.sourceUpdatedAt}:fail(snapshot.reason!,snapshot.retryable,snapshot.source);
+   }
+   const mail=this.ctx.storage.sql.exec<{name:string;sent:number;received:number;last:number}>(`SELECT MAX(name) AS name,SUM(sent) AS sent,SUM(received) AS received,MAX(date) AS last FROM (SELECT canonical,MAX(name) AS name,MAX(sent) AS sent,MAX(received) AS received,MAX(date) AS date FROM contributions WHERE email=? GROUP BY canonical) HAVING COUNT(*)>0`,email).toArray()[0];
+   const meetings=this.ctx.storage.sql.exec<{email:string;name:string;meetings:number;last:string;contact_email:string|null}>(`SELECT a.email AS email,MAX(a.name) AS name,COUNT(*) AS meetings,MAX(n.meeting_at) AS last,gi.contact_email FROM granola_attendees a JOIN granola_notes n ON n.id=a.note_id LEFT JOIN granola_identity gi ON gi.attendee_email=a.email AND gi.status='confirmed' WHERE n.hidden=0 AND (a.email=? OR gi.contact_email=?) GROUP BY a.email ORDER BY meetings DESC,a.email ASC`,email,email).toArray().filter(row=>(row.contact_email&&!own.has(row.contact_email)?row.contact_email:row.email)===email);
+   // A confirmed alias can augment an exact identity, never impersonate that identity.
+   if(!mail&&!meetings.length)return fail('confirmed_alias',false,'identity','ambiguous');
+   const completions:number[]=[];
+   for(const {account} of mailSources){
+    const data=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM accounts WHERE email=?',account).toArray()[0]?.data;
+    const completion=bookingSourceCompletion('gmail',data,checkedAt);if(typeof completion!=='number')return fail(completion.reason,completion.retryable,completion.source);completions.push(completion);
+   }
+   if(meetings.length){const completion=bookingSourceCompletion('granola',granolaSource?.data,checkedAt);if(typeof completion!=='number')return fail(completion.reason,completion.retryable,completion.source);completions.push(completion);}
+   let sent=mail?.sent??0,received=mail?.received??0,last=mail?.last??0,meetingName='';
+   for(const row of meetings){sent+=row.meetings;received+=row.meetings;last=Math.max(last,Date.parse(row.last));if(!meetingName||row.email===email||meetingName.includes('@')&&!row.name.includes('@'))meetingName=row.name;}
+   if(![sent,received,last].every(value=>typeof value==='number'&&Number.isFinite(value)&&value>=0)||!completions.length)return fail('corrupt_contact');
+   let delta:number;
+   try{const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',id).toArray()[0];delta=feedback?(JSON.parse(feedback.data) as PersonFeedback).delta:0;if(typeof delta!=='number'||!Number.isFinite(delta))return fail('corrupt_feedback');}catch{return fail('corrupt_feedback');}
+   let relationship:number;try{relationship=relationshipDelta(this.memoryStore().fields(id).relationship);}catch{return fail('corrupt_relationship');}
+   const base=emailScore(sent,received,(checkedAt-last)/86_400_000).combined;
+   if(!Number.isFinite(base))return fail('corrupt_contact');
+   const score=Math.max(0,Math.min(100,base+delta+relationship));
+   let rawName=mail?.name??meetingName;if(rawName.includes('@')&&meetingName&&!meetingName.includes('@'))rawName=meetingName;
+   const name=(rawName.includes('@')?email.split('@')[0]:rawName).replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,100)||email.split('@')[0];
+   return {owner,email,status:'matched',name,score,checkedAt,sourceUpdatedAt:Math.min(...completions)};
+  }catch{return fail('storage_unavailable',true,'storage');}
  }
  /** Readiness reports actual completion, not merely the presence of a binding. */
  async bookingSourceStatus(){return this.bookingSourceSnapshot(await this.ctx.storage.get<string>('owner')||'');}
- private bookingSourceSnapshot(owner:string):{owner:string;ready:boolean;checkedAt:number;sourceUpdatedAt?:number}{
-  const now=Date.now(),unknown={owner,ready:false,checkedAt:now};if(!owner)return unknown;
+ private bookingSourceSnapshot(owner:string):{owner:string;ready:boolean;checkedAt:number;sourceUpdatedAt?:number;reason?:string;retryable?:boolean;source?:BookingLookupDiagnostic['source']}{
+  const now=Date.now(),unknown={owner,ready:false,checkedAt:now};if(!owner)return {...unknown,reason:'owner_unbound',retryable:false,source:'identity'};
   try{
-   const completions:number[]=[],fresh=(value:unknown):value is number=>typeof value==='number'&&Number.isFinite(value)&&value>0&&value<=now&&now-value<=86_400_000;
-   for(const account of this.rows()){
-    if(account.status!=='connected'||!fresh(account.lastSync)||account.job&&(account.job.pending.length>0||account.job.hasMore))return unknown;
-    completions.push(account.lastSync);
+   const completions:number[]=[];
+   for(const account of this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM accounts').toArray()){
+    const completion=bookingSourceCompletion('gmail',account.data,now);if(typeof completion!=='number')return {...unknown,...completion};completions.push(completion);
    }
    const row=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM granola_connection WHERE id=1').toArray()[0];
-   if(row){const connection=JSON.parse(row.data) as {status?:unknown;lastSync?:unknown;job?:unknown};if(connection.status!=='connected'||connection.job!==null||!fresh(connection.lastSync))return unknown;completions.push(connection.lastSync);}
-   return completions.length?{owner,ready:true,checkedAt:now,sourceUpdatedAt:Math.min(...completions)}:unknown;
-  }catch{return unknown;}
+   if(row){const completion=bookingSourceCompletion('granola',row.data,now);if(typeof completion!=='number')return {...unknown,...completion};completions.push(completion);}
+   return completions.length?{owner,ready:true,checkedAt:now,sourceUpdatedAt:Math.min(...completions)}:{...unknown,reason:'sources_missing',retryable:false,source:'identity'};
+  }catch{return {...unknown,reason:'storage_unavailable',retryable:true,source:'storage'};}
  }
  /** Resolves an opaque node id back to the contact email, the way retrievalScope does. */
  private async emailForPerson(personId:string){

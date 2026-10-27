@@ -11,17 +11,28 @@ async function rpcResult(response:Response):Promise<any>{
  if(response.headers.get('content-type')?.includes('text/event-stream')){const messages=text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>JSON.parse(line.slice(6)));return messages.find(message=>message.result||message.error);}
  return JSON.parse(text);
 }
-test('MCP initializes and lists exactly four scoped tools with confirmation described as a calendar write',async t=>{
+test('MCP initializes and lists scoped tools with confirmation described as a calendar write',async t=>{
  const f=schedulingFixture(t),credential=await f.mint();
  const init=await f.machineRequest('/mcp',credential.token,initialize,headers);
  assert.equal(init.status,200);assert.equal(init.headers.get('mcp-session-id'),null);assert.equal(init.headers.get('cache-control'),'no-store');
  const welcome=await rpcResult(init);assert.equal(welcome.result.serverInfo.name,'people-scheduling');assert.ok(welcome.result.capabilities.tools);
  const list=await f.machineRequest('/mcp',credential.token,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},headers);
  assert.equal(list.status,200);const data=await rpcResult(list);
- assert.deepEqual(data.result.tools.map((v:any)=>v.name).sort(),['confirm_scheduling_time','get_scheduling_request','prepare_scheduling_reply','refresh_scheduling_options']);
+ assert.deepEqual(data.result.tools.map((v:any)=>v.name).sort(),['add_scheduling_context','confirm_scheduling_time','get_scheduling_request','prepare_scheduling_reply','refresh_scheduling_options']);
  const confirm=data.result.tools.find((v:any)=>v.name==='confirm_scheduling_time');assert.equal(confirm.annotations.readOnlyHint,false);assert.match(confirm.description,/calendar invitation/i);assert.equal(confirm.inputSchema.properties.owner,undefined);assert.equal(confirm.inputSchema.properties.evidenceId,undefined);
  const reader=await f.mint(['scheduling:read']);const filtered=await rpcResult(await f.machineRequest('/mcp',reader.token,{jsonrpc:'2.0',id:3,method:'tools/list',params:{}},headers));
  assert.deepEqual(filtered.result.tools.map((v:any)=>v.name),['get_scheduling_request']);
+});
+test('MCP accepts actual counterpart context as bounded evidence without granting overrides or new scheduling authority',async t=>{
+ const f=schedulingFixture(t),credential=await f.mint();
+ const call=async(args:unknown,id=1)=>rpcResult(await f.machineRequest('/mcp',credential.token,{jsonrpc:'2.0',id,method:'tools/call',params:{name:'add_scheduling_context',arguments:args}},headers));
+ f.service.addSchedulingContext=async(...args:any[])=>{f.calls.push({method:'addSchedulingContext',args});return {...f.result,needsContext:true,contextQuestion:'What would you like to discuss?',requiresReview:true,offer:null,replyText:'What would you like to discuss?'};};
+ const context={requestId:'request-1',context:'We are building a prototype for agent interfaces.',evidenceId:'counterpart-reply-1'};
+ const accepted=await call(context);assert.ok(accepted.result,JSON.stringify(accepted));assert.equal(accepted.result.isError,undefined);assert.equal(accepted.result.structuredContent.needsContext,true);assert.equal(accepted.result.structuredContent.offer,null);assert.equal(accepted.result.structuredContent.contextQuestion,'What would you like to discuss?');
+ assert.deepEqual(f.calls,[{method:'addSchedulingContext',args:[owner,'request-1',{context:context.context,evidenceId:context.evidenceId}]}]);
+ for(const extra of [{owner:'intruder@example.test'},{email:'other@example.test'},{approve:true},{windowStart:'2026-11-01T00:00:00Z'}]){const rejected=await call({...context,...extra});assert.ok(rejected.error||rejected.result?.isError);}
+ for(const patch of [{context:' '},{context:'x'.repeat(1501)},{evidenceId:''},{evidenceId:'x'.repeat(501)}]){const rejected=await call({...context,...patch});assert.ok(rejected.error||rejected.result?.isError);}
+ assert.equal(f.calls.length,1);
 });
 test('real MCP tools call the shared scheduling operations with server-derived authority and return structured results',async t=>{
  const f=schedulingFixture(t),credential=await f.mint();
@@ -52,7 +63,7 @@ test('official MCP client negotiates legacy and modern transport and calls sched
   const client=new Client({name:'scheduling-smoke',version:'1.0.0'},{versionNegotiation:{mode}});
   const transport=new StreamableHTTPClientTransport(new URL(origin+'/api/scheduling/mcp'),{authProvider:{token:async()=>credential.token},requestInit:{headers:{host:'people.test'}},fetch:async(url,init)=>schedulingMachineRoute(new Request(url,init),f.env)});
   await client.connect(transport);try{
-   const list=await client.listTools();assert.equal(list.tools.length,4);
+   const list=await client.listTools();assert.equal(list.tools.length,5);
    const result=await client.callTool({name:'prepare_scheduling_reply',arguments:input});assert.equal(result.isError,undefined);assert.equal(result.structuredContent?.requestId,'request-1');
   }finally{await client.close();}
  }

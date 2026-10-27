@@ -50,6 +50,26 @@ export async function lookupBookingPerson(env:BookingEnv,owner:string,email:stri
 }
 function record(value:unknown):value is Record<string,unknown>{return !!value&&typeof value==='object'&&!Array.isArray(value);}
 
+const sourceFailureMessages:Record<string,string>={
+ syncing:'is still syncing your relationship history.',incomplete:'has not finished syncing your relationship history.',
+ error:'could not finish the latest relationship sync.',never_synced:'has not completed its first relationship sync.',
+ stale:'needs a fresh relationship sync.',reconnect:'needs to be reconnected before this relationship can be checked.',
+ missing:'is no longer connected for this contact.',corrupt:'returned invalid sync information.'
+};
+const identityFailureMessages:Record<string,string>={
+ owner_unbound:'The relationship source is not linked to your account.',invalid_identity:'The exact contact identity could not be verified.',
+ confirmed_alias:'This address is a saved alias, but its direct relationship could not be verified.',manual_only:'This contact has a saved profile but no verified email or meeting activity.',
+ corrupt_contact:'This contact’s recorded activity could not be read reliably.',corrupt_feedback:'This contact’s saved score adjustment could not be read reliably.',
+ corrupt_relationship:'This contact’s saved relationship details could not be read reliably.',sources_missing:'No connected relationship source is available.',
+ storage_unavailable:'The relationship data could not be read.'
+};
+function localFailure(value:{status:string;reason?:string;retryable?:boolean}):BookingPeopleContext{
+ const status=value.status==='ambiguous'?'ambiguous':'unavailable',code=value.reason||'',match=/^(gmail|granola)_([a-z_]+)$/.exec(code);
+ const reason=match&&Object.hasOwn(sourceFailureMessages,match[2])?`${match[1]==='gmail'?'Gmail':'Granola'} ${sourceFailureMessages[match[2]]}`:Object.hasOwn(identityFailureMessages,code)?identityFailureMessages[code]:undefined;
+ const temporary=code==='storage_unavailable'||!!match&&['syncing','incomplete','error','never_synced','stale'].includes(match[2]);
+ return {status,reason:reason||'The My Network relationship lookup could not be completed.',...(reason?{reasonCode:code}:{}),retryable:status==='unavailable'&&!!reason&&temporary&&value.retryable===true};
+}
+
 async function lookupLocalBookingPerson(env:BookingEnv,owner:string,email:string,now:number):Promise<BookingPeopleContext>{
  const unavailable=(reason:string):BookingPeopleContext=>({status:'unavailable',reason});
  let timer:ReturnType<typeof setTimeout>|undefined;
@@ -57,14 +77,15 @@ async function lookupLocalBookingPerson(env:BookingEnv,owner:string,email:string
   owner=normalizeBookingEmail(owner);email=normalizeBookingEmail(email);
   const read=async()=>{const source=env.MAIL.getByName(owner);await source.bindOwner(owner);return source.bookingPerson(email);};
   const value=await Promise.race([read(),new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),3000);})]);
-  if(!value||value.owner!==owner||value.email!==email||!Number.isFinite(value.checkedAt)||Math.abs(now-value.checkedAt)>300000)return unavailable('Exact My Network ownership and identity could not be verified.');
-  if(value.status!=='matched'&&value.status!=='not_found')return {status:value.status==='ambiguous'?'ambiguous':'unavailable',reason:'The My Network source could not establish an exact, complete relationship lookup.'};
+  if(!value)return {status:'unavailable',reason:'The My Network relationship lookup timed out.',reasonCode:'lookup_timeout',retryable:true};
+  if(value.owner!==owner||value.email!==email||!Number.isFinite(value.checkedAt)||Math.abs(now-value.checkedAt)>300000)return unavailable('Exact My Network ownership and identity could not be verified.');
+  if(value.status!=='matched'&&value.status!=='not_found')return localFailure(value);
   if(!Number.isFinite(value.sourceUpdatedAt)||value.sourceUpdatedAt!>now||now-value.sourceUpdatedAt!>MAX_SOURCE_AGE)return {status:'stale',reason:'My Network source freshness could not be verified.'};
   const lastSync=new Date(value.sourceUpdatedAt!).toISOString();
   if(value.status==='not_found')return {status:'not_found',lastSync,reason:'No exact contact matched the complete fresh My Network source snapshot.'};
   if(typeof value.score!=='number'||!Number.isFinite(value.score)||value.score<0||value.score>100)return unavailable('The My Network contact score could not be verified.');
   return {status:'matched',email,lastSync,score:value.score,...(typeof value.name==='string'&&value.name.length<=100?{name:value.name}:{}),reason:'The email exactly matches a fresh direct My Network contact.'};
- }catch{return unavailable('The My Network relationship source is unavailable.');}
+ }catch{return {status:'unavailable',reason:'The My Network relationship source could not be reached.',reasonCode:'lookup_unavailable',retryable:true};}
  finally{if(timer!==undefined)clearTimeout(timer);}
 }
 

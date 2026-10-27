@@ -1,4 +1,5 @@
 import PostalMime from 'postal-mime';
+import {verifySchedulingSender,SchedulingSenderAuthUnavailable} from './scheduling-sender-auth';
 import {authoredSchedulingText,schedulingAddress,schedulingHeader,schedulingMailboxes,schedulingMessageId,type SchedulingInboundEmail} from './scheduling-email-policy';
 import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
 
@@ -33,7 +34,18 @@ export async function schedulingEmail(message:ForwardableEmailMessage,env:Schedu
   while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>MAX_RAW){await reader.cancel();throw Error('email_too_large');}chunks.push(value);}
   const raw=new Uint8Array(length);let offset=0;for(const chunk of chunks){raw.set(chunk,offset);offset+=chunk.length;}
   const parsed=await parseSchedulingEmail(raw.buffer,message.to);
-  await env.SCHEDULING_EMAIL.getByName(configuration.owner).receive(configuration.owner,parsed);
+  if(new RegExp('^scheduling\\+b[a-f0-9]{48}@'+configuration.replyDomain.replace(/[.]/g,'\\.')+'$').test(parsed.envelopeTo))await env.BOOKING.getByName(configuration.owner).receiveApprovalEmail(configuration.owner,parsed);
+  else {
+   // A shared reply address identifies the conversation, never the guest.
+   // Only this raw adapter may supply sender proof from the original bytes.
+   if(/^scheduling\+[a-f0-9]{48}@/.test(parsed.envelopeTo)&&await env.SCHEDULING_EMAIL.getByName(configuration.owner).deferSenderVerification(configuration.owner,raw.buffer,parsed.envelopeTo)){
+    // Reserve arrival order before a DNS lookup can delay this guest's reply.
+    // A concurrent reply must not book using an agreement they may be changing.
+    try{const sender=await verifySchedulingSender(raw,parsed);if(sender)parsed.authenticatedSender=sender;else return;}
+    catch(error){if(error instanceof SchedulingSenderAuthUnavailable)return;throw error;}
+   }
+   await env.SCHEDULING_EMAIL.getByName(configuration.owner).receive(configuration.owner,parsed);
+  }
  }catch(error){
   // Avoid reflecting message content, addresses or provider diagnostics into logs.
   if(error instanceof Error&&error.message==='automatic_email_ignored')return;

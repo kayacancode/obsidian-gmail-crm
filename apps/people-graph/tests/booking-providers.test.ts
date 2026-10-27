@@ -143,3 +143,26 @@ test('visitor Google sign-in rejects a forged identity',async t=>{
  const signed=await identity();await oauthMock(t,{id_token:signed.slice(0,signed.lastIndexOf('.')+1)+'A'.repeat(342)});
  await assert.rejects(providers.exchangeBookingVisitorOAuth(env,origin,'code',verifier));
 });
+
+test('calendar self-test keeps the owner as the single public booking guest',async t=>{
+ const request={...await booking(),email:owner};let inserts=0;
+ mockFetch(t,(url,init)=>{if(url.includes('/token'))return refresh();inserts++;assert.deepEqual(JSON.parse(init.body as string).attendees,[{email:owner}]);return Response.json({id:request.eventId,status:'confirmed'});});
+ assert.deepEqual(await createBookingEvent(env,await record(),request,settings),{id:request.eventId});assert.equal(inserts,1);
+});
+
+test('calendar group attendee validation cannot add guests outside a verified owner email request',async t=>{
+ let fetched=false;mockFetch(t,()=>{fetched=true;throw Error('Must not reach Calendar');});
+ const base=await booking(),stored=await record();
+ for(const [channel,attendees] of [
+  ['owner_api',['visitor@example.com','second@example.com']],
+  ['owner_email',['second@example.com']],
+  ['owner_email',['visitor@example.com',owner]],
+  ['owner_email',[]],
+  ['owner_email',['visitor@example.com',...Array.from({length:5},(_,index)=>`guest${index}@example.com`)]],
+  ['owner_email',['visitor@example.com','bad\r\n@example.com']],
+ ] as const){
+  const request={...base,scheduling:{authority:{channel,evidenceId:'owner-sent'},input:{email:base.email,attendees}}} as BookingRequestRecord;
+  await assert.rejects(createBookingEvent(env,stored,request,settings));
+ }
+ assert.equal(fetched,false);
+});

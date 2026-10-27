@@ -4,9 +4,12 @@ import type {BookingDecision,BookingRequestStatus,BookingSlot} from './booking-t
 export interface SchedulingAuthority {channel:'owner_api'|'owner_email';evidenceId:string}
 export interface SchedulingInput {
  email:string;name?:string;context:string;instructions?:string;timezone?:string;
+ /** Frozen guest set from the verified owner email; primary email is included. */
+ attendees?:string[];
  windowStart?:string;windowEnd?:string;idempotencyKey:string;
 }
 export interface SchedulingConfirmation {revision:string;slotId:string;evidenceId:string}
+export interface SchedulingContextReply {context:string;evidenceId:string}
 export interface SchedulingOfferedSlot extends BookingSlot {id:string}
 export interface SchedulingOffer {revision:string;expiresAt:number;slots:SchedulingOfferedSlot[]}
 export interface SchedulingRecommendation {summary:string;reasons:string[];uncertainties:string[]}
@@ -14,6 +17,7 @@ export interface SchedulingResult {
  requestId:string;status:BookingRequestStatus;timezone:string;offer:SchedulingOffer|null;
  replyText:string;recommendation:SchedulingRecommendation;
  decision?:BookingDecision;requiresReview?:boolean;
+ needsContext?:boolean;contextQuestion?:string|null;
 }
 /** Additive private request JSON. Never included in visitor projections. */
 export interface SchedulingRecord {
@@ -22,4 +26,6 @@ export interface SchedulingRecord {
  recommendation:SchedulingRecommendation;
  assessmentVersion?:1;approval?:{policyRevision:number;approvedAt:number};
  confirmation?:SchedulingConfirmation;
+ contextReplies?:SchedulingContextReply[];
+ contextAssessmentPending?:string;
 }

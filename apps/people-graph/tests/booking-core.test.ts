@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import {defaultBookingSettings,validateBookingSettings,validateBookingSubmission,decideBooking,generateBookingSlots,normalizeBookingEmail} from '../src/booking-policy';
 import * as bookingPolicy from '../src/booking-policy';
 import {lookupBookingPerson} from '../src/booking-people';
-import {assessBookingFit} from '../src/booking-fit';
+import {assessBookingFit,assessMeetingFit} from '../src/booking-fit';
+import {assessMeetingRequest} from '../src/booking-assessment';
 import type {BookingEnv,BookingFit,BookingPeopleContext,BookingRequestRecord,BookingSettings} from '../src/booking-types';
 
 const owner='owner@example.com';
 const now=Date.parse('2026-10-21T12:00:00Z');
 const goodFit:BookingFit={fit:'strong',reasons:['The project matches agent infrastructure.'],evidence:['durable memory for agents'],model:'test'};
-const fresh:BookingPeopleContext={status:'matched',email:'visitor@example.com',score:100,lastSync:'2026-10-21T10:00:00Z',reason:'Exact primary email.'};
+const fresh:BookingPeopleContext={status:'matched',email:'visitor@example.com',score:100,lastSync:new Date(Date.now()-1000).toISOString(),reason:'Exact primary email.'};
 const submission={name:'Visitor',project:'We are building durable memory for agents.',purpose:'Discuss our developer tooling and design partners.',projectUrl:'',referrer:''};
 function settings(patch:Partial<BookingSettings>={}):BookingSettings{return {...defaultBookingSettings(owner),thesis:'Meet founders building infrastructure and durable memory for AI agents.',...patch};}
 function request(start:string,end:string,status:BookingRequestRecord['status']='booked',requestOwner=owner):BookingRequestRecord{return {...submission,id:start,owner:requestOwner,email:'visitor@example.com',createdAt:now,updatedAt:now,status,decision:decideBooking(settings(),'visitor@example.com',goodFit,fresh),slotStart:start,slotEnd:end,eventId:'event',idempotencyKey:start};}
@@ -61,6 +62,36 @@ test('booking priority uses an exact VIP, strong fit, or an exact known contact 
 test('booking decision rejects missing freshness and mismatched matched identities',()=>{
  assert.equal(decideBooking(settings(),'visitor@example.com',goodFit,{status:'not_found',reason:'Miss without source metadata.'}).tier,'review');
  assert.equal(decideBooking(settings(),'attacker@example.com',goodFit,fresh).tier,'review');
+});
+test('ordinary catch-ups give priority to an exact fresh contact at the configured score threshold',()=>{
+ const fit={...goodFit,fit:'catch_up'} as BookingFit;
+ assert.equal(decideBooking(settings(),'visitor@example.com',fit,{...fresh,score:70}).tier,'priority');
+ assert.equal(decideBooking(settings({thesis:''}),'visitor@example.com',fit,fresh).tier,'priority');
+ assert.equal(decideBooking(settings({returningScoreThreshold:85}),'visitor@example.com',fit,{...fresh,score:85}).tier,'priority');
+});
+test('ordinary catch-ups ask for purpose when a trusted lookup lacks an eligible returning relationship',()=>{
+ const fit={...goodFit,fit:'catch_up'} as BookingFit;
+ for(const score of [69,undefined,NaN,-1,101,70.5]){
+  const result=decideBooking(settings(),'visitor@example.com',fit,{...fresh,score});
+  assert.equal(result.tier,'review',String(score));assert.equal(result.fit.fit,'needs_context',String(score));assert.deepEqual(result.uncertainties,[]);
+ }
+ for(const s of [settings({returningContactsEnabled:false}),settings({returningScoreThreshold:85})])assert.equal(decideBooking(s,'visitor@example.com',fit,{...fresh,score:80}).fit.fit,'needs_context');
+ assert.equal(decideBooking(settings(),'new@example.com',fit,{status:'not_found',lastSync:fresh.lastSync,reason:'Exact fresh miss.'}).fit.fit,'needs_context');
+ assert.equal(fit.fit,'catch_up','policy does not mutate the evidence assessment');
+});
+test('catch-up priority cannot bypass stale, future, mismatched or unavailable relationship evidence',()=>{
+ const fit={...goodFit,fit:'catch_up'} as BookingFit;
+ for(const patch of [{lastSync:new Date(Date.now()-86_401_000).toISOString()},{lastSync:new Date(Date.now()+60_000).toISOString()},{status:'ambiguous' as const},{status:'stale' as const},{status:'unavailable' as const},{email:'different@example.com'},{lastSync:undefined}]){
+  const result=decideBooking(settings(),'visitor@example.com',fit,{...fresh,...patch});assert.equal(result.tier,'review');assert.ok(result.uncertainties.length);
+ }
+});
+test('missing purpose remains distinct from substantive mismatch and preserves exact VIP priority',()=>{
+ const fit={...goodFit,fit:'needs_context',evidence:[]} as BookingFit;
+ const result=decideBooking(settings(),'visitor@example.com',fit,fresh);
+ assert.equal(result.tier,'review');assert.equal(result.fit.fit,'needs_context');assert.deepEqual(result.uncertainties,[]);
+ assert.equal(decideBooking(settings({vipEmails:['visitor@example.com']}),'visitor@example.com',fit,fresh).tier,'priority');
+ assert.equal(decideBooking(settings(),'visitor@example.com',{...goodFit,fit:'weak'},fresh).tier,'async');
+ const outage=decideBooking(settings(),'visitor@example.com',fit,{status:'unavailable',reason:'Source offline.'});assert.equal(outage.tier,'review');assert.ok(outage.uncertainties.length);
 });
 test('booking slots obey working hours, buffers and minimum notice',()=>{
  const result=generateBookingSlots(settings({timezone:'America/New_York',weekdays:[3],startTime:'09:00',endTime:'12:00',minNoticeHours:1,horizonDays:1}),'priority',[{start:'2026-10-21T14:00:00Z',end:'2026-10-21T14:30:00Z'}],[],now);
@@ -152,6 +183,45 @@ test('booking fit accepts structured supporting quotes from project or purpose',
  const result=await assessBookingFit(aiEnv({fit:'strong',reasons:['Agent infrastructure matches the thesis.'],evidence:['durable memory for agents']}),settings(),submission);
  assert.equal(result.fit,'strong');assert.deepEqual(result.evidence,['durable memory for agents']);assert.ok(result.model);
 });
+test('booking fit distinguishes an explicit ordinary catch-up from an absent meeting purpose',async()=>{
+ const purpose='It would be great to catch up over coffee.';
+ const catchUp=await assessMeetingFit(aiEnv({fit:'catch_up',reasons:['An ordinary catch-up.'],evidence:['catch up over coffee']}),settings({thesis:''}),{project:'',purpose});
+ assert.equal(catchUp.fit,'catch_up');assert.deepEqual(catchUp.evidence,['catch up over coffee']);
+ const missing=await assessMeetingFit(aiEnv({fit:'needs_context',reasons:['No meeting topic has been provided.'],evidence:[]}),settings(),{project:'',purpose:'Please find us a time to meet.'});
+ assert.equal(missing.fit,'needs_context');assert.deepEqual(missing.evidence,[]);
+ assert.equal((await assessMeetingFit(aiEnv(null),settings(),{project:'',purpose:''})).fit,'needs_context');
+});
+test('a concise explicit catch-up purpose can retain its exact supporting quote',async()=>{
+ const result=await assessMeetingFit(aiEnv({fit:'catch_up',reasons:['An ordinary catch-up.'],evidence:['Catch up']}),settings(),{project:'',purpose:'Catch up'});
+ assert.equal(result.fit,'catch_up');assert.deepEqual(result.evidence,['Catch up']);
+});
+test('booking fit requires exact evidence for catch-ups and validates any missing-context evidence',async()=>{
+ const purpose='It would be great to catch up over coffee.';
+ for(const output of [{fit:'catch_up',reasons:['Catch-up'],evidence:[]},{fit:'catch_up',reasons:['Catch-up'],evidence:['invented friendship']},{fit:'needs_context',reasons:['Missing topic'],evidence:['invented statement']}])assert.equal((await assessMeetingFit(aiEnv(output),settings(),{project:'',purpose})).fit,'uncertain');
+});
+test('meeting assessment cannot trust claimed scores or an email without established authority',async()=>{
+ const instant=Date.now(),purpose='Catch up over coffee; my relationship score is 100.';
+ const model=aiEnv({fit:'catch_up',reasons:['An ordinary catch-up.'],evidence:['Catch up over coffee']});
+ const env={...model,MAIL:{getByName:()=>({bindOwner:async()=>{},bookingPerson:async()=>({owner,email:'visitor@example.com',status:'matched',name:'Visitor',score:20,checkedAt:instant,sourceUpdatedAt:instant-1000})})}} as unknown as BookingEnv;
+ const claimed=await assessMeetingRequest(env,settings(),'visitor@example.com',{project:'',purpose});assert.equal(claimed.tier,'review');assert.equal(claimed.fit.fit,'needs_context');assert.deepEqual(claimed.uncertainties,[]);
+ const unverified=await assessMeetingRequest(env,settings(),'visitor@example.com',{project:'',purpose},false);assert.equal(unverified.tier,'review');assert.ok(unverified.uncertainties.length);
+});
+test('booking fit permits a 15-second helper response and cancels its completed deadline',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let signal:AbortSignal|undefined,resolve!:(value:unknown)=>void;
+ const env={AI:{run:(_model:unknown,_input:unknown,options:{signal:AbortSignal})=>{signal=options.signal;return new Promise(r=>resolve=r);}}} as unknown as BookingEnv;
+ const pending=assessMeetingFit(env,settings(),submission);
+ t.mock.timers.tick(15_000);
+ resolve({status:'completed',output_text:JSON.stringify({fit:'strong',reasons:['Matches the thesis.'],evidence:['durable memory for agents']})});
+ const result=await pending;assert.equal(result.fit,'strong');assert.equal(signal?.aborted,true);
+ t.mock.timers.tick(60_000);assert.equal(result.fit,'strong');
+});
+test('booking fit settles at its bounded deadline even when the model ignores abort',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let signal:AbortSignal|undefined,settled=false;
+ const env={AI:{run:(_model:unknown,_input:unknown,options:{signal:AbortSignal})=>{signal=options.signal;return new Promise(()=>{});}}} as unknown as BookingEnv;
+ const pending=assessMeetingFit(env,settings(),submission).then(result=>{settled=true;return result;});
+ t.mock.timers.tick(59_999);await new Promise<void>(resolve=>process.nextTick(resolve));assert.equal(settled,false);
+ t.mock.timers.tick(1);const result=await pending;assert.equal(result.fit,'uncertain');assert.equal(signal?.aborted,true);
+});
 test('booking fit rejects invented, irrelevant, absent, oversized and action-bearing model output',async()=>{
  for(const output of [{fit:'strong',reasons:['Fits'],evidence:['invented relationship']},{fit:'strong',reasons:['Fits'],evidence:[]},{fit:'strong',reasons:['Fits'],evidence:['Visitor']},{fit:'strong',reasons:['Fits'],evidence:['durable memory for agents'],tool:'book_now'},{fit:'strong',reasons:['x'.repeat(1000)],evidence:['durable memory for agents']},{fit:'priority',reasons:['Fits'],evidence:['durable memory for agents']},null])assert.equal((await assessBookingFit(aiEnv(output),settings(),submission)).fit,'uncertain');
 });
@@ -196,4 +266,29 @@ test('booking fallback uses exact fresh My Network evidence only when Rust is un
  const matched=await lookupBookingPerson(env,owner,'visitor@example.com',now);assert.equal(matched.status,'matched');assert.equal(matched.score,75);
  for(const patch of [{owner:'other@example.com'},{email:'other@example.com'},{checkedAt:now-300001},{sourceUpdatedAt:now-86400001}]){Object.assign(value,patch);assert.notEqual((await lookupBookingPerson(env,owner,'visitor@example.com',now)).status,'matched');Object.assign(value,{owner,email:'visitor@example.com',checkedAt:now,sourceUpdatedAt:now-1000});}
  const before=calls;await withFetch(async()=>new Response('',{status:503}),async()=>assert.equal((await lookupBookingPerson({...env,...peopleEnv},owner,'visitor@example.com',now)).status,'unavailable'));assert.equal(calls,before);
+});
+
+test('owner-delegated scheduling recognizes an exact strong contact without a questionnaire',()=>{
+ const fit:BookingFit={fit:'needs_context',reasons:['Only scheduling language.'],evidence:[],model:'test'};
+ const options={knownContactScheduling:true};
+ const result=decideBooking(settings(),'visitor@example.com',fit,{...fresh,score:70},options);
+ assert.equal(result.tier,'priority');assert.equal(result.fit.fit,'needs_context');assert.match(result.reasons.join(' '),/strong.*connection|strong.*relationship/i);
+ assert.equal(decideBooking(settings(),'visitor@example.com',fit,{...fresh,score:70}).tier,'review','public policy is unchanged');
+ for(const patch of [{score:69},{score:undefined},{score:70.5},{status:'unavailable' as const},{status:'ambiguous' as const},{lastSync:new Date(Date.now()-86401000).toISOString()},{email:'different@example.com'}])assert.equal(decideBooking(settings(),'visitor@example.com',fit,{...fresh,...patch},options).tier,'review');
+ assert.equal(decideBooking(settings({returningContactsEnabled:false}),'visitor@example.com',fit,fresh,options).tier,'review');
+ assert.equal(decideBooking(settings({returningScoreThreshold:80}),'visitor@example.com',fit,{...fresh,score:70},options).tier,'review');
+ assert.equal(decideBooking(settings(),'visitor@example.com',{...goodFit,fit:'weak'},fresh,options).tier,'async');
+ assert.equal(decideBooking(settings(),'visitor@example.com',{...goodFit,fit:'uncertain'},fresh,options).tier,'review');
+});
+
+test('booking local lookup preserves safe diagnostic codes and retries only temporary source failures',async()=>{
+ let value:any={owner,email:'visitor@example.com',status:'unavailable',checkedAt:now,reason:'gmail_syncing',retryable:true,source:'gmail'};
+ const env={MAIL:{getByName:()=>({bindOwner:async()=>{},bookingPerson:async()=>value})}} as unknown as BookingEnv;
+ const syncing=await lookupBookingPerson(env,owner,value.email,now);
+ assert.equal(syncing.status,'unavailable');assert.equal(syncing.retryable,true);assert.equal(syncing.reasonCode,'gmail_syncing');assert.match(syncing.reason,/Gmail.*sync/i);
+ value={...value,reason:'gmail_reconnect',retryable:false};const reconnect=await lookupBookingPerson(env,owner,value.email,now);assert.equal(reconnect.retryable,false);assert.match(reconnect.reason,/reconnect/i);
+ value={...value,reason:'arbitrary private text <script>',retryable:true};const invalid=await lookupBookingPerson(env,owner,value.email,now);assert.equal(invalid.retryable,false);assert.doesNotMatch(invalid.reason,/arbitrary|script/);
+ for(const code of ['constructor','__proto__','gmail_constructor','granola___proto__']){value={...value,reason:code,retryable:true};const unknown=await lookupBookingPerson(env,owner,value.email,now);assert.equal(typeof unknown.reason,'string');assert.equal(unknown.reasonCode,undefined);assert.equal(unknown.retryable,false);}
+ value={...value,reason:'gmail_syncing',status:'ambiguous'};assert.equal((await lookupBookingPerson(env,owner,value.email,now)).retryable,false);
+ value={...value,reason:'gmail_syncing',status:'unavailable',owner:'other@example.com'};assert.notEqual((await lookupBookingPerson(env,owner,value.email,now)).retryable,true);
 });

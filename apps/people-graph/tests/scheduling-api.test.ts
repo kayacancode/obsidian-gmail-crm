@@ -13,7 +13,7 @@ export function schedulingFixture(t:TestContext){
  const db:any={prepare(sql:string){let args:any[]=[];const statement:any={bind(...values:any[]){args=values;return statement;},async run(){const r=sqlite.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes)}};},async first(){return sqlite.prepare(sql).get(...args)??null;},async all(){return {results:sqlite.prepare(sql).all(...args)};}};return statement;},async batch(statements:any[]){return Promise.all(statements.map(s=>s.run()));}};
  const result:SchedulingResult={requestId:'request-1',status:'pending_approval',timezone:'America/New_York',offer:{revision:'revision-1',expiresAt:Date.now()+60000,slots:[{id:'slot-1',start:'2026-11-02T15:00:00.000Z',end:'2026-11-02T15:30:00.000Z'}]},replyText:'Would this time work?',recommendation:{summary:'Private recommendation.',reasons:[],uncertainties:[]}};
  const calls:Array<{method:string,args:any[]}>=[];
- const service=Object.fromEntries(['prepareScheduling','refreshScheduling','confirmScheduling','getScheduling'].map(method=>[method,async(...args:any[])=>{calls.push({method,args});return {...result,status:method==='confirmScheduling'?'booked':result.status};}]));
+ const service=Object.fromEntries(['prepareScheduling','refreshScheduling','confirmScheduling','getScheduling','addSchedulingContext'].map(method=>[method,async(...args:any[])=>{calls.push({method,args});return {...result,status:method==='confirmScheduling'?'booked':result.status};}]));
  const env:any={DB:db,BOOKING_OWNER_EMAIL:owner,BOOKING:{getByName(key:string){assert.equal(key,owner);return service;}}};
  const ownerRequest=(path:string,value?:unknown,headers:Record<string,string>={},actor=owner)=>schedulingOwnerRoute(new Request(origin+'/api/booking/scheduling'+path,{method:value===undefined?'GET':'POST',headers:{...(value===undefined?{}:{origin,'content-type':'application/json'}),...headers},...(value===undefined?{}:{body:JSON.stringify(value)})}),env,actor);
  const machineRequest=(path:string,token?:string,value?:unknown,headers:Record<string,string>={})=>schedulingMachineRoute(new Request(origin+'/api/scheduling'+path,{method:value===undefined?'GET':'POST',headers:{...(token?{authorization:'Bearer '+token}:{}),...(value===undefined?{}:{'content-type':'application/json'}),...headers},...(value===undefined?{}:{body:JSON.stringify(value)})}),env);
@@ -57,11 +57,22 @@ test('machine scheduling derives owner and evidence from its credential and refu
 test('read-only credentials cannot persist offers or confirm and cookies never authorize the machine API',async t=>{
  const f=schedulingFixture(t),read=await f.mint(['scheduling:read']),write=await f.mint(['scheduling:write']);
  assert.equal((await f.machineRequest('/requests/request-1',read.token)).status,200);
- for(const [path,data] of [['/prepare',input],['/requests/request-1/refresh',{}],['/requests/request-1/confirm',{revision:'revision-1',slotId:'slot-1'}]] as const)assert.equal((await f.machineRequest(path,read.token,data)).status,403);
+ for(const [path,data] of [['/prepare',input],['/requests/request-1/refresh',{}],['/requests/request-1/context',{context:'Discuss the agent product.',evidenceId:'reply-1'}],['/requests/request-1/confirm',{revision:'revision-1',slotId:'slot-1'}]] as const)assert.equal((await f.machineRequest(path,read.token,data)).status,403);
  assert.equal((await f.machineRequest('/requests/request-1',write.token)).status,403);
  assert.equal((await f.machineRequest('/requests/request-1',undefined,undefined,{cookie:'__Host-people-session=forged'})).status,401);
  assert.equal((await f.machineRequest('/requests/request-1','wrong-token')).status,401);
  assert.equal(f.calls.length,1);
+});
+test('scheduling context accepts only bounded counterpart evidence and returns the current assessment without sending mail',async t=>{
+ const f=schedulingFixture(t),credential=await f.mint();let resumed=0;
+ f.env.SCHEDULING_EMAIL={getByName:()=>({resumeApproved:async()=>{resumed++;}})};
+ f.service.addSchedulingContext=async(...args:any[])=>{f.calls.push({method:'addSchedulingContext',args});return {...f.result,requiresReview:true,needsContext:true,contextQuestion:'What would you like to discuss?',offer:null,replyText:'What would you like to discuss?'};};
+ const response=await f.machineRequest('/requests/request-1/context',credential.token,{context:'  Discuss our agent-interface prototype.  ',evidenceId:'counterpart-message-1'});
+ assert.equal(response.status,200);const result:any=await response.json();assert.equal(result.needsContext,true);assert.equal(result.requiresReview,true);assert.equal(result.offer,null);assert.equal(result.contextQuestion,'What would you like to discuss?');
+ assert.deepEqual(f.calls,[{method:'addSchedulingContext',args:[owner,'request-1',{context:'Discuss our agent-interface prototype.',evidenceId:'counterpart-message-1'}]}]);
+ for(const bad of [{context:'',evidenceId:'reply-2'},{context:'x'.repeat(1501),evidenceId:'reply-2'},{context:'More detail',evidenceId:''},{context:'More detail',evidenceId:'x'.repeat(501)},{context:'More\u0000detail',evidenceId:'reply-2'},{context:'More detail',evidenceId:'reply-2',email:'other@example.test'},{context:'More detail',evidenceId:'reply-2',owner:'other@example.test'},{context:'More detail',evidenceId:'reply-2',windowEnd:'2026-12-01T00:00:00Z'},{context:'More detail',evidenceId:'reply-2',approve:true}])assert.equal((await f.machineRequest('/requests/request-1/context',credential.token,bad)).status,400);
+ assert.equal(f.calls.length,1);assert.equal(resumed,0);
+ f.service.addSchedulingContext=async()=>{throw Error('context_not_requested');};const finished=await f.machineRequest('/requests/request-1/context',credential.token,{context:'More detail',evidenceId:'reply-2'});assert.equal(finished.status,409);assert.equal((await finished.json() as any).error,'context_not_requested');
 });
 test('machine scheduling rejects cross-origin access, oversized JSON and leaking provider errors',async t=>{
  const f=schedulingFixture(t),minted=await f.mint();

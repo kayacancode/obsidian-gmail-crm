@@ -130,6 +130,16 @@ Run `npm run test:meeting-preview-browser` against the local development server 
 
 ## Development
 
+### Email scheduling and meeting context
+
+The scheduling agent evaluates the actual meeting purpose against the saved Booking thesis, verified relationship data and VIP list. An ordinary catch-up can qualify through an exact, fresh contact whose People score meets the returning-contact cutoff (70 by default). A specific business agenda is still assessed against the thesis, even if the message also says “catch up.”
+
+Missing purpose returns `needsContext: true` with a short public question in `replyText`. The email agent asks the fixed counterpart, accepts their authenticated reply, and reassesses before offering times. It asks at most twice, then returns to owner review. Context reply addresses expire after 48 hours; an explicit owner reassessment can replace an expired question within that limit. Replies remain saved if model or Calendar work fails. Source failures and model failures require private review rather than being treated as a mismatch or lack of context. Fit assessment has a bounded 60-second deadline.
+
+API clients check `needsContext` before `requiresReview` and append actual reply evidence with `POST /api/scheduling/requests/:id/context` using `{context, evidenceId}`. Context is limited to 1,500 characters and `evidenceId` is a stable identifier for that reply; retrying the same pair is idempotent. MCP exposes the same operation as `add_scheduling_context`. Only `replyText` is suitable for the counterpart; the decision and recommendation are private. Original participants and scheduling constraints cannot change through context text.
+
+For requests assessed before these changes, choose **Reassess request** in Booking. Public returning-contact requests that skip the questionnaire still require owner approval.
+
 ```sh
 npm run typecheck
 npm run smoke        # end-to-end against wrangler dev --local
@@ -271,3 +281,19 @@ The hosted shared network opens with “You + [other members]”, one search fie
 Run `npm run test:shared-home-browser` against a static server at `TEST_ORIGIN` (default `http://127.0.0.1:4198`) for the complete hosted layout, search, detail/back, resize, and mobile checks.
 
 Shared profiles also show “Your private context” when the signed-in viewer has their own linked evidence. This viewer-only response field is separate from shared signals and is excluded from shared search, recommendations, introduction drafts, and exports. It does not change contribution settings.
+
+## Booking request email alerts
+
+When a visitor selects a time through the public booking link or suggests alternatives, People emails the configured booking owner. The alert includes their name, email, project, meeting purpose, requested times in the owner's timezone, and the private assessment. **Review request** opens that request in Booking, where the owner can approve or decline. Google sign-in stays on the request page; opening an email link never approves a meeting.
+
+Alerts use the existing `SCHEDULING_EMAIL_SEND` binding and `SCHEDULING_EMAIL_ADDRESS`, with `BOOKING_OWNER_EMAIL` as the only recipient and `APP_ORIGIN` for the review link. No additional sender domain is required for a deployment that already has scheduling email enabled. Booking → Requests shows the notification destination and any delivery failures or unknown outcomes. Confirmed automatic bookings continue to use Calendar invitations; questionnaire submissions without a selected or proposed time do not send approval alerts.
+
+The owner's coordinator keeps a separate durable notification outbox, checks that a request still needs approval before sending, and deduplicates repeat selections and delivery attempts. Explicit rate/quota rejections retry with backoff. An ambiguous provider result is shown as uncertain and is not automatically resent. Legacy verification-email records stay inert. The outbox is additive SQLite state; no D1 schema migration or backfill of historical requests is needed.
+
+### Reply to booking requests from your inbox
+
+Owner notifications support **Approve** for one time, **Approve 1/2/3** for numbered alternatives, and **Decline**. The agent rechecks Calendar, then sends a confirmation email; Calendar sends the invitation. Ambiguous replies ask for an explicit choice. Replies apply only to the time selection in that email. Changed selections and expired approvals require a fresh review.
+
+This uses the connected owner's Gmail Sent copy to verify authority and read the actual reply, plus a random seven-day reply address under the existing `scheduling+` subaddress route. It never trusts a forwarded email, a claimed From address, or the SMTP body as owner approval. Calendar writes use the same serialized coordinator and recovery path as dashboard approvals.
+
+Existing alerts remain review-link-only. In Booking → Requests, **Email me this request** sends an updated notice for one pending request and invalidates its old reply address (up to three resends per hour). No historical requests are automatically emailed. `SCHEDULING_EMAIL_REPLY_DOMAIN` must match the configured scheduling sender domain, with subaddress routing enabled. Reply processing and receipts use additive SQLite inbox/outbox tables; no D1 migration is needed. Unknown email-delivery outcomes are not automatically resent.
