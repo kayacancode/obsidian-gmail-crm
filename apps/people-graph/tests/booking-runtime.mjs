@@ -2,6 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {Miniflare} from 'miniflare';
+import {dkimSign} from 'mailauth/lib/dkim/sign';
+import {sealMessage} from 'mailauth/lib/arc';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -18,10 +20,26 @@ import {makeSession,sessionCookie} from './src/session';
 import {seal} from './src/mail-model';
 import {bookingCalendarBusy} from './src/booking-providers';
 import {bookingReadiness} from './src/booking-coordinator';
+import {verifyReceivedSchedulingGuestReply} from './src/scheduling-gmail';
 const owner='owner@example.com';
-function wrap(env){return {...env,AI:{async run(model,input){await env.DB.prepare("INSERT INTO fixture_control(key,body) VALUES('__model_call',?)").bind(JSON.stringify(input)).run();const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(scopedOwner){let boundOwner;return {bindOwner:async(value)=>{boundOwner=value;},verifyBookingApproval:async(messageId,replyAddress)=>{if(boundOwner!==scopedOwner)throw Error('owner_not_bound');const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__booking_approval:'+messageId).first();if(!row)throw Error('owner_kickoff_not_found');const value=JSON.parse(row.body);if(!value.to.includes(replyAddress)&&!value.cc.includes(replyAddress))throw Error('owner_kickoff_mismatch');return value;},verifySchedulingKickoff:async(messageId,agentAddress)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__kickoff:'+messageId).first();if(!row)throw Error('invalid_owner_kickoff');return JSON.parse(row.body);},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}}),bookingContact:async(email)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__contact:'+scopedOwner+':'+email).first();if(!row)return null;const value=JSON.parse(row.body);if(value.fail)throw Error('private source failure');return value;}}}}};}
+function wrap(env){return {...env,AI:{async run(model,input){await env.DB.prepare("INSERT INTO fixture_control(key,body) VALUES('__model_call',?)").bind(JSON.stringify(input)).run();const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(scopedOwner){let boundOwner;return {bindOwner:async(value)=>{boundOwner=value;},verifyBookingApproval:async(messageId,replyAddress)=>{if(boundOwner!==scopedOwner)throw Error('owner_not_bound');const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__booking_approval:'+messageId).first();if(!row)throw Error('owner_kickoff_not_found');const value=JSON.parse(row.body);if(!value.to.includes(replyAddress)&&!value.cc.includes(replyAddress))throw Error('owner_kickoff_mismatch');return value;},verifySchedulingGuestReply:async(input)=>{if(boundOwner!==scopedOwner)throw Error('owner_not_bound');return verifyReceivedSchedulingGuestReply({owner:scopedOwner,input,accessToken:'fixture-gmail-access',current:()=>boundOwner===scopedOwner});},verifySchedulingKickoff:async(messageId,agentAddress)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__kickoff:'+messageId).first();if(!row)throw Error('invalid_owner_kickoff');return JSON.parse(row.body);},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}}),bookingContact:async(email)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__contact:'+scopedOwner+':'+email).first();if(!row)return null;const value=JSON.parse(row.body);if(value.fail)throw Error('private source failure');return value;}}}}};}
 function emailWrap(env,sentKey='__sent',failureKey='__email_send_unknown'){return {...wrap(env),SCHEDULING_EMAIL_ADDRESS:'scheduling@agent.test',SCHEDULING_EMAIL_REPLY_DOMAIN:'agent.test',SCHEDULING_EMAIL_SEND:{async send(message){const id='<'+crypto.randomUUID()+'@mail.test>';await env.DB.prepare('INSERT INTO fixture_control(key,body) VALUES(?,?)').bind(sentKey,JSON.stringify({...message,messageId:id})).run();const failure=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind(failureKey).first();if(failure?.body==='true')throw Error('ambiguous provider response');return {messageId:id};}}};}
-export class TestSchedulingEmailCoordinator extends EmailCoordinator {constructor(ctx,env){super(ctx,emailWrap(env));} restartForTest(){this.ctx.abort('email fixture restart');} stateForTest(requestId){return this.ctx.storage.sql.exec("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.requestId')=?",requestId).toArray().map(row=>JSON.parse(row.data));}}
+export class TestSchedulingEmailCoordinator extends EmailCoordinator {
+ constructor(ctx,env){super(ctx,emailWrap(env));}
+ restartForTest(){this.ctx.abort('email fixture restart');}
+ async alarmForTest(){await this.ctx.storage.deleteAlarm();await this.alarm();}
+ stateForTest(requestId){return this.ctx.storage.sql.exec("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.requestId')=?",requestId).toArray().map(row=>JSON.parse(row.data));}
+ authStateForTest(envelopeTo){return envelopeTo?this.ctx.storage.sql.exec('SELECT id,attempts,length(raw) AS bytes,received FROM scheduling_email_auth_inbox WHERE envelope_to=?',envelopeTo).toArray():this.ctx.storage.sql.exec('SELECT id,attempts,length(raw) AS bytes,received FROM scheduling_email_auth_inbox').toArray();}
+ outboxForTest(requestId){const thread=this.stateForTest(requestId)[0];return this.ctx.storage.sql.exec('SELECT id,status,data FROM scheduling_email_outbox WHERE thread=?',thread.id).toArray().map(row=>({...row,data:JSON.parse(row.data)}));}
+ legacyGroupForTest(requestId,participants,queuedCopies=false){
+  const thread=this.stateForTest(requestId)[0];Object.assign(thread,{participants,groupReply:undefined,capabilityHash:null,replyAddress:null,latestMessageId:null});
+  this.ctx.storage.sql.exec('UPDATE scheduling_email_threads SET data=?,capability_hash=NULL WHERE id=?',JSON.stringify(thread),thread.id);
+  if(queuedCopies){
+   this.ctx.storage.sql.exec("DELETE FROM scheduling_email_outbox WHERE thread=? AND json_extract(data,'$.replyTo') IS NOT NULL",thread.id);
+   participants.forEach((participant,index)=>this.ctx.storage.sql.exec("INSERT INTO scheduling_email_outbox(id,thread,data,status) VALUES(?,?,?,'ready')",thread.id+':legacy-ready:'+index,thread.id,JSON.stringify({from:'scheduling@agent.test',to:[participant.email],cc:[thread.owner],subject:'Re: '+thread.subject,text:'Legacy private options must not be resent after migration.',replyTo:participant.replyAddress,headers:{'In-Reply-To':thread.kickoffMessageId,'References':thread.kickoffMessageId,'Auto-Submitted':'auto-replied'}})));
+  }
+ }
+}
 export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,emailWrap(env,'__booking_sent','__booking_send_unknown'));} restartForTest(){this.ctx.abort('fixture restart');} async alarmForTest(){await this.ctx.storage.deleteAlarm();await this.alarm();} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
 export default {async fetch(request,env){env=wrap(env);const url=new URL(request.url),store=new BookingStore(env.DB);
  if(url.pathname==='/fixture'){await store.init();await env.DB.prepare('CREATE TABLE IF NOT EXISTS fixture_control(key TEXT,body TEXT)').run();
@@ -30,8 +48,12 @@ export default {async fetch(request,env){env=wrap(env);const url=new URL(request
  await store.saveCalendar({owner,email:owner,connectedAt:Date.now(),grant:await seal(JSON.stringify({owner,email:owner,refreshToken:'fixture-refresh',scopes:['openid','email','https://www.googleapis.com/auth/calendar.events','https://www.googleapis.com/auth/calendar.freebusy']}),env.MAIL_TOKEN_KEY)});
  return Response.json({cookie:sessionCookie(await makeSession(owner,env.TOKEN_SECRET)),settings});}
  if(url.pathname==='/fixture/email'){const input=await request.json();let rejection=null;const bytes=new TextEncoder().encode(input.raw);await worker.email({to:input.to,from:input.from,rawSize:bytes.length,raw:new ReadableStream({start(controller){controller.enqueue(bytes);controller.close();}}),setReject(reason){rejection=reason;}},emailWrap(env));return Response.json({rejection});}
- if(url.pathname==='/fixture/email-alarm'){await env.SCHEDULING_EMAIL.getByName(owner).alarm();return Response.json({ok:true});}
+ if(url.pathname==='/fixture/email-alarm'){await env.SCHEDULING_EMAIL.getByName(owner).alarmForTest();return Response.json({ok:true});}
  if(url.pathname==='/fixture/booking-alarm'){await env.BOOKING.getByName(owner).alarmForTest();return Response.json({ok:true});}
+ if(url.pathname==='/fixture/email-legacy-group'){const {requestId,participants,queuedCopies}=await request.json();await env.SCHEDULING_EMAIL.getByName(owner).legacyGroupForTest(requestId,participants,queuedCopies);return Response.json({ok:true});}
+ if(url.pathname==='/fixture/email-auth-state')return Response.json(await env.SCHEDULING_EMAIL.getByName(owner).authStateForTest(url.searchParams.get('to')));
+ if(url.pathname==='/fixture/email-diagnostics')return Response.json(await env.SCHEDULING_EMAIL.getByName(owner).diagnostics(owner));
+ if(url.pathname==='/fixture/email-outbox')return Response.json(await env.SCHEDULING_EMAIL.getByName(owner).outboxForTest(url.searchParams.get('requestId')));
  if(url.pathname==='/fixture/email-state')return Response.json(await env.SCHEDULING_EMAIL.getByName(owner).stateForTest(url.searchParams.get('requestId')));
  if(url.pathname==='/fixture/email-restart'){try{await env.SCHEDULING_EMAIL.getByName(owner).restartForTest();}catch{}return Response.json({ok:true});}
  if(url.pathname==='/fixture/readiness'){const key=url.searchParams.get('missing');return Response.json(await bookingReadiness({...env,...(key?{[key]:undefined}:{})},owner));}
@@ -48,12 +70,21 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
  const googleCodes=new Map(),keys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
  const jwk=await crypto.subtle.exportKey('jwk',keys.publicKey),encode=value=>Buffer.from(value).toString('base64url');
  async function identity(claims){const now=Math.floor(Date.now()/1000),head=encode(JSON.stringify({alg:'RS256',kid:'fixture-key'})),body=encode(JSON.stringify({iss:'https://accounts.google.com',aud:'test-client',iat:now,exp:now+3600,email_verified:true,...claims})),signature=encode(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',keys.privateKey,new TextEncoder().encode(head+'.'+body)));return head+'.'+body+'.'+signature;}
+ const dkimPrivate='-----BEGIN PRIVATE KEY-----\n'+Buffer.from(await crypto.subtle.exportKey('pkcs8',keys.privateKey)).toString('base64')+'\n-----END PRIVATE KEY-----',dkimPublic=Buffer.from(await crypto.subtle.exportKey('spki',keys.publicKey)).toString('base64');
+ const unrelatedDkimKeys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']),unrelatedDkimPublic=Buffer.from(await crypto.subtle.exportKey('spki',unrelatedDkimKeys.publicKey)).toString('base64');let dkimResponseKey=dkimPublic,dkimUnavailable=false;
+ const receivedGmail=new Map();let gmailRawReads=0;
  const events=new Map();let inserts=0,failInsert=false,failLookup=false,failDelete=false,sourceMissing=false,sourceState='matched',sourceScore=40,externalBusy=[];
  try{
-  await build({stdin:{contents:fixture,resolveDir:process.cwd(),loader:'ts'},bundle:true,format:'esm',platform:'browser',external:['cloudflare:workers','cloudflare:email','node:*'],outfile:join(dir,'worker.mjs')});
+  await build({stdin:{contents:fixture,resolveDir:process.cwd(),loader:'ts'},bundle:true,format:'esm',platform:'browser',external:['cloudflare:workers','cloudflare:email','node:*'],plugins:[{name:'node-builtins',setup(b){b.onResolve({filter:/^(?:buffer|string_decoder)$/},args=>({path:args.path,namespace:'node-shim'}));b.onLoad({filter:/.*/,namespace:'node-shim'},args=>({contents:`export * from 'node:${args.path}'; import builtin from 'node:${args.path}'; export default builtin;`,loader:'js'}));}}],outfile:join(dir,'worker.mjs')});
   const scopes='openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy';
-  mf=new Miniflare({modules:true,modulesRoot:dir,scriptPath:join(dir,'worker.mjs'),compatibilityDate:'2025-05-01',compatibilityFlags:['nodejs_compat'],assets:{directory:join(process.cwd(),'public'),binding:'ASSETS',routerConfig:{invoke_user_worker_ahead_of_assets:true,has_user_worker:true}},d1Databases:{DB:'booking-test'},durableObjects:{BOOKING:{className:'TestBookingCoordinator',useSQLite:true},SCHEDULING_EMAIL:{className:'TestSchedulingEmailCoordinator',useSQLite:true}},bindings:{GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-client-secret',TOKEN_SECRET:'test-session-secret',MAIL_TOKEN_KEY:'test-encryption',APP_ORIGIN:'https://people.test',BOOKING_OWNER_EMAIL:'owner@example.com',PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'test-source-secret',PEOPLEGRAPH_OWNER_EMAIL:'owner@example.com'},outboundService:async req=>{
+  mf=new Miniflare({modules:true,modulesRoot:dir,scriptPath:join(dir,'worker.mjs'),compatibilityDate:'2025-05-01',compatibilityFlags:['nodejs_compat','enable_nodejs_http_modules'],assets:{directory:join(process.cwd(),'public'),binding:'ASSETS',routerConfig:{invoke_user_worker_ahead_of_assets:true,has_user_worker:true}},d1Databases:{DB:'booking-test'},durableObjects:{BOOKING:{className:'TestBookingCoordinator',useSQLite:true},SCHEDULING_EMAIL:{className:'TestSchedulingEmailCoordinator',useSQLite:true}},bindings:{GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-client-secret',TOKEN_SECRET:'test-session-secret',MAIL_TOKEN_KEY:'test-encryption',APP_ORIGIN:'https://people.test',BOOKING_OWNER_EMAIL:'owner@example.com',PEOPLEGRAPH_HOST:'https://source.test',PEOPLEGRAPH_TOKEN:'test-source-secret',PEOPLEGRAPH_OWNER_EMAIL:'owner@example.com'},outboundService:async req=>{
    const u=new URL(req.url);
+   if(u.hostname==='cloudflare-dns.com'&&u.pathname==='/dns-query'){const name=u.searchParams.get('name');assert.equal(u.searchParams.get('type'),'TXT');if(dkimUnavailable)return Response.json({Status:2});return Response.json({Status:0,TC:false,Question:[{name,type:16}],Answer:['runtime._domainkey.example.com','workspace._domainkey.example-com.20251104.gappssmtp.com','arc._domainkey.google.com'].includes(name)?[{name,type:16,data:'"v=DKIM1; k=rsa; p='+dkimResponseKey+'"'}]:[]});}
+   if(u.hostname==='gmail.googleapis.com'&&u.pathname.startsWith('/gmail/v1/users/me/messages')){
+    assert.equal(req.headers.get('authorization'),'Bearer fixture-gmail-access');
+    if(u.pathname==='/gmail/v1/users/me/messages'){const query=u.searchParams.get('q');assert.ok(query.includes('-in:sent -in:drafts -in:spam -in:trash'));const match=query.match(/^rfc822msgid:(<[^>]+>)/),message=receivedGmail.get(match?.[1]);return Response.json({messages:message?[{id:message.id}]:[]});}
+    assert.equal(u.searchParams.get('format'),'raw');gmailRawReads++;const message=[...receivedGmail.values()].find(value=>value.id===u.pathname.split('/').pop());return message?Response.json({id:message.id,labelIds:['INBOX'],internalDate:String(Date.now()),raw:Buffer.from(message.raw).toString('base64url')}):new Response(null,{status:404});
+   }
    if(u.hostname==='source.test'){
     if(sourceState==='unavailable')return new Response(null,{status:503});
     const missing=sourceMissing||sourceState==='not_found';
@@ -102,7 +133,14 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   const strongModel=(purpose=matchedPurpose)=>({fit:'strong',reasons:['The project and purpose match the saved agent-interface thesis.'],evidence:[purpose]});
   async function machineCredential(){const minted=await api('/api/booking/scheduling/tokens',{method:'POST',cookie:ownerCookie,data:{name:'Assessment runtime',scopes:['scheduling:read','scheduling:write']}});assert.equal(minted.res.status,201,JSON.stringify(minted.value));return minted.value.token;}
   async function machineRequest(token,path,data){const res=await mf.dispatchFetch('https://people.test/api/scheduling'+path,{method:data===undefined?'GET':'POST',headers:{Authorization:'Bearer '+token,...(data===undefined?{}:{'Content-Type':'application/json'})},...(data===undefined?{}:{body:JSON.stringify(data)})});return {res,value:await res.json()};}
-  async function incomingEmail({id,from,to,cc='owner@example.com',reply,text}){return api('/fixture/email',{method:'POST',data:{to,from,raw:['From: '+from,'To: '+to,'Cc: '+cc,'Message-ID: '+id,'Subject: Meet',...(reply?['In-Reply-To: '+reply]:[]),'Content-Type: text/plain; charset=utf-8','',''+text].join('\r\n')}});}
+  async function emailPayload({id,from,to,cc='owner@example.com',reply,references,text,signed=false,tamper,headers=[],signOptions={}}){
+   let raw=['From: '+from,'To: '+to,'Cc: '+cc,'Message-ID: '+id,'Subject: Meet',...(reply?['In-Reply-To: '+reply]:[]),...(references?.length?['References: '+references.join(' ')]:[]),'MIME-Version: 1.0','Content-Type: text/plain; charset=utf-8',...headers,'',''+text].join('\r\n');
+   if(signed){const signature=await dkimSign(raw,{...signOptions,headerList:['From','To','Cc','Message-ID','Subject','In-Reply-To','References','MIME-Version','Content-Type','Content-Transfer-Encoding'],signatureData:[{signingDomain:from.split('@')[1],selector:'runtime',privateKey:dkimPrivate}]});assert.deepEqual(signature.errors,[]);raw=signature.signatures+raw;}
+   if(tamper)raw=tamper(raw);
+   return {to,from,raw};
+  }
+  async function incomingEmail(input){return api('/fixture/email',{method:'POST',data:await emailPayload(input)});}
+  async function flushSchedulingEmail(){const result=await api('/fixture/email-alarm');assert.equal(result.res.status,200,JSON.stringify(result.value));return result;}
   const sentEmail=async()=> (await sql("SELECT body FROM fixture_control WHERE key='__sent' ORDER BY rowid")).map(row=>JSON.parse(row.body));
   const sentBookingEmail=async()=> (await sql("SELECT body FROM fixture_control WHERE key='__booking_sent' ORDER BY rowid")).map(row=>JSON.parse(row.body));
   const bookingReviewURL=id=>'https://people.test/booking?request='+encodeURIComponent(id);
@@ -570,7 +608,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    assert.equal((await incoming(selection)).value.rejection,null);assert.equal(inserts,before+1);
    const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(booked.status,'booked');assert.equal(booked.visitorSubject,undefined);assert.equal(events.get(booked.eventId).attendees[0].email,peer);
    assert.match((await sent()).at(-1).text,/meeting is booked/);
-   await api('/fixture/email-restart');await incoming(selection);await api('/fixture/email-alarm');assert.equal(inserts,before+1);assert.equal((await sent()).length,initialMail+2,'restart and repeated reply keep one offer and one confirmation');
+   await api('/fixture/email-restart');await incoming(selection);await flushSchedulingEmail();assert.equal(inserts,before+1);assert.equal((await sent()).length,initialMail+2,'restart and repeated reply keep one offer and one confirmation');
    await setModel(null);
   });
   await t.test('group email requires owner review and matching guest choices before one Calendar invitation to everyone',async()=>{
@@ -586,23 +624,29 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
     const review=(await sentEmail()).slice(initialMail);assert.equal(review.length,1);assert.deepEqual(review[0].to,['owner@example.com']);assert.deepEqual(review[0].cc,[]);for(const peer of peers)assert.ok(review[0].text.includes(peer),'owner review identifies every proposed guest');assert.equal(inserts,before,'owner delegation does not bypass group review');
     await incomingEmail(kickoff);assert.equal((await sentEmail()).length,initialMail+1,'redelivery cannot duplicate the group request or owner review');
     const approved=await api('/api/booking/scheduling/requests/'+record.id+'/approve',{method:'POST',cookie:ownerCookie,data:{policyRevision:settings.revision}});assert.equal(approved.res.status,200,JSON.stringify(approved.value));assert.equal(approved.value.requiresReview,false);assert.ok(approved.value.offer?.slots.length>=2);
-    const offers=(await sentEmail()).slice(initialMail).filter(message=>message.replyTo&&/available times/i.test(message.text));assert.equal(offers.length,2,'each guest receives a private reply capability');
-    const byPeer=new Map(offers.map(message=>[message.to[0],message]));assert.deepEqual([...byPeer.keys()].sort(),[...peers].sort());assert.notEqual(byPeer.get(peers[0]).replyTo,byPeer.get(peers[1]).replyTo);
-    for(const offer of offers){assert.equal(offer.to.length,1);assert.deepEqual(offer.cc,['owner@example.com']);assert.match(offer.replyTo,/^scheduling\+[a-f0-9]{48}@agent\.test$/);assert.match(offer.text,/Option 1 works/);assert.doesNotMatch(offer.text,/PRIVATE GROUP|score|thesis|Untrusted inbound/);}
-    const reply=(peer,id,option,parent=byPeer.get(peer).messageId)=>incomingEmail({id,from:peer,to:byPeer.get(peer).replyTo,reply:parent,text:'Option '+option+' works'});
-    const firstOffer=byPeer.get(peers[0]),secondOffer=byPeer.get(peers[1]);
-    await incomingEmail({id:'<group-outsider@example.com>',from:'outsider@example.com',to:firstOffer.replyTo,reply:firstOffer.messageId,text:'Option 1 works'});assert.equal(inserts,before);
-    await incomingEmail({id:'<group-cross-identity@example.com>',from:peers[1],to:firstOffer.replyTo,reply:firstOffer.messageId,text:'Option 1 works'});assert.equal(inserts,before);
+    const offers=(await sentEmail()).slice(initialMail).filter(message=>message.replyTo&&/available times/i.test(message.text));assert.equal(offers.length,1,'the group receives one shared reply-all offer');
+    const offer=offers[0];assert.deepEqual(offer.to,peers);assert.deepEqual(offer.cc,['owner@example.com']);assert.equal(offer.headers['In-Reply-To'],kickId);assert.ok(offer.headers.References.includes(kickId));assert.match(offer.replyTo,/^scheduling\+[a-f0-9]{48}@agent\.test$/);assert.match(offer.text,/Option 1 works/);assert.doesNotMatch(offer.text,/PRIVATE GROUP|score|thesis|Untrusted inbound|own copy/);
+    const reply=(peer,id,option,parent=offer.messageId,overrides={})=>incomingEmail({id,from:peer,to:offer.replyTo,cc:['owner@example.com',...peers.filter(value=>value!==peer)].join(', '),reply:parent,text:'Option '+option+' works',signed:true,...overrides});
+    const statusMessages=()=>sentEmail().then(messages=>messages.slice(initialMail).filter(message=>/Nothing is booked yet/.test(message.text)));
+    const beforeInvalid=(await sentEmail()).length;
+    await reply('outsider@example.com','<group-outsider@example.com>',1);assert.equal(inserts,before);
+    await reply(peers[1],'<group-unsigned@example.com>',1,offer.messageId,{signed:false,headers:['Authentication-Results: cloudflare-dns.com; dkim=pass header.d=example.com']});assert.equal(inserts,before);
+    await reply(peers[1],'<group-tampered@example.com>',1,offer.messageId,{tamper:raw=>raw.replace('Option 1 works','Option 2 works')});assert.equal(inserts,before);
+    try{dkimResponseKey=unrelatedDkimPublic;await reply(peers[1],'<group-wrong-key@example.com>',1);assert.equal(inserts,before);}finally{dkimResponseKey=dkimPublic;}
+    await reply(peers[1],'<group-expired-signature@example.com>',1,offer.messageId,{signOptions:{signTime:new Date(Date.now()-86400000),expires:new Date(Date.now()-3600000)}});assert.equal(inserts,before);
     await reply(peers[1],'<group-wrong-parent@example.com>',1,'<old-group-offer@example.com>');assert.equal(inserts,before);
+    assert.equal((await sentEmail()).length,beforeInvalid,'unverified, outsider, tampered, and unrelated replies cannot create acknowledgments');
     await reply(peers[0],'<group-first-choice@example.com>',1);assert.equal(inserts,before,'one guest cannot consent for the second guest');
+    const firstStatus=await statusMessages();assert.equal(firstStatus.length,1,'one vote produces one acknowledgment to the group');assert.deepEqual(firstStatus[0].to,peers);assert.deepEqual(firstStatus[0].cc,['owner@example.com']);assert.equal(firstStatus[0].headers['In-Reply-To'],'<group-first-choice@example.com>');assert.equal(firstStatus[0].replyTo,offer.replyTo);assert.ok(firstStatus[0].text.includes(peers[1]));
     await api('/fixture/email-restart');await api('/fixture/restart');
-    await reply(peers[1],'<group-conflicting-choice@example.com>',2);assert.equal(inserts,before,'different guest choices never book either slot');
-    const agreeing={id:'<group-agreeing-choice@example.com>',from:peers[1],to:secondOffer.replyTo,reply:secondOffer.messageId,text:'Option 1 works'};
-    await incomingEmail(agreeing);assert.equal(inserts,before+1,'the same option accepted by every guest creates one event');
+    await reply(peers[1],'<group-conflicting-choice@example.com>',2,'<group-first-choice@example.com>');assert.equal(inserts,before,'verified reply-all to another guest is tracked but differing choices never book');
+    const conflicting=await statusMessages();assert.equal(conflicting.length,2);assert.deepEqual(conflicting[1].to,peers);assert.match(conflicting[1].text,/different options/i);
+    const agreeing={id:'<group-agreeing-choice@example.com>',from:peers[1],to:offer.replyTo,cc:'owner@example.com, '+peers[0],reply:conflicting[1].messageId,text:'Option 1 works',signed:true};
+    await incomingEmail(agreeing);assert.equal(inserts,before+1,'the same option accepted by every authenticated guest creates one event');
     const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(booked.status,'booked');assert.equal(booked.slotStart,approved.value.offer.slots[0].start);assert.equal(booked.slotEnd,approved.value.offer.slots[0].end);
     const event=events.get(booked.eventId);assert.ok(event);assert.deepEqual(event.attendees.map(value=>value.email).sort(),[...peers].sort());assert.doesNotMatch(event.description,/PRIVATE GROUP|Untrusted inbound/);
     const confirmations=()=>sentEmail().then(messages=>messages.slice(initialMail).filter(message=>/meeting is booked/i.test(message.text)));const confirmed=await confirmations();assert.equal(confirmed.length,1);assert.deepEqual([...confirmed[0].to].sort(),[...peers].sort());assert.deepEqual(confirmed[0].cc,['owner@example.com']);
-    await api('/fixture/email-restart');await api('/fixture/restart');await incomingEmail(agreeing);await reply(peers[0],'<group-late-duplicate@example.com>',1);await api('/fixture/email-alarm');assert.equal(inserts,before+1);assert.equal((await confirmations()).length,1,'restart and repeated choices do not duplicate a group event or confirmation');
+    await api('/fixture/email-restart');await api('/fixture/restart');await incomingEmail(agreeing);await reply(peers[0],'<group-late-duplicate@example.com>',1);await flushSchedulingEmail();assert.equal(inserts,before+1);assert.equal((await confirmations()).length,1,'restart and repeated choices do not duplicate a group event or confirmation');
    }finally{sourceState='matched';await setModel(null);}
   });
   await t.test('group refresh discards earlier votes and rejects choices from the replaced offer',async()=>{
@@ -613,17 +657,152 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
     await incomingEmail({id:kickId,from:'owner@example.com',to:agent,cc:peers.join(', '),text:'Please find us a time to meet.'});
     const rows=await sql('SELECT data FROM booking_requests WHERE email=?',[peers[0]]);assert.equal(rows.length,1,'group kickoff persists its attendee set');const record=JSON.parse(rows[0].data);
     const approved=await api('/api/booking/scheduling/requests/'+record.id+'/approve',{method:'POST',cookie:ownerCookie,data:{policyRevision:settings.revision}});assert.equal(approved.res.status,200,JSON.stringify(approved.value));
-    const latestOffers=messages=>new Map(peers.map(peer=>[peer,messages.filter(message=>message.to.length===1&&message.to[0]===peer&&/available times/i.test(message.text)).at(-1)]));
-    const oldOffers=latestOffers(await sentEmail());for(const peer of peers)assert.ok(oldOffers.get(peer)?.replyTo);
-    const reply=(peer,id,offer,text)=>incomingEmail({id,from:peer,to:offer.replyTo,reply:offer.messageId,text});
-    await reply(peers[0],'<group-refresh-first-vote@example.com>',oldOffers.get(peers[0]),'Option 1 works');assert.equal(inserts,before);
-    await reply(peers[1],'<group-refresh-request@example.com>',oldOffers.get(peers[1]),'Other options please');
-    const currentOffers=latestOffers(await sentEmail());for(const peer of peers){assert.notEqual(currentOffers.get(peer).replyTo,oldOffers.get(peer).replyTo);assert.deepEqual(currentOffers.get(peer).to,[peer]);assert.deepEqual(currentOffers.get(peer).cc,['owner@example.com']);}
-    await api('/fixture/email-restart');await reply(peers[1],'<group-refresh-stale-vote@example.com>',oldOffers.get(peers[1]),'Option 1 works');assert.equal(inserts,before,'both guests accepting an obsolete offer cannot book');
-    await reply(peers[1],'<group-refresh-second-current@example.com>',currentOffers.get(peers[1]),'Option 1 works');assert.equal(inserts,before,'a previous-revision vote does not count toward the current offer');
-    await reply(peers[0],'<group-refresh-first-current@example.com>',currentOffers.get(peers[0]),'Option 1 works');assert.equal(inserts,before+1);
+    const offers=messages=>messages.filter(message=>message.to.includes(peers[0])&&/available times/i.test(message.text));
+    const oldOffer=offers(await sentEmail()).at(-1);assert.ok(oldOffer?.replyTo);assert.deepEqual(oldOffer.to,peers);
+    const reply=(peer,id,offer,text,parent=offer.messageId)=>incomingEmail({id,from:peer,to:offer.replyTo,cc:['owner@example.com',...peers.filter(value=>value!==peer)].join(', '),reply:parent,text,signed:true});
+    await reply(peers[0],'<group-refresh-first-vote@example.com>',oldOffer,'Option 1 works');assert.equal(inserts,before);
+    await reply(peers[1],'<group-refresh-request@example.com>',oldOffer,'Other options please');
+    const currentOffer=offers(await sentEmail()).at(-1);assert.notEqual(currentOffer.replyTo,oldOffer.replyTo);assert.deepEqual(currentOffer.to,peers);assert.deepEqual(currentOffer.cc,['owner@example.com']);
+    await api('/fixture/email-restart');await reply(peers[1],'<group-refresh-stale-vote@example.com>',oldOffer,'Option 1 works');assert.equal(inserts,before,'both guests accepting an obsolete offer cannot book');
+    await reply(peers[1],'<group-refresh-stale-parent@example.com>',currentOffer,'Option 1 works','<group-refresh-first-vote@example.com>');assert.equal(inserts,before,'an old-revision guest message cannot authorize the current offer');
+    await reply(peers[1],'<group-refresh-second-current@example.com>',currentOffer,'Option 1 works');assert.equal(inserts,before,'a previous-revision vote does not count toward the current offer');
+    await reply(peers[0],'<group-refresh-first-current@example.com>',currentOffer,'Option 1 works');assert.equal(inserts,before+1);
     const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(booked.status,'booked');assert.deepEqual(events.get(booked.eventId).attendees.map(value=>value.email).sort(),[...peers].sort());
    }finally{sourceState='matched';await setModel(null);}
+  });
+  await t.test('already delivered private group options keep working while further messages use the shared thread',async()=>{
+   const agent='scheduling@agent.test',peers=['legacy-group-first@example.com','legacy-group-second@example.com'],kickId='<legacy-group-kickoff@example.com>',before=inserts;
+   sourceState='matched';await setModel(strongModel());
+   try{
+    await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__kickoff:'+kickId,JSON.stringify({gmailId:'runtime-legacy-group',messageId:kickId,owner:'owner@example.com',from:'owner@example.com',to:[peers[0]],cc:[peers[1],agent],subject:'Legacy group',text:'Please find us a time to meet.',context:matchedPurpose,receivedAt:Date.now()})]);
+    await incomingEmail({id:kickId,from:'owner@example.com',to:agent,cc:peers.join(', '),text:'Please find us a time to meet.'});
+    const record=JSON.parse((await sql('SELECT data FROM booking_requests WHERE email=?',[peers[0]]))[0].data);
+    const approved=await api('/api/booking/scheduling/requests/'+record.id+'/approve',{method:'POST',cookie:ownerCookie,data:{policyRevision:settings.revision}});assert.equal(approved.res.status,200,JSON.stringify(approved.value));
+    // Preserve the actual persisted pre-upgrade shape: each guest has a private
+    // token and a different delivered message parent, with no shared capability.
+    const participants=await Promise.all(peers.map(async(email,index)=>{const token=String(index+1).repeat(48);return {email,hash:Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token))).toString('base64url'),replyAddress:'scheduling+'+token+'@agent.test',messageIds:['<legacy-private-'+index+'@mail.test>']};}));
+    assert.equal((await api('/fixture/email-legacy-group',{method:'POST',data:{requestId:record.id,participants,queuedCopies:true}})).res.status,200);
+    await api('/fixture/email-restart');const beforeReplies=(await sentEmail()).length;
+    try{dkimUnavailable=true;await incomingEmail({id:'<legacy-group-first-vote@example.com>',from:peers[0],to:participants[0].replyAddress,reply:participants[0].messageIds[0],text:'Option 1 works',signed:true});}finally{dkimUnavailable=false;}assert.equal(inserts,before,'legacy private capabilities continue through temporary DKIM resolver failures');
+    const queuedPrivate=(await api('/fixture/email-outbox?requestId='+record.id)).value.filter(row=>row.id.includes(':legacy-ready:'));assert.equal(queuedPrivate.length,2);assert.ok(queuedPrivate.every(row=>row.status==='cancelled'),'guest-triggered migration cancels queued private emails');
+    const notices=(await sentEmail()).slice(beforeReplies);assert.equal(notices.length,1,'the next reply creates one group status, not separate guest copies');assert.deepEqual(notices[0].to,peers);assert.deepEqual(notices[0].cc,['owner@example.com']);assert.ok(notices[0].replyTo);assert.match(notices[0].text,/Waiting for/);
+    const state=(await api('/fixture/email-state?requestId='+record.id)).value[0];assert.ok(state.groupReply);assert.equal(state.participants[0].choice.slotId,approved.value.offer.slots[0].id);assert.deepEqual(state.participants.map(p=>p.replyAddress),participants.map(p=>p.replyAddress),'a status preserves still-delivered private reply addresses');
+    await incomingEmail({id:'<legacy-group-shared-spoof@example.com>',from:peers[1],to:notices[0].replyTo,reply:notices[0].messageId,text:'Option 1 works'});assert.equal(inserts,before,'the now-public group token does not inherit legacy unsigned identity authority');
+    await api('/fixture/email-restart');await api('/fixture/restart');
+    const agreeing={id:'<legacy-group-second-vote@example.com>',from:peers[1],to:participants[1].replyAddress,reply:participants[1].messageIds[0],text:'Option 1 works'};
+    await incomingEmail(agreeing);assert.equal(inserts,before+1,'the remaining guest can use the original private email without needing a new offer');
+    const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(booked.status,'booked');assert.deepEqual(events.get(booked.eventId).attendees.map(v=>v.email).sort(),[...peers].sort());
+    const confirmations=(await sentEmail()).slice(beforeReplies).filter(message=>/meeting is booked/i.test(message.text));assert.equal(confirmations.length,1);assert.deepEqual(confirmations[0].to,peers);assert.deepEqual(confirmations[0].cc,['owner@example.com']);
+    await incomingEmail(agreeing);assert.equal(inserts,before+1);
+   }finally{sourceState='matched';await setModel(null);}
+  });
+  await t.test('resuming a legacy group cancels queued private copies while preserving votes and delivered reply addresses',async()=>{
+   const agent='scheduling@agent.test',peers=['migrate-group-first@example.com','migrate-group-second@example.com'],kickId='<migrate-group-kickoff@example.com>',before=inserts;
+   sourceState='matched';await setModel(strongModel());
+   try{
+    await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__kickoff:'+kickId,JSON.stringify({gmailId:'runtime-migrate-group',messageId:kickId,owner:'owner@example.com',from:'owner@example.com',to:[peers[0]],cc:[peers[1],agent],subject:'Migrate group',text:'Please find us a time to meet.',context:matchedPurpose,receivedAt:Date.now()})]);
+    await incomingEmail({id:kickId,from:'owner@example.com',to:agent,cc:peers.join(', '),text:'Please find us a time to meet.'});
+    const record=JSON.parse((await sql('SELECT data FROM booking_requests WHERE email=?',[peers[0]]))[0].data);
+    const approve=()=>api('/api/booking/scheduling/requests/'+record.id+'/approve',{method:'POST',cookie:ownerCookie,data:{policyRevision:settings.revision}});
+    const approved=await approve();assert.equal(approved.res.status,200,JSON.stringify(approved.value));
+    const vote={slotId:approved.value.offer.slots[0].id,evidenceId:'<migrate-first-accepted@example.com>'};
+    const participants=await Promise.all(peers.map(async(email,index)=>{const token=String(index+3).repeat(48);return {email,hash:Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(token))).toString('base64url'),replyAddress:'scheduling+'+token+'@agent.test',messageIds:['<migrate-private-'+index+'@mail.test>'],...(index===0?{choice:vote}:{} )};}));
+    await api('/fixture/email-legacy-group',{method:'POST',data:{requestId:record.id,participants,queuedCopies:true}});
+    await api('/fixture/email-restart');const sentBefore=(await sentEmail()).length;
+    const resumed=await approve();assert.equal(resumed.res.status,200,JSON.stringify(resumed.value));assert.equal(resumed.value.offer.revision,approved.value.offer.revision,'migration retains the exact offered revision');
+    const migrated=(await sentEmail()).slice(sentBefore);assert.equal(migrated.length,1,'only one shared offer is sent, never the queued private copies');assert.deepEqual(migrated[0].to,peers);assert.deepEqual(migrated[0].cc,['owner@example.com']);assert.match(migrated[0].text,/available times/i);assert.doesNotMatch(migrated[0].text,/Legacy private/);
+    const queued=(await api('/fixture/email-outbox?requestId='+record.id)).value.filter(row=>row.id.includes(':legacy-ready:'));assert.equal(queued.length,2);assert.ok(queued.every(row=>row.status==='cancelled'),'ready private emails are cancelled durably');
+    const state=(await api('/fixture/email-state?requestId='+record.id)).value[0];assert.equal(state.offer.revision,approved.value.offer.revision);assert.ok(state.groupReply);assert.deepEqual(state.participants[0].choice,vote);assert.deepEqual(state.participants.map(p=>p.replyAddress),participants.map(p=>p.replyAddress),'sent private capabilities remain valid during the same offer');assert.equal(inserts,before,'resuming never books on a single existing vote');
+    await api('/fixture/email-restart');await approve();await flushSchedulingEmail();assert.equal((await sentEmail()).length,sentBefore+1,'repeating the resume does not send another shared offer or revive private messages');
+    const accepting={id:'<migrate-second-choice@example.com>',from:peers[1],to:participants[1].replyAddress,reply:participants[1].messageIds[0],text:'Option 1 works'};
+    await incomingEmail(accepting);assert.equal(inserts,before+1,'the remaining original private reply completes the preserved consensus');
+    await api('/fixture/email-restart');await api('/fixture/restart');await incomingEmail(accepting);await approve();await flushSchedulingEmail();assert.equal(inserts,before+1,'retries do not rebook the migrated meeting');
+    const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(booked.status,'booked');assert.equal(booked.slotStart,approved.value.offer.slots[0].start);assert.deepEqual(events.get(booked.eventId).attendees.map(value=>value.email).sort(),[...peers].sort());
+    const confirmations=(await sentEmail()).slice(sentBefore).filter(message=>/meeting is booked/i.test(message.text));assert.equal(confirmations.length,1);assert.deepEqual(confirmations[0].to,peers);
+   }finally{sourceState='matched';await setModel(null);}
+  });
+  async function drainAuthJobs(){for(let attempt=0;attempt<30;attempt++){if(!(await api('/fixture/email-auth-state')).value.length)return;await flushSchedulingEmail();}assert.deepEqual((await api('/fixture/email-auth-state')).value,[],'previous verification jobs finish within bounded alarms');}
+  async function prepareAuthRetryGroup(label){
+   await drainAuthJobs();
+   const agent='scheduling@agent.test',peers=[label+'-first@example.com',label+'-second@example.com'],kickId='<'+label+'-kickoff@example.com>';
+   await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__kickoff:'+kickId,JSON.stringify({gmailId:'runtime-'+label,messageId:kickId,owner:'owner@example.com',from:'owner@example.com',to:[peers[0]],cc:[peers[1],agent],subject:label+' group',text:'Please find us a time to meet.',context:matchedPurpose,receivedAt:Date.now()})]);
+   await incomingEmail({id:kickId,from:'owner@example.com',to:agent,cc:peers.join(', '),text:'Please find us a time to meet.'});
+   const record=JSON.parse((await sql('SELECT data FROM booking_requests WHERE email=?',[peers[0]]))[0].data),approved=await api('/api/booking/scheduling/requests/'+record.id+'/approve',{method:'POST',cookie:ownerCookie,data:{policyRevision:settings.revision}});assert.equal(approved.res.status,200,JSON.stringify(approved.value));
+   const offer=(await sentEmail()).filter(message=>message.to.includes(peers[0])&&/available times/i.test(message.text)).at(-1);assert.ok(offer?.replyTo);
+   return {peers,record,approved:approved.value,offer,payload:(peer,id,option)=>emailPayload({id:'<'+id+'@example.com>',from:peer,to:offer.replyTo,cc:['owner@example.com',...peers.filter(value=>value!==peer)].join(', '),reply:offer.messageId,text:'Option '+option+' works',signed:true}),auth:async()=> (await api('/fixture/email-auth-state?to='+encodeURIComponent(offer.replyTo))).value,state:async()=> (await api('/fixture/email-state?requestId='+record.id)).value[0]};
+  }
+  await t.test('temporary sender verification failure retries durably and records guest consent once after recovery',async()=>{
+   sourceState='matched';await setModel(strongModel());const before=inserts;
+   try{
+    const group=await prepareAuthRetryGroup('auth-recovery'),first=await group.payload(group.peers[0],'auth-recovery-first',1),sentBefore=(await sentEmail()).length;
+    dkimUnavailable=true;
+    const deliver=()=>api('/fixture/email',{method:'POST',data:first});assert.equal((await deliver()).value.rejection,null);assert.equal((await deliver()).value.rejection,null);
+    const pending=await group.auth();assert.equal(pending.length,1,'identical deliveries share one bounded raw verification job');assert.ok(pending[0].bytes>0&&pending[0].bytes<=262144);assert.equal(pending[0].attempts,0);assert.ok((await api('/fixture/email-diagnostics')).value.pending>0);assert.equal((await sentEmail()).length,sentBefore);assert.equal(inserts,before);assert.ok((await group.state()).participants.every(p=>!p.choice));
+    const outsider=await group.payload('outsider@example.com','auth-recovery-outsider',1);await api('/fixture/email',{method:'POST',data:outsider});assert.equal((await group.auth()).length,1,'outsiders cannot reserve verification jobs on a known group address');
+    await api('/fixture/email-restart');dkimUnavailable=false;await flushSchedulingEmail();
+    assert.deepEqual(await group.auth(),[],'successful verification promptly deletes saved raw email');const waiting=(await sentEmail()).slice(sentBefore);assert.equal(waiting.length,1);assert.deepEqual(waiting[0].to,group.peers);assert.match(waiting[0].text,/Waiting for/);assert.equal((await group.state()).participants[0].choice.slotId,group.approved.offer.slots[0].id);assert.equal(inserts,before);
+    await flushSchedulingEmail();await deliver();assert.equal((await sentEmail()).length,sentBefore+1,'alarm and provider redelivery cannot record or acknowledge the same recovered vote twice');
+    const second=await group.payload(group.peers[1],'auth-recovery-second',1);await api('/fixture/email',{method:'POST',data:second});assert.equal(inserts,before+1);
+    const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[group.record.id]))[0].data);assert.equal(booked.status,'booked');assert.deepEqual(events.get(booked.eventId).attendees.map(v=>v.email).sort(),[...group.peers].sort());assert.equal((await sentEmail()).slice(sentBefore).filter(message=>/meeting is booked/i.test(message.text)).length,1);
+   }finally{dkimUnavailable=false;sourceState='matched';await setModel(null);}
+  });
+  await t.test('sender verification retry exhaustion deletes raw email and cannot silently record or revive a vote',async()=>{
+   sourceState='matched';await setModel(strongModel());const before=inserts;
+   try{
+    const group=await prepareAuthRetryGroup('auth-exhaustion'),first=await group.payload(group.peers[0],'auth-exhaustion-first',1),sentBefore=(await sentEmail()).length;
+    dkimUnavailable=true;await api('/fixture/email',{method:'POST',data:first});assert.equal((await group.auth()).length,1);
+    for(let attempt=1;attempt<=3;attempt++){await flushSchedulingEmail();const rows=await group.auth();if(attempt<3){assert.equal(rows.length,1);assert.equal(rows[0].attempts,attempt);}else assert.deepEqual(rows,[],'bounded retry exhaustion discards stored raw content');}
+    assert.equal((await sentEmail()).length,sentBefore);assert.equal(inserts,before);assert.ok((await group.state()).participants.every(p=>!p.choice),'failed authentication never grants consent');
+    dkimUnavailable=false;await api('/fixture/email-restart');await api('/fixture/email',{method:'POST',data:first});await flushSchedulingEmail();assert.equal((await sentEmail()).length,sentBefore,'an exhausted immutable message remains ignored after recovery');assert.ok((await group.state()).participants.every(p=>!p.choice));
+    await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[0],'auth-exhaustion-new-first',1)});await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[1],'auth-exhaustion-second',1)});assert.equal(inserts,before+1,'new authenticated replies can still complete the meeting');
+   }finally{dkimUnavailable=false;sourceState='matched';await setModel(null);}
+  });
+  await t.test('a delayed authenticated reply cannot overwrite a newer verified guest choice',async()=>{
+   sourceState='matched';await setModel(strongModel());const before=inserts;
+   try{
+    const group=await prepareAuthRetryGroup('auth-order'),older=await group.payload(group.peers[0],'auth-order-older',1),sentBefore=(await sentEmail()).length;
+    dkimUnavailable=true;await api('/fixture/email',{method:'POST',data:older});assert.equal((await group.auth()).length,1);
+    dkimUnavailable=false;await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[0],'auth-order-newer',2)});assert.equal((await group.state()).participants[0].choice.slotId,group.approved.offer.slots[1].id);assert.equal((await sentEmail()).length,sentBefore+1);
+    await api('/fixture/email-restart');await flushSchedulingEmail();assert.deepEqual(await group.auth(),[]);assert.equal((await group.state()).participants[0].choice.slotId,group.approved.offer.slots[1].id,'the reserved original arrival order survives asynchronous verification');assert.equal((await sentEmail()).length,sentBefore+1,'the superseded delayed vote has no new acknowledgment');assert.equal(inserts,before);
+    await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[1],'auth-order-second',2)});assert.equal(inserts,before+1);
+    const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[group.record.id]))[0].data);assert.equal(booked.status,'booked');assert.equal(booked.slotStart,group.approved.offer.slots[1].start,'the newer agreed option is the only booked slot');
+   }finally{dkimUnavailable=false;sourceState='matched';await setModel(null);}
+  });
+  await t.test('a newer reply awaiting identity verification blocks an old agreement even after retry exhaustion',async()=>{
+   sourceState='matched';await setModel(strongModel());const before=inserts;
+   try{
+    const group=await prepareAuthRetryGroup('auth-withdrawal');
+    await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[0],'auth-withdrawal-initial',1)});assert.equal((await group.state()).participants[0].choice.slotId,group.approved.offer.slots[0].id);
+    dkimUnavailable=true;await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[0],'auth-withdrawal-pending',2)});assert.equal((await group.auth()).length,1);
+    dkimUnavailable=false;await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[1],'auth-withdrawal-second',1)});assert.equal(inserts,before,'another guest cannot book against an agreement with a newer unverified reply');assert.match((await sentEmail()).at(-1).text,/sender verification/);
+    dkimUnavailable=true;for(let i=0;i<3;i++)await flushSchedulingEmail();assert.deepEqual(await group.auth(),[]);assert.equal(inserts,before);
+    dkimUnavailable=false;await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[1],'auth-withdrawal-second-repeat',1)});assert.equal(inserts,before,'verification exhaustion cannot restore the stale agreement');
+    await api('/fixture/email',{method:'POST',data:await group.payload(group.peers[0],'auth-withdrawal-new-confirmed',1)});assert.equal(inserts,before+1,'only a newer authenticated reply settles that guest consent');
+   }finally{dkimUnavailable=false;sourceState='matched';await setModel(null);}
+  });
+  async function googleWorkspaceReply(group,peer,id,option){
+   const base=await emailPayload({id:'<'+id+'@example.com>',from:peer,to:group.offer.replyTo,cc:['owner@example.com',...group.peers.filter(value=>value!==peer)].join(', '),reply:group.offer.messageId,text:'Option '+option+' works'});
+   const signed=await dkimSign(base.raw,{headerList:['From','To','Cc','Message-ID','Subject','In-Reply-To','References','MIME-Version','Content-Type','Content-Transfer-Encoding'],signatureData:[{signingDomain:'example-com.20251104.gappssmtp.com',selector:'workspace',privateKey:dkimPrivate}]});assert.deepEqual(signed.errors,[]);
+   const source=signed.signatures+base.raw,arc={signingDomain:'google.com',selector:'arc',privateKey:dkimPrivate,headerList:['DKIM-Signature','From','To','Cc','Message-ID','In-Reply-To','References','MIME-Version']};
+   const first=await sealMessage(source,{...arc,authResults:'mx.google.com; arc=none'}),outbound=first.toString()+source;
+   const second=await sealMessage(outbound,{...arc,cv:'pass',authResults:'mx.google.com; spf=pass smtp.mailfrom='+peer+'; dmarc=pass header.from=example.com'}),received=second.toString()+outbound;
+   assert.match(received,/ARC-Seal: i=2;/);return {payload:{...base,raw:outbound},received,messageId:'<'+id+'@example.com>',gmailId:'gmail_'+id.replaceAll('-','_')};
+  }
+  await t.test('Google Workspace replies use the exact Gmail received copy and real Google ARC evidence before group consent',async()=>{
+   sourceState='matched';await setModel(strongModel());const before=inserts;
+   try{
+    const group=await prepareAuthRetryGroup('google-arc'),first=await googleWorkspaceReply(group,group.peers[0],'google-arc-first',1),sentBefore=(await sentEmail()).length,readsBefore=gmailRawReads;
+    receivedGmail.set(first.messageId,{id:first.gmailId,raw:first.received});
+    await api('/fixture/email',{method:'POST',data:first.payload});assert.equal((await group.auth()).length,1,'a gappssmtp DKIM signature alone does not authenticate the sender');assert.equal((await sentEmail()).length,sentBefore);assert.ok((await group.state()).participants.every(p=>!p.choice));
+    await api('/fixture/email-restart');await flushSchedulingEmail();assert.deepEqual(await group.auth(),[]);assert.ok(gmailRawReads>readsBefore,'the production verifier fetched the exact received message through Gmail');assert.equal((await group.state()).participants[0].choice.slotId,group.approved.offer.slots[0].id);assert.equal((await sentEmail()).length,sentBefore+1);assert.equal(inserts,before);
+    const forged=await googleWorkspaceReply(group,group.peers[1],'google-arc-forged',1);receivedGmail.set(forged.messageId,{id:forged.gmailId,raw:'Authentication-Results: mx.google.com; spf=pass smtp.mailfrom='+group.peers[1]+'; dmarc=pass header.from=example.com\r\n'+forged.payload.raw});
+    await api('/fixture/email',{method:'POST',data:forged.payload});await flushSchedulingEmail();assert.equal((await group.state()).participants[1].choice,undefined,'unsealed authentication headers cannot supply Google identity proof');assert.equal(inserts,before);
+    const changed=await googleWorkspaceReply(group,group.peers[1],'google-arc-changed',1),canonicalOther=await googleWorkspaceReply(group,group.peers[1],'google-arc-changed',2);receivedGmail.set(changed.messageId,{id:changed.gmailId,raw:canonicalOther.received});
+    await api('/fixture/email',{method:'POST',data:changed.payload});await flushSchedulingEmail();assert.equal((await group.state()).participants[1].choice,undefined,'a valid Google seal for changed canonical content cannot authorize the frozen incoming choice');assert.equal(inserts,before);
+    const second=await googleWorkspaceReply(group,group.peers[1],'google-arc-second',1);receivedGmail.set(second.messageId,{id:second.gmailId,raw:second.received});await api('/fixture/email',{method:'POST',data:second.payload});assert.equal(inserts,before);await flushSchedulingEmail();assert.equal(inserts,before+1);
+    const booked=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[group.record.id]))[0].data);assert.equal(booked.status,'booked');assert.deepEqual(events.get(booked.eventId).attendees.map(v=>v.email).sort(),[...group.peers].sort());assert.equal((await sentEmail()).slice(sentBefore).filter(message=>/meeting is booked/i.test(message.text)).length,1);
+    await api('/fixture/email',{method:'POST',data:second.payload});await flushSchedulingEmail();assert.equal(inserts,before+1);
+   }finally{dkimUnavailable=false;sourceState='matched';await setModel(null);}
   });
   await t.test('unknown email delivery is not blindly retried after coordinator restart',async()=>{
    sourceState='matched';await setModel(strongModel());
@@ -634,7 +813,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const raw=['From: owner@example.com','To: '+peer,'Cc: '+agent,'Message-ID: '+id,'Subject: Meet','Content-Type: text/plain','','Please find us a time to meet.'].join('\r\n');
    await api('/fixture/email',{method:'POST',data:{to:agent,from:'owner@example.com',raw}});
    assert.equal((await sql("SELECT body FROM fixture_control WHERE key='__sent'")).length,sentBefore+1);
-   await sql("INSERT INTO fixture_control(key,body) VALUES('__email_send_unknown','false')");await api('/fixture/email-restart');await api('/fixture/email-alarm');
+   await sql("INSERT INTO fixture_control(key,body) VALUES('__email_send_unknown','false')");await api('/fixture/email-restart');await flushSchedulingEmail();
    assert.equal((await sql("SELECT body FROM fixture_control WHERE key='__sent'")).length,sentBefore+1);assert.equal(inserts,before);
    await setModel(null);
   });
@@ -767,7 +946,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
     const record=JSON.parse((await sql("SELECT data FROM booking_requests WHERE email=? ORDER BY created_at DESC LIMIT 1",[peer]))[0].data);
     assert.equal(record.decision.tier,'async');assert.equal(record.scheduling.input.context,purpose);assert.equal(record.scheduling.offer,null);
     assert.equal((await api('/fixture/email-state?requestId='+record.id)).value[0].status,'awaiting_review');assert.equal(inserts,before);
-    await incomingEmail(kickoff);await api('/fixture/email-alarm');assert.equal((await sentEmail()).length,initialMail+1,'ordinary delegation and duplicate delivery are not approval');
+    await incomingEmail(kickoff);await flushSchedulingEmail();assert.equal((await sentEmail()).length,initialMail+1,'ordinary delegation and duplicate delivery are not approval');
     const approve='/api/booking/scheduling/requests/'+record.id+'/approve',approval={policyRevision:settings.revision};
     assert.equal((await api(approve,{method:'POST',data:approval})).res.status,401);
     assert.equal((await api(approve,{method:'POST',cookie:ownerCookie,origin:'https://evil.test',data:approval})).res.status,403);
@@ -780,11 +959,11 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
     const offer=(await sentEmail()).at(-1);assert.equal((await sentEmail()).length,initialMail+2);assert.deepEqual(offer.to,[peer]);assert.deepEqual(offer.cc,['owner@example.com']);assert.match(offer.replyTo,/^scheduling\+[a-f0-9]{48}@agent\.test$/);assert.match(offer.text,/Option 1 works/);assert.doesNotMatch(offer.text,/PRIVATE:|score|thesis|garden|Ignore the owner/);
     const saved=JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[record.id]))[0].data);assert.equal(saved.scheduling.approval.policyRevision,settings.revision);assert.ok(saved.scheduling.approval.approvedAt);
     await api('/fixture/restart');await api('/fixture/email-restart');await incomingEmail(kickoff);
-    const duplicate=await api(approve,{method:'POST',cookie:ownerCookie,data:approval});assert.equal(duplicate.res.status,200);assert.equal(duplicate.value.offer.revision,approved.value.offer.revision);await api('/fixture/email-alarm');
+    const duplicate=await api(approve,{method:'POST',cookie:ownerCookie,data:approval});assert.equal(duplicate.res.status,200);assert.equal(duplicate.value.offer.revision,approved.value.offer.revision);await flushSchedulingEmail();
     assert.equal((await sentEmail()).length,initialMail+2,'restart and duplicate approval keep exactly one counterpart offer');
     const thread=(await api('/fixture/email-state?requestId='+record.id)).value[0];assert.equal(thread.status,'offered');assert.equal(thread.replyAddress,offer.replyTo);
     const choice={id:'<owner-reviewed-choice@example.com>',from:peer,to:offer.replyTo,reply:offer.messageId,text:'Option 1 works'};await incomingEmail(choice);assert.equal(inserts,before+1);assert.match((await sentEmail()).at(-1).text,/meeting is booked/);
-    await incomingEmail(choice);await api('/fixture/email-alarm');assert.equal(inserts,before+1);assert.equal((await sentEmail()).length,initialMail+3);
+    await incomingEmail(choice);await flushSchedulingEmail();assert.equal(inserts,before+1);assert.equal((await sentEmail()).length,initialMail+3);
    }finally{sourceState='matched';await setModel(null);}
   });
   await t.test('owner downgrade and stale assessment clarification cannot reissue cached email offers',async()=>{

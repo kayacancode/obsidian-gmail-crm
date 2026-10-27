@@ -1,8 +1,11 @@
 import {boundedJSON} from './bounded-json';
 import type {GmailMessage,GmailPart} from './mail-model';
-import {authoredSchedulingText,isSchedulingKickoff,schedulingAddress,schedulingParticipants,schedulingHeader,schedulingMailboxes,schedulingMessageId,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
+import {authoredSchedulingText,isSchedulingKickoff,schedulingAddress,schedulingParticipants,schedulingHeader,schedulingMailboxes,schedulingMessageId,type SchedulingInboundEmail,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
+import {parseSchedulingEmail} from './scheduling-email';
+import {verifyGoogleReceivedSchedulingSender,SchedulingSenderAuthUnavailable} from './scheduling-sender-auth';
 
 interface VerificationOptions {owner:string;agentAddress:string;messageId:string;accessToken:string;current:()=>boolean;fetch?:typeof fetch;now?:number}
+interface ReceivedVerificationOptions {owner:string;input:SchedulingInboundEmail;accessToken:string;current:()=>boolean;fetch?:typeof fetch;now?:number}
 export interface VerifiedBookingApproval extends VerifiedSchedulingKickoff {inReplyTo:string|null}
 function canonicalSchedulingText(message:GmailMessage):string {
  const parts:GmailPart[]=[];let nodes=0,bytes=0;
@@ -115,4 +118,43 @@ export async function verifySentBookingApproval(options:VerificationOptions):Pro
   const reference=schedulingHeader(headers,'in-reply-to'),inReplyTo=reference?schedulingMessageId(reference):null;
   check();return {gmailId,messageId:id,owner,from:owner,to,cc,subject:schedulingHeader(headers,'subject').slice(0,160),text,receivedAt,inReplyTo};
  }catch(error){if(error instanceof Error&&error.message==='scheduling_grant_revoked')throw error;throw Error('invalid_booking_approval');}
+}
+
+/** The owner's received copy supplies Google-sealed delivery evidence. Mailbox
+ * presence alone is never sender proof, and transit content must match exactly. */
+export async function verifyReceivedSchedulingGuestReply(options:ReceivedVerificationOptions):Promise<string|null>{
+ const input=options.input,id=schedulingMessageId(input.messageId),owner=schedulingAddress(options.owner),now=options.now??Date.now();
+ const check=()=>{if(!options.current())throw Error('scheduling_grant_revoked');};check();
+ const read=async(url:URL,maxBytes:number)=>{
+  check();let response:Response;
+  try{response=await (options.fetch??fetch)(url.href,{headers:{authorization:'Bearer '+options.accessToken},signal:AbortSignal.timeout(10000)});}
+  catch{check();throw Error('scheduling_sender_auth_unavailable');}
+  check();if(!response.ok){await response.body?.cancel();throw Error('scheduling_sender_auth_unavailable');}
+  const data=await boundedJSON(response,maxBytes);check();return data;
+ };
+ try{
+  const search=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+  search.searchParams.set('q','rfc822msgid:'+id+' -in:sent -in:drafts -in:spam -in:trash');search.searchParams.set('maxResults','2');
+  const listing=await read(search,16384) as {messages?:{id?:string}[];nextPageToken?:string};
+  if(listing.nextPageToken||listing.messages!==undefined&&!Array.isArray(listing.messages)||(listing.messages?.length??0)>1)return null;
+  if(!listing.messages?.length)throw Error('scheduling_sender_auth_unavailable');
+  const gmailId=listing.messages[0].id;if(typeof gmailId!=='string'||! /^[A-Za-z0-9_-]{1,200}$/.test(gmailId))return null;
+  const detail=new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(gmailId)}`);
+  detail.searchParams.set('format','raw');detail.searchParams.set('fields','id,labelIds,internalDate,raw');
+  const stored=await read(detail,360448) as {id?:string;labelIds?:string[];internalDate?:string;raw?:string};
+  const receivedAt=Number(stored.internalDate);
+  if(stored.id!==gmailId||!Array.isArray(stored.labelIds)||stored.labelIds.some(label=>['SENT','DRAFT','SPAM','TRASH'].includes(label))||!Number.isFinite(receivedAt)||receivedAt<=now-86400000||receivedAt>now+300000)return null;
+  if(typeof stored.raw!=='string'||!stored.raw.length||stored.raw.length>349528||! /^[A-Za-z0-9_-]+={0,2}$/.test(stored.raw))return null;
+  const raw=Uint8Array.from(atob(stored.raw.replace(/-/g,'+').replace(/_/g,'/')),char=>char.charCodeAt(0));if(raw.byteLength>262144)return null;
+  const canonical=await parseSchedulingEmail(raw.buffer,input.envelopeTo);check();
+  if(canonical.from===owner||![...canonical.to,...canonical.cc].includes(owner)||![...canonical.to,...canonical.cc].includes(input.envelopeTo))return null;
+  for(const field of ['from','messageId','inReplyTo','text'] as const)if(canonical[field]!==input[field])return null;
+  for(const field of ['to','cc','references'] as const)if(canonical[field].length!==input[field].length||canonical[field].some((value,index)=>value!==input[field][index]))return null;
+  const sender=await verifyGoogleReceivedSchedulingSender(raw,canonical,{fetch:options.fetch});check();return sender;
+ }catch(error){
+  check();
+  if(error instanceof SchedulingSenderAuthUnavailable)throw Error('scheduling_sender_auth_unavailable');
+  if(error instanceof Error&&['scheduling_sender_auth_unavailable','scheduling_grant_revoked'].includes(error.message))throw error;
+  return null;
+ }
 }

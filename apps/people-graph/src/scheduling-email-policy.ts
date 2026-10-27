@@ -4,6 +4,8 @@ import type {SchedulingOffer,SchedulingResult} from './scheduling-types';
 export interface SchedulingInboundEmail {
  messageId:string;envelopeTo:string;from:string;to:string[];cc:string[];subject:string;text:string;
  inReplyTo:string|null;references:string[];
+ /** Set only by the raw email adapter after independent signature verification. */
+ authenticatedSender?:string;
 }
 export interface VerifiedSchedulingKickoff {
  gmailId:string;messageId:string;owner:string;from:string;to:string[];cc:string[];subject:string;text:string;receivedAt:number;

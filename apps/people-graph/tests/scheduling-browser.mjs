@@ -64,6 +64,16 @@ try{
  assert.deepEqual(calls.findLast(c=>c.path.endsWith('/approve')).body,{policyRevision:1});
  assert.equal(await page.getByRole('button',{name:'Offer times anyway',exact:true}).count(),0,'approved requests cannot trigger a second override from the UI');
  await page.getByText('Times are ready. The email conversation will continue with the available options.',{exact:true}).waitFor();
+ // An approved email group can move its existing options into one shared thread.
+ assert.equal(await page.getByRole('button',{name:'Continue in shared email',exact:true}).count(),0,'single guest requests do not show a group migration action');
+ requests[0].scheduling.input.attendees=['peer@example.test','second@example.test'];
+ await page.getByRole('button',{name:'Refresh',exact:true}).click();await page.getByRole('button',{name:'Continue in shared email',exact:true}).waitFor();
+ const callsBeforeShared=calls.filter(c=>c.path.endsWith('/approve')).length;
+ await page.getByRole('button',{name:'Continue in shared email',exact:true}).click();await page.getByText('Times are ready. The email conversation will continue with the available options.',{exact:true}).waitFor();
+ assert.equal(calls.filter(c=>c.path.endsWith('/approve')).length,callsBeforeShared+1);
+ assert.deepEqual(calls.findLast(c=>c.path.endsWith('/approve')).body,{policyRevision:1});
+ assert.equal(calls.some(c=>c.path==='/api/booking/requests/scheduling-request/approve'),false,'continuing email cannot book on behalf of guests');
+ delete requests[0].scheduling.input.attendees;
  // Missing context is a counterpart question, while model/source problems still require owner review.
  requests[0].decision={tier:'review',policyRevision:1,reasons:['The meeting purpose needs more detail.'],uncertainties:[],fit:{fit:'needs_context',evidence:[]},people:{status:'not_found',lastSync:new Date().toISOString()}};
  delete requests[0].scheduling.approval;requests[0].scheduling.offer=null;requests[0].slotStart=null;requests[0].slotEnd=null;

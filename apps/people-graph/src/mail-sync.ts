@@ -16,8 +16,8 @@ import type {MetadataInput} from './relevance-store';
 import type {RelevanceLens} from './relevance-model';
 import {canonicalThemeName,type Theme,type ThemeSignal} from './relevance-model';
 import {decodeGmailMessage} from './gmail-body';
-import {verifySentBookingApproval,verifySentSchedulingKickoff} from './scheduling-gmail';
-import {schedulingMessageId} from './scheduling-email-policy';
+import {verifyReceivedSchedulingGuestReply,verifySentBookingApproval,verifySentSchedulingKickoff} from './scheduling-gmail';
+import {schedulingMessageId,type SchedulingInboundEmail} from './scheduling-email-policy';
 import {ThemeExtractor,THEME_MODEL,EXTRACTOR_VERSION,THEME_TOPICS} from './theme-extractor';
 import type {GmailMessage} from './mail-model';
 import type {RetrievalJob,RetrievalError} from './relevance-store';
@@ -88,12 +88,17 @@ export class MailSync extends DurableObject<MailEnv>{
   return {...(profile||memory),...memory,...(profile&&profile!==memory?{company:profile.company,building:profile.building,needs:profile.needs,offers:profile.offers,interests:profile.interests,relationship:profile.relationship}:{}),pointPersonId,notBefore,entries,aliasMemories};
  }
  async verifySchedulingKickoff(messageId:string,agentAddress:string){
-  return this.verifyOwnerSentEmail(messageId,agentAddress,verifySentSchedulingKickoff);
+  return this.verifyOwnerEmail(messageId,agentAddress,verifySentSchedulingKickoff);
  }
  async verifyBookingApproval(messageId:string,replyAddress:string){
-  return this.verifyOwnerSentEmail(messageId,replyAddress,verifySentBookingApproval);
+  return this.verifyOwnerEmail(messageId,replyAddress,verifySentBookingApproval);
  }
- private async verifyOwnerSentEmail<T>(messageId:string,agentAddress:string,verify:(options:Parameters<typeof verifySentSchedulingKickoff>[0])=>Promise<T>):Promise<T>{
+ async verifySchedulingGuestReply(input:SchedulingInboundEmail):Promise<string|null>{
+  schedulingMessageId(input.messageId);
+  try{return await this.verifyOwnerEmail(input.messageId,input.envelopeTo,options=>verifyReceivedSchedulingGuestReply({...options,input}));}
+  catch(error){if(error instanceof Error&&error.message==='scheduling_grant_revoked')throw error;throw Error('scheduling_sender_auth_unavailable');}
+ }
+ private async verifyOwnerEmail<T>(messageId:string,agentAddress:string,verify:(options:Parameters<typeof verifySentSchedulingKickoff>[0])=>Promise<T>):Promise<T>{
   schedulingMessageId(messageId);
   const owner=await this.ctx.storage.get<string>('owner'),key=this.env.MAIL_TOKEN_KEY,secret=this.env.GOOGLE_CLIENT_SECRET;
   if(!owner||!key||!secret)throw Error('scheduling_gmail_unavailable');
