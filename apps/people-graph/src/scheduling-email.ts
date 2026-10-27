@@ -33,7 +33,8 @@ export async function schedulingEmail(message:ForwardableEmailMessage,env:Schedu
   while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>MAX_RAW){await reader.cancel();throw Error('email_too_large');}chunks.push(value);}
   const raw=new Uint8Array(length);let offset=0;for(const chunk of chunks){raw.set(chunk,offset);offset+=chunk.length;}
   const parsed=await parseSchedulingEmail(raw.buffer,message.to);
-  await env.SCHEDULING_EMAIL.getByName(configuration.owner).receive(configuration.owner,parsed);
+  if(new RegExp('^scheduling\\+b[a-f0-9]{48}@'+configuration.replyDomain.replace(/[.]/g,'\\.')+'$').test(parsed.envelopeTo))await env.BOOKING.getByName(configuration.owner).receiveApprovalEmail(configuration.owner,parsed);
+  else await env.SCHEDULING_EMAIL.getByName(configuration.owner).receive(configuration.owner,parsed);
  }catch(error){
   // Avoid reflecting message content, addresses or provider diagnostics into logs.
   if(error instanceof Error&&error.message==='automatic_email_ignored')return;

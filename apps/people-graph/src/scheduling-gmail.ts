@@ -3,6 +3,7 @@ import type {GmailMessage,GmailPart} from './mail-model';
 import {authoredSchedulingText,isSchedulingKickoff,schedulingAddress,schedulingCounterpart,schedulingHeader,schedulingMailboxes,schedulingMessageId,type VerifiedSchedulingKickoff} from './scheduling-email-policy';
 
 interface VerificationOptions {owner:string;agentAddress:string;messageId:string;accessToken:string;current:()=>boolean;fetch?:typeof fetch;now?:number}
+export interface VerifiedBookingApproval extends VerifiedSchedulingKickoff {inReplyTo:string|null}
 function canonicalSchedulingText(message:GmailMessage):string {
  const parts:GmailPart[]=[];let nodes=0,bytes=0;
  const visit=(part:GmailPart,depth:number)=>{
@@ -82,4 +83,35 @@ export async function verifySentSchedulingKickoff(options:VerificationOptions):P
   try{const context=await canonicalThreadContext(canonical,verified,agent,read);if(context)verified.context=context;}catch(error){if(error instanceof Error&&error.message==='scheduling_grant_revoked')throw error;}
   check();return verified;
  }catch(error){if(error instanceof Error&&error.message==='scheduling_grant_revoked')throw error;throw Error('invalid_owner_kickoff');}
+}
+
+/** A booking decision must come from the owner's exact SENT copy addressed to
+ * this notification's reply capability. Transit content carries no authority. */
+export async function verifySentBookingApproval(options:VerificationOptions):Promise<VerifiedBookingApproval>{
+ const id=schedulingMessageId(options.messageId),owner=schedulingAddress(options.owner),replyAddress=schedulingAddress(options.agentAddress),now=options.now??Date.now();
+ const check=()=>{if(!options.current())throw Error('scheduling_grant_revoked');};check();
+ const read=async(url:URL)=>{
+  check();const response=await (options.fetch??fetch)(url.href,{headers:{authorization:'Bearer '+options.accessToken},signal:AbortSignal.timeout(10000)});check();
+  if(!response.ok){await response.body?.cancel();throw Error('scheduling_gmail_unavailable');}
+  const data=await boundedJSON(response,262144);check();return data;
+ };
+ const search=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');search.searchParams.set('q','rfc822msgid:'+id);search.searchParams.set('labelIds','SENT');search.searchParams.set('maxResults','2');
+ const listing=await read(search) as {messages?:{id:string}[];nextPageToken?:string};
+ if(!Array.isArray(listing.messages)||listing.messages.length!==1||listing.nextPageToken||! /^[A-Za-z0-9_-]{1,200}$/.test(listing.messages[0].id))throw Error('booking_approval_not_found');
+ const gmailId=listing.messages[0].id,detail=new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(gmailId)}`);
+ detail.searchParams.set('format','full');detail.searchParams.set('fields','id,labelIds,internalDate,payload');
+ const canonical=await read(detail) as GmailMessage&{labelIds?:string[]};
+ try{
+  const receivedAt=Number(canonical.internalDate),headers=canonical.payload?.headers??[];
+  if(canonical.id!==gmailId||!canonical.labelIds?.includes('SENT')||canonical.labelIds.includes('DRAFT')||!Number.isFinite(receivedAt)||receivedAt<=now-86400000||receivedAt>now+300000)throw Error();
+  if(schedulingMessageId(schedulingHeader(headers,'message-id'))!==id||schedulingHeader(headers,'bcc'))throw Error();
+  const from=schedulingMailboxes(schedulingHeader(headers,'from'));if(from.length!==1||from[0]!==owner)throw Error();
+  const to=schedulingMailboxes(schedulingHeader(headers,'to')),cc=schedulingMailboxes(schedulingHeader(headers,'cc')),recipients=[...to,...cc];
+  if(!recipients.includes(replyAddress)||recipients.some(address=>address!==replyAddress&&address!==owner))throw Error();
+  const auto=schedulingHeader(headers,'auto-submitted'),precedence=schedulingHeader(headers,'precedence');
+  if(auto&&auto.toLowerCase()!=='no'||/^(?:bulk|list|junk)$/i.test(precedence)||headers.some(header=>['list-id','x-autoreply','x-autorespond'].includes(header.name.toLowerCase())))throw Error();
+  const text=canonicalSchedulingText(canonical);if(!text)throw Error();
+  const reference=schedulingHeader(headers,'in-reply-to'),inReplyTo=reference?schedulingMessageId(reference):null;
+  check();return {gmailId,messageId:id,owner,from:owner,to,cc,subject:schedulingHeader(headers,'subject').slice(0,160),text,receivedAt,inReplyTo};
+ }catch(error){if(error instanceof Error&&error.message==='scheduling_grant_revoked')throw error;throw Error('invalid_booking_approval');}
 }

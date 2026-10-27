@@ -19,7 +19,7 @@ import {seal} from './src/mail-model';
 import {bookingCalendarBusy} from './src/booking-providers';
 import {bookingReadiness} from './src/booking-coordinator';
 const owner='owner@example.com';
-function wrap(env){return {...env,AI:{async run(model,input){await env.DB.prepare("INSERT INTO fixture_control(key,body) VALUES('__model_call',?)").bind(JSON.stringify(input)).run();const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(scopedOwner){return {bindOwner:async()=>{},verifySchedulingKickoff:async(messageId,agentAddress)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__kickoff:'+messageId).first();if(!row)throw Error('invalid_owner_kickoff');return JSON.parse(row.body);},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}}),bookingContact:async(email)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__contact:'+scopedOwner+':'+email).first();if(!row)return null;const value=JSON.parse(row.body);if(value.fail)throw Error('private source failure');return value;}}}}};}
+function wrap(env){return {...env,AI:{async run(model,input){await env.DB.prepare("INSERT INTO fixture_control(key,body) VALUES('__model_call',?)").bind(JSON.stringify(input)).run();const row=await env.DB.prepare("SELECT body FROM fixture_control WHERE key='__model' ORDER BY rowid DESC LIMIT 1").first();if(!row)throw Error('model unavailable');return {output_text:row.body};}},MAIL:{getByName(scopedOwner){let boundOwner;return {bindOwner:async(value)=>{boundOwner=value;},verifyBookingApproval:async(messageId,replyAddress)=>{if(boundOwner!==scopedOwner)throw Error('owner_not_bound');const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__booking_approval:'+messageId).first();if(!row)throw Error('owner_kickoff_not_found');const value=JSON.parse(row.body);if(!value.to.includes(replyAddress)&&!value.cc.includes(replyAddress))throw Error('owner_kickoff_mismatch');return value;},verifySchedulingKickoff:async(messageId,agentAddress)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__kickoff:'+messageId).first();if(!row)throw Error('invalid_owner_kickoff');return JSON.parse(row.body);},getOwnerLens:async()=>({fields:{focus:'Agent interfaces',needs:'Founders',offers:'Product feedback'}}),bookingContact:async(email)=>{const row=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind('__contact:'+scopedOwner+':'+email).first();if(!row)return null;const value=JSON.parse(row.body);if(value.fail)throw Error('private source failure');return value;}}}}};}
 function emailWrap(env,sentKey='__sent',failureKey='__email_send_unknown'){return {...wrap(env),SCHEDULING_EMAIL_ADDRESS:'scheduling@agent.test',SCHEDULING_EMAIL_REPLY_DOMAIN:'agent.test',SCHEDULING_EMAIL_SEND:{async send(message){const id='<'+crypto.randomUUID()+'@mail.test>';await env.DB.prepare('INSERT INTO fixture_control(key,body) VALUES(?,?)').bind(sentKey,JSON.stringify({...message,messageId:id})).run();const failure=await env.DB.prepare('SELECT body FROM fixture_control WHERE key=? ORDER BY rowid DESC LIMIT 1').bind(failureKey).first();if(failure?.body==='true')throw Error('ambiguous provider response');return {messageId:id};}}};}
 export class TestSchedulingEmailCoordinator extends EmailCoordinator {constructor(ctx,env){super(ctx,emailWrap(env));} restartForTest(){this.ctx.abort('email fixture restart');} stateForTest(requestId){return this.ctx.storage.sql.exec("SELECT data FROM scheduling_email_threads WHERE json_extract(data,'$.requestId')=?",requestId).toArray().map(row=>JSON.parse(row.data));}}
 export class TestBookingCoordinator extends Coordinator {constructor(ctx,env){super(ctx,emailWrap(env,'__booking_sent','__booking_send_unknown'));} restartForTest(){this.ctx.abort('fixture restart');} async alarmForTest(){await this.ctx.storage.deleteAlarm();await this.alarm();} async legacyOutboxForTest(){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS booking_outbox(id TEXT PRIMARY KEY,email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0)');this.ctx.storage.sql.exec("INSERT OR IGNORE INTO booking_outbox(id,email,subject,body) VALUES('old','visitor@example.com','Old notice','Deprecated')");await this.ctx.storage.deleteAlarm();await this.alarm();return {alarm:await this.ctx.storage.getAlarm()};}}
@@ -72,6 +72,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    }
    if(u.pathname.endsWith('/freeBusy')){const query=await req.json();return Response.json({kind:'calendar#freeBusy',timeMin:query.timeMin,timeMax:query.timeMax,calendars:{primary:{busy:[...externalBusy,...[...events.values()].filter(e=>e.status!=='cancelled').map(e=>({start:e.start.dateTime,end:e.end.dateTime}))]}}});}
    if(u.pathname.endsWith('/events')&&req.method==='POST'){
+    assert.equal(u.searchParams.get('sendUpdates'),'all','successful booking asks Calendar to invite the visitor');
     const e=await req.json();inserts++;
     if(events.has(e.id))return new Response(null,{status:409});
     events.set(e.id,{...e,status:'confirmed'});if(failInsert)return new Response(null,{status:503});return Response.json(events.get(e.id));
@@ -81,8 +82,8 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    if(req.method==='DELETE'&&u.pathname.includes('/events/')){if(events.has(id))events.get(id).status='cancelled';return new Response(null,{status:failDelete?503:204});}
    throw Error('Unexpected external request '+u.origin+u.pathname);
   }});
-  async function api(path,{method='GET',data,cookie='',origin='https://people.test'}={}){
-   const res=await mf.dispatchFetch('https://people.test'+path,{method,redirect:'manual',headers:{origin,cookie,...(data?{'content-type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});let value;try{value=await res.json();}catch{value={};}return {res,value};
+  async function api(path,{method='GET',data,cookie='',origin='https://people.test',ip}={}){
+   const res=await mf.dispatchFetch('https://people.test'+path,{method,redirect:'manual',headers:{origin,cookie,...(ip?{'CF-Connecting-IP':ip}:{}),...(data?{'content-type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});let value;try{value=await res.json();}catch{value={};}return {res,value};
   }
   await t.test('booking pages serve HTML directly without a redirect loop or losing the public slug',async()=>{
    for(const [path,title] of [['/booking','Booking · People'],['/book/test-host','A conversation · People']]){
@@ -95,6 +96,7 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   const setup=await api('/fixture'),ownerCookie=setup.value.cookie.split(';')[0];let settings=setup.value.settings;
   const sql=async(sql,args=[])=> (await api('/fixture/sql',{method:'POST',data:{sql,args}})).value.results;
   const prefix='/api/public/booking/test-host';
+  const visitorIPs=new Map();
   const setModel=async(value)=>{await sql("DELETE FROM fixture_control WHERE key='__model'");if(value)await sql("INSERT INTO fixture_control(key,body) VALUES('__model',?)",[JSON.stringify(value)]);};
   const matchedPurpose='I build interfaces that help people work with AI agents and would like product feedback.';
   const strongModel=(purpose=matchedPurpose)=>({fit:'strong',reasons:['The project and purpose match the saved agent-interface thesis.'],evidence:[purpose]});
@@ -104,12 +106,14 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   const sentEmail=async()=> (await sql("SELECT body FROM fixture_control WHERE key='__sent' ORDER BY rowid")).map(row=>JSON.parse(row.body));
   const sentBookingEmail=async()=> (await sql("SELECT body FROM fixture_control WHERE key='__booking_sent' ORDER BY rowid")).map(row=>JSON.parse(row.body));
   const bookingReviewURL=id=>'https://people.test/booking?request='+encodeURIComponent(id);
-  const bookingNotices=async id=>(await sentBookingEmail()).filter(message=>message.text.includes(bookingReviewURL(id)));
+  const bookingNotices=async id=>(await sentBookingEmail()).filter(message=>/^Meeting request:/.test(message.subject)&&message.text.includes(bookingReviewURL(id)));
   async function flushBookingEmail(){const result=await api('/fixture/booking-alarm');assert.equal(result.res.status,200,JSON.stringify(result.value));}
   function assertBookingNotice(message,r,times){
    assert.ok(message,'an owner review email was sent');
    assert.deepEqual(Array.isArray(message.to)?message.to:[message.to],['owner@example.com']);assert.deepEqual(message.cc||[],[]);assert.deepEqual(message.bcc||[],[]);
    assert.equal(message.from,'scheduling@agent.test');assert.ok(message.subject);assert.ok(message.text.includes(bookingReviewURL(r.id)));
+   assert.match(message.text,/Reply[\s\S]*Approve/);assert.match(message.text,/Decline/);
+   assert.match(message.replyTo,/^scheduling\+b[a-f0-9]{48}@agent\.test$/,'owner review emails accept authenticated Approve or Decline replies');
    for(const value of [r.name,r.email,r.project,r.purpose,r.projectUrl,r.referrer,settings.timezone])if(value)assert.ok(message.text.includes(value),'review email includes '+value);
    for(const slot of times)for(const value of [slot.start,slot.end]){
     const date=new Date(value),day=new Intl.DateTimeFormat('en-US',{timeZone:settings.timezone,month:'short',day:'numeric',year:'numeric'}).format(date),time=new Intl.DateTimeFormat('en-US',{timeZone:settings.timezone,hour:'numeric',minute:'2-digit'}).format(date);
@@ -119,7 +123,9 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const link=new URL(message.text.match(/https:\/\/people\.test\/booking\?request=[^\s<>"']+/)[0]);assert.equal(link.searchParams.get('request'),r.id);assert.deepEqual([...link.searchParams.keys()],['request']);
   }
   async function startSignIn(email,claims={},data={}){
-   const x=await api(prefix+'/sign-in',{method:'POST',data});assert.equal(x.res.status,200,JSON.stringify(x.value));
+   // Each simulated visitor has an address, so independent scenarios do not exhaust one anonymous ingress quota.
+   if(!visitorIPs.has(email))visitorIPs.set(email,'192.0.2.'+(visitorIPs.size+1));
+   const x=await api(prefix+'/sign-in',{method:'POST',data,ip:visitorIPs.get(email)});assert.equal(x.res.status,200,JSON.stringify(x.value));
    const auth=new URL(x.value.url),browser=x.res.headers.get('set-cookie').split(';')[0],code=crypto.randomUUID();
    assert.equal(auth.searchParams.get('scope'),'openid email');assert.equal(auth.searchParams.get('access_type'),'online');
    googleCodes.set(code,{email,sub:'subject-'+email,hd:'example.com',nonce:auth.searchParams.get('nonce'),...claims});
@@ -356,6 +362,98 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
   function proposalInput(days,hour=22){const date=new Date(Date.now()+days*86400000);date.setUTCHours(hour,0,0,0);return {timezone:'UTC',times:[date.toISOString().slice(0,16)]};}
   async function propose(cookie,r,input){const response=await api(prefix+'/requests/'+r.id+'/proposals',{method:'POST',cookie,data:input});assert.equal(response.res.status,200,JSON.stringify(response.value));return response.value.request;}
   async function approveProposal(r,start=r.proposedTimes.slots[0].start){return api('/api/booking/requests/'+r.id+'/approve-proposal',{method:'POST',cookie:ownerCookie,data:{start,revision:r.proposedTimes.revision}});}
+  const bookingRecord=async id=>JSON.parse((await sql('SELECT data FROM booking_requests WHERE id=?',[id]))[0].data);
+  async function pendingEmailReview(email,input){
+   const cookie=await visitor(email),r=await submit(cookie);
+   let saved;
+   if(input)saved=await propose(cookie,r,input);
+   else{
+    const selected=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots[0];assert.ok(selected);
+    const response=await api(prefix+'/requests/'+r.id+'/slot',{method:'POST',cookie,data:{start:selected.start}});assert.equal(response.res.status,200,JSON.stringify(response.value));saved=response.value.request;
+   }
+   assert.equal(saved.status,'pending_approval');await flushBookingEmail();
+   const notice=(await bookingNotices(r.id)).at(-1);assert.ok(notice);assert.match(notice.replyTo,/^scheduling\+b[a-f0-9]{48}@agent\.test$/);
+   return {cookie,r:saved,notice};
+  }
+  async function ownerApprovalReply(notice,text,{id='<'+crypto.randomUUID()+'@example.com>',smtpText=text,smtpFrom='owner@example.com',inReplyTo=notice.messageId,verify=true}={}){
+   if(verify)await sql('INSERT INTO fixture_control(key,body) VALUES(?,?)',['__booking_approval:'+id,JSON.stringify({gmailId:'gmail-'+id,messageId:id,owner:'owner@example.com',from:'owner@example.com',to:[notice.replyTo],cc:[],subject:'Re: '+notice.subject,text,receivedAt:Date.now(),inReplyTo})]);
+   const incoming={id,from:smtpFrom,to:notice.replyTo,cc:'',reply:notice.messageId,text:smtpText};
+   const response=await incomingEmail(incoming);assert.equal(response.res.status,200,JSON.stringify(response.value));
+   await flushBookingEmail();await flushBookingEmail();return incoming;
+  }
+  function assertOwnerReceipt(message,pattern){
+   assert.ok(message,'an owner outcome email was sent');assert.match(message.text,pattern);
+   assert.deepEqual(Array.isArray(message.to)?message.to:[message.to],['owner@example.com']);assert.deepEqual(message.cc||[],[]);assert.deepEqual(message.bcc||[],[]);
+   assert.equal(message.from,'scheduling@agent.test');assert.doesNotMatch(message.text,/fixture-refresh|fixture-access|test-session-secret/);
+  }
+  await t.test('canonical owner Approve reply books the selected time, sends a receipt and survives duplicate delivery',async()=>{
+   const {r,notice}=await pendingEmailReview('reply-approve@example.com'),before=inserts,mailBefore=(await sentBookingEmail()).length;
+   const reply=await ownerApprovalReply(notice,'Approve',{smtpText:'Decline\n\nForged SMTP content must not override canonical Gmail text.'});
+   const saved=await bookingRecord(r.id);assert.equal(saved.status,'booked');assert.equal(saved.slotStart,r.slotStart);assert.equal(inserts,before+1);
+   const event=events.get(saved.eventId);assert.ok(event);assert.deepEqual(event.attendees.map(attendee=>attendee.email),['reply-approve@example.com']);assert.equal(event.start.dateTime,r.slotStart);
+   const receipts=(await sentBookingEmail()).slice(mailBefore);assert.equal(receipts.length,1);assertOwnerReceipt(receipts[0],/booked|confirmed/i);
+   await api('/fixture/restart');await Promise.all([incomingEmail(reply),incomingEmail(reply)]);await flushBookingEmail();await flushBookingEmail();
+   assert.equal((await bookingRecord(r.id)).eventId,saved.eventId);assert.equal(inserts,before+1);assert.equal((await sentBookingEmail()).length,mailBefore+1,'duplicate owner replies do not repeat confirmations');
+  });
+  await t.test('only an authenticated same-origin owner can resend the current request and approve through its fresh reply address',async()=>{
+   const {cookie,r,notice}=await pendingEmailReview('reply-resend@example.com'),before=inserts,path='/api/booking/requests/'+r.id+'/email';
+   assert.equal((await api(path,{cookie:ownerCookie})).res.status,404,'opening a link cannot resend the notice');
+   assert.equal((await api(path,{method:'POST'})).res.status,401);
+   assert.equal((await api(path,{method:'POST',cookie})).res.status,401);
+   for(const origin of ['https://evil.test',''])assert.equal((await api(path,{method:'POST',cookie:ownerCookie,origin})).res.status,403);
+   await flushBookingEmail();assert.equal((await bookingNotices(r.id)).length,1,'rejected resend attempts leave the original notice alone');
+   const resent=await api(path,{method:'POST',cookie:ownerCookie});assert.equal(resent.res.status,200,JSON.stringify(resent.value));assert.equal(resent.value.request.status,'pending_approval');assert.equal(resent.value.request.slotStart,r.slotStart);assert.equal(resent.value.request.slotEnd,r.slotEnd);
+   await flushBookingEmail();const notices=await bookingNotices(r.id);assert.equal(notices.length,2);const currentNotice=notices[1];assert.notEqual(currentNotice.replyTo,notice.replyTo);assert.notEqual(currentNotice.messageId,notice.messageId);assert.equal(inserts,before);
+   await ownerApprovalReply(notice,'Approve');const pending=await bookingRecord(r.id);assert.equal(pending.status,'pending_approval');assert.equal(pending.slotStart,r.slotStart);assert.equal(inserts,before,'resending revokes the original reply address');
+   await ownerApprovalReply(currentNotice,'Approve');const booked=await bookingRecord(r.id);assert.equal(booked.status,'booked');assert.equal(booked.slotStart,r.slotStart);assert.equal(inserts,before+1);assertOwnerReceipt((await sentBookingEmail()).at(-1),/booked|confirmed/i);
+  });
+  await t.test('forged owner replies, missing canonical evidence and unrelated reply parents cannot approve a request',async()=>{
+   const {r,notice}=await pendingEmailReview('reply-auth@example.com'),before=inserts,mailBefore=(await sentBookingEmail()).length;
+   await ownerApprovalReply(notice,'Approve',{verify:false});
+   await ownerApprovalReply(notice,'Approve',{smtpFrom:'stranger@example.com'});
+   await ownerApprovalReply(notice,'Approve',{inReplyTo:'<unrelated-review@example.com>'});
+   assert.equal((await bookingRecord(r.id)).status,'pending_approval');assert.equal(inserts,before);assert.equal((await sentBookingEmail()).length,mailBefore,'unauthenticated replies send no owner outcome');
+  });
+  await t.test('canonical Decline reply closes the request without inviting the visitor and sends one owner receipt',async()=>{
+   const {r,notice}=await pendingEmailReview('reply-decline@example.com'),before=inserts,mailBefore=(await sentBookingEmail()).length;
+   const reply=await ownerApprovalReply(notice,'Decline',{smtpText:'Approve'});
+   assert.equal((await bookingRecord(r.id)).status,'declined');assert.equal(inserts,before);
+   const receipts=(await sentBookingEmail()).slice(mailBefore);assert.equal(receipts.length,1);assertOwnerReceipt(receipts[0],/declined/i);
+   await api('/fixture/restart');await incomingEmail(reply);await flushBookingEmail();assert.equal((await sentBookingEmail()).length,mailBefore+1);assert.equal(inserts,before);
+  });
+  await t.test('ambiguous approval of multiple suggestions asks for a numbered choice before Approve 2 books only that time',async()=>{
+   const input=proposalInput(23);input.times.push(proposalInput(24).times[0]);
+   const {r,notice}=await pendingEmailReview('reply-choice@example.com',input),before=inserts,mailBefore=(await sentBookingEmail()).length;
+   assert.match(notice.text,/Approve 1/);assert.match(notice.text,/Approve 2/);
+   await ownerApprovalReply(notice,'Approve');assert.equal((await bookingRecord(r.id)).status,'pending_approval');assert.equal(inserts,before);
+   const clarification=(await sentBookingEmail()).slice(mailBefore);assert.equal(clarification.length,1);assertOwnerReceipt(clarification[0],/Approve 1/);assert.match(clarification[0].text,/Approve 2/);
+   await ownerApprovalReply(notice,'Approve 2');const saved=await bookingRecord(r.id);assert.equal(saved.status,'booked');assert.equal(saved.slotStart,r.proposedTimes.slots[1].start);assert.equal(saved.slotSource,'suggested');assert.equal(inserts,before+1);
+   assert.equal(events.get(saved.eventId).start.dateTime,r.proposedTimes.slots[1].start);assertOwnerReceipt((await sentBookingEmail()).at(-1),/booked|confirmed/i);
+  });
+  await t.test('reply to a superseded proposal cannot approve it and the current notification books the new proposal',async()=>{
+   const {cookie,r,notice}=await pendingEmailReview('reply-stale-proposal@example.com',proposalInput(25)),before=inserts;
+   const current=await propose(cookie,r,proposalInput(26));await flushBookingEmail();const currentNotice=(await bookingNotices(r.id)).at(-1);
+   assert.notEqual(currentNotice.replyTo,notice.replyTo);assert.notEqual(currentNotice.messageId,notice.messageId);
+   await ownerApprovalReply(notice,'Approve');let saved=await bookingRecord(r.id);assert.equal(saved.status,'pending_approval');assert.equal(saved.proposedTimes.revision,current.proposedTimes.revision);assert.equal(saved.slotStart,null);assert.equal(inserts,before);
+   await ownerApprovalReply(currentNotice,'Approve');saved=await bookingRecord(r.id);assert.equal(saved.status,'booked');assert.equal(saved.slotStart,current.proposedTimes.slots[0].start);assert.equal(inserts,before+1);
+  });
+  await t.test('reply to a replaced offered slot stays stale even after the visitor selects that time again',async()=>{
+   const {cookie,r,notice}=await pendingEmailReview('reply-stale-slot@example.com'),before=inserts;
+   const nextSlot=(await api(prefix+'/slots?requestId='+r.id,{cookie})).value.slots.find(slot=>slot.start!==r.slotStart);assert.ok(nextSlot);
+   const path=prefix+'/requests/'+r.id+'/slot',chosen=await api(path,{method:'POST',cookie,data:{start:nextSlot.start}});assert.equal(chosen.res.status,200);await flushBookingEmail();const replacedNotice=(await bookingNotices(r.id)).at(-1);assert.notEqual(replacedNotice.replyTo,notice.replyTo);
+   await ownerApprovalReply(notice,'Approve');let saved=await bookingRecord(r.id);assert.equal(saved.status,'pending_approval');assert.equal(saved.slotStart,nextSlot.start);assert.equal(inserts,before);
+   const restored=await api(path,{method:'POST',cookie,data:{start:r.slotStart}});assert.equal(restored.res.status,200);await flushBookingEmail();const currentNotice=(await bookingNotices(r.id)).at(-1);assert.notEqual(currentNotice.replyTo,notice.replyTo);assert.notEqual(currentNotice.replyTo,replacedNotice.replyTo);
+   await ownerApprovalReply(notice,'Approve');await ownerApprovalReply(replacedNotice,'Approve');saved=await bookingRecord(r.id);assert.equal(saved.status,'pending_approval');assert.equal(saved.slotStart,r.slotStart);assert.equal(inserts,before);
+   await ownerApprovalReply(currentNotice,'Approve');saved=await bookingRecord(r.id);assert.equal(saved.status,'booked');assert.equal(saved.slotStart,r.slotStart);assert.equal(inserts,before+1);
+  });
+  await t.test('owner email approval rechecks Calendar and asks for a new slot when the selected time became busy',async()=>{
+   const {r,notice}=await pendingEmailReview('reply-busy@example.com'),before=inserts,mailBefore=(await sentBookingEmail()).length,busyBefore=externalBusy;
+   try{
+    externalBusy=[{start:r.slotStart,end:r.slotEnd}];await ownerApprovalReply(notice,'Approve');
+    assert.equal((await bookingRecord(r.id)).status,'needs_new_slot');assert.equal(inserts,before);
+    const receipts=(await sentBookingEmail()).slice(mailBefore);assert.equal(receipts.length,1);assertOwnerReceipt(receipts[0],/unavailable|no longer available|new time|new slot|another time/i);assert.doesNotMatch(receipts[0].text,/meeting is booked/i);
+   }finally{externalBusy=busyBefore;}
+  });
   await t.test('suggested alternatives notify only the owner once per changed proposal and preserve review controls',async()=>{
    const cookie=visitorCookie,r=await submit(cookie),before=inserts,firstInput=proposalInput(16);
    firstInput.times.push(proposalInput(17).times[0]);

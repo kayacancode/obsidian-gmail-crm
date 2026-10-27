@@ -78,3 +78,37 @@ test('booking notification keeps an email fallback subject compact without short
  const email=bookingRequestEmail(request({name:'',email:visitorEmail}),settings,config)!;
  assert.ok(email);assert.ok(email.subject.length<=180);assert.ok(email.text.includes(visitorEmail));
 });
+
+test('booking notification offers explicit owner replies without exposing the approval capability in the message',()=>{
+ const replyTo='scheduling+b'+'a'.repeat(48)+'@example.com';
+ const email=bookingRequestEmail(request(),settings,{...config,replyTo})!;
+ assert.equal(email.replyTo,replyTo);
+ assert.match(email.text,/1\. .*Oct 28, 2026/);
+ assert.match(email.text,/reply.*[“"]Approve[”"]/i);
+ assert.match(email.text,/[“"]Decline[”"]/i);
+ assert.match(email.text,/from (?:your (?:owner )?email(?: address)?[,:]? )?owner@example\.com/i);
+ assert.match(email.text,/booked only after.*confirm/i);
+ assert.match(email.html,/Approve/);assert.match(email.html,/Decline/);assert.match(email.html,/<ol>/);
+ assert.match(email.html,/>Review request<\/a>/);
+ for(const value of [replyTo,'a'.repeat(48)]){
+  assert.ok(!email.text.includes(value));assert.ok(!email.html.includes(value));assert.ok(!email.subject.includes(value));
+ }
+ assert.deepEqual(email.headers,{'Auto-Submitted':'auto-generated'});
+});
+
+test('booking notification numbers alternative times and requires an explicit numbered approval',()=>{
+ const proposedTimes={timezone:'UTC',revision:'proposal-1',slots:[{start:'2026-10-28T15:00:00.000Z',end:'2026-10-28T15:30:00.000Z'},{start:'2026-10-29T18:00:00.000Z',end:'2026-10-29T18:30:00.000Z'},{start:'2026-10-30T18:00:00.000Z',end:'2026-10-30T18:30:00.000Z'}]};
+ const email=bookingRequestEmail(request({proposedTimes,slotStart:null,slotEnd:null,slotSource:'suggested'}),settings,{...config,replyTo:'scheduling+b'+'0'.repeat(48)+'@example.com'})!;
+ for(const [number,day] of [[1,28],[2,29],[3,30]])assert.match(email.text,new RegExp(`${number}\\. .*Oct ${day}, 2026`));
+ for(const command of ['Approve 1','Approve 2','Approve 3']){assert.ok(email.text.includes(command));assert.ok(email.html.includes(command));}
+ assert.match(email.text,/exactly one/i);
+});
+
+test('booking notification rejects malformed or cross-domain reply capabilities',()=>{
+ const token='a'.repeat(48),valid='scheduling+b'+token+'@example.com';
+ for(const replyTo of ['','owner@example.com','scheduling+'+token+'@example.com','scheduling+b'+token+'@other.example.com','scheduling+b'+token+'@example.com.evil.test','scheduling+b'+'a'.repeat(47)+'@example.com','scheduling+b'+'a'.repeat(49)+'@example.com','scheduling+b'+'g'.repeat(48)+'@example.com','Owner <'+valid+'>',valid+'\r\nBcc: thief@example.com',valid+'\n',valid+'\u0000']){
+  assert.throws(()=>bookingRequestEmail(request(),settings,{...config,replyTo}),/booking_notification_invalid_reply_to/,replyTo);
+ }
+ assert.equal(bookingRequestEmail(request(),settings,{...config,replyTo:valid.toUpperCase()})!.replyTo,valid);
+ assert.equal(bookingRequestEmail(request(),settings,config)!.replyTo,undefined);
+});

@@ -358,3 +358,69 @@ test('booking alerts retain a wakeup through a prolonged D1 outage and drain aft
  }
  outage.mock.restore();await f.service.alarm();assert.equal(f.messages.length,1);assert.equal(f.alarmAt(),null);
 });
+
+async function replyFixture(t:TestContext){
+ const f=await alertSelection(t);f.env.SCHEDULING_EMAIL_REPLY_DOMAIN='agent.test';
+ f.env.SCHEDULING_EMAIL_SEND.send=async(message:any)=>{f.messages.push(message);return {messageId:`<notice-${f.messages.length}@agent.test>`};};
+ const canonical=new Map<string,any>();
+ f.env.MAIL={getByName:(o:string)=>{assert.equal(o,owner);return {bindOwner:async()=>{},verifyBookingApproval:async(id:string,address:string)=>{const value=canonical.get(id);if(!value)throw Error('owner_kickoff_not_found');assert.ok(value.to.includes(address));return value;}};}};
+ await f.service.alarm();
+ async function reply(text:string,options:{notice?:any;canonicalText?:string;unverified?:boolean;from?:string;id?:string}={}){
+  const notice=options.notice??f.messages[0],id=options.id??`<reply-${crypto.randomUUID()}@owner.test>`;
+  const inbound={messageId:id,envelopeTo:notice.replyTo,from:options.from??owner,to:[notice.replyTo],cc:[],subject:'Re: '+notice.subject,text,inReplyTo:'<notice-1@agent.test>',references:[]};
+  if(!options.unverified)canonical.set(id,{...inbound,gmailId:'canonical-id',owner,receivedAt:Date.now(),text:options.canonicalText??text});
+  await f.service.receiveApprovalEmail(owner,inbound);await f.service.alarm();return inbound;
+ }
+ return {...f,reply,canonical};
+}
+test('booking email approval uses canonical owner text, books once and confirms only after Calendar success',async t=>{
+ const f=await replyFixture(t);assert.match(f.messages[0].replyTo,/^scheduling\+b[a-f0-9]{48}@agent\.test$/);
+ const inbound=await f.reply('Decline',{canonicalText:'Approve'});
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'booked');assert.equal(f.calendar.writes.length,1);
+ assert.ok(f.messages.some(m=>/confirmed/i.test(m.text)&&m.to===owner));
+ await f.service.receiveApprovalEmail(owner,inbound);await f.service.alarm();assert.equal(f.calendar.writes.length,1);assert.equal(f.messages.length,2);
+});
+test('booking email approval never trusts spoofed From or an unverified reply',async t=>{
+ const f=await replyFixture(t);await f.reply('Approve',{from:'attacker@example.com'});await f.reply('Approve',{unverified:true});
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'pending_approval');assert.equal(f.calendar.writes.length,0);
+});
+test('booking email approval rejects stale time revisions even after selecting the original time again',async t=>{
+ const f=await replyFixture(t);
+ await f.service.selectSlot(owner,visitor,f.settings.slug,f.r.id,f.slots[1].start);await f.service.selectSlot(owner,visitor,f.settings.slug,f.r.id,f.slots[0].start);
+ await f.reply('Approve');assert.equal((await f.store.request(owner,f.r.id))?.status,'pending_approval');assert.equal(f.calendar.writes.length,0);
+ assert.ok(f.messages.some(m=>/changed|outdated/i.test(m.text)));
+});
+test('booking email approval declines without creating an event and refuses later approval',async t=>{
+ const f=await replyFixture(t);await f.reply('Decline');await f.reply('Approve');
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'declined');assert.equal(f.calendar.writes.length,0);
+});
+test('booking email approval handles ambiguous replies and occupied time without booking',async t=>{
+ const f=await replyFixture(t);await f.reply('Approve if free after 3pm');
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'pending_approval');assert.ok(f.messages.some(m=>/reply.*Approve/i.test(m.text)));
+ f.calendar.busy=[f.slots[0]];await f.reply('Approve');assert.equal((await f.store.request(owner,f.r.id))?.status,'needs_new_slot');assert.equal(f.calendar.writes.length,0);
+});
+test('booking email approval resumes an uncertain Calendar write after restart without a second event',async t=>{
+ const f=await replyFixture(t);f.calendar.lostWrite=true;await f.reply('Approve');
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'booking');assert.equal(f.calendar.writes.length,1);
+ const restarted=new BookingCoordinator(f.ctx as any,f.env);f.calendar.found=true;f.clock.now+=120000;await restarted.alarm();
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'booked');assert.equal(f.calendar.writes.length,1);assert.ok(f.messages.some(m=>/confirmed/i.test(m.text)));
+});
+
+test('booking email approval expires and an explicit resend replaces the old capability',async t=>{
+ const f=await replyFixture(t);const old=f.messages[0];f.clock.now+=8*86400000;
+ await f.reply('Approve');assert.equal((await f.store.request(owner,f.r.id))?.status,'pending_approval');assert.equal(f.calendar.writes.length,0);
+ // Move the clock back only inside this fixed test fixture; resend is an owner action.
+ f.clock.now=proposalNow;
+ await f.service.emailRequest(owner,f.r.id);await f.service.alarm();
+ const renewed=f.messages.filter(m=>m.subject.startsWith('Meeting request:')).at(-1);assert.notEqual(renewed.replyTo,old.replyTo);
+ await f.reply('Approve',{notice:old});assert.equal(f.calendar.writes.length,0);
+});
+
+test('booking email approval deduplicates within its reply address without suppressing another request',async t=>{
+ const f=await replyFixture(t),second=f.record({decision:{...f.record().decision,tier:'review'}});await f.store.add(second);
+ await f.service.selectSlot(owner,visitor,f.settings.slug,second.id,f.slots[1].start);await f.service.alarm();
+ const other=f.messages.find(m=>m.text.includes('/booking?request='+second.id)),id='<same-owner-message@owner.test>';
+ await f.service.receiveApprovalEmail(owner,{messageId:id,envelopeTo:other.replyTo,from:owner,to:[f.messages[0].replyTo],cc:[],subject:'Re: Meeting request',text:'Approve',inReplyTo:'<notice-1@agent.test>',references:[]});
+ await f.reply('Approve',{id});
+ assert.equal((await f.store.request(owner,f.r.id))?.status,'booked');assert.equal((await f.store.request(owner,second.id))?.status,'pending_approval');assert.equal(f.calendar.writes.length,1);
+});

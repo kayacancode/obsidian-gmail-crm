@@ -27,6 +27,7 @@ export interface BookingRequestRecord extends BookingSubmission {
  intakeKind?:'returning'|'standard';
  proposedTimes?:{timezone:string;slots:BookingSlot[];revision:string};
  slotSource?:'suggested'|'offered';
+ selectionRevision?:string;
  initialDecision?:BookingDecision;
  policySnapshot?:Omit<BookingSettings,'vipEmails'> & {vipMatch:boolean};
  scheduling?:SchedulingRecord;
@@ -38,6 +39,6 @@ export interface BookingReadiness {signIn:boolean;calendar:boolean;people:boolea
 export interface BookingEnv extends MailEnv {
  DB:D1Database; BOOKING:DurableObjectNamespace<BookingCoordinator>;
  BOOKING_OWNER_EMAIL?:string;
- SCHEDULING_EMAIL_ADDRESS?:string; SCHEDULING_EMAIL_SEND?:SendEmail;
+ SCHEDULING_EMAIL_ADDRESS?:string; SCHEDULING_EMAIL_SEND?:SendEmail; SCHEDULING_EMAIL_REPLY_DOMAIN?:string;
  PEOPLEGRAPH_HOST?:string; PEOPLEGRAPH_TOKEN?:string; PEOPLEGRAPH_OWNER_EMAIL?:string;
 }
