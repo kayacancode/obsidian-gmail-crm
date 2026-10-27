@@ -1,154 +1,155 @@
-# People — personal and shared relationship graphs
+# People
 
-Explore who you know, understand the activity behind a connection, and find a path to someone new through a shared network.
+**Your network, with context.**
 
-**[Open the web app →](https://people-graph.kayarjones901.workers.dev/)** · [Self-hosting guide](apps/people-graph/README.md#setup-once)
+Remember who someone is to you, find people relevant to what you’re working on, and turn useful connections into conversations. People brings together your email activity, meeting context, and the things you know about someone in an interactive relationship graph.
 
-The hosted app requires Google sign-in. Your personal network is private; shared networks require membership. You can also run your own deployment.
+**[Open People →](https://people-graph.kayarjones901.workers.dev/)** · [Get started](#get-started) · [Connect your agent](#use-people-with-your-agent) · [Self-host](apps/people-graph/README.md#setup-once)
 
-People brings together **Gmail activity, Google Calendar invitations, and optional meeting or note context**. Start with a person or topic, inspect the evidence behind a connection, and request an introduction from a network member.
+![My network with a selected person, relationship context, and labeled connections](docs/screenshots/network-profile.jpg)
 
-**You do not need Obsidian.** This repository contains both a standalone web app and an optional Obsidian plugin. The repository name reflects the project's origins as Gmail CRM for Obsidian.
+*Screenshots show the current web UI with fictional people and sample data. [Preview and capture instructions](docs/screenshots/README.md).*
 
-> Active development. Features and data coverage vary by connected source. Relationship scores are estimates; invitations are not proof of attendance, and a graph path does not guarantee an introduction.
+People works as a **standalone web app**, through a **Rust CLI or MCP connection to your agent**, and as an optional **Obsidian plugin**. You don’t need Obsidian to use the web app. The repository name comes from its beginnings as Gmail CRM for Obsidian.
 
-## Choose how to use it
+## A tour of the app
 
-| Path | Best for | What you need |
-| --- | --- | --- |
-| **Web app** | Personal graphs, shared networks, Discover, and introduction requests | A configured People deployment and a Google account |
-| **Obsidian plugin** | Markdown people pages and a CRM inside your vault | Obsidian desktop and your own Google OAuth credentials |
-| **PeopleGraph CLI / agent skill** | Graph questions, private relationship context, and evidence-backed recommendations | Browser login for graph reads; a People key for private context; optional local Obsidian cache |
+### Remember the person behind the contact
 
-- [Web app setup and deployment](apps/people-graph/README.md)
-- [Obsidian installation, commands, and scoring guide](docs/obsidian-plugin.md)
-- [Connect Codex, Claude, or another agent](docs/people-agent-onboarding.md)
-- [Privacy and data handling](PRIVACY.md)
+**“How do I know Maya, and what did we last talk about?”**
 
-## What you can do
+Open **My network**, search for someone, and select their node. Their profile brings together recent context, contact activity, and the evidence behind a connection. Where a supported introduction is found, it can name the person who introduced you. Links distinguish introductions, shared email threads, shared meetings, and inferred connections.
 
-- **Explore your network:** search people, inspect contact activity, and navigate the graph.
-- **Share a network:** invite members and choose which contacts and context to contribute. Each contributor's relationship evidence stays distinguishable.
-- **Walk from A to B:** follow recorded connections and inspect the evidence and uncertainty at each step.
-- **Discover people by topic:** enter a goal or question and find new people with matching shared evidence. The current Discover goal matcher uses keywords, not guaranteed semantic understanding.
-- **Ask for an introduction:** review and submit an in-app request to a contributor. Completed-introduction counts include only requests marked completed in that workspace.
-- **See relationship activity:** sent/received email counts, last contact, shared calendar invitations, mutual accepted RSVPs, and upcoming invitations, where available.
-- **Add optional context:** Granola and published Obsidian evidence can explain why a person or topic is relevant.
+Add your own context when email alone misses the point: what they’re building, what they need, or something to follow up on. Saved private context stays with that person and can guide future suggestions.
 
-For example: enter **“agent memory”** in Discover. If a new person has matching shared evidence and a supported contributor connection, their card shows the evidence, source/date, a suggested conversation, an intro action, and a graph walk. If that evidence is missing, the app does not invent a reason to meet them.
+The **People score** summarizes recorded activity and recency. It helps you understand the data you have; it isn’t a measure of personal closeness. A shared email thread is not automatically an introduction.
 
-## Start in the web app
+### Find people for what you’re working on
 
-Open the [hosted web app](https://people-graph.kayarjones901.workers.dev/) or your own configured deployment:
+**“Who could help me find design partners for an agent interface?”**
 
-1. Sign in with Google and open **Accounts**.
-2. Select **Connect Google**. Review Google's requested permissions for Gmail, Calendar, and contact photos.
-3. Let the first import finish. Start with 90 days of email history or select all history. Calendar imports cover the past year and next 30 days of your primary calendar.
-4. Open your personal network. Optionally join or create a shared network under **Accounts → Shared networks**.
-5. Choose which people to share and how much context to include. Other members make their own choices.
+Open **Your lens** and save three things: **Focused on**, **Looking for**, and **Can help with**. **Find people for me** uses that saved context to suggest people, with supporting evidence and a possible conversation to have.
 
-Obsidian and Granola are optional. Connecting Google does not require installing a browser extension or Gmail add-on.
+![Your lens with saved focus, needs, offers, and a suggested connection](docs/screenshots/people-lens.jpg)
 
-**For self-hosting:** follow the [web deployment guide](apps/people-graph/README.md#setup-once). You need your own Cloudflare resources and Google web OAuth client. The checked-in deployment identifiers belong to the maintainer; replace them before deploying. Google OAuth testing/publication settings can limit who is allowed to connect.
+You can also explore **Who could help this person?** from a profile. These “what-if” suggestions are possible conversations, separate from recorded relationships. Optional learning from your work context can propose updates to your lens; you review them before they become part of your saved profile.
 
-## Use People with an agent
+### Explore a network together
 
-Install **PeopleGraph 0.3.12** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+**“Who does our team know that I haven’t met yet?”**
 
-Run `peoplegraph login` for read-only access to your visible web graph. For your saved People Lens, recommendations, connections, and private memory, create a separate People key in **Accounts → Integrations** and configure `PEOPLEGRAPH_WEB_URL` and `PEOPLEGRAPH_WEB_TOKEN`. Enable write access only for clients you want to save context. Compatible MCP clients can use `/api/people-mcp` with a custom bearer header; REST clients use `/api/people-agent`.
+Create or join a workspace in **Accounts → Shared networks**. Each member chooses which people and how much context to contribute. Joining a workspace shares nothing automatically.
 
-Try “Who could help with my saved needs, and why?”, “What connects Maya and Sam?”, or “Remember this note for Maya.” The agent distinguishes confirmed saved context from inferred suggestions, resolves ambiguous people, and reports the evidence behind recommendations. These People tools do not send email or schedule meetings. Scheduling is a separate opt-in integration.
+![A shared network showing a teammate’s contact and the context behind their connection](docs/screenshots/shared-network.jpg)
 
-**Obsidian plugin 0.9.5** is optional and keeps the local vault workflow available. Installing or updating it does not grant an agent access to your private web account.
+The shared view starts with a focused graph of new connections. Search for a person or a question, select someone to see who knows them and why, or choose **Show all people** to include mutual contacts. Supported recent context helps prioritize people relevant to members’ work. For someone new to you, you can ask a contributing member for an introduction inside People.
 
-## What each source contributes
+### Let people find a time with you
 
-| Source | Used for | Important distinction |
-| --- | --- | --- |
-| Gmail | Sent/received activity, reciprocity, contact dates, and thread metadata | Normal sync does not import bodies or attachments. Metadata alone cannot establish expertise. |
-| Google Calendar | Shared invitations, mutual accepted RSVPs, and upcoming invitations | Accepted invitations do not prove attendance. Calendar counts do not increase shared email or meeting counts. |
-| Granola, optional | Meeting attendees, topics, and permitted discussion context | A meeting topic linked to an attendee is not a statement attributed to them. |
-| Obsidian, optional | Published people records, scores, links, and selected topic evidence | A person appearing in a vault does not establish a personal relationship. |
-| In-app introductions | Request status and completed introduction counts | Requests are not counted as completed introductions, and ordinary emails are not guessed to be intros. |
+**“Give someone my link, with the right amount of access to my calendar.”**
 
-## Sharing and privacy
+Set up **Booking** with your meeting thesis, availability, VIPs, and approval rules. You can use your saved lens as a starting point for the thesis. Share your booking link; visitors sign in with Google and tell you what they’d like to discuss.
 
-The plugin and web app have different storage models:
+![Public booking page with a month calendar and available times for the selected day](docs/screenshots/booking-calendar.jpg)
 
-- **Obsidian plugin:** the contact index and generated notes are stored in your vault. Optional graph uploads and AI enrichment send selected data to their configured services.
-- **Web app:** connected-source data is stored on Cloudflare, scoped to the signed-in account. Google refresh grants and Granola API keys are encrypted on the server.
-- **Shared networks:** members choose the people and context they contribute. Connection activity can be shared without sharing discussion text. Event titles are not included in the shared calendar activity summary.
-- **Optional deeper email retrieval:** a separate confirmation permits bounded body processing—up to 50 matching messages and 1 MB of decoded text. Raw bodies are not retained after processing. The web app requests Gmail read access; normal sync still imports metadata only.
-- **Actions:** introduction requests are sent inside People only when a user submits them. The app does not automatically email contacts or guarantee that a contributor will introduce you.
+- **Priority requests** can get earlier availability and automatic booking when you enable it.
+- **Requests needing review** can select a later time for your approval.
+- **Requests outside your thesis** can take an asynchronous path instead of choosing a time.
+- **Returning contacts** who meet your configured People-score cutoff can skip the questionnaire. That shortcut alone does not grant automatic booking.
+- **None of your times work?** Visitors can suggest alternatives for you to review.
 
-Read [PRIVACY.md](PRIVACY.md) before connecting real accounts. Do not commit credentials, tokens, contact indexes, vault notes, or production data when contributing.
+### Approve from your inbox—or schedule in the thread
 
-## Current limitations
+**“Find us a time next week.”**
 
-- Discover depends on context actually shared into the network. A large contact list or high relationship score alone is not enough for a relevant recommendation.
-- Calendar currently enriches existing imported contacts; invite-only people are not automatically added to the graph.
-- Shared calendar counts describe the imported window, not lifetime activity. Missing data is not evidence of no relationship.
-- Personal vault and web imports have separate source views. Shared-network identity matching requires compatible published identities; older vault snapshots may need a fresh push.
-- Gmail deletions are not automatically reconciled with previously imported metadata. Disconnecting an inbox removes its imported contributions.
-- Browser fixture tests do not verify live Google OAuth approval, API access, or real-account sync.
+When a visitor requests a time, an enabled email integration sends you the context, requested time, and private assessment. Review it in **Booking → Requests**, or reply **Approve** or **Decline** to the notification. For proposed alternatives, reply **Approve 1**, **Approve 2**, or **Approve 3**.
+
+![Booking request inbox with meeting context, private reasoning, and approval controls](docs/screenshots/booking-requests.jpg)
+
+For an existing email conversation, CC your configured scheduling agent and ask it to find times. It evaluates the meeting using your thesis, verified relationship data, and VIP rules, then offers options in the same reply-all thread when eligible or approved. For a one-person request missing a clear purpose, it can ask for more context. A verified strong connection can arrange a catch-up without another questionnaire.
+
+Group meetings require your approval before times are offered. Every guest must then agree to the same current option before it books.
+
+The agent rechecks Calendar before booking and sends a confirmation; Google Calendar sends the invitation. Scheduling requires its own Calendar and email setup and is currently a configured-owner pilot. [Technical setup and behavior](apps/people-graph/README.md#email-scheduling-and-meeting-context).
+
+## Get started
+
+1. Open [People](https://people-graph.kayarjones901.workers.dev/) and sign in with Google.
+2. In **Accounts**, connect Google and choose your import window. Let the first import finish.
+3. Open **My network** and select a person to explore their context and connections.
+4. Save **Your lens** so recommendations reflect your current focus, needs, and offers.
+5. Optionally connect Granola, join a shared network, or configure Booking.
+
+The hosted deployment’s Google OAuth settings may limit who can connect. To run your own, follow the [Cloudflare deployment guide](apps/people-graph/README.md#setup-once) with your own Google OAuth credentials and Cloudflare resources.
+
+### Where the context comes from
+
+| Source | What it adds |
+| --- | --- |
+| **Gmail** | Email activity, reciprocity, last contact, and shared threads. Optional conversation-context features can extract more useful context from bounded message reads. |
+| **Google Calendar** | Shared invitations, accepted RSVPs, and upcoming invitations. Invitations aren’t proof of attendance. Booking uses a separate Calendar connection for availability and event creation. |
+| **Granola** | Meeting attendees, discussion context, and supported statements from notes. Private by default. |
+| **Your own notes** | Corrections and context saved on a person’s profile, plus your focus, needs, and offers in Your lens. |
+| **Obsidian** | Optional people pages, a local contact index, and explicitly published graph context from your vault. |
+
+## Use People with your agent
+
+Take the same relationship context into conversations with Codex, Claude, or a compatible agent. The **Rust PeopleGraph CLI**, agent skill, **MCP**, and REST API support graph questions, your saved lens, recommendations, and private relationship memory.
+
+Try:
+
+- “Who could help with my saved needs, and why?”
+- “What connects Maya and Sam?”
+- “Remember that Maya is looking for design partners.”
+
+Start with the [agent installation and update guide](docs/people-agent-onboarding.md). `peoplegraph login` grants access to the visible graph. For private lens and memory tools, create a separate key in **Accounts → Integrations**; enable write access only if you want that client to save context.
+
+People tools don’t send outreach or book meetings. The [scheduling API and MCP integration](apps/people-graph/README.md#email-scheduling-and-meeting-context) is separately authorized. See the [private API contract](docs/people-memory-integration.md) for integration details.
+
+**Prefer Obsidian?** The optional plugin keeps people pages and relationship activity in your vault. See [installation, commands, and scoring](docs/obsidian-plugin.md).
+
+## Privacy and useful limits
+
+Your personal network and lens are private. Shared workspaces use only contributed records; a connection’s source remains visible. The web app stores connected data on Cloudflare, while the Obsidian plugin stores its contact index and generated notes in your vault.
+
+Normal Gmail sync reads metadata. Automatic conversation context, deeper retrieval, and lens learning are separate opt-in features; selected content may be processed by configured AI services. Those extraction features discard raw email bodies afterward. Granola imports can retain meeting content in your private account. Scheduling stores conversation records and can temporarily retain raw mail while verifying a sender. See the [web data-handling details](apps/people-graph/README.md) and [plugin privacy policy](PRIVACY.md) before connecting accounts.
+
+Recommendations depend on the context available. A high score does not establish expertise, a graph path does not promise an introduction, and missing evidence does not mean two people have never met. In-app introduction requests, saved notes, and scheduling actions are distinct. Only the separately enabled scheduling flow sends scheduling emails or creates Calendar events.
 
 ## Develop locally
 
-Use a recent Node.js release with `node:sqlite` support for the web tests (Node 22.13+). Cloud deployment also requires a Cloudflare account and Google OAuth configuration.
+Use Node.js 22.13+ for tests that require `node:sqlite`. Rust/Cargo is needed only to build the CLI from source.
 
 ```bash
 git clone https://github.com/kayacancode/obsidian-gmail-crm.git
 cd obsidian-gmail-crm
 npm ci
-```
 
-### Obsidian plugin
-
-```bash
-npm run test:intelligence
-npx tsc --noEmit
-npm run build
-```
-
-Install the built `main.js`, `manifest.json`, and `styles.css` into your vault as described in the [plugin guide](docs/obsidian-plugin.md). For a synthetic-data UI preview, run `npm run preview:intelligence`.
-
-### Web app
-
-```bash
+# Web app checks
 cd apps/people-graph
 npm ci
 npm run typecheck
 npm test
 ```
 
-Follow the [web setup guide](apps/people-graph/README.md#setup-once) before running `npm run dev` or `npm run deploy`. Deployment builds the required static bundles through the `predeploy` script.
-
-### CLI
+For a local UI tour with sample data and no connected accounts:
 
 ```bash
-# From the repository root; requires Rust/Cargo
-npm run build:peoplegraph
-./crates/peoplegraph/target/release/peoplegraph --help
+# From the repository root
+node apps/people-graph/scripts/readme-preview.mjs
+# Open http://127.0.0.1:4318
 ```
 
-The CLI supports hosted graph login, explicit private People commands, and local plugin contact indexes. Use `--local` to choose the vault cache when a web login is saved. See the [agent guide](docs/people-agent-onboarding.md), [web login guide](docs/peoplegraph-web-login.md), and [private API contract](docs/people-memory-integration.md).
+For a working integration, follow the [web setup guide](apps/people-graph/README.md#setup-once) before running `npm run dev` or `npm run deploy`. The sample-data preview does not connect to Google, send email, or create events.
 
-## Repository map
+| Component | Location | Guide |
+| --- | --- | --- |
+| Web UI, APIs, integrations, booking | `apps/people-graph/` | [Development and deployment](apps/people-graph/README.md) |
+| Obsidian plugin | `src/` | [Plugin guide](docs/obsidian-plugin.md) |
+| Rust CLI | `crates/peoplegraph/` | [Agent onboarding](docs/people-agent-onboarding.md) |
+| Scoring and shared contracts | `shared/` | [Repository source](shared/) |
 
-| Directory | Purpose |
-| --- | --- |
-| `src/` | Obsidian plugin |
-| `apps/people-graph/` | Main web app, API, Google/Granola integrations, shared networks |
-| `shared/` | Shared scoring and data contracts |
-| `crates/peoplegraph/` | Rust CLI |
-| `tests/` | Plugin and intelligence tests |
-| `apps/people-graph/tests/` | Web unit, integration, and browser tests |
-| `docs/` | Guides and design documents; proposals are not a feature guarantee |
-| `apps/people-graph-lab/`, `apps/reconnect-web/` | Related experiments and companion apps |
-
-## Contributing
-
-Open an issue with the problem, reproduction steps, and expected behavior. Use synthetic examples instead of private contact data. For a pull request, describe the behavior change and run the checks for the component you changed. Keep source permissions, contributor attribution, and the distinction between inferred and confirmed relationships intact.
+To contribute, describe the problem and expected behavior, use fictional examples, and run checks for the component you change. Keep credentials, vault notes, and real contact data out of commits.
 
 ## License
 
