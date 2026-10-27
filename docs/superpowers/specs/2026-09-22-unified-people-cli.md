@@ -1,6 +1,6 @@
 # One People network: website and CLI
 
-Status: proposed for user review; web integration is not implemented.
+Status: implemented, deployed, and verified on September 22, 2026. CLI 0.3.11 is released; source integration is tracked in PR #8.
 
 ## Outcome
 
