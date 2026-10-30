@@ -1,6 +1,6 @@
 # Use People with your agent
 
-PeopleGraph 0.3.13 lets an agent read and edit the same People account you use on the website. One saved People credential covers graph questions, your Lens, and relationship context within its approved scopes. You do not need Obsidian or MCP for the CLI.
+PeopleGraph 0.3.14 lets an agent read and edit the same People account you use on the website. One saved People credential covers graph questions, your Lens, and relationship context within its approved scopes. You do not need Obsidian or MCP for the CLI.
 
 ## Install or upgrade and connect
 
@@ -8,7 +8,7 @@ This is the complete setup for an agent that should read your network and save t
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.13/install-peoplegraph.sh \
+  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.14/install-peoplegraph.sh \
   -o install-peoplegraph.sh
 bash install-peoplegraph.sh --skill agents
 ~/.local/bin/peoplegraph version
@@ -77,7 +77,7 @@ Use the documented JSON shape for the selected route. `--file -` accepts stdin; 
 
 Additional permission groups are explicit: `sources:manage`, `sharing:manage`, `booking:manage`, and `integrations:manage`. Request only the groups needed for the owner's task, for example `peoplegraph login --write --scope sources:manage`. The approval page shows every requested group. Existing keys gain no new scopes automatically. Source/calendar OAuth still returns a browser handoff; public booking visitor identity remains separate. Booking and sharing operations can have external effects, so an agent performs them only when the owner requests them.
 
-See the [CLI and web parity guide](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.13/docs/peoplegraph-cli-parity.md) and [API contract](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.13/docs/people-memory-integration.md).
+See the [CLI and web parity guide](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.14/docs/peoplegraph-cli-parity.md) and [API contract](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.14/docs/people-memory-integration.md).
 
 ## Try a conversation
 
@@ -91,4 +91,4 @@ See the [CLI and web parity guide](https://github.com/kayacancode/obsidian-gmail
 
 The CLI is sufficient for the workflows above. A compatible MCP client can instead use `<origin>/api/people-mcp` with the same People key in its secret bearer-header configuration. It supports Streamable HTTP; client support varies, and this endpoint does not provide OAuth. Read tools include `get_people_lens`, `recommend_people`, `find_people`, `explain_connection`, `suggest_connections`, and `lookup_relationship_memory`. Write tools include `update_people_lens`, `capture_relationship_context`, and `save_relationship_memory`.
 
-Older `pgd1_` browser-device credentials remain graph-only until you explicitly sign in again for scoped People access. `peoplegraph --local` selects an Obsidian cache. Neither a legacy login nor a local cache silently substitutes for a failed hosted request. See [login and local mode](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.13/docs/peoplegraph-web-login.md).
+Older `pgd1_` browser-device credentials remain graph-only until you explicitly sign in again for scoped People access. `peoplegraph --local` selects an Obsidian cache. Neither a legacy login nor a local cache silently substitutes for a failed hosted request. See [login and local mode](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.14/docs/peoplegraph-web-login.md).

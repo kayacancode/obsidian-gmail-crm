@@ -53,7 +53,7 @@ Obsidian and Granola are optional. Connecting Google does not require installing
 
 ## Use People with an agent
 
-Install **PeopleGraph 0.3.13** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+Install **PeopleGraph 0.3.14** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
 
 Run `peoplegraph login` for graph and private People reads, or `peoplegraph login --write` to approve requested Lens and context edits. The CLI stores one origin-bound key in `~/.config/peoplegraph/config.json` (or `$XDG_CONFIG_HOME/peoplegraph/config.json`) and loads it automatically. `peoplegraph status` verifies the account, permissions, and API capabilities; `peoplegraph lens set --needs "…"` preserves the other Lens fields with revision checking. `peoplegraph api METHOD /api/path --file payload.json` covers registered website operations under their required scopes. Existing keys can be saved with `configure --url <origin> --token-stdin`. MCP is optional and uses the same People key.
 

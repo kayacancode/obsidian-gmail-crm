@@ -5,7 +5,7 @@ description: Use when the owner asks about people they know, relationship contex
 
 # PeopleGraph
 
-Use `peoplegraph version` and `peoplegraph describe` to inspect the installed CLI. This skill targets 0.3.13. Commands return JSON; check `ok` before using `data`. On failure explain `error.kind` and `error.message`. Never invent a score, date, connection, or recommendation when a query fails.
+Use `peoplegraph version` and `peoplegraph describe` to inspect the installed CLI. This skill targets 0.3.14. Commands return JSON; check `ok` before using `data`. On failure explain `error.kind` and `error.message`. Never invent a score, date, connection, or recommendation when a query fails.
 
 ## Setup and access
 
@@ -74,4 +74,4 @@ The CLI is sufficient. Compatible Streamable HTTP MCP clients can use `<origin>/
 
 Lens and memory operations do not send outreach. Generic sharing and booking actions may have external effects; perform them only when the owner requests them. Direct scheduling MCP remains a separate opt-in endpoint/credential. Botwick is an optional client, not required enrollment.
 
-The installer places offline guides in `references/`. Online: [onboarding](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.13/docs/people-agent-onboarding.md), [API and profile contract](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.13/docs/people-memory-integration.md), [login and local mode](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.13/docs/peoplegraph-web-login.md).
+The installer places offline guides in `references/`. Online: [onboarding](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.14/docs/people-agent-onboarding.md), [API and profile contract](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.14/docs/people-memory-integration.md), [login and local mode](https://github.com/kayacancode/obsidian-gmail-crm/blob/peoplegraph-v0.3.14/docs/peoplegraph-web-login.md).
