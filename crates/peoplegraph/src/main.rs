@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod hosted;
 mod people_client;
+mod sources;
 mod web_client;
 mod web_profile;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -65,6 +66,8 @@ enum Commands {
     Memory(memory::MemoryArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
+    /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
+    Sources(sources::SourcesArgs),
     /// Call a registered web operation with your scoped People credential.
     Api(hosted::ApiArgs),
     /// Save an integration key securely from stdin, without shell environment setup.
@@ -610,6 +613,7 @@ fn run_with_profile(
         cli.command,
         Commands::Memory(_)
             | Commands::Lens(_)
+            | Commands::Sources(_)
             | Commands::Matches(_)
             | Commands::Search(_)
             | Commands::Connection(_)
@@ -629,6 +633,7 @@ fn run_with_profile(
         return match &cli.command {
             Commands::Memory(args) => memory::run(args, start),
             Commands::Lens(args) => hosted::lens(args, start),
+            Commands::Sources(args) => sources::run(args, start),
             Commands::Api(args) => hosted::api(args, start),
             Commands::Configure(args) => hosted::configure(args, start),
             Commands::Status(args) => hosted::status(args, start),
@@ -748,6 +753,7 @@ fn run_with_profile(
         Commands::Serve(_) => unreachable!("serve handled before command dispatch"),
         Commands::Memory(_)
         | Commands::Lens(_)
+        | Commands::Sources(_)
         | Commands::Matches(_)
         | Commands::Search(_)
         | Commands::Connection(_)
@@ -898,6 +904,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         Commands::Version => Some("/version".to_string()),
         Commands::Memory(_)
         | Commands::Lens(_)
+        | Commands::Sources(_)
         | Commands::Matches(_)
         | Commands::Search(_)
         | Commands::Connection(_)
@@ -4908,6 +4915,7 @@ fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Memory(_) => "memory",
         Commands::Lens(_) => "lens",
+        Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
         Commands::Configure(_) => "configure",
         Commands::Status(_) => "status",
@@ -4963,6 +4971,7 @@ fn describe_payload() -> Value {
         },
         "commands": [
             {"name":"lens","usage":"peoplegraph lens [--url <https-origin>] [set --focus <text> --needs <text> --offers <text> [--revision <revision>] | set --file <lens.json|-> | inspect | learning on|off | granola on|off | refresh | accept <id> | dismiss <id>]","description":"Read or update focus, needs, offers and source settings. Partial edits preserve other fields; revisions prevent stale overwrites. Inferred suggestions require explicit acceptance.","auth":"private_people_auth"},
+            {"name":"sources","usage":"peoplegraph sources [--url <https-origin>] status | connect gmail | connect granola --key-stdin [--range recent|all] | sync gmail --email <email> [--range recent|all] | sync granola | context gmail --email <email> on|off","description":"Inspect and manage connected sources with sources:manage permission. Gmail connect returns a browser consent URL; Granola reads a bounded API key from piped stdin. Sync requests start background imports; status reports progress. Context on explicitly enables automatic Gmail body context for the selected inbox.","auth":"private_people_auth"},
             {"name":"configure","usage":"peoplegraph configure --url <https-origin> --token-stdin","description":"Save an existing integration credential from stdin in an atomic owner-only config file. Never prints the credential."},
             {"name":"status","usage":"peoplegraph status [--offline] [--url <https-origin>]","description":"Verify live owner, grants and web capabilities; --offline reports configuration only without claiming authentication."},
             {"name":"api","usage":"peoplegraph api GET|POST|PUT|PATCH|DELETE /api/path [--file <request.json|->] [--idempotency-key <key>]","description":"Call registered owner web operations with the same validation and safeguards. status lists exact routes, scopes and browser handoffs. Sending, booking and sharing still require user authorization."},

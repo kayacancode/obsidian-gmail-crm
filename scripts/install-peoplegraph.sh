@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="kayacancode/obsidian-gmail-crm"
-VERSION="0.3.14"
+VERSION="0.3.15"
 INSTALL_DIR="$HOME/.local/bin"
 SKILL_DIRS=()
 GUIDES=(people-agent-onboarding.md people-memory-integration.md peoplegraph-web-login.md)
@@ -13,7 +13,7 @@ usage() {
 Install a versioned PeopleGraph binary and optionally its agent skill.
 
 Usage: bash install-peoplegraph.sh [options]
-  --version X.Y.Z       Release version (default: 0.3.14; requires SHA256SUMS)
+  --version X.Y.Z       Release version (default: 0.3.15; requires SHA256SUMS)
   --bin-dir PATH        Binary directory (default: ~/.local/bin)
   --skill codex         Install skill in ${CODEX_HOME:-~/.codex}/skills/peoplegraph
   --skill claude        Install skill in ~/.claude/skills/peoplegraph
@@ -144,6 +144,7 @@ esac
 printf '\nCheck: %q version\n' "$INSTALL_DIR/peoplegraph"
 if [ "$SCOPED_LOGIN" = true ]; then
   echo "Next: peoplegraph login --write, then peoplegraph status."
+  echo "For source connection or sync, request: peoplegraph login --write --scope sources:manage"
   echo "Approve once; the CLI saves one credential for graph, Lens and private context."
   echo "For read-only access, use peoplegraph login without --write. MCP is optional."
 else

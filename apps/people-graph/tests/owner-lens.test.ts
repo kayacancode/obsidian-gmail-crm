@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {OwnerLensStore,ownerMailPassages,OWNER_LENS_WINDOW,ownerLensDiagnostic} from '../src/owner-lens';
 import {MailSync} from '../src/mail-sync';
 import {seal} from '../src/mail-model';
+import {rankOwnerLens} from '../src/helper-brief';
 
 const OWN='me@example.com';
 const WORK='I am building research tools that help climate scientists compare experimental results.';
@@ -14,7 +15,7 @@ function fixture(configured=false){
  const ai={calls:[] as any[],async run(_model:string,input:any){this.calls.push(input);return facts;}};
  const env={TOKEN_SECRET:'owner-test-key',MAIL_TOKEN_KEY:'mail-test-key',GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',HONCHO_API_KEY:configured?'test-honcho-key':undefined,AI:ai};
  const service=new MailSync(ctx as any,env as any),store=new OwnerLensStore(ctx as any,env as any,async()=>OWN);
- return {db,kv,env,ai,service,store};
+ return {db,kv,ctx,env,ai,service,store};
 }
 function message(id:string,from=OWN,text=WORK,observed=Date.now()-1000){return {id,internalDate:String(observed),payload:{mimeType:'text/plain',headers:[{name:'From',value:from},{name:'To',value:from===OWN?'friend@example.com':OWN},{name:'Message-ID',value:id},{name:'Subject',value:'Research tools'}],body:{data:Buffer.from(text).toString('base64url')}}};}
 async function enabled(store:OwnerLensStore){return store.setEnabled({revision:store.get().revision,enabled:true});}
@@ -57,6 +58,59 @@ test('owner lens manual fields require fresh revisions and never trigger learnin
   await assert.rejects(f.store.refresh({revision:saved.revision,note:WORK},async()=>{}),/owner_lens_disabled/);
   assert.equal(f.ai.calls.length,0);
  }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens enabling learning is idle until an explicit refresh and does not schedule provider work',async()=>{
+ const f=fixture(true),original=globalThis.fetch;let requests=0;
+ globalThis.fetch=async()=>{requests++;throw Error('unexpected network');};
+ try{
+  let state=await f.service.getOwnerLens();
+  state=await f.service.updateOwnerLens({revision:state.revision,fields:{focus:WORK,needs:'Research peers',offers:''}});
+  state=await f.service.setOwnerLensEnabled({revision:state.revision,enabled:true});
+  assert.equal(state.honcho.status,'idle');assert.deepEqual(state.refresh,{state:'not_refreshed',lastRefresh:null,nextAction:'refresh'});
+  assert.deepEqual(state.sources,[]);assert.equal(state.honcho.lastSync,null);assert.equal(f.kv.has('alarm'),false);
+  await f.service.alarm();assert.deepEqual((await f.service.getOwnerLens()).refresh,state.refresh);
+  const result=await rankOwnerLens(f.env,{nodes:[{id:'person',name:'A contact'}]},state.fields);
+  assert.equal(result.status,'no_evidence');assert.equal(result.considered,0);assert.equal(requests,0);assert.equal(f.ai.calls.length,0);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens empty refresh reports no sources without claiming a successful Honcho sync',async()=>{
+ const f=fixture(true),original=globalThis.fetch;let requests=0;
+ globalThis.fetch=async()=>{requests++;throw Error('unexpected network');};
+ try{
+  let state=await enabled(f.store);
+  state=await f.service.refreshOwnerLens({revision:state.revision});
+  assert.equal(state.honcho.status,'idle');assert.equal(state.refresh.state,'no_sources');assert.equal(state.refresh.nextAction,'add_note_or_connect_source');
+  assert.match(state.refresh.lastRefresh!,/^\d{4}-/);assert.equal(state.honcho.lastSync,null);assert.deepEqual(state.sources,[]);assert.equal(requests,0);assert.equal(f.ai.calls.length,0);
+  await addMail(f.store);state=f.store.get();
+  assert.equal(state.honcho.status,'idle');assert.equal(state.refresh.state,'refresh_required');assert.equal(state.refresh.nextAction,'refresh');assert.equal(state.honcho.lastSync,null);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens legacy pending and empty ready snapshots derive truthful idle states without changing saved data',async()=>{
+ const f=fixture(true);try{
+  await enabled(f.store);
+  for(const [status,expected] of [['pending','not_refreshed'],['ready','no_sources']] as const){
+   const stored=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);stored.status=status;delete stored.lastRefresh;delete stored.projectionRequested;delete stored.pendingSnapshot;
+   const serialized=JSON.stringify(stored);f.db.prepare('UPDATE owner_lens_state SET data=?').run(serialized);
+   const state=new OwnerLensStore(f.ctx as any,f.env as any,async()=>OWN).get();
+   assert.equal(state.honcho.status,'idle');assert.equal(state.refresh.state,expected);assert.equal(state.refresh.lastRefresh,null);
+   assert.equal(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data,serialized);
+  }
+ }finally{f.db.close();}
+});
+
+test('owner lens explicit note refresh distinguishes provider pending from a completed real sync',async()=>{
+ const f=fixture(true),net=honchoNetwork(),transport=globalThis.fetch;let pending=true;
+ globalThis.fetch=async(input:any,init:any)=>String(input).endsWith('/chat')&&pending?Response.json({content:null}):transport(input,init);
+ try{
+  let state=await enabled(f.store);assert.equal(net.calls.length,0);
+  state=await f.store.refresh({revision:state.revision,note:WORK},async()=>{});
+  assert.equal(state.sources.length,1);assert.equal(state.honcho.status,'pending');assert.equal(state.refresh.state,'pending');assert.equal(state.refresh.nextAction,'refresh');assert.match(state.refresh.lastRefresh!,/^\d{4}-/);assert.equal(state.honcho.lastSync,null);
+  pending=false;state=await f.store.refresh({revision:state.revision},async()=>{});
+  assert.equal(state.honcho.status,'ready');assert.equal(state.refresh.state,'ready');assert.equal(state.refresh.nextAction,'review_suggestions');assert.match(state.honcho.lastSync!,/^\d{4}-/);assert.equal(state.fields.focus,'');
+ }finally{net.restore();f.db.close();}
 });
 
 test('owner lens source extraction verifies actual From and strips replies before attribution',async()=>{

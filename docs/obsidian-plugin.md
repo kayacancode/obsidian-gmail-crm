@@ -171,7 +171,7 @@ Install the versioned binary and explicitly choose an agent skill destination:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.14/install-peoplegraph.sh \
+  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.15/install-peoplegraph.sh \
   -o install-peoplegraph.sh
 bash install-peoplegraph.sh --skill claude
 ~/.local/bin/peoplegraph version

@@ -16,11 +16,14 @@ try{
  const token=(await api('/api/token')).data.token;
  const graph={pushedAt:'2026-09-20T00:00:00Z',nodes:[{id:'ada-test',name:'Ada',company:'acme.test',combined:80},{id:'bo-test',name:'Bo',company:'acme.test'}],edges:[{source:'ada-test',target:'bo-test',weight:1,types:['note'],contexts:['Met at demo']}]};
  const pushed=await fetch(origin+'/api/push',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify(graph)});assert.equal(pushed.status,200);
- const login=command(['login','--url',origin,'--no-browser','--write']);let code;
+ const login=command(['login','--url',origin,'--no-browser','--write','--scope','sources:manage']);let code;
  for(let i=0;i<100;i++){code=login.stderr().match(/Enter code: ([A-F0-9]{12})/)?.[1];if(code)break;await new Promise(r=>setTimeout(r,100));}
- assert.ok(code,login.stderr());assert.equal((await api('/api/cli/device/approve',{userCode:code,expectedOwner:'owner@test.com',expectedScopes:['people:read','people:write']})).status,200);
+ assert.ok(code,login.stderr());assert.equal((await api('/api/cli/device/approve',{userCode:code,expectedOwner:'owner@test.com',expectedScopes:['people:read','people:write','sources:manage']})).status,200);
  const result=await login.done;assert.equal(result.code,0,result.err);assert.equal(JSON.parse(result.out).data.owner,'owner@test.com');
- const status=JSON.parse((await command(['status']).done).out);assert.equal(status.data.authenticated,true);assert.deepEqual(status.data.credential.scopes,['people:read','people:write']);
+ const status=JSON.parse((await command(['status']).done).out);assert.equal(status.data.authenticated,true);assert.deepEqual(status.data.credential.scopes,['people:read','people:write','sources:manage']);
+ const sources=await command(['sources','status']).done;assert.equal(sources.code,0,sources.out);assert.deepEqual(JSON.parse(sources.out).data.gmail.accounts,[]);assert.equal(JSON.parse(sources.out).data.granola.connected,false);
+ const handoff=await command(['sources','connect','gmail']).done;assert.equal(handoff.code,0,handoff.out);assert.equal(JSON.parse(handoff.out).data.status,'requires_browser_consent');
+ const learning=await command(['lens','learning','on']).done;assert.equal(learning.code,0,learning.out);const inspected=JSON.parse((await command(['lens','inspect']).done).out);assert.equal(inspected.data.honcho.lastSync,null);assert.notEqual(inspected.data.refresh.state,'pending');
  const lensBefore=JSON.parse((await command(['lens']).done).out).data;
  const saved=await command(['lens','set','--focus','Agent interfaces','--needs','Design partners','--offers','Research']).done;assert.equal(saved.code,0,saved.out);
  const webLens=await api('/api/lens');assert.deepEqual(webLens.data.fields,{focus:'Agent interfaces',needs:'Design partners',offers:'Research'});
@@ -42,6 +45,7 @@ try{
  const privateDenied=await fetch(origin+'/api/people-agent/lens',{headers:{authorization:'Bearer '+secondToken}});assert.equal(privateDenied.status,401,'graph device cannot read private lens');
  const keyResult=await api('/api/people/integrations',{name:'Local release verification',scopes:['people:read']});assert.equal(keyResult.status,201);
  const privateEnv={PEOPLEGRAPH_WEB_URL:origin,PEOPLEGRAPH_WEB_TOKEN:keyResult.data.token};
+ const deniedSource=await command(['sources','status'],privateEnv).done;assert.equal(JSON.parse(deniedSource.out).error.kind,'insufficient_scope');assert.match(JSON.parse(deniedSource.out).error.message,/sources:manage/);
  const lens=await command(['lens'],privateEnv).done;assert.equal(lens.code,0,lens.out);assert.deepEqual(JSON.parse(lens.out).data.fields,{focus:'',needs:'',offers:''});
  const matches=await command(['matches'],privateEnv).done;assert.equal(matches.code,0,matches.out);assert.deepEqual(JSON.parse(matches.out).data.results,[]);
  const privateSearch=await command(['search','Ada'],privateEnv).done;assert.equal(privateSearch.code,0,privateSearch.out);assert.equal(JSON.parse(privateSearch.out).data.people[0].id,'ada-test');
@@ -58,5 +62,5 @@ try{
  assert.equal((await api('/api/people/integrations/'+status.data.credential.id+'/revoke',{})).status,200);
  const revoked=await command(['find-person','Ada']).done;assert.equal(JSON.parse(revoked.out).error.kind,'login_required');
  const logout=await command(['logout']).done;assert.equal(logout.code,0,logout.err);
- console.log('PASS: compiled CLI scoped login, auto-config, status, Lens writes/CAS, generic API, graph parity, local mode, private intelligence, scoped MCP, tenant isolation, revocation, logout');
+ console.log('PASS: compiled CLI scoped login, auto-config, source status/consent/scope denial, Lens idle state/writes/CAS, generic API, graph parity, local mode, private intelligence, scoped MCP, tenant isolation, revocation, logout');
 }finally{await rm(home,{recursive:true,force:true});}

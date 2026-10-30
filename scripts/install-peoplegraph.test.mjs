@@ -39,10 +39,10 @@ const args = process.argv.slice(2);
 const url = args.find(arg => arg.startsWith('https://'));
 if (process.env.FAIL_NETWORK === '1') process.exit(7);
 if (url === 'https://api.github.com/repos/kayacancode/obsidian-gmail-crm/releases?per_page=100') {
-  process.stdout.write('[{"tag_name":"peoplegraph-v0.3.14"}]\\n');
+  process.stdout.write('[{"tag_name":"peoplegraph-v0.3.15"}]\\n');
   process.exit(0);
 }
-const prefix = 'https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v' + (process.env.EXPECT_VERSION || '0.3.14') + '/';
+const prefix = 'https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v' + (process.env.EXPECT_VERSION || '0.3.15') + '/';
 if (!url || !url.startsWith(prefix)) process.exit(22);
 const filename = path.join(process.env.DOWNLOADS, url.slice(prefix.length));
 if (!fs.existsSync(filename)) process.exit(22);

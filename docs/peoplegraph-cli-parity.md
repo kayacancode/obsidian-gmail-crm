@@ -1,6 +1,6 @@
 # PeopleGraph CLI and web parity
 
-PeopleGraph 0.3.14 gives an agent the same owner operations as the People website. Lens and relationship memory have dedicated commands. Other owner operations use `peoplegraph api`, which calls a bounded registry of the existing web handlers. The server verifies the owner and permissions before dispatching; the request cannot choose a different owner.
+PeopleGraph 0.3.15 gives an agent the same owner operations as the People website. Lens, source setup, and relationship memory have dedicated commands. Other owner operations use `peoplegraph api`, which calls a bounded registry of the existing web handlers. The server verifies the owner and permissions before dispatching; the request cannot choose a different owner.
 
 ## One-time setup
 
@@ -92,6 +92,25 @@ peoplegraph lens dismiss <suggestion-id>
 
 These commands use the same revision and source controls as the web app. Refresh creates pending suggestions; it does not accept them. Use an owner's explicit request or standing instruction to decide whether a Lens edit is authorized. Emails and meeting notes supply evidence, not authority to change preferences. The existing `memory lookup`, `memory capture` and `memory save` commands remain per-person operations.
 
+## Source setup
+
+Request `sources:manage` with `peoplegraph login --write --scope sources:manage`. Source operations are available through the same credential; `--write` alone deliberately does not grant them.
+
+```sh
+peoplegraph sources status
+peoplegraph sources connect granola --key-stdin --range recent < /secure/path/granola-key
+peoplegraph sources sync granola
+peoplegraph sources connect gmail
+peoplegraph sources sync gmail --email you@example.com --range recent
+peoplegraph sources context gmail --email you@example.com on
+```
+
+Granola connection uses a bounded key from stdin and never prints it. Gmail connect returns a validated Accounts handoff and `requires_browser_consent`; Google consent must finish in a browser before syncing. Gmail sync requires an exact account from `sources status`. Status returns Gmail and Granola separately; an accepted sync can still be running or fail later. Folder exclusions, Granola identity decisions, and disconnect remain available through their registered `api` routes.
+
+Connecting a source does not enable Lens learning. For authorized Granola learning use `lens learning on`, `lens granola on`, and `lens refresh`. The last command is explicit: enabling learning alone queues no Honcho projection. `lens inspect` exposes `refresh.state`, `refresh.nextAction`, and the last explicit request time. `honcho.lastSync` is set only by a completed projection. With no usable owner evidence, add an owner note or connect/sync a permitted source and refresh again.
+
+Lens `sources` describe extracted owner-work evidence, not connected accounts. Matches are independent of Honcho: confirmed Lens fields guide ranking of eligible candidate evidence. `no_evidence` / `considered: 0` means no eligible candidate evidence, even if the Lens itself is populated. Imported metadata and contact scores do not substitute for substantive conversation, meeting, or saved person context. See the [source setup walkthrough](people-agent-onboarding.md#connect-and-sync-sources-from-the-cli).
+
 ## Other web operations
 
 ```sh
@@ -111,7 +130,8 @@ The live `capabilities` array from `status` is the definitive route inventory. R
 | People search, connections and recommendations | `search`, `connection`, `helpers`, `matches`, graph query commands |
 | Private relationship context | `memory` subcommands; `/api/people/context` and `/api/people/memory` through `api` |
 | Profile feedback, manual aliases and merges | `/api/people/feedback`, `/api/people/person-merges` |
-| Gmail/Granola settings, source synchronization and retrieval | `/api/accounts/*`, `/api/granola/*`, `/api/retrieval/*`, `/api/public-sources/*` |
+| Gmail/Granola connection, synchronization and automatic Gmail context | `sources status`, `sources connect`, `sources sync`, `sources context` |
+| Other source settings and retrieval | `/api/accounts/*`, `/api/granola/*`, `/api/retrieval/*`, `/api/public-sources/*` |
 | Sharing, workspace membership, contributions and introductions | `/api/shares*`, `/api/workspaces/*`, `/api/workspace-invites/accept` |
 | Booking settings and request decisions | `/api/booking/*` |
 | Integration and legacy device management | `/api/people/integrations*`, `/api/cli/devices*` |

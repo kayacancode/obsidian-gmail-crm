@@ -41,6 +41,9 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   if(model?.enabled===false&&value?.status==='unavailable')return 'Learning is off. Clearing learned context is still pending. Retry to finish clearing it.';
   if(model?.enabled===true&&value?.configured&&value.cleanupPending)return 'Updating stored context. Refresh again after cleanup finishes.';
   if(!value?.configured)return 'Honcho is not configured. You can still edit your lens and find people.';
+  if(model?.refresh?.state==='no_sources')return 'No usable work sources found. Add a note about your work or connect a source, then refresh suggestions.';
+  if(model?.refresh?.state==='refresh_required')return 'Your work context has changed. Refresh suggestions to look for updates.';
+  if(value.status==='idle')return 'Learning is enabled. Refresh suggestions to look for updates.';
   return ({disabled:saved?'Learning is off. Your saved lens still works.':'Learning is off. You can fill in your lens above.',pending:'No completed updates yet. Refresh again to check.',ready:count?`${count} proposed ${count===1?'update is':'updates are'} ready to review. Choose Use update to add each one to your lens.`:saved?'No new updates. Your saved lens is unchanged.':'No profile updates found yet. Add a note about your work or fill in your lens above.',unavailable:saved?'Learning is temporarily unavailable. Your saved lens still works.':'Learning is temporarily unavailable. You can still fill in your lens above.',invalid:saved?'No reliable update was returned. Your saved lens is unchanged.':'No reliable profile update was returned. Add a note about your work or fill in your lens above.'})[value.status]||'Ready to learn from your work context.';
  }
  function renderModel(value){
