@@ -1,5 +1,5 @@
 use crate::{
-    Cli, Commands, Response, fail, ok, unix_seconds,
+    Cli, Commands, Response, config, fail, ok, unix_seconds,
     web_profile::{self, WebProfile},
 };
 use serde_json::{Value, json};
@@ -43,16 +43,39 @@ fn post(
     let data = serde_json::from_str(&text).map_err(|_| "People returned an invalid response.")?;
     Ok((status, data))
 }
-pub fn login(cli: &Cli, path: &Path, start: Instant) -> Response {
+pub fn login(
+    cli: &Cli,
+    path: &Path,
+    no_browser: bool,
+    url: Option<&str>,
+    scopes: &[String],
+    start: Instant,
+) -> Response {
     let result = (|| -> Result<Value, String> {
-        let origin = web_profile::origin(cli.host.as_deref().unwrap_or(DEFAULT_ORIGIN))?;
+        let selected = url.or(cli.host.as_deref()).map(str::to_owned).or_else(|| {
+            std::env::var("PEOPLEGRAPH_WEB_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+        let origin = if let Some(selected) = selected {
+            web_profile::origin(&selected)?
+        } else {
+            let metadata = config::metadata().map_err(|(_, message)| message.to_owned())?;
+            if let Some(saved) = metadata["activeOrigin"].as_str() {
+                saved.to_owned()
+            } else {
+                web_profile::load_profile(path)?
+                    .map(|profile| profile.origin)
+                    .unwrap_or_else(|| DEFAULT_ORIGIN.into())
+            }
+        };
         let name = std::env::var("HOSTNAME")
             .or_else(|_| std::env::var("COMPUTERNAME"))
             .unwrap_or_else(|_| "People CLI".into());
         let (status, data) = post(
             &origin,
             "device/start",
-            json!({"deviceName":name.chars().take(80).collect::<String>()}),
+            json!({"deviceName":name.chars().filter(|c| !c.is_control()).take(80).collect::<String>(),"scopes":scopes}),
             None,
         )?;
         if status != 200 {
@@ -71,14 +94,15 @@ pub fn login(cli: &Cli, path: &Path, start: Instant) -> Response {
         // Construct the URL from the validated origin; never open an arbitrary server-provided URL.
         let url = format!("{origin}/cli");
         eprintln!(
-            "Open {url}\nEnter code: {code}\nApprove read-only access to your People account."
+            "Open {url}\nEnter code: {code}\nReview and approve the requested People permissions: {}",
+            scopes.join(", ")
         );
         #[cfg(target_os = "macos")]
-        if !matches!(cli.command, Commands::Login { no_browser: true }) {
+        if !no_browser {
             let _ = std::process::Command::new("open").arg(&url).output();
         }
         #[cfg(target_os = "linux")]
-        if !matches!(cli.command, Commands::Login { no_browser: true }) {
+        if !no_browser {
             let _ = std::process::Command::new("xdg-open").arg(&url).output();
         }
         let deadline = Instant::now() + Duration::from_secs(600);
@@ -100,30 +124,73 @@ pub fn login(cli: &Cli, path: &Path, start: Instant) -> Response {
             }
             let token = result["token"]
                 .as_str()
-                .filter(|t| t.starts_with("pgd1_") && t.len() == 69)
-                .ok_or("Invalid device credential.")?;
-            let owner = result["owner"]
-                .as_str()
-                .ok_or("Invalid account response.")?;
-            let expires_at = result["expiresAt"]
-                .as_u64()
-                .filter(|t| *t > unix_seconds())
-                .ok_or("Invalid credential expiry.")?;
-            let profile = WebProfile {
-                version: 1,
-                backend: "people-web".into(),
-                origin: origin.clone(),
-                owner: owner.into(),
-                token: token.into(),
-                expires_at,
+                .filter(|value| {
+                    value.starts_with("people_")
+                        && value.len() == 50
+                        && value[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                })
+                .ok_or("Invalid People credential. The server must support scoped CLI login.")?;
+            let issued = (|| -> Result<Value, String> {
+                let owner = result["owner"]
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or("Invalid account response.")?;
+                let expires_at = result["expiresAt"]
+                    .as_u64()
+                    .filter(|value| *value > unix_seconds())
+                    .ok_or("Invalid credential expiry.")?;
+                let mut approved: Vec<&str> = result["scopes"]
+                    .as_array()
+                    .ok_or("The server did not confirm the approved permissions.")?
+                    .iter()
+                    .map(|value| value.as_str().ok_or("Invalid approved permissions."))
+                    .collect::<Result<_, _>>()?;
+                let mut requested: Vec<&str> = scopes.iter().map(String::as_str).collect();
+                approved.sort_unstable();
+                requested.sort_unstable();
+                if approved != requested
+                    || approved.is_empty()
+                    || approved.windows(2).any(|pair| pair[0] == pair[1])
+                {
+                    return Err("The issued permissions differ from the requested permissions. Run peoplegraph login again.".into());
+                }
+                let mut saved =
+                    config::save(&origin, token).map_err(|(_, message)| message.to_owned())?;
+                saved["owner"] = json!(owner);
+                saved["source"] = json!("people-web");
+                saved["expiresAt"] = json!(expires_at);
+                saved["scopes"] = json!(approved);
+                Ok(saved)
+            })();
+            let mut saved = match issued {
+                Ok(saved) => saved,
+                Err(error) => {
+                    let _ = post(&origin, "logout", json!({}), Some(token));
+                    return Err(error);
+                }
             };
-            if let Err(error) = web_profile::save_profile(path, &profile) {
-                let _ = post(&origin, "logout", json!({}), Some(token));
-                return Err(error);
+            // Replacing a same-origin legacy login must not resurrect it after a later logout.
+            let mut legacy_remaining = false;
+            match web_profile::load_profile(path) {
+                Ok(Some(legacy)) if legacy.origin == origin => {
+                    let _ = post(&legacy.origin, "logout", json!({}), Some(&legacy.token));
+                    if web_profile::remove_profile(path).is_err() {
+                        legacy_remaining = true;
+                        eprintln!(
+                            "Connected, but the previous local graph profile could not be removed."
+                        );
+                    }
+                }
+                Ok(Some(_)) => legacy_remaining = true,
+                Err(_) => {
+                    legacy_remaining = path.exists();
+                }
+                Ok(None) => {}
             }
-            return Ok(
-                json!({"owner":owner,"source":"people-web","origin":origin,"expiresAt":expires_at}),
-            );
+            saved["legacyProfileRemaining"] = json!(legacy_remaining);
+            return Ok(saved);
         }
         Err("Login expired. Run peoplegraph login again.".into())
     })();
@@ -148,7 +215,75 @@ pub fn logout(profile: &WebProfile, path: &Path, start: Instant) -> Response {
         Err(message) => fail("logout", "logout_failed", message, start),
     }
 }
+pub fn logout_configured(_cli: &Cli, start: Instant) -> Response {
+    let credential = match config::resolve(None) {
+        Ok(value) => value,
+        Err((kind, message)) => return fail("logout", kind, message.into(), start),
+    };
+    let result = (|| -> Result<Value, String> {
+        let (status, _) = post(
+            &credential.origin,
+            "logout",
+            json!({}),
+            Some(&credential.token),
+        )?;
+        if status != 200 && status != 401 {
+            return Err(
+                "Could not revoke access; your local credential was retained. Try logout again."
+                    .into(),
+            );
+        }
+        if credential.source == "config" {
+            config::remove(&credential.origin).map_err(|(_, message)| message.to_owned())?;
+        }
+        let legacy_remaining = web_profile::profile_path()
+            .ok()
+            .is_some_and(|path| path.exists());
+        Ok(
+            json!({"revoked":true,"origin":credential.origin,"credentialSource":credential.source,"legacyProfileRemaining":legacy_remaining}),
+        )
+    })();
+    match result {
+        Ok(data) => ok("logout", data, json!({})),
+        Err(message) => fail("logout", "logout_failed", message, start),
+    }
+}
+pub fn query_configured(cli: &Cli, start: Instant) -> Response {
+    let command = crate::command_name(&cli.command);
+    let credential = match config::resolve(None) {
+        Ok(value) => value,
+        Err((kind, message)) => return fail(command, kind, message.into(), start),
+    };
+    query_credential(
+        &credential.origin,
+        &credential.token,
+        None,
+        None,
+        cli,
+        command,
+        start,
+    )
+}
 pub fn query(profile: &WebProfile, cli: &Cli, command: &'static str, start: Instant) -> Response {
+    query_credential(
+        &profile.origin,
+        &profile.token,
+        Some(&profile.owner),
+        Some(profile.expires_at),
+        cli,
+        command,
+        start,
+    )
+}
+fn query_credential(
+    origin: &str,
+    token: &str,
+    owner: Option<&str>,
+    expires_at: Option<u64>,
+    cli: &Cli,
+    command: &'static str,
+    start: Instant,
+) -> Response {
     let mut body = json!({"command":command});
     match &cli.command {
         Commands::FindPerson(a) => {
@@ -186,7 +321,7 @@ pub fn query(profile: &WebProfile, cli: &Cli, command: &'static str, start: Inst
             );
         }
     }
-    if profile.expires_at <= unix_seconds() {
+    if expires_at.is_some_and(|value| value <= unix_seconds()) {
         return fail(
             command,
             "login_required",
@@ -194,7 +329,7 @@ pub fn query(profile: &WebProfile, cli: &Cli, command: &'static str, start: Inst
             start,
         );
     }
-    match post(&profile.origin, "v1/query", body, Some(&profile.token)) {
+    match post(origin, "v1/query", body, Some(token)) {
         Ok((401, _)) => fail(
             command,
             "login_required",
@@ -208,7 +343,9 @@ pub fn query(profile: &WebProfile, cli: &Cli, command: &'static str, start: Inst
                     && result.stats.as_ref().is_none_or(Value::is_object) =>
             {
                 let stats = result.stats.get_or_insert(json!({}));
-                stats["owner"] = json!(profile.owner);
+                if let Some(owner) = owner {
+                    stats["owner"] = json!(owner);
+                }
                 stats["backend"] = json!("people-web");
                 result
             }

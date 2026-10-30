@@ -1,4 +1,5 @@
 import {schedulingOwnerRoute} from './scheduling-routes';
+import type {SchedulingCredentialDelegation} from './scheduling-auth';
 import type {BookingEnv,BookingRequestRecord} from './booking-types';
 import {BookingStore} from './booking-store';
 import {bookingReadiness,publicBookingRequest} from './booking-coordinator';
@@ -25,10 +26,10 @@ export function bookingError(error:unknown){
  const safe=codes.includes(code)?code:code.startsWith('invalid_')&&/^[a-z_]{1,60}$/.test(code)?code:'booking_failed';
  return json({error:safe},safe==='invalid_origin'?403:safe==='not_found'?404:safe==='verification_required'?401:safe==='rate_limited'?429:['settings_changed','settings_conflict','thesis_required','unknown_setting','slug_taken','slot_unavailable','request_closed','booking_in_progress','intake_required','proposal_changed'].includes(safe)?409:['email_unavailable','calendar_unavailable','booking_unavailable','booking_failed'].includes(safe)?503:400);
 }
-export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:string):Promise<Response>{
+export async function bookingOwnerRoute(request:Request,env:BookingEnv,owner:string,delegation?:SchedulingCredentialDelegation):Promise<Response>{
  try{
   const url=new URL(request.url),path=url.pathname,store=new BookingStore(env.DB);await store.init();
-  if(path.startsWith('/api/booking/scheduling/'))return schedulingOwnerRoute(request,env,owner);
+  if(path.startsWith('/api/booking/scheduling/'))return schedulingOwnerRoute(request,env,owner,delegation);
   if(request.method==='GET'&&path==='/api/booking'){
    const [settings,requests,readiness,calendar]=await Promise.all([store.settings(owner),store.requests(owner),bookingReadiness(env,owner),store.calendar(owner)]);
    let lens=null;try{const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);const saved=await stub.getOwnerLens();lens=saved.fields;}catch{}

@@ -1,4 +1,6 @@
 mod agent;
+mod config;
+mod hosted;
 mod people_client;
 mod web_client;
 mod web_profile;
@@ -61,8 +63,14 @@ enum OutputFormat {
 enum Commands {
     /// Read, append context or explicitly edit private relationship memory in the hosted People account.
     Memory(memory::MemoryArgs),
-    /// Read your confirmed saved Lens (requires PEOPLEGRAPH_WEB_TOKEN).
-    Lens(agent::WebArgs),
+    /// Read or update your saved Lens with the same owner controls as the website.
+    Lens(hosted::LensArgs),
+    /// Call a registered web operation with your scoped People credential.
+    Api(hosted::ApiArgs),
+    /// Save an integration key securely from stdin, without shell environment setup.
+    Configure(hosted::ConfigureArgs),
+    /// Show redacted configuration and verify live permissions and capabilities.
+    Status(hosted::StatusArgs),
     /// Match people against your saved Lens (requires PEOPLEGRAPH_WEB_TOKEN).
     Matches(agent::WebArgs),
     /// Search your People account (requires PEOPLEGRAPH_WEB_TOKEN).
@@ -76,6 +84,15 @@ enum Commands {
         /// Print the approval URL without opening a browser.
         #[arg(long)]
         no_browser: bool,
+        /// Hosted People origin (defaults to the public People app).
+        #[arg(long)]
+        url: Option<String>,
+        /// Request permission to save Lens and private relationship context.
+        #[arg(long)]
+        write: bool,
+        /// Additional explicit permission; repeat to request more than one scope.
+        #[arg(long,value_parser=["people:read","people:write","sources:manage","sharing:manage","booking:manage","integrations:manage"])]
+        scope: Vec<String>,
     },
     /// Revoke this CLI device and remove the local web profile.
     Logout,
@@ -575,6 +592,20 @@ fn run_with_profile(
     start: Instant,
     profile_path: impl Fn() -> Result<PathBuf, String>,
 ) -> Response {
+    // These describe the installed executable, regardless of stale daemon environment settings.
+    match cli.command {
+        Commands::Version => {
+            return ok(
+                command,
+                json!({"name":"peoplegraph","version":COMMAND_VERSION}),
+                json!({"ms":elapsed_ms(start)}),
+            );
+        }
+        Commands::Describe => {
+            return ok(command, describe_payload(), json!({"ms":elapsed_ms(start)}));
+        }
+        _ => {}
+    }
     if matches!(
         cli.command,
         Commands::Memory(_)
@@ -583,6 +614,9 @@ fn run_with_profile(
             | Commands::Search(_)
             | Commands::Connection(_)
             | Commands::Helpers(_)
+            | Commands::Api(_)
+            | Commands::Configure(_)
+            | Commands::Status(_)
     ) {
         if cli.local
             || cli.remote
@@ -594,6 +628,10 @@ fn run_with_profile(
         }
         return match &cli.command {
             Commands::Memory(args) => memory::run(args, start),
+            Commands::Lens(args) => hosted::lens(args, start),
+            Commands::Api(args) => hosted::api(args, start),
+            Commands::Configure(args) => hosted::configure(args, start),
+            Commands::Status(args) => hosted::status(args, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -602,8 +640,26 @@ fn run_with_profile(
             Ok(p) => p,
             Err(e) => return fail(command, "profile_error", e, start),
         };
-        if matches!(cli.command, Commands::Login { .. }) {
-            return web_client::login(cli, &path, start);
+        if let Commands::Login {
+            no_browser,
+            url,
+            write,
+            scope,
+        } = &cli.command
+        {
+            let mut scopes = vec!["people:read".to_string()];
+            if *write {
+                scopes.push("people:write".into());
+            }
+            scopes.extend(scope.iter().cloned());
+            scopes.sort();
+            scopes.dedup();
+            return web_client::login(cli, &path, *no_browser, url.as_deref(), &scopes, start);
+        }
+        match config::configured() {
+            Ok(true) => return web_client::logout_configured(cli, start),
+            Ok(false) => {}
+            Err((kind, message)) => return fail(command, kind, message.into(), start),
         }
         return match web_profile::load_profile(&path) {
             Ok(Some(p)) => web_client::logout(&p, &path, start),
@@ -615,6 +671,14 @@ fn run_with_profile(
         return serve_http(cli, args, start);
     }
 
+    if !cli.local && !cli.remote && cli.host.is_none() && cli.token.is_none() && cli.cache.is_none()
+    {
+        match config::configured() {
+            Ok(true) => return web_client::query_configured(cli, start),
+            Ok(false) => {}
+            Err((kind, message)) => return fail(command, kind, message.into(), start),
+        }
+    }
     if !cli.local && (cli.remote || effective_host(cli).is_some()) {
         return remote_run(cli, command, start);
     }
@@ -688,6 +752,9 @@ fn run_with_profile(
         | Commands::Search(_)
         | Commands::Connection(_)
         | Commands::Helpers(_) => unreachable!("private People command handled before dispatch"),
+        Commands::Api(_) | Commands::Configure(_) | Commands::Status(_) => {
+            unreachable!("hosted command handled before dispatch")
+        }
     }
 }
 
@@ -836,6 +903,9 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::Connection(_)
         | Commands::Helpers(_)
         | Commands::Login { .. }
+        | Commands::Api(_)
+        | Commands::Configure(_)
+        | Commands::Status(_)
         | Commands::Logout
         | Commands::ImportCache(_)
         | Commands::ApplyExternalMerge(_)
@@ -4838,6 +4908,9 @@ fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Memory(_) => "memory",
         Commands::Lens(_) => "lens",
+        Commands::Api(_) => "api",
+        Commands::Configure(_) => "configure",
+        Commands::Status(_) => "status",
         Commands::Matches(_) => "matches",
         Commands::Search(_) => "search",
         Commands::Connection(_) => "connection",
@@ -4883,18 +4956,21 @@ fn describe_payload() -> Value {
             "--quiet"
         ],
         "private_people_auth": {
-            "origin": "--url <https-origin> or PEOPLEGRAPH_WEB_URL",
-            "token": "PEOPLEGRAPH_WEB_TOKEN (People integration credential)",
-            "scope": "Lens and memory require this explicit credential; read-only login device credentials are never used.",
+            "origin": "--url, PEOPLEGRAPH_WEB_URL, or active_origin in $XDG_CONFIG_HOME/peoplegraph/config.json (default ~/.config/peoplegraph/config.json)",
+            "token": "One origin-bound People integration credential from login, configure --token-stdin, or PEOPLEGRAPH_WEB_TOKEN",
+            "scope": "login grants people:read by default; --write adds people:write; --scope requests explicit management permissions. status verifies live grants. Legacy pgd1 device credentials remain graph-only.",
             "fallback": "No local cache or legacy remote fallback. --local, --remote, --host, --token and --cache are incompatible."
         },
         "commands": [
-            {"name":"lens","usage":"peoplegraph lens [--url <https-origin>]","description":"Read confirmed saved focus, needs, offers and revision from your People Lens","auth":"private_people_auth"},
+            {"name":"lens","usage":"peoplegraph lens [--url <https-origin>] [set --focus <text> --needs <text> --offers <text> [--revision <revision>] | set --file <lens.json|-> | inspect | learning on|off | granola on|off | refresh | accept <id> | dismiss <id>]","description":"Read or update focus, needs, offers and source settings. Partial edits preserve other fields; revisions prevent stale overwrites. Inferred suggestions require explicit acceptance.","auth":"private_people_auth"},
+            {"name":"configure","usage":"peoplegraph configure --url <https-origin> --token-stdin","description":"Save an existing integration credential from stdin in an atomic owner-only config file. Never prints the credential."},
+            {"name":"status","usage":"peoplegraph status [--offline] [--url <https-origin>]","description":"Verify live owner, grants and web capabilities; --offline reports configuration only without claiming authentication."},
+            {"name":"api","usage":"peoplegraph api GET|POST|PUT|PATCH|DELETE /api/path [--file <request.json|->] [--idempotency-key <key>]","description":"Call registered owner web operations with the same validation and safeguards. status lists exact routes, scopes and browser handoffs. Sending, booking and sharing still require user authorization."},
             {"name":"matches","usage":"peoplegraph matches [--url <https-origin>]","description":"Get the same matches and evidence ranked against your saved Lens in People","auth":"private_people_auth"},
             {"name":"search","usage":"peoplegraph search <query> [--limit <1..50>] [--url <https-origin>]","description":"Search your People account and return people with provenance","auth":"private_people_auth"},
             {"name":"connection","usage":"peoplegraph connection --from <person-id|email> --to <person-id|email> [--url <https-origin>]","description":"Read source-backed connection evidence for exact identities; search first to resolve names, never guess an identity","auth":"private_people_auth"},
             {"name":"helpers","usage":"peoplegraph helpers --person-id <person-id> [--url <https-origin>]","description":"Find helpers from the person's saved context using the same evidence as People","auth":"private_people_auth"},
-            {"name":"login","usage":"peoplegraph login [--no-browser]","description":"Approve read-only web access in your browser"},
+            {"name":"login","usage":"peoplegraph login [--url <https-origin>] [--no-browser] [--write] [--scope <scope>]","description":"Approve one scoped credential for graph queries, Lens and permitted edits; saves configuration automatically"},
             {"name":"logout","usage":"peoplegraph logout","description":"Revoke the current web device credential"},
             {
                 "name": "memory",

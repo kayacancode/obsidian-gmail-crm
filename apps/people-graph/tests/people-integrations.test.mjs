@@ -58,3 +58,18 @@ test('a key response arriving after an account switch is never displayed',async(
  await new Promise(resolve=>setImmediate(resolve));assert.equal(control(root,'New API key'),undefined);
  assert.ok(!descendants(root).some(node=>node.value==='people_fake_test_key'));
 });
+
+test('integration scope choices send only selected grants and display administrative access accurately',async()=>{
+ const doc=documentFixture(),root=doc.createElement('main');let submitted;
+ const panel=createPeopleIntegrations(root,{request:async(path,body,method)=>{
+  if(method==='GET')return {tokens:[{id:'source-key',name:'Source sync',scopes:['sources:manage'],expiresAt:Date.now()+86400000}],scopes:['people:read','people:write','sources:manage','sharing:manage','booking:manage','integrations:manage']};
+  submitted=body;return {token:'people_test',credential:{id:'new',name:body.name,scopes:body.scopes,expiresAt:Date.now()+86400000}};
+ }});
+ panel.setAccount('owner@example.test');panel.refresh();await new Promise(resolve=>setImmediate(resolve));
+ assert.ok(descendants(root).some(node=>node.tag==='small'&&node.textContent.includes('sources:manage')));
+ assert.ok(!descendants(root).some(node=>node.tag==='small'&&node.textContent.startsWith('Read only')));
+ control(root,'Integration name').value='Source agent';
+ control(root,'sources:manage').checked=true;control(root,'integrations:manage').checked=true;
+ await descendants(root).find(node=>node.tag==='form').onsubmit({preventDefault(){}});
+ assert.deepEqual(submitted,{name:'Source agent',scopes:['people:read','sources:manage','integrations:manage']});
+});

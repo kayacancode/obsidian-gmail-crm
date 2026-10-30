@@ -17,6 +17,7 @@ const assets = {
   'people-agent-onboarding.md': '# Getting started\n',
   'people-memory-integration.md': '# Private context\n',
   'peoplegraph-web-login.md': '# Web login\n',
+  'peoplegraph-cli-parity.md': '# CLI and web parity\n',
 };
 
 function fixture(t) {
@@ -38,10 +39,10 @@ const args = process.argv.slice(2);
 const url = args.find(arg => arg.startsWith('https://'));
 if (process.env.FAIL_NETWORK === '1') process.exit(7);
 if (url === 'https://api.github.com/repos/kayacancode/obsidian-gmail-crm/releases?per_page=100') {
-  process.stdout.write('[{"tag_name":"peoplegraph-v0.3.12"}]\\n');
+  process.stdout.write('[{"tag_name":"peoplegraph-v0.3.13"}]\\n');
   process.exit(0);
 }
-const prefix = 'https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v' + (process.env.EXPECT_VERSION || '0.3.12') + '/';
+const prefix = 'https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v' + (process.env.EXPECT_VERSION || '0.3.13') + '/';
 if (!url || !url.startsWith(prefix)) process.exit(22);
 const filename = path.join(process.env.DOWNLOADS, url.slice(prefix.length));
 if (!fs.existsSync(filename)) process.exit(22);
@@ -89,7 +90,7 @@ test('explicit agent choices install the skill and its offline guides for all se
   for (const directory of ['.codex', '.claude', '.agents']) {
     const target = path.join(f.home, directory, 'skills/peoplegraph');
     assert.equal(readFileSync(path.join(target, 'SKILL.md'), 'utf8'), assets['peoplegraph-SKILL.md']);
-    for (const guide of ['people-agent-onboarding.md', 'people-memory-integration.md', 'peoplegraph-web-login.md']) {
+    for (const guide of ['people-agent-onboarding.md', 'people-memory-integration.md', 'peoplegraph-web-login.md', 'peoplegraph-cli-parity.md']) {
       assert.equal(readFileSync(path.join(target, 'references', guide), 'utf8'), assets[guide]);
     }
   }

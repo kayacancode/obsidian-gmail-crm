@@ -9,6 +9,7 @@ try{
  await page.goto((process.env.PEOPLE_TEST_ORIGIN||'http://127.0.0.1:4183')+'/cli.html');
  await page.getByLabel('Code from your terminal').fill('ABCDEF123456');await page.getByRole('button',{name:'Continue',exact:true}).click();
  await page.getByText('My Mac', {exact:false}).waitFor();assert.equal(approved,false);
+ await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'approval form fits before consent');
  previewOwner='other@test.com';await page.getByRole('button',{name:'Approve read-only access'}).click();await page.getByText('Your account changed.',{exact:false}).waitFor();assert.equal(approved,false);
  await page.getByRole('button',{name:'Approve read-only access'}).click();await page.getByText('Connected. Return to your terminal.').waitFor();assert.equal(approved,true);
  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert.deepEqual(errors,[]);

@@ -3,7 +3,7 @@ import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
 import type {SchedulingResult} from './scheduling-types';
 import {boundedJSON} from './bounded-json';
 import {validateSchedulingInput,validateSchedulingConfirmation,validateSchedulingContext} from './scheduling-policy';
-import {authenticateScheduling,createSchedulingCredential,listSchedulingCredentials,revokeSchedulingCredential,requireSchedulingOwner,requireSchedulingScope,schedulingOrigin,schedulingScopes,type SchedulingPrincipal} from './scheduling-auth';
+import {authenticateScheduling,createSchedulingCredential,listSchedulingCredentials,revokeSchedulingCredential,requireSchedulingOwner,requireSchedulingScope,schedulingOrigin,schedulingScopes,type SchedulingPrincipal,type SchedulingCredentialDelegation} from './scheduling-auth';
 import {schedulingMcpRoute} from './scheduling-mcp';
 import {schedulingEmailConfiguration} from './scheduling-email';
 
@@ -55,7 +55,7 @@ async function actionRoute(request:Request,env:BookingEnv,principal:SchedulingPr
  if(match&&request.method===(match[2]?'POST':'GET'))return schedulingJSON(await runSchedulingAction(env,principal,(match[2]||'get') as SchedulingAction,match[2]?await schedulingBody(request):{},match[1]));
  return schedulingJSON({error:'not_found'},404);
 }
-export async function schedulingOwnerRoute(request:Request,env:SchedulingRouteEnv,owner:string):Promise<Response>{
+export async function schedulingOwnerRoute(request:Request,env:SchedulingRouteEnv,owner:string,delegation?:SchedulingCredentialDelegation):Promise<Response>{
  try{
   owner=owner.toLowerCase();requireSchedulingOwner(env,owner);schedulingOrigin(request,request.method!=='GET');
   const url=new URL(request.url),path=url.pathname.slice('/api/booking/scheduling'.length);
@@ -67,7 +67,7 @@ export async function schedulingOwnerRoute(request:Request,env:SchedulingRouteEn
   }
   if(path==='/tokens'){
    if(request.method==='GET')return schedulingJSON({tokens:await listSchedulingCredentials(env.DB,owner)});
-   if(request.method==='POST')return schedulingJSON(await createSchedulingCredential(env.DB,owner,await schedulingBody(request)),201);
+   if(request.method==='POST')return schedulingJSON(await createSchedulingCredential(env.DB,owner,await schedulingBody(request),delegation),201);
   }
   const revoke=path.match(/^\/tokens\/([\w-]{1,100})\/revoke$/);
   if(request.method==='POST'&&revoke){fields(await schedulingBody(request),[]);await revokeSchedulingCredential(env.DB,owner,revoke[1]);return schedulingJSON({ok:true});}
