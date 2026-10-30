@@ -73,6 +73,21 @@ jobs:
         run: |
           cp crates/peoplegraph/target/${{ matrix.target }}/release/peoplegraph ${{ matrix.name }}
 
+      - name: Verify native release reports its own version
+        if: matrix.target != 'x86_64-apple-darwin'
+        env:
+          PEOPLEGRAPH_HOST: http://127.0.0.1:1
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          binary = './${{ matrix.name }}'
+          expected = os.environ['GITHUB_REF_NAME'].removeprefix('peoplegraph-v')
+          assert subprocess.check_output([binary, '--version'], text=True).strip() == 'peoplegraph ' + expected
+          for command in ('version', 'describe'):
+              result = json.loads(subprocess.check_output([binary, command], text=True))
+              assert result['ok'] and result['data']['version'] == expected, command
+          PY
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -101,7 +116,7 @@ jobs:
           done
           cp skills/peoplegraph/SKILL.md release/peoplegraph-SKILL.md
           cp skills/gmail-crm/SKILL.md release/gmail-crm-SKILL.md
-          cp docs/people-agent-onboarding.md docs/people-memory-integration.md docs/peoplegraph-web-login.md release/
+          cp docs/people-agent-onboarding.md docs/people-memory-integration.md docs/peoplegraph-web-login.md docs/peoplegraph-cli-parity.md release/
           cp scripts/install-peoplegraph.sh release/
           cd release
           sha256sum * > SHA256SUMS

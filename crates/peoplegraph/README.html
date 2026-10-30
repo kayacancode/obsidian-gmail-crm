@@ -144,15 +144,17 @@ peoplegraph --local --cache /path/to/contact-index.json propose-merge maya.river
 
     <section>
       <h2>Your saved Lens and relationship context</h2>
-      <p>Set <code>PEOPLEGRAPH_WEB_URL</code> to your hosted People origin and <code>PEOPLEGRAPH_WEB_TOKEN</code> to your People integration credential. Each command also accepts <code>--url &lt;https-origin&gt;</code>.</p>
+      <p>Run <code>peoplegraph login --write</code> and approve the displayed People permissions. The CLI saves one origin-bound key in <code>~/.config/peoplegraph/config.json</code> (or your XDG config directory). Use <code>peoplegraph status</code> to verify access. Existing keys can be supplied through <code>configure --url &lt;origin&gt; --token-stdin</code>.</p>
       <pre><code>peoplegraph lens
+peoplegraph lens set --needs "Clinical design partners"
+peoplegraph api GET /api/lens
 peoplegraph matches
 peoplegraph search "clinical design partners" --limit 20
 peoplegraph connection --from person-123 --to ada@example.com
 peoplegraph helpers --person-id person-123
 peoplegraph memory lookup --email ada@example.com</code></pre>
       <p>These commands use your confirmed saved Lens, matches and source-backed relationship evidence from People. Search accepts 1–200 characters and a limit of 1–50 (default 20). Resolve names with search, then supply exact IDs or emails to connection; helpers requires an exact person ID. The CLI preserves the returned evidence and never guesses an identity.</p>
-      <p>Private Lens and memory commands require the explicit People integration credential. Device credentials from <code>peoplegraph login</code> retain read-only graph access. Private requests have no local-cache or legacy-remote fallback, reject <code>--local</code>, <code>--remote</code>, <code>--host</code>, <code>--token</code> and <code>--cache</code>, and return structured errors on conflicts or failed requests. Run <code>peoplegraph describe</code> for the agent-readable command and authentication contract.</p>
+      <p>New browser login creates a scoped People integration credential for graph and private commands. Old device credentials remain graph-only until explicit reauthorization. Partial Lens edits preserve other fields and reject stale revisions. Private requests have no local-cache or legacy-remote fallback, reject <code>--local</code>, <code>--remote</code>, <code>--host</code>, <code>--token</code> and <code>--cache</code>, and return structured errors on conflicts or failed requests. Run <code>peoplegraph describe</code> for the agent-readable command and authentication contract.</p>
     </section>
 
     <section>

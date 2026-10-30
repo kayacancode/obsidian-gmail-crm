@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::io::Write;
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 #[derive(Serialize, Deserialize)]
@@ -76,6 +77,7 @@ pub fn load_profile(path: &Path) -> Result<Option<WebProfile>, String> {
     }
     Ok(Some(profile))
 }
+#[cfg(test)]
 pub fn save_profile(path: &Path, profile: &WebProfile) -> Result<(), String> {
     let parent = path.parent().ok_or("Invalid profile path.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create profile directory.")?;

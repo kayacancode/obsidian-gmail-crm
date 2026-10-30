@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="kayacancode/obsidian-gmail-crm"
-VERSION="0.3.12"
+VERSION="0.3.15"
 INSTALL_DIR="$HOME/.local/bin"
 SKILL_DIRS=()
 GUIDES=(people-agent-onboarding.md people-memory-integration.md peoplegraph-web-login.md)
@@ -13,7 +13,7 @@ usage() {
 Install a versioned PeopleGraph binary and optionally its agent skill.
 
 Usage: bash install-peoplegraph.sh [options]
-  --version X.Y.Z       Release version (default: 0.3.12; requires SHA256SUMS)
+  --version X.Y.Z       Release version (default: 0.3.15; requires SHA256SUMS)
   --bin-dir PATH        Binary directory (default: ~/.local/bin)
   --skill codex         Install skill in ${CODEX_HOME:-~/.codex}/skills/peoplegraph
   --skill claude        Install skill in ~/.claude/skills/peoplegraph
@@ -51,6 +51,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must have the form X.Y.Z"
+SCOPED_LOGIN=false
+if awk -v version="$VERSION" 'BEGIN { split(version,v,"."); exit !(v[1]>0 || v[2]>3 || (v[2]==3 && v[3]>=13)) }'; then
+  SCOPED_LOGIN=true
+  GUIDES+=(peoplegraph-cli-parity.md)
+fi
 command -v curl >/dev/null || fail "curl is required"
 if command -v sha256sum >/dev/null; then
   HASH_COMMAND=(sha256sum)
@@ -136,5 +141,13 @@ case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) printf '\nAdd the binary directory to your shell PATH if needed:\n  export PATH=%q:"$PATH"\n' "$INSTALL_DIR" ;;
 esac
-printf '\nCheck: %q version\nNext: peoplegraph login (read-only graph access)\n' "$INSTALL_DIR/peoplegraph"
-echo "Private People context uses a separate People key from Accounts → Integrations."
+printf '\nCheck: %q version\n' "$INSTALL_DIR/peoplegraph"
+if [ "$SCOPED_LOGIN" = true ]; then
+  echo "Next: peoplegraph login --write, then peoplegraph status."
+  echo "For source connection or sync, request: peoplegraph login --write --scope sources:manage"
+  echo "Approve once; the CLI saves one credential for graph, Lens and private context."
+  echo "For read-only access, use peoplegraph login without --write. MCP is optional."
+else
+  echo "Next: peoplegraph login (legacy read-only graph access)."
+  echo "This older release uses a separate People key for private context."
+fi

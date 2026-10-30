@@ -18,7 +18,7 @@ People brings together **Gmail activity, Google Calendar invitations, and option
 | --- | --- | --- |
 | **Web app** | Personal graphs, shared networks, Discover, and introduction requests | A configured People deployment and a Google account |
 | **Obsidian plugin** | Markdown people pages and a CRM inside your vault | Obsidian desktop and your own Google OAuth credentials |
-| **PeopleGraph CLI / agent skill** | Graph questions, private relationship context, and evidence-backed recommendations | Browser login for graph reads; a People key for private context; optional local Obsidian cache |
+| **PeopleGraph CLI / agent skill** | Graph questions, private relationship context, and evidence-backed recommendations | One saved scoped People credential; optional local Obsidian cache |
 
 - [Web app setup and deployment](apps/people-graph/README.md)
 - [Obsidian installation, commands, and scoring guide](docs/obsidian-plugin.md)
@@ -53,13 +53,15 @@ Obsidian and Granola are optional. Connecting Google does not require installing
 
 ## Use People with an agent
 
-Install **PeopleGraph 0.3.12** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+Install **PeopleGraph 0.3.15** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
 
-Run `peoplegraph login` for read-only access to your visible web graph. For your saved People Lens, recommendations, connections, and private memory, create a separate People key in **Accounts → Integrations** and configure `PEOPLEGRAPH_WEB_URL` and `PEOPLEGRAPH_WEB_TOKEN`. Enable write access only for clients you want to save context. Compatible MCP clients can use `/api/people-mcp` with a custom bearer header; REST clients use `/api/people-agent`.
+Run `peoplegraph login` for graph and private People reads, or `peoplegraph login --write` to approve requested Lens and context edits. The CLI stores one origin-bound key in `~/.config/peoplegraph/config.json` (or `$XDG_CONFIG_HOME/peoplegraph/config.json`) and loads it automatically. `peoplegraph status` verifies the account, permissions, and API capabilities; `peoplegraph lens set --needs "…"` preserves the other Lens fields with revision checking. `peoplegraph api METHOD /api/path --file payload.json` covers registered website operations under their required scopes. Existing keys can be saved with `configure --url <origin> --token-stdin`. MCP is optional and uses the same People key.
 
-Try “Who could help with my saved needs, and why?”, “What connects Maya and Sam?”, or “Remember this note for Maya.” The agent distinguishes confirmed saved context from inferred suggestions, resolves ambiguous people, and reports the evidence behind recommendations. These People tools do not send email or schedule meetings. Scheduling is a separate opt-in integration.
+Try “Who could help with my saved needs, and why?”, “What connects Maya and Sam?”, or “Remember this note for Maya.” The agent distinguishes confirmed saved context from inferred suggestions, resolves ambiguous people, and reports the evidence behind recommendations. Lens and memory operations do not send outreach. Generic sharing and booking operations require their explicit scopes and an owner-requested action; direct scheduling MCP remains a separate opt-in integration.
 
 **Obsidian plugin 0.9.5** is optional and keeps the local vault workflow available. Installing or updating it does not grant an agent access to your private web account.
+
+For source setup, approve `peoplegraph login --write --scope sources:manage`, then run `peoplegraph sources status`. Dedicated commands connect Granola using a key supplied through stdin, sync connected Gmail/Granola sources, and control automatic Gmail context. Gmail connection still requires Google's browser consent. [Source setup and empty-match troubleshooting](docs/people-agent-onboarding.md#connect-and-sync-sources-from-the-cli) explains the distinction between imports, Lens learning, and evidence for recommendations.
 
 ## What each source contributes
 

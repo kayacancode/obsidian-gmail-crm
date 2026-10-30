@@ -165,13 +165,13 @@ Calendar data feeds into the strength score (up to 20 bonus points) and can over
 
 ## PeopleGraph CLI (optional)
 
-The plugin works on its own. The companion `peoplegraph` CLI can query your local contact index, read your hosted People graph, or use an explicitly connected People key for private context. The [agent onboarding guide](people-agent-onboarding.md) covers these separate access choices.
+The plugin works on its own. The companion `peoplegraph` CLI can query your local contact index, read your hosted People graph and private context, and save requested Lens edits with one scoped credential. The [agent onboarding guide](people-agent-onboarding.md) covers browser login, saved keys, and explicit local mode.
 
 Install the versioned binary and explicitly choose an agent skill destination:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.12/install-peoplegraph.sh \
+  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.15/install-peoplegraph.sh \
   -o install-peoplegraph.sh
 bash install-peoplegraph.sh --skill claude
 ~/.local/bin/peoplegraph version

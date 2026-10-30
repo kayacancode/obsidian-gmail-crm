@@ -17,6 +17,7 @@ const assets = {
   'people-agent-onboarding.md': '# Getting started\n',
   'people-memory-integration.md': '# Private context\n',
   'peoplegraph-web-login.md': '# Web login\n',
+  'peoplegraph-cli-parity.md': '# CLI and web parity\n',
 };
 
 function fixture(t) {
@@ -38,10 +39,10 @@ const args = process.argv.slice(2);
 const url = args.find(arg => arg.startsWith('https://'));
 if (process.env.FAIL_NETWORK === '1') process.exit(7);
 if (url === 'https://api.github.com/repos/kayacancode/obsidian-gmail-crm/releases?per_page=100') {
-  process.stdout.write('[{"tag_name":"peoplegraph-v0.3.12"}]\\n');
+  process.stdout.write('[{"tag_name":"peoplegraph-v0.3.15"}]\\n');
   process.exit(0);
 }
-const prefix = 'https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v' + (process.env.EXPECT_VERSION || '0.3.12') + '/';
+const prefix = 'https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v' + (process.env.EXPECT_VERSION || '0.3.15') + '/';
 if (!url || !url.startsWith(prefix)) process.exit(22);
 const filename = path.join(process.env.DOWNLOADS, url.slice(prefix.length));
 if (!fs.existsSync(filename)) process.exit(22);
@@ -80,6 +81,17 @@ test('installs the pinned binary without changing agent skills by default', t =>
   assert.equal(readFileSync(f.bin, 'utf8'), binary);
   assert.equal(readFileSync(f.skill, 'utf8'), 'previous working skill');
   assert.equal(existsSync(path.join(f.home, '.claude')), false);
+  assert.match(result.stdout,/login --write/);
+  assert.match(result.stdout,/peoplegraph status/);
+  assert.doesNotMatch(result.stdout,/separate People key/);
+});
+
+test('an older release does not require a guide that did not exist yet', t => {
+  const f=fixture(t);
+  rmSync(path.join(f.downloads,'peoplegraph-cli-parity.md'));
+  const result=f.run(['--version','0.3.12','--skill','agents'],{EXPECT_VERSION:'0.3.12'});
+  assert.equal(result.status,0,result.stdout+result.stderr);
+  assert.equal(readFileSync(f.bin,'utf8'),binary);
 });
 
 test('explicit agent choices install the skill and its offline guides for all selected agents', t => {
@@ -89,7 +101,7 @@ test('explicit agent choices install the skill and its offline guides for all se
   for (const directory of ['.codex', '.claude', '.agents']) {
     const target = path.join(f.home, directory, 'skills/peoplegraph');
     assert.equal(readFileSync(path.join(target, 'SKILL.md'), 'utf8'), assets['peoplegraph-SKILL.md']);
-    for (const guide of ['people-agent-onboarding.md', 'people-memory-integration.md', 'peoplegraph-web-login.md']) {
+    for (const guide of ['people-agent-onboarding.md', 'people-memory-integration.md', 'peoplegraph-web-login.md', 'peoplegraph-cli-parity.md']) {
       assert.equal(readFileSync(path.join(target, 'references', guide), 'utf8'), assets[guide]);
     }
   }

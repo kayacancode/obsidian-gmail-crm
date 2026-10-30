@@ -8,19 +8,25 @@ export interface OwnerLensFields {focus:string;needs:string;offers:string}
 export interface OwnerLensCollectionResult {failed:number;deferred:number}
 export interface OwnerLensSuggestion {id:string;kind:OwnerLensKind;text:string;sourceIds:string[]}
 export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'|'Your Granola meeting'|'Meeting you attended';title?:string;url?:string|null;attribution?:'statement'|'meeting'}
+export interface OwnerLensRefresh {
+ state:'disabled'|'not_refreshed'|'no_sources'|'refresh_required'|'pending'|'ready'|'retry_required'|'unconfigured'|'cleanup_pending';
+ lastRefresh:string|null;
+ nextAction:'enable_learning'|'refresh'|'add_note_or_connect_source'|'review_suggestions'|'wait_for_cleanup'|null;
+}
 export interface OwnerGranolaInput {id:string;version:string;observedAt:string;title:string;url:string|null;passages:string[];meetingPassages?:string[]}
 export interface OwnerLens {
  revision:string;enabled:boolean;granolaEnabled:boolean;fields:OwnerLensFields;updatedAt:string|null;
  granolaProgress?:{available:number;checked:number;excerpts:number};
  suggestions:OwnerLensSuggestion[];sources:OwnerLensSource[];
- honcho:{configured:boolean;status:'disabled'|'unconfigured'|'pending'|'ready'|'unavailable'|'invalid';lastSync:string|null;cleanupPending:boolean;retryAt:string|null};
+ honcho:{configured:boolean;status:'disabled'|'unconfigured'|'idle'|'pending'|'ready'|'unavailable'|'invalid';lastSync:string|null;cleanupPending:boolean;retryAt:string|null};
+ refresh:OwnerLensRefresh;
 }
 interface StoredSource extends OwnerLensSource {account:string|null;message:string;version?:string;meetingId?:string}
 interface Accepted {text:string;sourceIds:string[];acceptedAt:string}
-interface State extends Omit<OwnerLens,'sources'|'honcho'|'granolaProgress'> {
+interface State extends Omit<OwnerLens,'sources'|'honcho'|'granolaProgress'|'refresh'> {
  generation:string;sources:StoredSource[];dismissed:string[];
  accepted:Partial<Record<keyof OwnerLensFields,Accepted>>;
- status:OwnerLens['honcho']['status'];lastSync:string|null;pendingDelete:string|null;remotePossible?:boolean;syncedSources?:string;cleanupAttempts?:number;nextCleanup?:number;projectionRequested?:boolean;projectionVersion?:number;pendingSnapshot?:{fingerprint:string;attempts:number;since:number};
+ status:OwnerLens['honcho']['status'];lastSync:string|null;lastRefresh?:string;pendingDelete:string|null;remotePossible?:boolean;syncedSources?:string;cleanupAttempts?:number;nextCleanup?:number;projectionRequested?:boolean;projectionVersion?:number;pendingSnapshot?:{fingerprint:string;attempts:number;since:number};
 }
 type OwnerLensEnv=HonchoLensEnv&{AI?:Env['AI']};
 export const OWNER_LENS_WINDOW=90*86400000;
@@ -64,7 +70,21 @@ export class OwnerLensStore {
  private touch(state:State,invalidate=true){state.revision=crypto.randomUUID();state.updatedAt=stamp();if(invalidate){state.generation=crypto.randomUUID();this.controller?.abort();}}
  private check(state:State,revision:string){if(typeof revision!=='string'||revision!==state.revision)throw Error('owner_lens_conflict');}
  private result(state:State):OwnerLens{
-  return {revision:state.revision,enabled:state.enabled,granolaEnabled:state.granolaEnabled,fields:{...state.fields},updatedAt:state.updatedAt,suggestions:state.suggestions.map(s=>({...s,sourceIds:[...s.sourceIds]})),sources:state.sources.map(({id,text,observedAt,label,title,url,attribution})=>({id,text,observedAt,label,...(title!==undefined?{title}:{}),...(url!==undefined?{url}:{}),...(attribution?{attribution}:{})})),honcho:{configured:honchoConfigured(this.env),status:state.pendingDelete?'unavailable':!state.enabled?'disabled':!honchoConfigured(this.env)?'unconfigured':state.status,lastSync:state.lastSync,cleanupPending:!!state.pendingDelete,retryAt:state.pendingDelete&&state.nextCleanup?new Date(state.nextCleanup).toISOString():null}};
+  const configured=honchoConfigured(this.env),refresh=this.refreshStatus(state,configured);
+  const idle=state.status==='pending'&&!state.projectionRequested&&!state.pendingSnapshot||state.status==='ready'&&!state.sources.length&&!state.lastSync;
+  return {revision:state.revision,enabled:state.enabled,granolaEnabled:state.granolaEnabled,fields:{...state.fields},updatedAt:state.updatedAt,suggestions:state.suggestions.map(s=>({...s,sourceIds:[...s.sourceIds]})),sources:state.sources.map(({id,text,observedAt,label,title,url,attribution})=>({id,text,observedAt,label,...(title!==undefined?{title}:{}),...(url!==undefined?{url}:{}),...(attribution?{attribution}:{})})),honcho:{configured,status:state.pendingDelete?'unavailable':!state.enabled?'disabled':!configured?'unconfigured':idle?'idle':state.status,lastSync:state.lastSync,cleanupPending:!!state.pendingDelete,retryAt:state.pendingDelete&&state.nextCleanup?new Date(state.nextCleanup).toISOString():null},refresh};
+ }
+ /** A learning opt-in does not queue a projection. Derive legacy states without rewriting them. */
+ private refreshStatus(state:State,configured:boolean):OwnerLensRefresh{
+  const result=(status:OwnerLensRefresh['state'],nextAction:OwnerLensRefresh['nextAction']):OwnerLensRefresh=>({state:status,lastRefresh:state.lastRefresh??null,nextAction});
+  if(state.pendingDelete)return result('cleanup_pending','wait_for_cleanup');
+  if(!state.enabled)return result('disabled','enable_learning');
+  if(!configured)return result('unconfigured',null);
+  if(state.status==='unavailable'||state.status==='invalid')return result('retry_required','refresh');
+  if(state.status==='pending'&&(state.projectionRequested||state.pendingSnapshot))return result('pending','refresh');
+  if(!state.sources.length)return state.status==='ready'?result('no_sources','add_note_or_connect_source'):result('not_refreshed','refresh');
+  if(state.status==='ready'&&state.lastSync)return result('ready',state.suggestions.length?'review_suggestions':null);
+  return result('refresh_required','refresh');
  }
  private requestCleanup(state:State){state.pendingDelete=crypto.randomUUID();state.cleanupAttempts=0;state.nextCleanup=Date.now();state.lastSync=null;state.syncedSources=undefined;state.pendingSnapshot=undefined;}
  private withdraw(state:State,keep:StoredSource[],invalidate=true){
@@ -219,7 +239,7 @@ export class OwnerLensStore {
   // pendingSnapshot also recognizes unfinished work from records predating this flag.
   const outdatedProjection=!!state.lastSync&&state.projectionVersion!==HONCHO_LENS_PROJECTION_VERSION;
   const resumeProjection=honchoConfigured(this.env)&&!!(state.projectionRequested||state.pendingSnapshot||outdatedProjection)&&state.sources.length>0;
-  state.projectionRequested=true;this.touch(state);state.status='pending';this.write(state);const generation=state.generation;
+  state.projectionRequested=true;state.lastRefresh=stamp();this.touch(state);state.status='pending';this.write(state);const generation=state.generation;
   const valid=()=>{const latest=this.read();return latest.enabled&&latest.generation===generation;};
   return this.serial(async()=>{
    if(!valid())return this.get();

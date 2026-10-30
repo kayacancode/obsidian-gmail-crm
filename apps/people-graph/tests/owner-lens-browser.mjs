@@ -132,6 +132,7 @@ try{
  // A blank profile needs an explicit review workflow; refreshing must never accept updates.
  state={...state,enabled:true,fields:{focus:'',needs:'',offers:''},suggestions:[],honcho:{configured:true,status:'ready',lastSync:stamp}};
  await launch.click();await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
+ await page.waitForFunction(()=>document.querySelector('[aria-label="Learn from my work context"]')?.checked);
  assert.match(await panel.locator('.owner-lens-learning > .owner-lens-muted').allTextContents().then(parts=>parts.join(' ')),/No profile updates found yet/);
  assert.doesNotMatch(await panel.innerText(),/Your saved lens is unchanged/);
  await panel.getByRole('textbox',{name:'Can help with',exact:true}).fill('My unsaved offer');
@@ -171,6 +172,17 @@ try{
  assert.equal(await panel.getByRole('textbox',{name:'Focused on',exact:true}).inputValue(),'Changed elsewhere','conflict recovery reloads untouched fields');
  assert.equal(await panel.getByRole('button',{name:'Find people for me',exact:true}).isDisabled(),false,'a clean conflict does not invent unsaved edits');
  await panel.getByRole('button',{name:'Close your lens',exact:true}).click();
+
+ // Enabling learning and an empty refresh are idle states with an explicit next step.
+ for(const [refreshState,expected] of [['not_refreshed',/Refresh suggestions to look for updates/],['no_sources',/Add a note.*connect.*source/i]]){
+  state={...state,enabled:true,sources:[],suggestions:[],honcho:{configured:true,status:'idle',lastSync:null},refresh:{state:refreshState,lastRefresh:refreshState==='no_sources'?stamp:null,nextAction:refreshState==='no_sources'?'add_note_or_connect_source':'refresh'}};
+  const before=calls.length;
+  await launch.click();await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Learn from my work context"]')?.checked);
+  assert.match(await panel.innerText(),expected);assert.doesNotMatch(await panel.innerText(),/No completed updates yet|Last checked/);
+  assert.equal(calls.length,before,'opening an idle lens does not start a refresh');
+  await panel.getByRole('button',{name:'Close your lens',exact:true}).click();
+ }
 
  await launch.click();await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
  await panel.getByRole('button',{name:'Close your lens',exact:true}).click();

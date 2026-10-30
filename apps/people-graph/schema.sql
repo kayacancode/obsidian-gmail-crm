@@ -43,7 +43,8 @@ CREATE INDEX IF NOT EXISTS intro_recipient ON introduction_requests(workspace_id
 CREATE TABLE IF NOT EXISTS cli_challenges (
  id TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, user_code TEXT NOT NULL UNIQUE,
  name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', owner TEXT,
- created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_poll INTEGER NOT NULL DEFAULT 0
+ created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_poll INTEGER NOT NULL DEFAULT 0,
+ requested_scopes TEXT
 );
 CREATE INDEX IF NOT EXISTS cli_challenges_expiry ON cli_challenges(expires_at);
 CREATE TABLE IF NOT EXISTS cli_devices (

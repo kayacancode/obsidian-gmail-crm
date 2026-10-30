@@ -17,6 +17,13 @@ fn cli() -> Command {
     ] {
         command.env_remove(name);
     }
+    let home = std::env::temp_dir().join(format!(
+        "peoplegraph-agent-empty-home-{}",
+        std::process::id()
+    ));
+    command
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"));
     command
 }
 
@@ -297,7 +304,7 @@ fn agent_responses_reject_non_objects_invalid_json_and_oversized_bodies() {
         "not json".into(),
         "[]".into(),
         "null".into(),
-        format!(r#"{{"text":"{}"}}"#, "x".repeat(1_000_001)),
+        format!(r#"{{"text":"{}"}}"#, "x".repeat(4 * 1024 * 1024 + 1)),
     ] {
         let (url, received) = fixture(body, "200 OK", "");
         let output = cli()
@@ -309,6 +316,30 @@ fn agent_responses_reject_non_objects_invalid_json_and_oversized_bodies() {
         assert_eq!(envelope(&output)["error"]["kind"], "web_response_invalid");
         received.recv_timeout(Duration::from_secs(3)).unwrap();
     }
+}
+
+#[test]
+fn shared_transport_accepts_a_bounded_graph_sized_response() {
+    let (url, received) = fixture(
+        json!({"text":"x".repeat(1_000_001)}).to_string(),
+        "200 OK",
+        "",
+    );
+    let output = cli()
+        .args(["lens", "--url", &url])
+        .env("PEOPLEGRAPH_WEB_TOKEN", "secret")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        envelope(&output)["data"]["text"].as_str().unwrap().len(),
+        1_000_001
+    );
+    received.recv_timeout(Duration::from_secs(3)).unwrap();
 }
 
 #[test]
