@@ -153,7 +153,7 @@ Use this on the computer that has the real Obsidian vault and Gmail CRM plugin. 
 
    For an unreleased change, build from source as above. Do not assume the committed
    `bin/peoplegraph` matches this machine's architecture. Keep local jobs on explicit
-   local cache access; a browser login and a private People key are separate options.
+   local cache access; hosted browser login now saves the same scoped People key used for private commands.
 
 2. In Obsidian, run the plugin sync commands so the cache is current:
 

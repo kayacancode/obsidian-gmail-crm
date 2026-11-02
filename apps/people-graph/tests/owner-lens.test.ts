@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {OwnerLensStore,ownerMailPassages,OWNER_LENS_WINDOW,ownerLensDiagnostic} from '../src/owner-lens';
 import {MailSync} from '../src/mail-sync';
 import {seal} from '../src/mail-model';
+import {rankOwnerLens} from '../src/helper-brief';
 
 const OWN='me@example.com';
 const WORK='I am building research tools that help climate scientists compare experimental results.';
@@ -14,11 +15,12 @@ function fixture(configured=false){
  const ai={calls:[] as any[],async run(_model:string,input:any){this.calls.push(input);return facts;}};
  const env={TOKEN_SECRET:'owner-test-key',MAIL_TOKEN_KEY:'mail-test-key',GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',HONCHO_API_KEY:configured?'test-honcho-key':undefined,AI:ai};
  const service=new MailSync(ctx as any,env as any),store=new OwnerLensStore(ctx as any,env as any,async()=>OWN);
- return {db,kv,env,ai,service,store};
+ return {db,kv,ctx,env,ai,service,store};
 }
 function message(id:string,from=OWN,text=WORK,observed=Date.now()-1000){return {id,internalDate:String(observed),payload:{mimeType:'text/plain',headers:[{name:'From',value:from},{name:'To',value:from===OWN?'friend@example.com':OWN},{name:'Message-ID',value:id},{name:'Subject',value:'Research tools'}],body:{data:Buffer.from(text).toString('base64url')}}};}
 async function enabled(store:OwnerLensStore){return store.setEnabled({revision:store.get().revision,enabled:true});}
 async function addMail(store:OwnerLensStore,id='sent',account=OWN,text=WORK,observed=Date.now()-1000){await store.recordMail(account,id,observed,message(id,account,text,observed),store.guard());}
+async function refreshLens(service:MailSync,input:{revision:string;note?:string}){await service.refreshOwnerLens(input);await service.alarm();return service.getOwnerLens();}
 async function account(f:ReturnType<typeof fixture>,email=OWN){f.db.prepare('INSERT INTO accounts VALUES (?,?)').run(email,JSON.stringify({email,grant:await seal('refresh-token',f.env.MAIL_TOKEN_KEY),revision:'account-revision',status:'connected',job:null,lastSync:Date.now(),nextSync:Date.now()+3600000}));}
 function indexed(f:ReturnType<typeof fixture>,id:string,sent=1,observed=Date.now()-1000){f.db.prepare('INSERT INTO messages VALUES (?,?,?)').run(OWN,id,id);f.db.prepare('INSERT INTO contributions VALUES (?,?,?,?,?,?,?,?)').run(OWN,id,'friend@example.com','Friend',observed,'Research',sent,sent?0:1);}
 function granolaNote(id='meeting',version='version-1',passages=[WORK]){return {id,version,observedAt:new Date(Date.now()-500).toISOString(),title:'Research meeting',url:'https://notes.granola.ai/d/meeting',passages};}
@@ -59,6 +61,209 @@ test('owner lens manual fields require fresh revisions and never trigger learnin
  }finally{globalThis.fetch=original;f.db.close();}
 });
 
+test('owner lens job queues without provider work, coalesces retries, and survives reconstruction',async()=>{
+ const f=fixture(true),net=honchoNetwork();
+ try{
+  const before=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  const queued=await f.service.refreshOwnerLens({revision:before.revision,note:WORK});
+  assert.equal(queued.refresh.job?.status,'queued');assert.equal(queued.refresh.nextAction,'poll');assert.equal(f.ai.calls.length,0);assert.equal(net.calls.length,0);assert.equal(typeof f.kv.get('alarm'),'number');
+  assert.equal(queued.refresh.job?.waitReason,'alarm');assert.equal(queued.refresh.job?.nextAttemptAt,new Date(f.kv.get('alarm') as number).toISOString());assert.ok(Date.parse(queued.refresh.job!.expiresAt!)>Date.now());assert.equal(queued.refresh.job?.deadlineAt,undefined);
+  assert.equal(JSON.stringify(queued).includes(WORK),false,'queued raw notes are private job inputs');
+  const repeat=await f.service.refreshOwnerLens({revision:before.revision});assert.equal(repeat.refresh.job?.id,queued.refresh.job?.id);
+  const sameNote=await f.service.refreshOwnerLens({revision:before.revision,note:WORK});assert.equal(sameNote.refresh.job?.id,queued.refresh.job?.id);
+  await assert.rejects(f.service.refreshOwnerLens({revision:queued.revision,note:'A different note'}),/owner_lens_refresh_busy/);
+  for(let i=0;i<3;i++)assert.equal((await f.service.getOwnerLens()).refresh.job?.status,'queued');assert.equal(net.calls.length,0);
+  const reloaded=new MailSync(f.ctx as any,f.env as any);await reloaded.alarm();
+  const completed=await reloaded.getOwnerLens();assert.equal(completed.refresh.job?.id,queued.refresh.job?.id);assert.equal(completed.refresh.job?.status,'completed');assert.equal(completed.refresh.job?.attempts,1);assert.equal(completed.suggestions.length,1);assert.equal(completed.fields.focus,'');
+  const stored=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);assert.equal(stored.refreshJob.note,undefined);
+  await assert.rejects(reloaded.refreshOwnerLens({revision:before.revision}),/owner_lens_conflict/);
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens job cancellation prevents queued note extraction after manual edits or learning withdrawal',async()=>{
+ for(const disable of [false,true]){
+  const f=fixture(true),net=honchoNetwork();try{
+   const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+   const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});
+   if(disable)await f.service.setOwnerLensEnabled({revision:queued.revision,enabled:false});else await f.service.updateOwnerLens({revision:queued.revision,fields:{focus:'Manual priority',needs:'',offers:''}});
+   await f.service.alarm();const cancelled=await f.service.getOwnerLens();assert.equal(cancelled.refresh.job?.status,'cancelled');assert.equal(f.ai.calls.length,0);assert.equal(cancelled.suggestions.length,0);
+   assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  }finally{net.restore();f.db.close();}
+ }
+});
+
+test('owner lens job finishes when Honcho remains pending without automatically replaying projection',async()=>{
+ const f=fixture(true),net=honchoNetwork(),transport=globalThis.fetch;globalThis.fetch=async(input:any,init:any)=>String(input).endsWith('/chat')?Response.json({content:null}):transport(input,init);
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  await f.service.refreshOwnerLens({revision:state.revision,note:WORK});await f.service.alarm();
+  const completed=await f.service.getOwnerLens();assert.equal(completed.refresh.job?.status,'completed');assert.equal(completed.honcho.status,'pending');assert.equal(completed.refresh.nextAction,'refresh');
+  const calls=net.calls.length;await f.service.alarm();await f.service.getOwnerLens();assert.equal(net.calls.length,calls);
+ }finally{net.restore();f.db.close();}
+});
+
+test('owner lens job provider failure is terminal and does not retry on subsequent alarms',async()=>{
+ const f=fixture(true),original=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;return new Response(null,{status:503});};
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  await f.service.refreshOwnerLens({revision:state.revision,note:WORK});await f.service.alarm();
+  const failed=await f.service.getOwnerLens();assert.equal(failed.refresh.job?.status,'failed');assert.equal(failed.refresh.job?.error,'refresh_unavailable');assert.equal(failed.refresh.nextAction,'refresh');
+  const count=calls;await f.service.alarm();assert.equal(calls,count);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens job failures remain failures when Honcho is unconfigured',async()=>{
+ for(const stage of ['note','collection']){
+  const f=fixture();let collections=0;
+  f.ai.run=async()=>{throw Error('ai_unavailable');};
+  try{
+   const state=await enabled(f.store);await f.store.queueRefresh({revision:state.revision,...(stage==='note'?{note:WORK}:{})});
+   await f.store.runRefreshJob(async()=>{collections++;return {failed:1,deferred:0};},async()=>{});
+   const failed=f.store.get();assert.equal(failed.honcho.status,'unconfigured');assert.equal(failed.refresh.job?.status,'failed');assert.equal(failed.refresh.job?.error,'refresh_unavailable');assert.equal(failed.refresh.nextAction,'refresh');
+   assert.equal(collections,stage==='collection'?1:0);assert.equal(await f.store.runRefreshJob(async()=>{collections++;},async()=>{}),false);assert.equal(collections,stage==='collection'?1:0);
+   assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  }finally{f.db.close();}
+ }
+});
+
+test('owner lens job frequent GET polls cannot postpone the queued alarm',async()=>{
+ const f=fixture(),original=Date.now;let now=original();Date.now=()=>now;
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  await f.service.refreshOwnerLens({revision:state.revision});const due=f.kv.get('alarm');
+  for(let i=0;i<20;i++){now+=100;await f.service.getOwnerLens();assert.equal(f.kv.get('alarm'),due);}
+  await f.service.alarm();assert.equal((await f.service.getOwnerLens()).refresh.job?.status,'completed');
+ }finally{Date.now=original;f.db.close();}
+});
+
+test('owner lens job retains an unextracted note until preexisting cleanup finishes',async()=>{
+ const f=fixture(true),net=honchoNetwork(),original=Date.now;let now=original();Date.now=()=>now;
+ const transport=globalThis.fetch;let holdCleanup=true;
+ globalThis.fetch=async(input:any,init:any)=>holdCleanup&&new URL(String(input)).pathname==='/v3/workspaces/list'?Response.json({items:[{id:JSON.parse(init.body).filters.id,metadata:{purpose:'private-owner-lens-v1'}}],total:1}):transport(input,init);
+ try{
+  await enabled(f.store);await addMail(f.store);await f.store.refresh({revision:f.store.get().revision},async()=>{});
+  let state=await f.service.setOwnerLensEnabled({revision:f.store.get().revision,enabled:false});assert.equal(state.honcho.cleanupPending,true);
+  state=await f.service.setOwnerLensEnabled({revision:state.revision,enabled:true});const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});
+  const extractions=f.ai.calls.length;await f.service.alarm();
+  state=await f.service.getOwnerLens();assert.equal(state.refresh.job?.id,queued.refresh.job?.id);assert.equal(state.refresh.job?.status,'queued');assert.equal(state.refresh.job?.attempts,0);assert.equal(f.ai.calls.length,extractions);
+  assert.equal(state.refresh.job?.waitReason,'cleanup');assert.equal(state.refresh.job?.nextAttemptAt,state.honcho.retryAt);assert.ok(Date.parse(state.refresh.job!.expiresAt!)>Date.now());
+  assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,WORK);
+  assert.equal(f.kv.get('alarm'),Date.parse(state.honcho.retryAt!),'queued work follows cleanup backoff instead of a busy alarm loop');
+  holdCleanup=false;now=Date.parse(state.honcho.retryAt!)+1;await f.service.alarm();assert.equal((await f.service.getOwnerLens()).honcho.cleanupPending,false);
+  await f.service.alarm();state=await f.service.getOwnerLens();assert.equal(state.refresh.job?.status,'completed');assert.equal(f.ai.calls.length,extractions+1);assert.equal(state.sources[0].text,WORK);
+  assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+ }finally{Date.now=original;net.restore();f.db.close();}
+});
+
+test('owner lens job running projection remains readable and stale retries never restart it',async()=>{
+ const f=fixture(true);let entered!:()=>void,release!:()=>void,running:Promise<void>|undefined;
+ const ready=new Promise<void>(resolve=>entered=resolve),held=new Promise<void>(resolve=>release=resolve),net=honchoNetwork({chat:async()=>{entered();await held;}});
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});running=f.service.alarm();await ready;
+  const read=await f.service.getOwnerLens();assert.equal(read.refresh.job?.status,'running');assert.equal(read.refresh.nextAction,'poll');
+  assert.equal(read.refresh.job?.waitReason,undefined);assert.equal(read.refresh.job?.nextAttemptAt,undefined);assert.ok(Date.parse(read.refresh.job!.deadlineAt!)>Date.now());
+  assert.equal((await f.service.refreshOwnerLens({revision:state.revision})).refresh.job?.id,queued.refresh.job?.id);
+  assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  release();await running;assert.equal((await f.service.getOwnerLens()).refresh.job?.status,'completed');assert.equal(net.calls.filter(call=>call.path.endsWith('/chat')).length,1);
+ }finally{release();await running;net.restore();f.db.close();}
+});
+
+test('owner lens job interrupted leases resume once and stop after the attempt bound',async()=>{
+ for(const attempts of [1,2]){
+  const f=fixture(true),net=honchoNetwork();try{
+   const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+   const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});
+   const stored=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);
+   Object.assign(stored.refreshJob,{status:'running',attempts,leaseUntil:Date.now()-1});f.db.prepare('UPDATE owner_lens_state SET data=?').run(JSON.stringify(stored));
+   const reloaded=new MailSync(f.ctx as any,f.env as any);await reloaded.alarm();
+   const result=await reloaded.getOwnerLens();assert.equal(result.refresh.job?.id,queued.refresh.job?.id);assert.equal(result.refresh.job?.attempts,2);assert.equal(result.refresh.job?.status,attempts===1?'completed':'failed');
+   if(attempts===2){assert.equal(result.refresh.job?.error,'retry_exhausted');assert.equal(f.ai.calls.length,0);assert.equal(net.calls.length,0);}
+   assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  }finally{net.restore();f.db.close();}
+ }
+});
+
+test('owner lens inspection expires an unstarted job without provider calls and permits a fresh request',async()=>{
+ const f=fixture(true),originalNow=Date.now,originalFetch=globalThis.fetch;let now=originalNow(),providerCalls=0;Date.now=()=>now;
+ globalThis.fetch=async()=>{providerCalls++;throw Error('inspection must not call a provider');};
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});
+  now+=30*60_000+1;
+  const expired=await f.service.getOwnerLens();assert.equal(expired.refresh.job?.id,queued.refresh.job?.id);assert.equal(expired.refresh.job?.status,'failed');assert.equal(expired.refresh.job?.error,'deadline_exceeded');assert.equal(expired.refresh.job?.attempts,0);assert.equal(expired.refresh.nextAction,'refresh');
+  assert.equal(expired.refresh.job?.waitReason,undefined);assert.equal(expired.refresh.job?.nextAttemptAt,undefined);assert.equal(f.ai.calls.length,0);assert.equal(providerCalls,0);
+  assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  const retry=await f.service.refreshOwnerLens({revision:expired.revision,note:WORK});assert.equal(retry.refresh.job?.status,'queued');assert.notEqual(retry.refresh.job?.id,queued.refresh.job?.id);assert.equal(providerCalls,0);
+ }finally{Date.now=originalNow;globalThis.fetch=originalFetch;f.db.close();}
+});
+
+test('owner lens job deadline rejects a held late provider result without restoring suggestions',async(t)=>{
+ const f=fixture(true);let entered!:()=>void,release!:()=>void;
+ const ready=new Promise<void>(resolve=>entered=resolve),held=new Promise<void>(resolve=>release=resolve),net=honchoNetwork({chat:async()=>{entered();await held;}});
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:Date.now()});
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  await f.service.refreshOwnerLens({revision:state.revision,note:WORK});const running=f.service.alarm();await ready;
+  t.mock.timers.tick(12*60_000+1);await running;
+  const failed=await f.service.getOwnerLens();assert.equal(failed.refresh.job?.status,'failed');assert.equal(failed.refresh.job?.error,'deadline_exceeded');assert.deepEqual(failed.suggestions,[]);
+  release();await new Promise<void>(resolve=>setImmediate(resolve));assert.deepEqual((await f.service.getOwnerLens()).suggestions,[]);assert.equal((await f.service.getOwnerLens()).refresh.job?.status,'failed');
+ }finally{release();t.mock.timers.reset();net.restore();f.db.close();}
+});
+
+test('owner lens enabling learning is idle until an explicit refresh and does not schedule provider work',async()=>{
+ const f=fixture(true),original=globalThis.fetch;let requests=0;
+ globalThis.fetch=async()=>{requests++;throw Error('unexpected network');};
+ try{
+  let state=await f.service.getOwnerLens();
+  state=await f.service.updateOwnerLens({revision:state.revision,fields:{focus:WORK,needs:'Research peers',offers:''}});
+  state=await f.service.setOwnerLensEnabled({revision:state.revision,enabled:true});
+  assert.equal(state.honcho.status,'idle');assert.deepEqual(state.refresh,{state:'not_refreshed',lastRefresh:null,nextAction:'refresh'});
+  assert.deepEqual(state.sources,[]);assert.equal(state.honcho.lastSync,null);assert.equal(f.kv.has('alarm'),false);
+  await f.service.alarm();assert.deepEqual((await f.service.getOwnerLens()).refresh,state.refresh);
+  const result=await rankOwnerLens(f.env,{nodes:[{id:'person',name:'A contact'}]},state.fields);
+  assert.equal(result.status,'no_evidence');assert.equal(result.considered,0);assert.equal(requests,0);assert.equal(f.ai.calls.length,0);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens empty refresh reports no sources without claiming a successful Honcho sync',async()=>{
+ const f=fixture(true),original=globalThis.fetch;let requests=0;
+ globalThis.fetch=async()=>{requests++;throw Error('unexpected network');};
+ try{
+  let state=await enabled(f.store);
+  state=await refreshLens(f.service,{revision:state.revision});
+  assert.equal(state.honcho.status,'idle');assert.equal(state.refresh.state,'no_sources');assert.equal(state.refresh.nextAction,'add_note_or_connect_source');
+  assert.match(state.refresh.lastRefresh!,/^\d{4}-/);assert.equal(state.honcho.lastSync,null);assert.deepEqual(state.sources,[]);assert.equal(requests,0);assert.equal(f.ai.calls.length,0);
+  await addMail(f.store);state=f.store.get();
+  assert.equal(state.honcho.status,'idle');assert.equal(state.refresh.state,'refresh_required');assert.equal(state.refresh.nextAction,'refresh');assert.equal(state.honcho.lastSync,null);
+ }finally{globalThis.fetch=original;f.db.close();}
+});
+
+test('owner lens legacy pending and empty ready snapshots derive truthful idle states without changing saved data',async()=>{
+ const f=fixture(true);try{
+  await enabled(f.store);
+  for(const [status,expected] of [['pending','not_refreshed'],['ready','no_sources']] as const){
+   const stored=JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string);stored.status=status;delete stored.lastRefresh;delete stored.projectionRequested;delete stored.pendingSnapshot;
+   const serialized=JSON.stringify(stored);f.db.prepare('UPDATE owner_lens_state SET data=?').run(serialized);
+   const state=new OwnerLensStore(f.ctx as any,f.env as any,async()=>OWN).get();
+   assert.equal(state.honcho.status,'idle');assert.equal(state.refresh.state,expected);assert.equal(state.refresh.lastRefresh,null);
+   assert.equal(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data,serialized);
+  }
+ }finally{f.db.close();}
+});
+
+test('owner lens explicit note refresh distinguishes provider pending from a completed real sync',async()=>{
+ const f=fixture(true),net=honchoNetwork(),transport=globalThis.fetch;let pending=true;
+ globalThis.fetch=async(input:any,init:any)=>String(input).endsWith('/chat')&&pending?Response.json({content:null}):transport(input,init);
+ try{
+  let state=await enabled(f.store);assert.equal(net.calls.length,0);
+  state=await f.store.refresh({revision:state.revision,note:WORK},async()=>{});
+  assert.equal(state.sources.length,1);assert.equal(state.honcho.status,'pending');assert.equal(state.refresh.state,'pending');assert.equal(state.refresh.nextAction,'refresh');assert.match(state.refresh.lastRefresh!,/^\d{4}-/);assert.equal(state.honcho.lastSync,null);
+  pending=false;state=await f.store.refresh({revision:state.revision},async()=>{});
+  assert.equal(state.honcho.status,'ready');assert.equal(state.refresh.state,'ready');assert.equal(state.refresh.nextAction,'review_suggestions');assert.match(state.honcho.lastSync!,/^\d{4}-/);assert.equal(state.fields.focus,'');
+ }finally{net.restore();f.db.close();}
+});
+
 test('owner lens source extraction verifies actual From and strips replies before attribution',async()=>{
  const f=fixture();try{
   assert.deepEqual(await ownerMailPassages(message('inbound','friend@example.com'),'inbound',OWN,f.ai as any),[]);
@@ -78,10 +283,10 @@ test('owner lens uses a global four-message sent-only refresh budget and tombsto
   indexed(f,'inbound',0,Date.now());indexed(f,'too-old',1,Date.now()-OWNER_LENS_WINDOW-1000);
   f.ai.run=async(_m,input)=>{f.ai.calls.push(input);return {response:{facts:[]}};};
   globalThis.fetch=async(input:any)=>{const url=String(input);calls.push(url);if(url.includes('oauth2'))return Response.json({access_token:'access'});const id=new URL(url).pathname.split('/').at(-1)!;return Response.json(message(id));};
-  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});
+  let state=await refreshLens(f.service,{revision:(await f.service.getOwnerLens()).revision});
   assert.equal(calls.filter(c=>c.includes('format=full')).length,4);assert.ok(!calls.some(c=>c.includes('/inbound')||c.includes('/too-old')));
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM owner_lens_messages').get()!.n,4);assert.deepEqual(state.sources,[]);
-  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(calls.filter(c=>c.includes('format=full')).length,6);assert.equal(state.honcho.status,'unconfigured');
+  state=await refreshLens(f.service,{revision:state.revision});assert.equal(calls.filter(c=>c.includes('format=full')).length,6);assert.equal(state.honcho.status,'unconfigured');
  }finally{globalThis.fetch=original;f.db.close();}
 });
 
@@ -373,10 +578,10 @@ test('owner lens recovers an interrupted marked upload only after confirmed dele
   };
   let state=await f.store.refresh({revision:f.store.get().revision},async()=>{});assert.equal(batches,0);assert.equal(state.fields.focus,'A manual priority');
   state=await f.store.refresh({revision:state.revision},async()=>{});assert.equal(state.honcho.status,'pending');assert.equal(state.honcho.cleanupPending,false);assert.equal(batches,0);
-  clock+=60001;state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.cleanupPending,true);assert.equal(batches,0);
+  clock+=60001;state=await refreshLens(f.service,{revision:state.revision});assert.equal(state.honcho.cleanupPending,true);assert.equal(batches,0);
   await f.service.alarm();assert.equal(deletions,1);assert.equal(batches,0);state=await f.service.getOwnerLens();assert.equal(state.honcho.cleanupPending,true);
   confirmed=true;clock=Date.parse(state.honcho.retryAt!)+1;await f.service.alarm();state=await f.service.getOwnerLens();assert.equal(state.honcho.cleanupPending,false);assert.equal(batches,0);
-  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'ready');assert.equal(batches,1);assert.equal(state.fields.focus,'A manual priority');assert.equal(state.suggestions.length,1);
+  state=await refreshLens(f.service,{revision:state.revision});assert.equal(state.honcho.status,'ready');assert.equal(batches,1);assert.equal(state.fields.focus,'A manual priority');assert.equal(state.suggestions.length,1);
  }finally{Date.now=originalNow;net.restore();f.db.close();}
 });
 
@@ -430,7 +635,7 @@ test('owner lens collection diagnostics distinguish read, decode, extraction, an
     if(failure==='read')return new Response('private-provider-error-body',{status:503});
     const raw=message('private-message-id');if(failure==='decode')raw.payload.body.data='not valid base64!';return Response.json(raw);
    };
-   const state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});assert.equal(state.honcho.status,'unavailable');
+   const state=await refreshLens(f.service,{revision:(await f.service.getOwnerLens()).revision});assert.equal(state.honcho.status,'unavailable');
    const events=lines.map(line=>JSON.parse(line)),stage=failure==='read'?'gmail-read':failure==='store'?'source-store':'mail-extraction';
    assert.ok(events.some(event=>event.event==='owner_lens_failure'&&event.stage===stage));
    if(failure==='extraction')assert.ok(events.some(event=>event.code==='invalid_extraction'));
@@ -453,10 +658,10 @@ test('owner lens isolates invalid extraction, respects the four-message budget, 
    if(url.hostname==='gmail.googleapis.com'){const id=url.pathname.split('/').at(-1)!;readIds.push(id);return Response.json(message(id,OWN,id==='bad'?'I am building a bad extraction marker that the test model cannot process.':WORK));}
    return provider(input,init);
   };
-  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});
+  let state=await refreshLens(f.service,{revision:(await f.service.getOwnerLens()).revision});
   assert.deepEqual(readIds,['bad','good0','good1','good2']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,3);assert.equal(state.suggestions.length,1);
   assert.equal(f.store.hasMessage(OWN,'bad'),false);assert.equal(f.db.prepare('SELECT attempts FROM owner_lens_retries WHERE message=?').get('bad')!.attempts,1);
-  state=await f.service.refreshOwnerLens({revision:state.revision});
+  state=await refreshLens(f.service,{revision:state.revision});
   assert.deepEqual(readIds,['bad','good0','good1','good2','good3']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,4);
  }finally{net.restore();f.db.close();}
 });
@@ -470,13 +675,13 @@ test('owner lens empty failed collections stay unavailable while extraction retr
    const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
    if(url.hostname==='gmail.googleapis.com'){reads++;return Response.json(message('bad'));}return provider(input,init);
   };
-  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});
+  let state=await refreshLens(f.service,{revision:(await f.service.getOwnerLens()).revision});
   assert.equal(state.honcho.status,'unavailable');assert.equal(reads,1);assert.deepEqual(state.sources,[]);assert.equal(f.store.hasMessage(OWN,'bad'),false);
   let retry=f.db.prepare('SELECT attempts,next_attempt FROM owner_lens_retries').get()!;assert.equal(retry.attempts,1);assert.equal(retry.next_attempt,clock+60000);
-  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.equal(reads,1);
-  clock=Number(retry.next_attempt);state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.equal(reads,2);
+  state=await refreshLens(f.service,{revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.equal(reads,1);
+  clock=Number(retry.next_attempt);state=await refreshLens(f.service,{revision:state.revision});assert.equal(state.honcho.status,'unavailable');assert.equal(reads,2);
   retry=f.db.prepare('SELECT attempts,next_attempt FROM owner_lens_retries').get()!;assert.equal(retry.attempts,2);assert.equal(retry.next_attempt,clock+120000);
-  repaired=true;clock=Number(retry.next_attempt);state=await f.service.refreshOwnerLens({revision:state.revision});
+  repaired=true;clock=Number(retry.next_attempt);state=await refreshLens(f.service,{revision:state.revision});
   assert.equal(reads,3);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,1);assert.equal(f.store.hasMessage(OWN,'bad'),true);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM owner_lens_retries').get()!.n,0);
  }finally{Date.now=originalNow;net.restore();f.db.close();}
 });
@@ -491,7 +696,7 @@ test('owner lens uses an existing valid snapshot despite a new invalid extractio
    const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
    if(url.hostname==='gmail.googleapis.com')return Response.json(message('bad'));return provider(input,init);
   };
-  state=await f.service.refreshOwnerLens({revision:state.revision});assert.equal(state.honcho.status,'ready');assert.deepEqual(state.sources,sources);assert.equal(state.suggestions.length,1);
+  state=await refreshLens(f.service,{revision:state.revision});assert.equal(state.honcho.status,'ready');assert.deepEqual(state.sources,sources);assert.equal(state.suggestions.length,1);
   assert.equal(net.calls.filter(call=>call.path.endsWith('/chat')).length,chats);assert.equal(f.store.hasMessage(OWN,'bad'),false);
  }finally{net.restore();f.db.close();}
 });
@@ -516,8 +721,8 @@ test('owner lens due retries cannot starve older mail that has not yet been atte
    const url=new URL(String(input));if(url.hostname==='oauth2.googleapis.com')return Response.json({access_token:'access'});
    if(url.hostname==='gmail.googleapis.com'){const id=url.pathname.split('/').at(-1)!;readIds.push(id);return Response.json(message(id,OWN,id.startsWith('bad')?'I am building a bad extraction marker that the test model cannot process.':WORK));}return provider(input,init);
   };
-  let state=await f.service.refreshOwnerLens({revision:(await f.service.getOwnerLens()).revision});assert.equal(state.honcho.status,'unavailable');assert.deepEqual(readIds,['bad0','bad1','bad2','bad3']);
-  clock+=86400000;state=await f.service.refreshOwnerLens({revision:state.revision});
+  let state=await refreshLens(f.service,{revision:(await f.service.getOwnerLens()).revision});assert.equal(state.honcho.status,'unavailable');assert.deepEqual(readIds,['bad0','bad1','bad2','bad3']);
+  clock+=86400000;state=await refreshLens(f.service,{revision:state.revision});
   assert.deepEqual(readIds.slice(4),['good0','good1','good2','good3']);assert.equal(state.honcho.status,'ready');assert.equal(state.sources.length,4);
  }finally{Date.now=originalNow;net.restore();f.db.close();}
 });

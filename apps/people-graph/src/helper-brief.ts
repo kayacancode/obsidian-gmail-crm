@@ -43,7 +43,11 @@ export async function rankOwnerLens(env:HelperEnv,graph:any,fields:OwnerLensFiel
 
 async function rankContext(env:HelperEnv,graph:any,personId:string|null,brief:string,owner:boolean){
  if(!Array.isArray(graph?.nodes))throw Error('invalid_request');
- const now=Date.now(),people=new Set(graph.nodes.map((n:any)=>n.id));
+ // An opaque ID must identify exactly one visible node before any evidence is selected.
+ const nodesById=new Map<string,any>(),ambiguousIds=new Set<string>();
+ for(const node of graph.nodes){if(nodesById.has(node.id)){nodesById.delete(node.id);ambiguousIds.add(node.id);}else if(!ambiguousIds.has(node.id))nodesById.set(node.id,node);}
+ if(personId&&!nodesById.has(personId))throw Error('invalid_request');
+ const now=Date.now(),people=new Set(nodesById.keys());
  const memory:RecommendationMemory|undefined=graph.source==='workspace'?undefined:graph.recommendationMemory;
  const explicit=brief.trim(),saved=!owner&&personId?memory?.people[personId]:undefined;
  const savedEvidence=!explicit&&saved?memoryEvidence(saved):[];
@@ -52,6 +56,7 @@ async function rankContext(env:HelperEnv,graph:any,personId:string|null,brief:st
  brief=explicit||savedEvidence.map(e=>e.summary).join('\n\n');
  const automatic=!owner&&!explicit;
  const allowed=(id:string)=>{const feedback=graph.source==='workspace'?undefined:graph.personFeedback?.[id],deferred=memory?.people[id]?.notBefore;return feedback?.action!=='suppress'&&!(feedback?.action==='snooze'&&feedback.until>now)&&!(deferred&&deferred>new Date(now).toISOString().slice(0,10));};
+ const visibleIdentity=(n:any)=>n&&allowed(n.id)&&n.type!=='company'&&!['denied','conflicted'].includes(n.permission)&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved'&&(!n.sources?.includes('obsidian')||n.identityMatchReady===true);
  const eligible=(s:any)=>people.has(s.personId)&&['granola','obsidian_note','gmail_body_derived'].includes(s.sourceType)&&typeof s.summary==='string'&&s.summary.trim()&&!/^(Recorded topic:|Activity involving |I hope\b|We hope\b|I can send\b|I look forward\b|We look forward\b|I am available\b|I'm available\b)/i.test(s.summary)&&Date.parse(s.observedAt)<=now&&Date.parse(s.observedAt)>=now-90*86400000&&(graph.source==='workspace'?s.visibility==='firm':!s.evidenceRef?.startsWith('share:'));
  // Full private source excerpts are supplied only to the authenticated helper route. They never
  // come from a shared graph, and replace their clipped display copies rather than counting twice.
@@ -75,7 +80,7 @@ async function rankContext(env:HelperEnv,graph:any,personId:string|null,brief:st
  }
  const anchorEvidence=automatic?(savedEvidence.length?savedEvidence:byPerson.get(personId!)||[]):[];
  if(automatic&&!anchorEvidence.length)return {results:[],checked:true,status:'no_anchor_context',automatic,brief,anchorEvidence,considered:0,available:0};
- const candidates=graph.nodes.filter((n:any)=>n.id!==personId&&allowed(n.id)&&n.type!=='company'&&!n.memberId&&!['denied','conflicted'].includes(n.permission)&&!n.permissionConflict&&n.identityResolved!==false&&n.identityStatus!=='unresolved'&&(!n.sources?.includes('obsidian')||n.identityMatchReady===true)).map((n:any)=>({personId:n.id,evidence:byPerson.get(n.id)||[]})).filter((c:any)=>c.evidence.length).sort((a:any,b:any)=>Date.parse(b.evidence[0].date)-Date.parse(a.evidence[0].date));
+ const candidates=[...nodesById.values()].filter((n:any)=>n.id!==personId&&!n.memberId&&visibleIdentity(n)).map((n:any)=>({personId:n.id,evidence:byPerson.get(n.id)||[]})).filter((c:any)=>c.evidence.length).sort((a:any,b:any)=>Date.parse(b.evidence[0].date)-Date.parse(a.evidence[0].date));
  const selected=candidates.slice(0,60),base={...(owner?{owner:true}:{}),automatic,brief,anchorEvidence,considered:selected.length,available:candidates.length};
  if(!selected.length)return {...base,results:[],checked:true,status:'no_evidence'};
  if(!env.AI)return {...base,results:[],checked:false,status:'unavailable'};
@@ -115,12 +120,12 @@ async function rankContext(env:HelperEnv,graph:any,personId:string|null,brief:st
   if(!verified.length&&failures.length)throw failures[0].reason;
   for(const failure of failures)console.warn('helper_search_unavailable',phase,failureCode(failure.reason));
   const results=verified.filter((p):p is NonNullable<typeof p>=>p!==null).sort((a,b)=>b.score-a.score||preference(memory?.people[b.personId])-preference(memory?.people[a.personId])).map(p=>{
-   const label=(id:string,fallback:string)=>{const name=graph.nodes.find((n:any)=>n.id===id)?.name;return typeof name==='string'&&name.trim()?redact(name.trim(),100):fallback;};
+   const label=(id:string,fallback:string)=>{const name=nodesById.get(id)?.name;return typeof name==='string'&&name.trim()?redact(name.trim(),100):fallback;};
    const selectedName=owner?'You':label(personId!,'This person'),candidateName=label(p.personId,'this contact');
    const namePeople=(value:string)=>value.replace(/\bPERSON_[AB]\b/g,token=>token==='PERSON_A'?selectedName:candidateName);
    const pointId=memory?.people[p.personId]?.pointPersonId||(personId?memory?.people[personId]?.pointPersonId:null);
-   const point=pointId?graph.nodes.find((n:any)=>n.id===pointId&&n.type!=='company'):null;
-   return {...p,reason:namePeople(p.reason),conversation:namePeople(p.conversation),...(point?{pointPerson:{personId:point.id,name:label(point.id,'your point person')}}:{})};
+   const point=pointId&&visibleIdentity(nodesById.get(pointId))?nodesById.get(pointId):null,name=label(p.personId,'');
+   return {...p,...(name?{name}:{}),reason:namePeople(p.reason),conversation:namePeople(p.conversation),...(point?{pointPerson:{personId:point.id,name:label(point.id,'your point person')}}:{})};
   });
   return {...base,results,checked:true,status:'ready'};
  }catch(error){console.warn('helper_search_unavailable',phase,failureCode(error));return {...base,results:[],checked:false,status:'unavailable'};}

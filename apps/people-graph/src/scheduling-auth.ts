@@ -3,6 +3,8 @@ import type {BookingEnv} from './booking-types';
 export type SchedulingScope='scheduling:read'|'scheduling:write';
 export interface SchedulingCredential {id:string;name:string;scopes:SchedulingScope[];createdAt:number;expiresAt:number;revokedAt:number|null;lastUsedAt:number|null}
 export interface SchedulingPrincipal {owner:string;credentialId:string;scopes:SchedulingScope[]}
+/** Present only when a scoped machine credential delegates scheduling access. */
+export interface SchedulingCredentialDelegation {expiresAt?:number}
 interface CredentialRow {id:string;owner:string;name:string;scopes:string;created_at:number;expires_at:number;revoked_at:number|null;last_used_at:number|null}
 const lifetime=90*86400000;
 export const schedulingScopes:SchedulingScope[]=['scheduling:read','scheduling:write'];
@@ -21,11 +23,13 @@ export function requireSchedulingOwner(env:Pick<BookingEnv,'BOOKING_OWNER_EMAIL'
 export function requireSchedulingScope(principal:SchedulingPrincipal,scope:SchedulingScope){if(!principal.scopes.includes(scope))throw Error('insufficient_scope');}
 export function schedulingOrigin(request:Request,required=false){const origin=request.headers.get('origin');if((required||origin!==null)&&origin!==new URL(request.url).origin)throw Error('invalid_origin');}
 
-export async function createSchedulingCredential(db:D1Database,owner:string,input:Record<string,unknown>){
+export async function createSchedulingCredential(db:D1Database,owner:string,input:Record<string,unknown>,delegation?:SchedulingCredentialDelegation){
  if(Object.keys(input).some(key=>!['name','scopes'].includes(key))||typeof input.name!=='string'||!input.name.trim()||input.name.length>80||/[\u0000-\u001f\u007f]/.test(input.name))throw Error('invalid_request');
  const allowed=scopes(input.scopes),random=crypto.getRandomValues(new Uint8Array(32));
  const token='sched_'+btoa(String.fromCharCode(...random)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
- const credential:SchedulingCredential={id:crypto.randomUUID(),name:input.name.trim(),scopes:allowed,createdAt:Date.now(),expiresAt:0,revokedAt:null,lastUsedAt:null};credential.expiresAt=credential.createdAt+lifetime;
+ const createdAt=Date.now();
+ if(delegation&&(typeof delegation.expiresAt!=='number'||!Number.isSafeInteger(delegation.expiresAt)||delegation.expiresAt<=createdAt))throw Error('insufficient_scope');
+ const credential:SchedulingCredential={id:crypto.randomUUID(),name:input.name.trim(),scopes:allowed,createdAt,expiresAt:Math.min(createdAt+lifetime,delegation?.expiresAt??Infinity),revokedAt:null,lastUsedAt:null};
  await initSchedulingCredentials(db);
  await db.prepare('INSERT INTO scheduling_credentials(id,owner,name,token_hash,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').bind(credential.id,owner,credential.name,await hash(token),JSON.stringify(allowed),credential.createdAt,credential.expiresAt).run();
  return {token,credential};

@@ -235,16 +235,28 @@ export class MailSync extends DurableObject<MailEnv>{
   return save({status:'not_found'});
  }
  private ownerLens(){return this.ownerLensStore??=new OwnerLensStore(this.ctx,this.env,()=>this.ctx.storage.get<string>('owner'));}
+ /** Minimal read-only matching diagnostics; source management still requires its own scope. */
+ private matchingSources(){
+  const connected=this.rows().filter(account=>['connected','syncing'].includes(account.status));
+  const enabled=connected.filter(account=>account.contextEnabled);
+  const gmail={connected:connected.length,contextEnabled:enabled.length,contextDisabled:connected.length-enabled.length,syncing:enabled.filter(account=>account.status==='syncing').length,contextErrors:enabled.filter(account=>!!account.contextError).length};
+  const hints:Array<{code:string;message:string;command?:string}>=[];
+  if(gmail.contextDisabled)hints.push({code:'gmail_context_disabled',message:`Gmail content is off for ${gmail.contextDisabled} connected account(s). Their email content cannot feed matches; calendar, photo and metadata sync counts do not establish conversation evidence. With the owner's permission and sources:manage scope, enable context for each intended account.`,command:'peoplegraph sources context gmail --email <account-email> on'});
+  if(gmail.syncing)hints.push({code:'gmail_context_syncing',message:'A source sync is queued or in progress for a context-enabled Gmail account. This can include calendar work or retry waits before content extraction. Matches use eligible evidence already ingested; sync completion does not guarantee a useful match.',command:'peoplegraph sources status'});
+  if(gmail.contextErrors)hints.push({code:'gmail_context_errors',message:'Some Gmail content could not be analysed. Inspect source status with sources:manage; the next source sync retries extraction.',command:'peoplegraph sources status'});
+  return {gmail,hints};
+ }
  private ownerLensResult(value:OwnerLens){
-  if(!value.enabled||!value.granolaEnabled)return value;
+  const matchingSources=this.matchingSources();
+  if(!value.enabled||!value.granolaEnabled)return {...value,matchingSources};
   const versions=this.granola().ownerLensVersions(),checked=this.ctx.storage.sql.exec<{id:string;version:string}>('SELECT id,version FROM owner_lens_granola').toArray().filter(row=>versions.get(row.id)===row.version).length;
-  return {...value,granolaProgress:{available:versions.size,checked,excerpts:value.sources.filter(source=>source.id.startsWith('owner-granola:')).length}};
+  return {...value,matchingSources,granolaProgress:{available:versions.size,checked,excerpts:value.sources.filter(source=>source.id.startsWith('owner-granola:')).length}};
  }
  async getOwnerLens(){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().get();await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  async updateOwnerLens(input:{revision:string;fields:OwnerLensFields}){const value=this.ownerLens().update(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  async setOwnerLensEnabled(input:{revision:string;enabled:boolean}){const value=await this.ownerLens().setEnabled(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  async setOwnerLensGranolaEnabled(input:{revision:string;enabled:boolean}){const value=await this.ownerLens().setGranolaEnabled(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
- async refreshOwnerLens(input:{revision:string;note?:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=await this.ownerLens().refresh(input,valid=>this.collectOwnerLens(valid));await this.scheduleNextAlarm();return this.ownerLensResult(value);}
+ async refreshOwnerLens(input:{revision:string;note?:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=await this.ownerLens().queueRefresh(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  async acceptOwnerLensSuggestion(input:{revision:string;id:string}){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().decide(input,true);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  async dismissOwnerLensSuggestion(input:{revision:string;id:string}){const value=this.ownerLens().decide(input,false);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  private relevanceStore?:RelevanceStore;
@@ -301,6 +313,7 @@ export class MailSync extends DurableObject<MailEnv>{
  async resolveOwnEmail(email:string):Promise<string|null>{const owner=await this.ctx.storage.get<string>('owner');if(!owner||!this.graphContacts().some(r=>r.email===email))return null;return opaque(owner,email,this.env.TOKEN_SECRET);}
  private async google(url:string,access:string){const r=await fetch(url,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});if(!r.ok){await r.body?.cancel();const e=new Error(r.status===401?'reconnect_required':r.status===403?'gmail_access_denied':`gmail_${r.status}`);throw e;}return readBoundedJSON(r,2_000_000);}
  async alarm(){
+  if(await this.ownerLens().runRefreshJob(valid=>this.collectOwnerLens(valid),()=>this.scheduleNextAlarm())){await this.scheduleNextAlarm();return;}
   const now=Date.now();if(await this.ownerLens().retryCleanup(now)){await this.scheduleNextAlarm();return;}for(const a of this.rows()){if(a.status==='connected'&&a.nextSync<=now)await this.start(a.email,undefined,false);}
   const a=this.rows().filter(a=>a.status==='syncing'&&(a.job?.nextAttempt||0)<=now).sort((a,b)=>(a.job?.lastRun||0)-(b.job?.lastRun||0))[0];
   if(a?.job){a.job.lastRun=now;this.put(a);try{await this.batch(a);}catch(e){if(this.active(a)){const current=this.get(a.email)!;current.job!.retries++;current.job!.nextAttempt=Date.now()+Math.min(300000,5000*2**current.job!.retries);const message=e instanceof Error?e.message:'sync_failed';current.error=message;current.status=message==='reconnect_required'?'reconnect':current.job!.retries>=6?'error':'syncing';this.put(current);}}}
@@ -312,7 +325,7 @@ export class MailSync extends DurableObject<MailEnv>{
   await this.publicSourceBatch();
   await this.scheduleNextAlarm();
  }
- private async scheduleNextAlarm(){const now=Date.now(),pending=this.rows().filter(a=>a.status==='syncing'),idle=this.rows().filter(a=>a.status==='connected');const pendingDue=pending.length?Math.max(now+1500,Math.min(...pending.map(a=>a.job?.nextAttempt||0))):undefined;const idleDue=idle.length?Math.max(now+1000,Math.min(...idle.map(a=>a.nextSync))):undefined;const mailDue0=pendingDue===undefined?idleDue:idleDue===undefined?pendingDue:Math.min(pendingDue,idleDue);const granolaDue=this.granola().nextDue(now);const mailDue=mailDue0===undefined?granolaDue:granolaDue===undefined?mailDue0:Math.min(mailDue0,granolaDue);const ownerDue=this.ownerLens().nextDue(now),sourceDue=ownerDue===undefined?mailDue:mailDue===undefined?ownerDue:Math.min(mailDue,ownerDue);const due=await this.store().nextAlarmAt(sourceDue,this.retrievalClaim?.deadline,this.publicClaim?.deadline);if(due!==undefined)await this.ctx.storage.setAlarm(due);else {const storage=this.ctx.storage as unknown as {deleteAlarm?:()=>Promise<void>};if(storage.deleteAlarm)await storage.deleteAlarm();}}
+ private async scheduleNextAlarm(){const now=Date.now(),pending=this.rows().filter(a=>a.status==='syncing'),idle=this.rows().filter(a=>a.status==='connected');const pendingDue=pending.length?Math.max(now+1500,Math.min(...pending.map(a=>a.job?.nextAttempt||0))):undefined;const idleDue=idle.length?Math.max(now+1000,Math.min(...idle.map(a=>a.nextSync))):undefined;const mailDue0=pendingDue===undefined?idleDue:idleDue===undefined?pendingDue:Math.min(pendingDue,idleDue);const granolaDue=this.granola().nextDue(now);const mailDue=mailDue0===undefined?granolaDue:granolaDue===undefined?mailDue0:Math.min(mailDue0,granolaDue);const ownerDue=this.ownerLens().nextDue(now),sourceDue=ownerDue===undefined?mailDue:mailDue===undefined?ownerDue:Math.min(mailDue,ownerDue);const due=await this.store().nextAlarmAt(sourceDue,this.retrievalClaim?.deadline,this.publicClaim?.deadline);if(due!==undefined){const scheduled=await this.ctx.storage.getAlarm?.();if(scheduled===undefined||scheduled===null||due<scheduled)await this.ctx.storage.setAlarm(due);}else {const storage=this.ctx.storage as unknown as {deleteAlarm?:()=>Promise<void>};if(storage.deleteAlarm)await storage.deleteAlarm();}}
  private async calendarBatch(a:Account,access:string){
   const job=a.job!;if(!a.calendarEnabled||job.calendarDone)return;
   try {

@@ -1,6 +1,7 @@
 const FIELD_LABELS={focus:'Focused on',needs:'Looking for',offers:'Can help with'};
 const KIND_FIELDS={focus:'focus',need:'needs',offer:'offers'};
 const dateLabel=value=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'Date unavailable';};
+const scheduleLabel=value=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):null;};
 function granolaLink(value){
  try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&(url.hostname==='granola.ai'||url.hostname.endsWith('.granola.ai'))?url.href:null;}catch{return null;}
 }
@@ -9,18 +10,38 @@ function granolaLink(value){
 export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplore}){
  const doc=button.ownerDocument;
  let dialog=null,view=null,disposed=false,run=0,busy=false,busyAction='',model=null;
+ let pollTimer=null,pollGeneration=0,pollJob=null,pollDeadline=0,submittedNote=null;
  let draft={focus:'',needs:'',offers:''},note='',dirty=new Set();
  const el=(tag,cls,text)=>{const node=doc.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;};
  const action=(text,handler,cls='')=>{const b=el('button',cls,text);b.type='button';b.onclick=handler;return b;};
  const alive=token=>!disposed&&dialog?.isConnected&&token===run;
  const message=text=>{if(view)view.status.textContent=text;};
- function close(){run++;dialog?.close();dialog?.remove();dialog=null;view=null;busy=false;busyAction='';button.setAttribute('aria-expanded','false');}
+ const refreshing=()=>['queued','running'].includes(model?.refresh?.job?.status);
+ function stopPolling(){pollGeneration++;if(pollTimer!==null)clearTimeout(pollTimer);pollTimer=null;pollJob=null;pollDeadline=0;}
+ function close(){run++;stopPolling();dialog?.close();dialog?.remove();dialog=null;view=null;busy=false;busyAction='';button.setAttribute('aria-expanded','false');}
+ function pollRefresh(){
+  if(!refreshing()||!dialog?.isConnected||disposed){stopPolling();return;}
+  if(pollJob!==model.refresh.job.id){stopPolling();pollJob=model.refresh.job.id;pollDeadline=Date.now()+15*60_000;}
+  if(pollTimer!==null)return;
+  if(Date.now()>=pollDeadline){message('Refresh is still running. Reopen this panel to check progress.');return;}
+  const token=run,generation=pollGeneration;
+  pollTimer=setTimeout(async()=>{
+   pollTimer=null;if(!alive(token)||generation!==pollGeneration)return;
+   if(busy){pollRefresh();return;}
+   const revision=model.revision;
+   try{
+    const next=await load();if(!alive(token)||generation!==pollGeneration||busy||model.revision!==revision)return;
+    renderModel(next);message(learningStatus(next.honcho));
+   }catch(error){if(alive(token)&&generation===pollGeneration){stopPolling();if(error.name!=='AbortError')message('Could not check refresh progress. Reopen this panel to check again.');}}
+   finally{if(alive(token)&&generation===pollGeneration)pollRefresh();}
+  },2000);
+ }
  function setBusy(value,operation=busyAction){
   busy=value;busyAction=value?operation:'';if(!view)return;
   for(const control of view.content.querySelectorAll('button,input,textarea'))control.disabled=value||!model;
-  view.note.disabled=value||!model?.enabled;
-  view.refresh.disabled=value||!model?.enabled;
-  view.refresh.textContent=busyAction==='refresh'?'Reading context…':'Refresh suggestions';
+  view.note.disabled=value||!model?.enabled||refreshing();
+  view.refresh.disabled=value||!model?.enabled||refreshing();
+  view.refresh.textContent=busyAction==='refresh'?'Reading context…':model?.refresh?.job?.status==='queued'?'Refresh queued…':model?.refresh?.job?.status==='running'?'Refreshing…':'Refresh suggestions';
   view.granola.disabled=value||!model?.enabled;
   view.save.disabled=value||!model;
   view.find.disabled=value||!model||dirty.size>0||!Object.values(model.fields||{}).some(v=>typeof v==='string'&&v.trim());
@@ -39,12 +60,32 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   const saved=Object.values(model?.fields||{}).some(text=>typeof text==='string'&&text.trim());
   const count=(model?.suggestions||[]).filter(s=>KIND_FIELDS[s.kind]).length;
   if(model?.enabled===false&&value?.status==='unavailable')return 'Learning is off. Clearing learned context is still pending. Retry to finish clearing it.';
+  const job=model?.refresh?.job;
+  if(job?.status==='queued'){
+   const next=scheduleLabel(job.nextAttemptAt),expiry=scheduleLabel(job.expiresAt);
+   if(job.waitReason==='cleanup')return 'Refresh queued, waiting for earlier learned context to be cleared.'+(next?' Next cleanup check: '+next+'.':'')+(expiry?' Refresh expires '+expiry+'.':'')+' This panel will check automatically.';
+   return 'Refresh queued. Waiting for the background worker to start.'+(expiry?' Refresh expires '+expiry+'.':'')+' This panel will check for updates automatically.';
+  }
+  if(job?.status==='running')return 'Refreshing your work context. You can close this panel while it runs.';
+  if(job?.status==='cancelled')return 'Refresh cancelled because your lens or connected sources changed. Refresh again when you are ready.';
+  if(job?.status==='failed'){
+   if(job.error==='deadline_exceeded'&&job.attempts===0)return value?.cleanupPending?'Refresh expired while earlier learned context was being cleared. Try again after cleanup finishes.':'Refresh expired before it started. Your saved lens is unchanged. Start a new refresh to try again.';
+   return job.error==='deadline_exceeded'?'Refresh took too long. Your saved lens is unchanged. You can try again.':'Refresh could not finish. Your saved lens is unchanged. You can try again.';
+  }
   if(model?.enabled===true&&value?.configured&&value.cleanupPending)return 'Updating stored context. Refresh again after cleanup finishes.';
   if(!value?.configured)return 'Honcho is not configured. You can still edit your lens and find people.';
+  if(model?.refresh?.state==='no_sources')return 'No usable work sources found. Add a note about your work or connect a source, then refresh suggestions.';
+  if(model?.refresh?.state==='refresh_required')return 'Your work context has changed. Refresh suggestions to look for updates.';
+  if(value.status==='idle')return 'Learning is enabled. Refresh suggestions to look for updates.';
   return ({disabled:saved?'Learning is off. Your saved lens still works.':'Learning is off. You can fill in your lens above.',pending:'No completed updates yet. Refresh again to check.',ready:count?`${count} proposed ${count===1?'update is':'updates are'} ready to review. Choose Use update to add each one to your lens.`:saved?'No new updates. Your saved lens is unchanged.':'No profile updates found yet. Add a note about your work or fill in your lens above.',unavailable:saved?'Learning is temporarily unavailable. Your saved lens still works.':'Learning is temporarily unavailable. You can still fill in your lens above.',invalid:saved?'No reliable update was returned. Your saved lens is unchanged.':'No reliable profile update was returned. Add a note about your work or fill in your lens above.'})[value.status]||'Ready to learn from your work context.';
  }
  function renderModel(value){
   model=value;if(!view)return;
+  const job=value.refresh?.job;
+  if(submittedNote?.id===job?.id&&['completed','failed','cancelled'].includes(job?.status)){
+   if(job.status==='completed'&&note===submittedNote.draft){note='';view.note.value='';}
+   submittedNote=null;
+  }
   for(const field of Object.keys(FIELD_LABELS)){if(!dirty.has(field))draft[field]=String(value.fields?.[field]||'');view.inputs[field].value=draft[field];}
   view.updated.textContent=value.updatedAt?'Last saved '+dateLabel(value.updatedAt):'Add what matters to you right now.';
   view.learning.checked=value.enabled===true;
@@ -71,22 +112,23 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   view.sources.replaceChildren();
   if(value.sources?.length){view.sources.append(el('summary','',`Your sources (${value.sources.length})`));for(const source of value.sources)view.sources.append(sourceBlock(source));}
   view.sources.hidden=!value.sources?.length;
-  setBusy(busy);
+  setBusy(busy);pollRefresh();
  }
  async function mutate(body,success){
   if(busy||!model)return;
-  const token=run;setBusy(true,body.action);
+  const token=run;stopPolling();setBusy(true,body.action);
   const pending=body.action==='refresh'?'Reading your work context and preparing profile updates…':body.action==='accept'?'Adding this update to your lens…':body.action==='dismiss'?'Dismissing this update…':'Saving…';
   message(pending);if(body.action==='refresh')view.learningStatus.textContent=pending;
   try{
    const next=await update({...body,revision:model.revision});if(!alive(token))return;
+   if(body.action==='refresh'&&typeof body.note==='string'&&next.refresh?.job?.id)submittedNote={id:next.refresh.job.id,draft:note};
    if(body.action==='save')dirty.clear();
    if(body.action==='accept'){const suggestion=model.suggestions?.find(s=>s.id===body.id);if(suggestion)dirty.delete(KIND_FIELDS[suggestion.kind]);}
    renderModel(next);view.matches.replaceChildren();
    if(body.action==='refresh'){
     message(learningStatus(next.honcho));
     if(next.honcho?.status==='ready'&&next.suggestions?.length){const heading=view.suggestions.querySelector('h3');heading?.focus({preventScroll:true});heading?.scrollIntoView({block:'start'});}
-    if(next.honcho?.status==='ready'){note='';view.note.value='';}
+    if(!next.refresh?.job&&next.honcho?.status==='ready'){note='';view.note.value='';}
    }else message(body.action==='learning'&&next.enabled===false&&next.honcho?.status==='unavailable'?learningStatus(next.honcho):success);
   }catch(error){
    if(!alive(token)||error.name==='AbortError')return;
@@ -95,7 +137,7 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
     try{const latest=await load();if(!alive(token))return;renderModel(latest);message(dirty.size?'Your lens changed elsewhere. Your edits are still here; review them and save again.':'Your lens changed elsewhere. The latest saved lens is now shown; try again.');}
     catch(reloadError){if(alive(token))message(dirty.size?'Your lens changed elsewhere. Your edits are still here. Reopen the panel to retry.':'Your lens changed elsewhere. Reopen the panel to load the latest saved lens.');}
    }else{if(body.action==='learning')view.learning.checked=model.enabled===true;if(body.action==='granola')view.granola.checked=model.granolaEnabled===true;view.learningStatus.textContent=learningStatus(model.honcho);message(error.serverMessage||(body.action==='refresh'?'Could not refresh profile updates. Your edits are still here. Try again.':'Could not save your lens. Your edits are still here. Try again.'));}
-  }finally{if(alive(token))setBusy(false);}
+  }finally{if(alive(token)){setBusy(false);pollRefresh();}}
  }
  async function search(){
   if(busy||!model||dirty.size)return;
@@ -150,10 +192,10 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
   dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)close();}});
   doc.body.append(dialog);button.setAttribute('aria-expanded','true');dialog.showModal();setBusy(true);message('Loading your lens…');
-  try{const value=await load();if(!alive(token))return;renderModel(value);message(dirty.size?'Your unsaved edits are still here.':'');}
+  try{const value=await load();if(!alive(token))return;renderModel(value);message(refreshing()?learningStatus(value.honcho):dirty.size?'Your unsaved edits are still here.':'');}
   catch(error){if(alive(token)&&error.name!=='AbortError'){message('Your lens could not load. Close this panel and try again.');}}
   finally{if(alive(token))setBusy(false);}
  }
  button.hidden=false;button.setAttribute('aria-haspopup','dialog');button.setAttribute('aria-expanded','false');button.setAttribute('aria-controls','owner-lens-panel');button.onclick=open;
- return {destroy(){disposed=true;close();model=null;draft={focus:'',needs:'',offers:''};dirty.clear();note='';button.hidden=true;button.onclick=null;},close};
+ return {destroy(){disposed=true;close();model=null;draft={focus:'',needs:'',offers:''};dirty.clear();note='';submittedNote=null;button.hidden=true;button.onclick=null;},close};
 }
