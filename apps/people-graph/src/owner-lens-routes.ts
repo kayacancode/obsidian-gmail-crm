@@ -1,6 +1,7 @@
 import type {MailEnv} from './mail-sync';
 import {boundedJSON} from './bounded-json';
 import {savedPeopleMatches} from './people-intelligence';
+import {peopleFailureKind} from './people-diagnostics';
 
 const json=(body:unknown,status=200)=>Response.json(body,{status,headers:{'cache-control':'no-store'}});
 const updating=()=>json({error:'owner_lens_updating',message:'The Granola update is still reaching your account. Please try again in a moment.'},503);
@@ -40,16 +41,16 @@ export async function ownerLensRoute(request:Request,env:MailEnv,owner:string){
     if(typeof (await stub.getOwnerLens()).granolaEnabled!=='boolean')return updating();
     return json(await stub.setOwnerLensGranolaEnabled({revision:body.revision,enabled:body.enabled}));
    }
-   case 'refresh':return json(await stub.refreshOwnerLens({revision:body.revision,note:body.note}));
+   case 'refresh':return json(await stub.refreshOwnerLens({revision:body.revision,note:body.note}),202);
    case 'accept':return json(await stub.acceptOwnerLensSuggestion({revision:body.revision,id:body.id}));
    case 'dismiss':return json(await stub.dismissOwnerLensSuggestion({revision:body.revision,id:body.id}));
   }
  }catch(error){
   const code=error instanceof Error?error.message:'';
   if(body?.action==='granola'&&error instanceof TypeError&&code.includes('setOwnerLensGranolaEnabled')&&/not a function|does not implement|not implemented|does not exist/.test(code))return updating();
-  const kind=error instanceof Error?error.name:'unknown';
+  const kind=peopleFailureKind(error);
   console.warn(JSON.stringify({event:'owner_lens_route_failure',action:body?.action??'read',kind,method:['setOwnerLensGranolaEnabled','setGranolaEnabled','reconcileGranola','scheduleNextAlarm'].find(name=>code.includes(name))??'unknown',category:/not a function|does not implement|not implemented|does not exist/.test(code)?'method_unavailable':/SQLITE|SQL|table|column/.test(code)?'storage':/serializ|clone/.test(code)?'serialization':code==='owner_lens_conflict'?'conflict':'other'}));
-  if(['owner_lens_conflict','person_context_conflict'].includes(code))return json({error:code},409);
+  if(['owner_lens_conflict','owner_lens_refresh_busy','person_context_conflict'].includes(code))return json({error:code},409);
   if(['invalid_owner_lens','invalid_request'].includes(code))return json({error:code},400);
   if(code==='owner_lens_disabled')return json({error:code},409);
   if(code==='owner_lens_suggestion_missing')return json({error:code},404);

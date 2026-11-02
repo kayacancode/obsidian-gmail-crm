@@ -35,6 +35,14 @@ test('owner matches use stored confirmed fields, never browser-supplied profile 
  const response=await f.request('/api/lens/matches',{});assert.equal(response.status,200);const body:any=await response.json();assert.equal(body.status,'no_owner_context');assert.deepEqual(body.results,[]);
  assert.equal((await f.request('/api/lens/matches')).status,405);
 });
+test('owner lens refresh acknowledges a durable job with 202 and preserves busy conflicts',async()=>{
+ const f=await fixture(),job={id:'job',status:'queued',requestedAt:new Date().toISOString(),attempts:0};
+ f.stub.refreshOwnerLens=async(input:any)=>{assert.deepEqual(input,{revision:'rev',note:'A work note'});return {...lens(),enabled:true,refresh:{state:'pending',nextAction:'poll',lastRefresh:job.requestedAt,job}};};
+ const response=await f.request('/api/lens',{action:'refresh',revision:'rev',note:'A work note'});
+ assert.equal(response.status,202);assert.equal((await response.json() as any).refresh.job.id,'job');assert.equal(response.headers.get('cache-control'),'no-store');
+ f.stub.refreshOwnerLens=async()=>{throw Error('owner_lens_refresh_busy');};
+ const busy=await f.request('/api/lens',{action:'refresh',revision:'rev',note:'Another note'});assert.equal(busy.status,409);assert.deepEqual(await busy.json(),{error:'owner_lens_refresh_busy'});
+});
 test('Granola owner learning requires a revisioned boolean opt-in and calls only the authenticated owner store',async()=>{
  const f=await fixture(),updates:Array<{revision:string;enabled:boolean}>=[];
  f.stub.setOwnerLensGranolaEnabled=async(input:{revision:string;enabled:boolean})=>{updates.push(input);return {...lens(),enabled:true,granolaEnabled:input.enabled};};

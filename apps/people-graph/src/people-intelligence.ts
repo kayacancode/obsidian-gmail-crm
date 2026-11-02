@@ -4,6 +4,7 @@ import {loadPeopleNetwork} from './people-service';
 import {queryPeople} from './cli-query';
 import {memoryBrief,rankHelperBrief,rankOwnerLens} from './helper-brief';
 import {validMemoryEmail} from './relationship-memory';
+import {peopleFailureDiagnostic,type PeopleFailurePhase} from './people-diagnostics';
 
 type Store=ReturnType<MailEnv['MAIL']['getByName']>;
 type Person={id:string;name?:string;type?:string;permission?:string;permissionConflict?:boolean;identityResolved?:boolean;identityStatus?:string};
@@ -20,14 +21,19 @@ export async function confirmedPeopleLens(stub:Store){
 
 /** Shared by the browser and machine adapters; pending suggestions never define a request. */
 export async function savedPeopleMatches(env:MailEnv,stub:Store){
- const lens=await stub.getOwnerLens();
- if(!Object.values(lens.fields).some(value=>value.trim()))return rankOwnerLens(env,{nodes:[]},lens.fields);
- const recommendationMemory=await stub.recommendationMemory(),graph=await stub.graph(),helperContext=await stub.helperContext();
- const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext,recommendationMemory},lens.fields);
- const current=await stub.getOwnerLens();
- if(fields.some(key=>current.fields[key]!==lens.fields[key]))throw Error('owner_lens_conflict');
- if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)throw Error('person_context_conflict');
- return result;
+ const started=Date.now();let phase:PeopleFailurePhase='lens_read';
+ try{
+  const lens=await stub.getOwnerLens();
+  if(!Object.values(lens.fields).some(value=>value.trim())){phase='ranking';return await rankOwnerLens(env,{nodes:[]},lens.fields);}
+  phase='memory_read';const recommendationMemory=await stub.recommendationMemory();
+  phase='graph_read';const graph=await stub.graph();
+  phase='helper_context_read';const helperContext=await stub.helperContext();
+  phase='ranking';const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext,recommendationMemory},lens.fields);
+  phase='lens_recheck';const current=await stub.getOwnerLens();
+  if(fields.some(key=>current.fields[key]!==lens.fields[key]))throw Error('owner_lens_conflict');
+  phase='memory_recheck';if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)throw Error('person_context_conflict');
+  return result;
+ }catch(error){peopleFailureDiagnostic('people_matches_failed',phase,error,started);throw error;}
 }
 
 /** Preserve the website's saved-report, source refresh, ranking and explanation path. */

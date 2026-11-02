@@ -16,7 +16,7 @@ pub(crate) struct LensArgs {
 pub(crate) enum LensAction {
     /// Save explicit owner-approved fields. Unspecified fields are preserved.
     Set(LensSet),
-    /// Read the complete Lens state, including pending suggestions and source settings.
+    /// Read the complete Lens state, including refresh job progress, suggestions and sources.
     Inspect,
     /// Enable or disable learning from connected context.
     Learning {
@@ -32,7 +32,7 @@ pub(crate) enum LensAction {
         #[arg(long)]
         revision: Option<String>,
     },
-    /// Refresh pending suggestions; does not silently accept inferred edits.
+    /// Queue a background refresh. Poll with lens inspect; suggestions still require acceptance.
     Refresh {
         #[arg(long)]
         note: Option<String>,

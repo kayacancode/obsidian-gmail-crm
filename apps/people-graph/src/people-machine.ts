@@ -13,6 +13,7 @@ import {bookingOwnerRoute} from './booking-routes';
 import {deviceRoute} from './cli-auth';
 import {loadPeopleNetwork} from './people-service';
 import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
+import {peopleFailureDiagnostic} from './people-diagnostics';
 
 type Method='GET'|'POST'|'PUT'|'PATCH'|'DELETE';
 type Handler='lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph';
@@ -62,6 +63,7 @@ export function peopleMachineStatus(principal:PeopleMemoryPrincipal,origin:strin
 
 /** Only a verified server-created principal may reach this adapter. Owner handlers keep their business checks. */
 export async function peopleMachineRequest(request:Request,env:SchedulingEmailEnv,principal:PeopleMemoryPrincipal):Promise<Response>{
+ const started=Date.now();let phase:Handler|'request'='request';
  try{
   if(request.method!=='POST')return failure('method_not_allowed',405);
   peopleMemoryOrigin(request);
@@ -87,6 +89,7 @@ export async function peopleMachineRequest(request:Request,env:SchedulingEmailEn
   const headers=new Headers({'content-type':'application/json',origin});if(typeof input.idempotencyKey==='string')headers.set('idempotency-key',input.idempotencyKey);
   const adapted=new Request(url,{method:input.method,headers,signal:request.signal,...(input.method==='GET'?{}:{body:JSON.stringify(body)})});
   const owner=principal.owner;
+  phase=selected.handler;
   switch(selected.handler){
    case 'lens':return await ownerLensRoute(adapted,env,owner);
    case 'context':return await personContextRoute(adapted,env,owner);
@@ -120,6 +123,7 @@ export async function peopleMachineRequest(request:Request,env:SchedulingEmailEn
   if(code==='invalid_origin'||code==='insufficient_scope')return failure(code,403);
   if(code==='not_found')return failure(code,404);
   if(/^invalid_[a-z_]{1,60}$/.test(code))return failure(code,400);
+  peopleFailureDiagnostic('people_machine_failed',phase,error,started);
   return failure('people_request_failed',503);
  }
 }

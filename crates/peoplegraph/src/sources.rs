@@ -195,6 +195,7 @@ fn error(kind: &'static str, message: &str) -> ClientError {
     ClientError {
         kind,
         message: message.into(),
+        http_status: None,
     }
 }
 fn malformed() -> ClientError {

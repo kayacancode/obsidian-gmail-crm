@@ -12,6 +12,7 @@ pub(crate) struct Client {
 pub(crate) struct ClientError {
     pub kind: &'static str,
     pub message: String,
+    pub http_status: Option<u16>,
 }
 
 impl ClientError {
@@ -19,11 +20,58 @@ impl ClientError {
         Self {
             kind,
             message: message.into(),
+            http_status: None,
         }
     }
     pub(crate) fn response(self, command: &'static str, start: Instant) -> Response {
-        fail(command, self.kind, self.message, start)
+        let mut response = fail(command, self.kind, self.message, start);
+        if let Some(status) = self.http_status {
+            response.stats.as_mut().unwrap()["httpStatus"] = json!(status);
+        }
+        response
     }
+}
+
+// Ranking has three bounded model stages (15s + 60s + 60s), plus store reads.
+// Ordinary reads and the background refresh enqueue retain the short deadline.
+fn request_budget(method: &str, path: &str, payload: Option<&Value>) -> Duration {
+    let ranking = method == "POST"
+        && (matches!(
+            path,
+            "/api/people-agent/matches" | "/api/people-agent/helpers"
+        ) || (path == "/api/people-agent/request"
+            && payload.is_some_and(|body| {
+                body["method"] == "POST"
+                    && matches!(
+                        body["path"].as_str(),
+                        Some("/api/lens/matches" | "/api/people/helpers" | "/api/people/search")
+                    )
+            })));
+    Duration::from_secs(if ranking { 180 } else { 30 })
+}
+
+fn transport_error(error: ureq::Error, budget: Duration, status: Option<u16>) -> ClientError {
+    let mut result = if matches!(error, ureq::Error::Timeout(_)) {
+        ClientError::new(
+            "web_request_timeout",
+            format!(
+                "The People request exceeded the client's {}ms deadline. Inspect operation status before retrying a mutation; no fallback was used.",
+                budget.as_millis()
+            ),
+        )
+    } else if status.is_some() {
+        ClientError::new(
+            "web_response_invalid",
+            "The People service returned an unreadable response.",
+        )
+    } else {
+        ClientError::new(
+            "web_request_failed",
+            "The People service could not be reached; no fallback was used.",
+        )
+    };
+    result.http_status = status;
+    result
 }
 
 pub(crate) fn configure(url: Option<&str>) -> Result<Client, config::Error> {
@@ -96,6 +144,17 @@ impl Client {
         path: &str,
         payload: Option<Value>,
     ) -> Result<Value, ClientError> {
+        let budget = request_budget(method, path, payload.as_ref());
+        self.request_json_with_timeout(method, path, payload, budget)
+    }
+
+    fn request_json_with_timeout(
+        &self,
+        method: &str,
+        path: &str,
+        payload: Option<Value>,
+        budget: Duration,
+    ) -> Result<Value, ClientError> {
         if !matches!(method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
             return Err(ClientError::new(
                 "invalid_request",
@@ -123,7 +182,7 @@ impl Client {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(30)))
+            .timeout_global(Some(budget))
             .build()
             .into();
         let body = payload.map(|value| value.to_string());
@@ -151,12 +210,7 @@ impl Client {
             })?;
             agent.run(request)
         };
-        let mut response = response.map_err(|_| {
-            ClientError::new(
-                "web_request_failed",
-                "The People service could not be reached; no fallback was used.",
-            )
-        })?;
+        let mut response = response.map_err(|error| transport_error(error, budget, None))?;
         let status = response.status().as_u16();
         if (300..400).contains(&status) {
             return Err(ClientError::new(
@@ -175,12 +229,7 @@ impl Client {
             .with_config()
             .limit(4 * 1024 * 1024)
             .read_to_string()
-            .map_err(|_| {
-                ClientError::new(
-                    "web_response_invalid",
-                    "The People service returned an unreadable response.",
-                )
-            })?;
+            .map_err(|error| transport_error(error, budget, Some(status)))?;
         let invalid_response = || {
             ClientError::new(
                 "web_response_invalid",
@@ -199,11 +248,15 @@ impl Client {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             json!({"contentType":"application/x-ndjson","events":events})
-        } else {
+        } else if (200..300).contains(&status) {
             serde_json::from_str(&text)
                 .ok()
                 .filter(Value::is_object)
                 .ok_or_else(invalid_response)?
+        } else {
+            // Edge/server failures may be HTML, empty or malformed. Keep their actual status
+            // without echoing any response body or misreporting a JSON parse error.
+            serde_json::from_str(&text).unwrap_or(Value::Null)
         };
         if !(200..300).contains(&status) {
             let supplied = data
@@ -244,9 +297,11 @@ impl Client {
                 "request_too_large",
                 "unsupported_media_type",
                 "people_request_failed",
+                "people_memory_failed",
                 "server_error",
                 // Lens, private context, and identity edits.
                 "owner_lens_updating",
+                "owner_lens_refresh_busy",
                 "owner_lens_disabled",
                 "owner_lens_suggestion_missing",
                 "invalid_owner_lens",
@@ -374,12 +429,14 @@ impl Client {
                 .into_iter()
                 .find(|allowed| *allowed == supplied)
                 .unwrap_or("web_request_failed");
-            return Err(ClientError::new(
+            let mut error = ClientError::new(
                 kind,
                 format!(
                     "People request failed (HTTP {status}); no local cache was changed and no fallback was used."
                 ),
-            ));
+            );
+            error.http_status = Some(status);
+            return Err(error);
         }
         Ok(data)
     }
@@ -568,6 +625,7 @@ mod tests {
     #[test]
     fn registered_owner_recovery_codes_survive_without_provider_details() {
         for code in [
+            "owner_lens_refresh_busy",
             "offer_changed",
             "assessment_required",
             "settings_conflict",
@@ -583,6 +641,107 @@ mod tests {
             assert_eq!(error.kind, code);
             assert!(!error.message.contains("fixture_secret"));
             assert!(!error.message.contains("provider body"));
+        }
+    }
+
+    #[test]
+    fn worker_failures_preserve_http_status_even_without_json() {
+        for body in [
+            json!({"error":"people_memory_failed","details":"fixture_secret"}).to_string(),
+            "<html>upstream fixture_secret unavailable</html>".into(),
+        ] {
+            let client = reply_status("text/html", body.clone(), "503 Service Unavailable");
+            let result = client.request_http(
+                "matches",
+                "POST",
+                "/api/people-agent/matches",
+                Some(json!({})),
+                Instant::now(),
+            );
+            assert!(!result.ok);
+            assert_eq!(result.stats.as_ref().unwrap()["httpStatus"], 503);
+            let error = result.error.unwrap();
+            assert_eq!(
+                error.kind,
+                if body.starts_with('{') {
+                    "people_memory_failed"
+                } else {
+                    "web_request_failed"
+                }
+            );
+            assert!(error.message.contains("HTTP 503"));
+            assert!(!error.message.contains("fixture_secret"));
+        }
+    }
+
+    #[test]
+    fn only_matching_operations_receive_the_model_work_budget() {
+        for path in ["/api/people-agent/matches", "/api/people-agent/helpers"] {
+            assert_eq!(request_budget("POST", path, None), Duration::from_secs(180));
+            assert_eq!(request_budget("GET", path, None), Duration::from_secs(30));
+        }
+        for path in [
+            "/api/lens/matches",
+            "/api/people/helpers",
+            "/api/people/search",
+        ] {
+            assert_eq!(
+                request_budget(
+                    "POST",
+                    "/api/people-agent/request",
+                    Some(&json!({"method":"POST","path":path}))
+                ),
+                Duration::from_secs(180)
+            );
+        }
+        for payload in [
+            json!({"method":"POST","path":"/api/lens","body":{"action":"refresh"}}),
+            json!({"method":"GET","path":"/api/accounts"}),
+        ] {
+            assert_eq!(
+                request_budget("POST", "/api/people-agent/request", Some(&payload)),
+                Duration::from_secs(30)
+            );
+        }
+    }
+
+    #[test]
+    fn delayed_headers_and_body_report_client_timeout_without_inventing_http_failure() {
+        for send_headers in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let target = format!("http://{}", listener.local_addr().unwrap());
+            let (release, wait) = std::sync::mpsc::channel();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = [0; 2048];
+                stream.read(&mut request).unwrap();
+                if send_headers {
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n").unwrap();
+                }
+                let _ = wait.recv_timeout(Duration::from_secs(3));
+            });
+            let client = Client {
+                target,
+                token: "fixture_secret".into(),
+            };
+            let error = client
+                .request_json_with_timeout(
+                    "GET",
+                    "/api/people-agent/lens",
+                    None,
+                    Duration::from_millis(100),
+                )
+                .unwrap_err();
+            release.send(()).unwrap();
+            server.join().unwrap();
+            assert_eq!(error.kind, "web_request_timeout");
+            assert_eq!(error.http_status, send_headers.then_some(200));
+            assert!(error.message.contains("Inspect operation status"));
+            assert!(!error.message.contains("fixture_secret"));
+            assert!(!error.message.contains("503"));
         }
     }
 

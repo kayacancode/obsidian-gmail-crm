@@ -111,9 +111,26 @@ test('machine scheduling credential creation rejects expired or missing delegati
  const table=sql.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='scheduling_credentials'").get();
  if(table)assert.equal(sql.prepare('SELECT count(*) AS n FROM scheduling_credentials').get()?.n,0);
 });
-test('machine adapter sanitizes unexpected owner-service failures without leaking their text',async()=>{
- const response=await request({MAIL:{getByName:()=>({bindOwner:async()=>{throw Error('private provider secret');}})}},principal(['people:read']),{method:'GET',path:'/api/lens'});
+test('machine adapter sanitizes unexpected owner-service failures without leaking their text',async t=>{
+ const logs:unknown[][]=[];t.mock.method(console,'warn',(...args:unknown[])=>logs.push(args));
+ const response=await request({MAIL:{getByName:()=>({bindOwner:async()=>{const error=new Error('RPC disconnected: fixture_secret private provider');error.name='fixture_secret';throw error;}})}},principal(['people:read']),{method:'GET',path:'/api/lens'});
  assert.equal(response.status,503);assert.deepEqual(await response.json(),{error:'people_request_failed'});
+ assert.equal(logs.length,1);assert.equal(logs[0].length,1);const diagnostic=JSON.parse(logs[0][0] as string);
+ assert.deepEqual(Object.keys(diagnostic).sort(),['category','elapsedMs','event','kind','phase']);
+ assert.equal(diagnostic.event,'people_machine_failed');assert.equal(diagnostic.phase,'lens');assert.equal(diagnostic.category,'rpc');assert.equal(diagnostic.kind,'unknown');
+ assert.ok(Number.isFinite(diagnostic.elapsedMs)&&diagnostic.elapsedMs>=0&&diagnostic.elapsedMs<=3_600_000);
+ assert.ok(!JSON.stringify(logs).includes('fixture_secret'));assert.ok(!JSON.stringify(logs).includes(owner));
+});
+test('machine matches preserve stage diagnostics without leaking custom errors through the browser route',async t=>{
+ const logs:unknown[][]=[];t.mock.method(console,'warn',(...args:unknown[])=>logs.push(args));
+ const env:any={MAIL:{getByName:()=>({bindOwner:async()=>{},getOwnerLens:async()=>({fields:{focus:'Clinic scheduling',needs:'',offers:''}}),recommendationMemory:async()=>{const error=new Error('SQLITE_ERROR fixture_secret source text');error.name='fixture_secret';throw error;}})}};
+ const response=await request(env,principal(['people:read']),{method:'POST',path:'/api/lens/matches',body:{}});
+ assert.equal(response.status,503);assert.deepEqual(await response.json(),{error:'people_request_failed'});
+ const records=logs.map(args=>JSON.parse(args[0] as string));
+ assert.equal(records.find(record=>record.event==='people_matches_failed')?.phase,'memory_read');
+ assert.equal(records.find(record=>record.event==='owner_lens_route_failure')?.kind,'unknown');
+ assert.equal(records.find(record=>record.event==='people_machine_failed')?.phase,'lens');
+ assert.ok(!JSON.stringify(logs).includes('fixture_secret'));assert.ok(!JSON.stringify(logs).includes(owner));
 });
 test('machine People read credentials query the web graph while write-only credentials cannot',async t=>{
  const {DB,sql}=database(t);sql.exec('CREATE TABLE cli_rate_limits(key TEXT PRIMARY KEY,window INTEGER NOT NULL,count INTEGER NOT NULL)');

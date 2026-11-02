@@ -24,6 +24,12 @@ try{
  const sources=await command(['sources','status']).done;assert.equal(sources.code,0,sources.out);assert.deepEqual(JSON.parse(sources.out).data.gmail.accounts,[]);assert.equal(JSON.parse(sources.out).data.granola.connected,false);
  const handoff=await command(['sources','connect','gmail']).done;assert.equal(handoff.code,0,handoff.out);assert.equal(JSON.parse(handoff.out).data.status,'requires_browser_consent');
  const learning=await command(['lens','learning','on']).done;assert.equal(learning.code,0,learning.out);const inspected=JSON.parse((await command(['lens','inspect']).done).out);assert.equal(inspected.data.honcho.lastSync,null);assert.notEqual(inspected.data.refresh.state,'pending');
+ const refresh=await command(['lens','refresh','--revision',inspected.data.revision]).done;assert.equal(refresh.code,0,refresh.out);const queued=JSON.parse(refresh.out).data;
+ assert.equal(queued.refresh.job.status,'queued');assert.equal(queued.refresh.nextAction,'poll');assert.ok(queued.refresh.job.id);
+ const duplicate=await command(['lens','refresh','--revision',inspected.data.revision]).done;assert.equal(duplicate.code,0,duplicate.out);assert.equal(JSON.parse(duplicate.out).data.refresh.job.id,queued.refresh.job.id,'active stale retry coalesces');
+ let completed;
+ for(let i=0;i<100;i++){const poll=await command(['lens','inspect']).done;assert.equal(poll.code,0,poll.out);completed=JSON.parse(poll.out).data;assert.equal(completed.refresh.job.id,queued.refresh.job.id);if(!['queued','running'].includes(completed.refresh.job.status))break;await new Promise(r=>setTimeout(r,100));}
+ assert.equal(completed.refresh.job.status,'completed');assert.equal(completed.refresh.job.attempts,1);assert.equal(completed.honcho.lastSync,null,'completed empty refresh does not invent provider synchronization');
  const lensBefore=JSON.parse((await command(['lens']).done).out).data;
  const saved=await command(['lens','set','--focus','Agent interfaces','--needs','Design partners','--offers','Research']).done;assert.equal(saved.code,0,saved.out);
  const webLens=await api('/api/lens');assert.deepEqual(webLens.data.fields,{focus:'Agent interfaces',needs:'Design partners',offers:'Research'});
@@ -62,5 +68,5 @@ try{
  assert.equal((await api('/api/people/integrations/'+status.data.credential.id+'/revoke',{})).status,200);
  const revoked=await command(['find-person','Ada']).done;assert.equal(JSON.parse(revoked.out).error.kind,'login_required');
  const logout=await command(['logout']).done;assert.equal(logout.code,0,logout.err);
- console.log('PASS: compiled CLI scoped login, auto-config, source status/consent/scope denial, Lens idle state/writes/CAS, generic API, graph parity, local mode, private intelligence, scoped MCP, tenant isolation, revocation, logout');
+ console.log('PASS: compiled CLI scoped login, auto-config, source status/consent/scope denial, durable Lens refresh enqueue/coalescing/alarm/GET polling, Lens writes/CAS, generic API, graph parity, local mode, private intelligence, scoped MCP, tenant isolation, revocation, logout');
 }finally{await rm(home,{recursive:true,force:true});}

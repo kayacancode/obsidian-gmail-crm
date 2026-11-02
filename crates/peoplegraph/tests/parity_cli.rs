@@ -135,6 +135,45 @@ fn stale_lens_edit_is_not_retried() {
             .starts_with("POST /api/people-agent/lens ")
     );
 }
+
+#[test]
+fn queued_lens_refresh_returns_job_without_implicit_wait_or_retry() {
+    let snapshot = json!({"revision":"r2","refresh":{"state":"pending","nextAction":"poll","job":{"id":"job-1","status":"queued","requestedAt":"2026-11-02T12:00:00.000Z","attempts":0}}});
+    let (url, rx) = fixture(vec![(202, snapshot.clone())]);
+    let o = authenticated(&url)
+        .args(["lens", "refresh", "--revision", "r1"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", value(&o));
+    assert_eq!(value(&o)["data"], snapshot);
+    let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        body(&request),
+        json!({"method":"POST","path":"/api/lens","body":{"action":"refresh","revision":"r1"}})
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn busy_refresh_preserves_safe_recovery_code_and_status() {
+    let (url, rx) = fixture(vec![(409, json!({"error":"owner_lens_refresh_busy"}))]);
+    let o = authenticated(&url)
+        .args([
+            "lens",
+            "refresh",
+            "--revision",
+            "r1",
+            "--note",
+            "different owner note",
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert_eq!(value(&o)["error"]["kind"], "owner_lens_refresh_busy");
+    assert_eq!(value(&o)["stats"]["httpStatus"], 409);
+    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(rx.try_recv().is_err());
+}
 #[test]
 fn api_uses_scoped_adapter_and_preserves_method_path_and_json() {
     let (url, rx) = fixture(vec![(200, json!({"ok":true}))]);

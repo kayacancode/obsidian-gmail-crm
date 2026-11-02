@@ -8,10 +8,18 @@ export interface OwnerLensFields {focus:string;needs:string;offers:string}
 export interface OwnerLensCollectionResult {failed:number;deferred:number}
 export interface OwnerLensSuggestion {id:string;kind:OwnerLensKind;text:string;sourceIds:string[]}
 export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'|'Your Granola meeting'|'Meeting you attended';title?:string;url?:string|null;attribution?:'statement'|'meeting'}
+export interface OwnerLensRefreshJob {
+ id:string;status:'queued'|'running'|'completed'|'failed'|'cancelled';requestedAt:string;startedAt?:string;finishedAt?:string;attempts:number;
+ error?:'deadline_exceeded'|'retry_exhausted'|'refresh_unavailable';
+}
+interface StoredRefreshJob extends OwnerLensRefreshJob {note?:string;noteDigest?:string;dueAt:number;leaseUntil?:number;expiresAt:number}
+const REFRESH_ATTEMPT_MS=12*60_000,REFRESH_EXPIRY_MS=30*60_000,REFRESH_ATTEMPTS=2;
+const activeJob=(job:OwnerLensRefreshJob|undefined)=>job?.status==='queued'||job?.status==='running';
 export interface OwnerLensRefresh {
  state:'disabled'|'not_refreshed'|'no_sources'|'refresh_required'|'pending'|'ready'|'retry_required'|'unconfigured'|'cleanup_pending';
  lastRefresh:string|null;
- nextAction:'enable_learning'|'refresh'|'add_note_or_connect_source'|'review_suggestions'|'wait_for_cleanup'|null;
+ nextAction:'enable_learning'|'refresh'|'poll'|'add_note_or_connect_source'|'review_suggestions'|'wait_for_cleanup'|null;
+ job?:OwnerLensRefreshJob;
 }
 export interface OwnerGranolaInput {id:string;version:string;observedAt:string;title:string;url:string|null;passages:string[];meetingPassages?:string[]}
 export interface OwnerLens {
@@ -26,6 +34,7 @@ interface Accepted {text:string;sourceIds:string[];acceptedAt:string}
 interface State extends Omit<OwnerLens,'sources'|'honcho'|'granolaProgress'|'refresh'> {
  generation:string;sources:StoredSource[];dismissed:string[];
  accepted:Partial<Record<keyof OwnerLensFields,Accepted>>;
+ refreshJob?:StoredRefreshJob;
  status:OwnerLens['honcho']['status'];lastSync:string|null;lastRefresh?:string;pendingDelete:string|null;remotePossible?:boolean;syncedSources?:string;cleanupAttempts?:number;nextCleanup?:number;projectionRequested?:boolean;projectionVersion?:number;pendingSnapshot?:{fingerprint:string;attempts:number;since:number};
 }
 type OwnerLensEnv=HonchoLensEnv&{AI?:Env['AI']};
@@ -67,7 +76,7 @@ export class OwnerLensStore {
   const state:State={revision:crypto.randomUUID(),generation:crypto.randomUUID(),enabled:false,granolaEnabled:false,fields:{focus:'',needs:'',offers:''},updatedAt:null,suggestions:[],sources:[],dismissed:[],accepted:{},status:'disabled',lastSync:null,pendingDelete:null};this.write(state);return state;
  }
  private write(state:State){this.ctx.storage.sql.exec('INSERT OR REPLACE INTO owner_lens_state VALUES (1,?)',JSON.stringify(state));}
- private touch(state:State,invalidate=true){state.revision=crypto.randomUUID();state.updatedAt=stamp();if(invalidate){state.generation=crypto.randomUUID();this.controller?.abort();}}
+ private touch(state:State,invalidate=true){state.revision=crypto.randomUUID();state.updatedAt=stamp();if(invalidate){state.generation=crypto.randomUUID();this.controller?.abort();if(activeJob(state.refreshJob)){state.refreshJob!.status='cancelled';state.refreshJob!.finishedAt=stamp();delete state.refreshJob!.note;delete state.refreshJob!.leaseUntil;}}}
  private check(state:State,revision:string){if(typeof revision!=='string'||revision!==state.revision)throw Error('owner_lens_conflict');}
  private result(state:State):OwnerLens{
   const configured=honchoConfigured(this.env),refresh=this.refreshStatus(state,configured);
@@ -76,7 +85,9 @@ export class OwnerLensStore {
  }
  /** A learning opt-in does not queue a projection. Derive legacy states without rewriting them. */
  private refreshStatus(state:State,configured:boolean):OwnerLensRefresh{
-  const result=(status:OwnerLensRefresh['state'],nextAction:OwnerLensRefresh['nextAction']):OwnerLensRefresh=>({state:status,lastRefresh:state.lastRefresh??null,nextAction});
+  const job=state.refreshJob;const publicJob=job?{id:job.id,status:job.status,requestedAt:job.requestedAt,attempts:job.attempts,...(job.startedAt?{startedAt:job.startedAt}:{}),...(job.finishedAt?{finishedAt:job.finishedAt}:{}),...(job.error?{error:job.error}:{})}:undefined;
+  const result=(status:OwnerLensRefresh['state'],nextAction:OwnerLensRefresh['nextAction']):OwnerLensRefresh=>({state:status,lastRefresh:state.lastRefresh??null,nextAction,...(publicJob?{job:publicJob}:{})});
+  if(activeJob(job)&&state.enabled)return result('pending','poll');
   if(state.pendingDelete)return result('cleanup_pending','wait_for_cleanup');
   if(!state.enabled)return result('disabled','enable_learning');
   if(!configured)return result('unconfigured',null);
@@ -130,7 +141,53 @@ export class OwnerLensStore {
   this.touch(state);this.write(state);return this.result(state);
  }
  private serial<T>(fn:()=>Promise<T>):Promise<T>{const result=this.operation.then(fn,fn);this.operation=result.then(()=>{},()=>{});return result;}
- nextDue(now=Date.now()){const state=this.read();return state.pendingDelete?Math.max(now+1000,state.nextCleanup??now):undefined;}
+ nextDue(now=Date.now()){
+  const state=this.read(),due:number[]=[];
+  if(state.pendingDelete)due.push(state.nextCleanup??now);
+  if(activeJob(state.refreshJob)){
+   const job=state.refreshJob!,readyAt=job.status==='running'?job.leaseUntil??now:job.dueAt;
+   due.push(Math.min(state.pendingDelete?Math.max(readyAt,state.nextCleanup??now):readyAt,job.expiresAt));
+  }
+  return due.length?Math.min(...due):undefined;
+ }
+ /** Persist the explicit request before the caller schedules its alarm and acknowledges it. */
+ async queueRefresh(input:{revision:string;note?:string}){
+  if(!input||input.note!==undefined&&(typeof input.note!=='string'||input.note.length>3000))throw Error('invalid_owner_lens');
+  const note=input.note?.trim()||undefined,noteDigest=note?await digest(note):undefined,state=this.current();
+  if(!state.enabled)throw Error('owner_lens_disabled');
+  if(activeJob(state.refreshJob)){
+   if(noteDigest&&noteDigest!==state.refreshJob!.noteDigest)throw Error('owner_lens_refresh_busy');
+   return this.result(state);
+  }
+  this.check(state,input.revision);this.touch(state);
+  state.refreshJob={id:crypto.randomUUID(),status:'queued',requestedAt:stamp(),attempts:0,dueAt:Date.now()+1000,expiresAt:Date.now()+REFRESH_EXPIRY_MS,...(note?{note,noteDigest}:{})};
+  state.lastRefresh=state.refreshJob.requestedAt;this.write(state);return this.result(state);
+ }
+ /** A persisted lease recovers interrupted alarms; ordinary provider outcomes never auto-retry. */
+ async runRefreshJob(collect:(valid:()=>boolean)=>Promise<OwnerLensCollectionResult|void>,schedule:()=>Promise<void>){
+  const state=this.current(),job=state.refreshJob,now=Date.now();if(!activeJob(job))return false;
+  if(job!.status==='running'&&(job!.leaseUntil??0)>now&&job!.expiresAt>now)return false;
+  const finish=(status:'completed'|'failed',error?:OwnerLensRefreshJob['error'])=>{
+   const latest=this.read();if(latest.refreshJob?.id!==job!.id||latest.refreshJob.attempts!==job!.attempts||!activeJob(latest.refreshJob))return;
+   if(error){this.touch(latest);if(error!=='refresh_unavailable')latest.status='unavailable';}else this.touch(latest,false);
+   latest.refreshJob.status=status;latest.refreshJob.finishedAt=stamp();latest.refreshJob.error=error;delete latest.refreshJob.note;delete latest.refreshJob.leaseUntil;this.write(latest);
+  };
+  if(job!.expiresAt<=now||job!.attempts>=REFRESH_ATTEMPTS){finish('failed',job!.expiresAt<=now?'deadline_exceeded':'retry_exhausted');return true;}
+  // Cleanup owns its existing backoff. Keep a queued note intact until it is safe to extract it.
+  if(state.pendingDelete)return false;
+  job!.status='running';job!.attempts++;job!.startedAt=stamp();job!.leaseUntil=Math.min(now+REFRESH_ATTEMPT_MS,job!.expiresAt);state.generation=crypto.randomUUID();this.controller?.abort();this.touch(state,false);this.write(state);
+  // Set the recovery alarm before external work. Other RPCs can still read or cancel this job.
+  await schedule();
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+   const work=this.executeRefresh({revision:state.revision,note:job!.note},collect,job!.id);
+   const result=await Promise.race([work,new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),Math.max(1,job!.leaseUntil!-Date.now()));})]);
+   if(result===null)finish('failed','deadline_exceeded');
+   else {const failed=!result.honcho.cleanupPending&&['unavailable','invalid'].includes(result.honcho.status);finish(failed?'failed':'completed',failed?'refresh_unavailable':undefined);}
+  }catch{finish('failed','refresh_unavailable');}
+  finally{if(timer)clearTimeout(timer);}
+  return true;
+ }
  async retryCleanup(now=Date.now()){
   const state=this.read();if(!state.pendingDelete||(state.nextCleanup??0)>now)return false;
   return this.serial(async()=>{const latest=this.read();if(!latest.pendingDelete||(latest.nextCleanup??0)>now)return false;await this.cleanup();return true;});
@@ -232,14 +289,15 @@ export class OwnerLensStore {
   if(state.sources.some(old=>!keep.some(s=>s.id===old.id)))this.withdraw(state,keep,false);else {state.sources=keep;this.touch(state,false);}
   state.status='pending';state.suggestions=[];this.write(state);
  }
- async refresh(input:{revision:string;note?:string},collect:(valid:()=>boolean)=>Promise<OwnerLensCollectionResult|void>){
+ async refresh(input:{revision:string;note?:string},collect:(valid:()=>boolean)=>Promise<OwnerLensCollectionResult|void>){return this.executeRefresh(input,collect);}
+ private async executeRefresh(input:{revision:string;note?:string},collect:(valid:()=>boolean)=>Promise<OwnerLensCollectionResult|void>,jobId?:string){
   if(!input||input.note!==undefined&&(typeof input.note!=='string'||input.note.length>3000))throw Error('invalid_owner_lens');
   const state=this.current();this.check(state,input.revision);if(!state.enabled)throw Error('owner_lens_disabled');
   // Finish projecting the collected batch before a retry can evict more evidence.
   // pendingSnapshot also recognizes unfinished work from records predating this flag.
   const outdatedProjection=!!state.lastSync&&state.projectionVersion!==HONCHO_LENS_PROJECTION_VERSION;
   const resumeProjection=honchoConfigured(this.env)&&!!(state.projectionRequested||state.pendingSnapshot||outdatedProjection)&&state.sources.length>0;
-  state.projectionRequested=true;state.lastRefresh=stamp();this.touch(state);state.status='pending';this.write(state);const generation=state.generation;
+  state.projectionRequested=true;if(!jobId)state.lastRefresh=stamp();this.touch(state,!jobId);state.status='pending';this.write(state);const generation=state.generation;
   const valid=()=>{const latest=this.read();return latest.enabled&&latest.generation===generation;};
   return this.serial(async()=>{
    if(!valid())return this.get();
@@ -249,7 +307,9 @@ export class OwnerLensStore {
     if(input.note?.trim()){
      const facts=await extractMailContext(this.env.AI,input.note),observedAt=stamp();
      const sources=await Promise.all(facts.map(async(fact,index)=>({id:'owner-note:'+await digest(input.note+'\0'+index+'\0'+fact.quote),text:fact.quote,observedAt,label:'Your note' as const,account:null,message:''})));
-     if(!valid())return this.get();if(sources.length)this.addSources(this.read(),sources);
+     if(!valid())return this.get();
+     if(jobId){const latest=this.read();if(latest.refreshJob?.id===jobId){delete latest.refreshJob.note;this.write(latest);}}
+     if(sources.length)this.addSources(this.read(),sources);
     }
     stage='collection';const collection=resumeProjection?undefined:await collect(valid),collectionFailed=!!collection&&(collection.failed>0||collection.deferred>0);if(!valid())return this.get();
     // Retention eviction or account withdrawal requires removal before another remote snapshot.

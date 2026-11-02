@@ -369,14 +369,41 @@ mod tests {
         net::TcpListener,
         thread,
     };
+    // Drain POST bodies before closing: an unread body can cause a TCP reset and
+    // hide the response this fixture is supposed to test (notably on macOS).
+    fn drain_request(stream: &mut std::net::TcpStream) {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let size = stream.read(&mut chunk).unwrap();
+            assert!(size > 0, "request ended before its body");
+            bytes.extend_from_slice(&chunk[..size]);
+            if let Some(offset) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..offset]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= offset + 4 + length {
+                    break;
+                }
+            }
+        }
+    }
     #[test]
     fn malformed_stats_are_a_json_error_instead_of_a_panic() {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", server.local_addr().unwrap());
         let task = thread::spawn(move || {
             let (mut stream, _) = server.accept().unwrap();
-            let mut buf = [0; 4096];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             let body = r#"{"ok":true,"command":"find-person","data":{},"stats":"bad"}"#;
             write!(
                 stream,
@@ -425,8 +452,7 @@ mod tests {
         let origin = format!("http://{}", server.local_addr().unwrap());
         let task = thread::spawn(move || {
             let (mut stream, _) = server.accept().unwrap();
-            let mut buf = [0; 4096];
-            let _ = stream.read(&mut buf);
+            drain_request(&mut stream);
             write!(stream,"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
         });
         assert!(
