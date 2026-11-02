@@ -190,6 +190,16 @@ pub fn login(
                 Ok(None) => {}
             }
             saved["legacyProfileRemaining"] = json!(legacy_remaining);
+            let active = config::resolve(None).ok();
+            saved["activeCredentialSource"] = json!(active.as_ref().map(|c| c.source));
+            saved["savedCredentialActive"] = json!(
+                active
+                    .as_ref()
+                    .is_some_and(|c| c.source == "config" && c.origin == origin)
+            );
+            if let Some(warning) = config::environment_override_warning() {
+                saved["warnings"] = json!([warning]);
+            }
             return Ok(saved);
         }
         Err("Login expired. Run peoplegraph login again.".into())

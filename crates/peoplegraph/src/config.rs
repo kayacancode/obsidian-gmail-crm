@@ -202,6 +202,16 @@ fn environment(name: &str) -> Result<Option<String>, Error> {
     }
 }
 
+pub(crate) fn environment_override_warning() -> Option<Value> {
+    environment("PEOPLEGRAPH_WEB_TOKEN")
+        .ok()
+        .flatten()
+        .map(|_| json!({
+            "code": "environment_credential_override",
+            "message": "PEOPLEGRAPH_WEB_TOKEN takes precedence over the saved login. Unset PEOPLEGRAPH_WEB_TOKEN and PEOPLEGRAPH_WEB_URL to use the saved credential, then run peoplegraph status to verify its permissions."
+        }))
+}
+
 pub(crate) fn resolve(url: Option<&str>) -> Result<Credential, Error> {
     let explicit = url.map(origin).transpose()?;
     let env_origin = environment("PEOPLEGRAPH_WEB_URL")?

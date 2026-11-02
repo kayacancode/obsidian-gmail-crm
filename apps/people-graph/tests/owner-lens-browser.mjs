@@ -185,12 +185,14 @@ try{
  }
 
  // A queued refresh returns immediately and progresses only through GET polling.
- const queuedJob={id:'background-refresh',status:'queued',requestedAt:stamp,attempts:0};
- refreshResult={suggestions:[],honcho:{configured:true,status:'pending',lastSync:null},refresh:{state:'pending',lastRefresh:stamp,nextAction:'poll',job:queuedJob}};
+ const queuedJob={id:'background-refresh',status:'queued',requestedAt:stamp,attempts:0,waitReason:'cleanup',nextAttemptAt:new Date(Date.now()+5000).toISOString(),expiresAt:new Date(Date.now()+30*60_000).toISOString()};
+ refreshResult={suggestions:[],honcho:{configured:true,status:'unavailable',lastSync:null,cleanupPending:true,retryAt:queuedJob.nextAttemptAt},refresh:{state:'pending',lastRefresh:stamp,nextAction:'poll',job:queuedJob}};
  await launch.click();await panel.getByRole('textbox',{name:'Focused on',exact:true}).waitFor();
  await panel.getByRole('textbox',{name:'Can help with',exact:true}).fill('Draft while the refresh runs');
  await panel.getByRole('button',{name:'Refresh suggestions',exact:true}).click();
  await panel.getByText(/Refresh queued/).first().waitFor();
+ await panel.getByText(/waiting for earlier learned context to be cleared/).first().waitFor();
+ assert.match(await panel.locator('.owner-lens-status').innerText(),/Next cleanup check:/);assert.match(await panel.locator('.owner-lens-status').innerText(),/Refresh expires/);
  assert.equal(await panel.getByRole('button',{name:'Refresh queued…',exact:true}).isDisabled(),true);
  const queuedMutations=calls.length;
  state={...state,refresh:{...state.refresh,job:{...queuedJob,status:'running',attempts:1}}};

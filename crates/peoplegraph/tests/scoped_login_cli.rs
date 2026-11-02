@@ -146,6 +146,9 @@ fn browser_login_persists_one_scoped_key_for_graph_and_private_commands_then_sel
         String::from_utf8_lossy(&login.stderr)
     );
     assert_eq!(envelope(&login)["data"]["scopes"], scopes);
+    assert_eq!(envelope(&login)["data"]["activeCredentialSource"], "config");
+    assert_eq!(envelope(&login)["data"]["savedCredentialActive"], true);
+    assert!(envelope(&login)["data"]["warnings"].is_null());
     assert_eq!(
         request_body(&rx.recv_timeout(Duration::from_secs(1)).unwrap())["scopes"],
         scopes
@@ -227,4 +230,135 @@ fn login_revokes_and_refuses_a_key_with_unapproved_scopes() {
     assert!(revoked.starts_with("POST /api/cli/logout "));
     assert!(revoked.contains(TOKEN));
     assert!(!String::from_utf8_lossy(&output.stdout).contains(TOKEN));
+}
+
+#[test]
+fn login_refuses_missing_source_scope_without_replacing_a_saved_credential() {
+    let sandbox = Sandbox::new();
+    let previous = "people_ccccccccccccccccccccccccccccccccccccccccccc";
+    let (origin, rx) = fixture(vec![
+        start_response(),
+        poll_response(json!(["people:read", "people:write"])),
+        json!({"revoked":true}),
+    ]);
+    fs::create_dir_all(sandbox.config().parent().unwrap()).unwrap();
+    let saved =
+        json!({"version":1,"active_origin":origin,"profiles":[{"origin":origin,"token":previous}]})
+            .to_string();
+    fs::write(sandbox.config(), &saved).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(sandbox.config(), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let output = sandbox
+        .cli()
+        .args([
+            "login",
+            "--url",
+            &origin,
+            "--no-browser",
+            "--write",
+            "--scope",
+            "sources:manage",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(envelope(&output)["error"]["kind"], "login_failed");
+    assert_eq!(fs::read_to_string(sandbox.config()).unwrap(), saved);
+    assert_eq!(
+        request_body(&rx.recv_timeout(Duration::from_secs(1)).unwrap())["scopes"],
+        json!(["people:read", "people:write", "sources:manage"])
+    );
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let revoked = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(revoked.starts_with("POST /api/cli/logout "));
+    assert!(revoked.contains(TOKEN));
+    for secret in [TOKEN, previous] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+    }
+}
+
+#[test]
+fn login_and_status_warn_when_environment_still_selects_an_older_credential() {
+    let sandbox = Sandbox::new();
+    let older = "people_ccccccccccccccccccccccccccccccccccccccccccc";
+    let (origin, rx) = fixture(vec![
+        start_response(),
+        poll_response(json!(["people:read", "people:write", "sources:manage"])),
+        json!({"protocolVersion":1,"owner":"owner@test","credential":{"id":"older-key","scopes":["people:read"],"expiresAt":4_000_000_000_000u64},"capabilities":[]}),
+    ]);
+    let output = sandbox
+        .cli()
+        .env("PEOPLEGRAPH_WEB_URL", &origin)
+        .env("PEOPLEGRAPH_WEB_TOKEN", older)
+        .args([
+            "login",
+            "--no-browser",
+            "--write",
+            "--scope",
+            "sources:manage",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let data = &envelope(&output)["data"];
+    assert_eq!(
+        data["scopes"],
+        json!(["people:read", "people:write", "sources:manage"])
+    );
+    assert_eq!(data["activeCredentialSource"], "environment");
+    assert_eq!(data["savedCredentialActive"], false);
+    assert_eq!(
+        data["warnings"][0]["code"],
+        "environment_credential_override"
+    );
+    let saved: Value = serde_json::from_slice(&fs::read(sandbox.config()).unwrap()).unwrap();
+    assert_eq!(saved["profiles"][0]["token"], TOKEN);
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let status = sandbox
+        .cli()
+        .env("PEOPLEGRAPH_WEB_URL", &origin)
+        .env("PEOPLEGRAPH_WEB_TOKEN", older)
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let data = &envelope(&status)["data"];
+    assert_eq!(data["credentialSource"], "environment");
+    assert_eq!(data["credential"]["scopes"], json!(["people:read"]));
+    assert_eq!(
+        data["warnings"][0]["code"],
+        "environment_credential_override"
+    );
+    assert!(
+        rx.recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .contains(older)
+    );
+    let offline = sandbox
+        .cli()
+        .env("PEOPLEGRAPH_WEB_URL", &origin)
+        .env("PEOPLEGRAPH_WEB_TOKEN", older)
+        .args(["status", "--offline"])
+        .output()
+        .unwrap();
+    assert_eq!(envelope(&offline)["data"]["authenticated"], Value::Null);
+    assert_eq!(
+        envelope(&offline)["data"]["warnings"][0]["code"],
+        "environment_credential_override"
+    );
+    for result in [output, status, offline] {
+        for secret in [TOKEN, older] {
+            assert!(!String::from_utf8_lossy(&result.stdout).contains(secret));
+            assert!(!String::from_utf8_lossy(&result.stderr).contains(secret));
+        }
+    }
 }

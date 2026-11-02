@@ -30,6 +30,41 @@ test('People intelligence reads only the confirmed lens and empty confirmed fiel
  f.setFields(empty);f.stub.graph=async()=>{throw Error('Empty lens must not load graph');};
  const matched=await f.request('/api/people-agent/matches',key.token,{});assert.equal(matched.status,200);const result:any=await matched.json();assert.equal(result.status,'no_owner_context');assert.deepEqual(result.results,[]);
 });
+
+test('People onboarding explains Gmail content opt-in through inspect and read-only matches without exposing account details',async t=>{
+ const f=fixture(t),own=await mailFixture();t.after(()=>own.db.close());f.env.MAIL=own.env.MAIL;
+ const account=JSON.parse(own.db.prepare('SELECT data FROM accounts').get()!.data as string);
+ account.contextEnabled=false;account.grant='private-refresh-token';account.calendarCount=739;account.photoCount=414;
+ own.db.prepare('UPDATE accounts SET data=?').run(JSON.stringify(account));
+ const lens=await own.service.getOwnerLens();await own.service.updateOwnerLens({revision:lens.revision,fields});
+ const inspected:any=await (await own.request('/api/lens')).json();
+ assert.equal(inspected.matchingSources.gmail.contextDisabled,1);
+ assert.equal(inspected.matchingSources.gmail.contextEnabled,0);
+ assert.equal(inspected.matchingSources.hints[0].code,'gmail_context_disabled');
+ assert.match(inspected.matchingSources.hints[0].command,/sources context gmail --email <account-email> on/);
+ assert.match(inspected.matchingSources.hints[0].message,/permission/i);
+ const key=await f.mint(['people:read']);
+ const response=await f.request('/api/people-agent/matches',key.token,{});assert.equal(response.status,200);
+ const result:any=await response.json();assert.equal(result.status,'no_evidence');
+ assert.deepEqual(result.matchingSources,inspected.matchingSources);
+ assert.match(result.guidance,/Lens refresh.*not required/);
+ assert.ok(!JSON.stringify(result.matchingSources).includes(account.email));
+ assert.ok(!JSON.stringify(result).includes(account.grant));
+ assert.equal(JSON.parse(own.db.prepare('SELECT data FROM accounts').get()!.data as string).contextEnabled,false);
+ account.contextEnabled=true;account.status='syncing';account.contextError='private failure details';
+ own.db.prepare('UPDATE accounts SET data=?').run(JSON.stringify(account));
+ const syncing=(await own.service.getOwnerLens()).matchingSources;
+ assert.equal(syncing.gmail.syncing,1);assert.equal(syncing.gmail.contextErrors,1);assert.equal(syncing.gmail.contextDisabled,0);
+ assert.ok(syncing.hints.some((hint:any)=>hint.code==='gmail_context_syncing'));
+ assert.ok(!JSON.stringify(syncing).includes('private failure'));
+});
+
+test('People onboarding does not treat absent Gmail as a required source or promise email evidence from sync counts',async t=>{
+ const own=await mailFixture();t.after(()=>own.db.close());own.db.prepare('DELETE FROM accounts').run();
+ const value=(await own.service.getOwnerLens()).matchingSources;
+ assert.equal(value.gmail.connected,0);assert.equal(value.gmail.contextDisabled,0);
+ assert.deepEqual(value.hints,[]);
+});
 test('People intelligence requires people read authority and strictly bounded owner-free inputs',async t=>{
  const f=fixture(t),read=await f.mint(),write=await f.mint(['people:write']);
  const requests:[string,unknown?][]=[['/lens'],['/matches',{}],['/search',{query:'Ada'}],['/connection',{from:'ada',to:'bo'}],['/helpers',{personId:'ada'}]];
@@ -155,16 +190,19 @@ test('People recommendations return audited website evidence and discard a succe
  f.stub.refreshOwnerLens=f.stub.refreshHelperContext=async()=>{throw Error('Matches must use already ingested evidence without a refresh');};
  const before=await f.request('/api/people-agent/matches',key.token,{});assert.equal(before.status,200);assert.equal((await before.json() as any).status,'no_evidence');
  f.stub.helperContext=async()=>[{personId:'bo',evidenceRef:'gmail-context:bo',sourceType:'gmail_body_derived',summary:passage,visibility:'private',observedAt:new Date().toISOString()}];
- let withdraw=false,generated=0,audited=0;
+ let withdraw=false,rename=false,generated=0,audited=0;
  f.env.TYPESAFE_API_KEY='test';f.env.AI={run:async(_model:any,input:any)=>{
   const state=JSON.parse(input.input[1].content);
   if(input.text.format.schema.properties.matches){generated++;assert.match(state.selected.brief,/clinic scheduling/);assert.equal(state.candidates[0].evidence[0].summary,passage);return {status:'completed',output_text:JSON.stringify({matches:[{candidate:'c0',reason:'You are building a clinic scheduling tool. PERSON_B has interviewed nurses about shift handoffs.',conversation:'Which nurse handoff assumptions should your scheduling tool test first?',anchorRefs:[],candidateRefs:['c0e0']}]})};}
   audited++;if(withdraw)f.setMemory({revision:'source-withdrawn',people:{}});
+  if(rename)f.setGraph({...f.getGraph(),nodes:f.getGraph().nodes.map((person:any)=>person.id==='bo'?{...person,name:'Changed identity'}:person)});
   return {status:'completed',output_text:JSON.stringify({sourceReadings:state.candidate.evidence.map((source:any)=>({sourceRef:source.ref,workSubject:'person_or_team',polarity:'affirmed',sentenceIds:[source.sentences[0].id],ownWork:source.sentences[0].text})),grounded:true,attributed:true,specific:true,reason:'The source supports a workflow discussion.'})};
  }};
  t.mock.method(globalThis,'fetch',jevServer(()=>scoreA(3)).fake);
  const response=await f.request('/api/people-agent/matches',key.token,{});assert.equal(response.status,200);const value:any=await response.json();assert.equal(value.status,'ready');assert.equal(value.checked,true);assert.equal(value.results.length,1);assert.equal(value.results[0].personId,'bo');assert.equal(value.results[0].evidence[0].summary,passage);assert.equal(generated,1);assert.equal(audited,1);
  withdraw=true;const stale=await f.request('/api/people-agent/matches',key.token,{});assert.equal(stale.status,409);assert.deepEqual(await stale.json(),{error:'person_context_conflict'});assert.equal(generated,2);assert.equal(audited,2);
+ withdraw=false;rename=true;
+ const changed=await f.request('/api/people-agent/matches',key.token,{});assert.equal(changed.status,409);assert.deepEqual(await changed.json(),{error:'person_context_conflict'});
 });
 
 test('People search discards a names-only shared person revoked after the final graph snapshot',async t=>{

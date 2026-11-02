@@ -10,11 +10,13 @@ export interface OwnerLensSuggestion {id:string;kind:OwnerLensKind;text:string;s
 export interface OwnerLensSource {id:string;text:string;observedAt:string;label:'Your sent email'|'Your note'|'Your Granola meeting'|'Meeting you attended';title?:string;url?:string|null;attribution?:'statement'|'meeting'}
 export interface OwnerLensRefreshJob {
  id:string;status:'queued'|'running'|'completed'|'failed'|'cancelled';requestedAt:string;startedAt?:string;finishedAt?:string;attempts:number;
+ /** Earliest eligible attempt, not a guarantee that a busy worker has started it. */
+ waitReason?:'cleanup'|'alarm';nextAttemptAt?:string;deadlineAt?:string;expiresAt?:string;
  error?:'deadline_exceeded'|'retry_exhausted'|'refresh_unavailable';
 }
-interface StoredRefreshJob extends OwnerLensRefreshJob {note?:string;noteDigest?:string;dueAt:number;leaseUntil?:number;expiresAt:number}
+interface StoredRefreshJob extends Omit<OwnerLensRefreshJob,'expiresAt'> {note?:string;noteDigest?:string;dueAt:number;leaseUntil?:number;expiresAt:number}
 const REFRESH_ATTEMPT_MS=12*60_000,REFRESH_EXPIRY_MS=30*60_000,REFRESH_ATTEMPTS=2;
-const activeJob=(job:OwnerLensRefreshJob|undefined)=>job?.status==='queued'||job?.status==='running';
+const activeJob=(job:Pick<OwnerLensRefreshJob,'status'>|undefined)=>job?.status==='queued'||job?.status==='running';
 export interface OwnerLensRefresh {
  state:'disabled'|'not_refreshed'|'no_sources'|'refresh_required'|'pending'|'ready'|'retry_required'|'unconfigured'|'cleanup_pending';
  lastRefresh:string|null;
@@ -85,11 +87,19 @@ export class OwnerLensStore {
  }
  /** A learning opt-in does not queue a projection. Derive legacy states without rewriting them. */
  private refreshStatus(state:State,configured:boolean):OwnerLensRefresh{
-  const job=state.refreshJob;const publicJob=job?{id:job.id,status:job.status,requestedAt:job.requestedAt,attempts:job.attempts,...(job.startedAt?{startedAt:job.startedAt}:{}),...(job.finishedAt?{finishedAt:job.finishedAt}:{}),...(job.error?{error:job.error}:{})}:undefined;
+  const job=state.refreshJob;
+  const eligibleAt=job?state.pendingDelete?Math.max(job.dueAt,state.nextCleanup??Date.now()):job.dueAt:undefined;
+  const publicJob:OwnerLensRefreshJob|undefined=job?{
+   id:job.id,status:job.status,requestedAt:job.requestedAt,attempts:job.attempts,expiresAt:new Date(job.expiresAt).toISOString(),
+   ...(job.status==='queued'?{waitReason:state.pendingDelete?'cleanup' as const:'alarm' as const,...(eligibleAt!<job.expiresAt?{nextAttemptAt:new Date(eligibleAt!).toISOString()}:{})}:{}),
+   ...(job.status==='running'&&job.leaseUntil?{deadlineAt:new Date(job.leaseUntil).toISOString()}:{}),
+   ...(job.startedAt?{startedAt:job.startedAt}:{}),...(job.finishedAt?{finishedAt:job.finishedAt}:{}),...(job.error?{error:job.error}:{})
+  }:undefined;
   const result=(status:OwnerLensRefresh['state'],nextAction:OwnerLensRefresh['nextAction']):OwnerLensRefresh=>({state:status,lastRefresh:state.lastRefresh??null,nextAction,...(publicJob?{job:publicJob}:{})});
   if(activeJob(job)&&state.enabled)return result('pending','poll');
   if(state.pendingDelete)return result('cleanup_pending','wait_for_cleanup');
   if(!state.enabled)return result('disabled','enable_learning');
+  if(job?.status==='failed')return result('retry_required','refresh');
   if(!configured)return result('unconfigured',null);
   if(state.status==='unavailable'||state.status==='invalid')return result('retry_required','refresh');
   if(state.status==='pending'&&(state.projectionRequested||state.pendingSnapshot))return result('pending','refresh');
@@ -119,6 +129,10 @@ export class OwnerLensStore {
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
   this.ctx.storage.sql.exec('DELETE FROM owner_lens_granola_retries WHERE observed<?',Date.now()-OWNER_LENS_WINDOW);
   if(keep.length!==state.sources.length){this.withdraw(state,keep);this.write(state);}
+  // A missed alarm must not make inspection or an explicit retry coalesce an expired job forever.
+  if(activeJob(state.refreshJob)&&state.refreshJob!.expiresAt<=Date.now()){
+   this.touch(state);state.status='unavailable';state.refreshJob!.status='failed';state.refreshJob!.error='deadline_exceeded';this.write(state);
+  }
   return state;
  }
  get(){return this.result(this.current());}
@@ -183,7 +197,7 @@ export class OwnerLensStore {
    const work=this.executeRefresh({revision:state.revision,note:job!.note},collect,job!.id);
    const result=await Promise.race([work,new Promise<null>(resolve=>{timer=setTimeout(()=>resolve(null),Math.max(1,job!.leaseUntil!-Date.now()));})]);
    if(result===null)finish('failed','deadline_exceeded');
-   else {const failed=!result.honcho.cleanupPending&&['unavailable','invalid'].includes(result.honcho.status);finish(failed?'failed':'completed',failed?'refresh_unavailable':undefined);}
+   else {const outcome=this.read(),failed=!outcome.pendingDelete&&['unavailable','invalid'].includes(outcome.status);finish(failed?'failed':'completed',failed?'refresh_unavailable':undefined);}
   }catch{finish('failed','refresh_unavailable');}
   finally{if(timer)clearTimeout(timer);}
   return true;

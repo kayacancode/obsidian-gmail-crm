@@ -1,6 +1,7 @@
 const FIELD_LABELS={focus:'Focused on',needs:'Looking for',offers:'Can help with'};
 const KIND_FIELDS={focus:'focus',need:'needs',offer:'offers'};
 const dateLabel=value=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'Date unavailable';};
+const scheduleLabel=value=>{const date=new Date(value);return value&&Number.isFinite(date.getTime())?date.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):null;};
 function granolaLink(value){
  try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&!url.port&&(url.hostname==='granola.ai'||url.hostname.endsWith('.granola.ai'))?url.href:null;}catch{return null;}
 }
@@ -60,10 +61,17 @@ export function mountOwnerLens({button,load,update,findMatches,getGraph,onExplor
   const count=(model?.suggestions||[]).filter(s=>KIND_FIELDS[s.kind]).length;
   if(model?.enabled===false&&value?.status==='unavailable')return 'Learning is off. Clearing learned context is still pending. Retry to finish clearing it.';
   const job=model?.refresh?.job;
-  if(job?.status==='queued')return 'Refresh queued. This panel will check for updates automatically.';
+  if(job?.status==='queued'){
+   const next=scheduleLabel(job.nextAttemptAt),expiry=scheduleLabel(job.expiresAt);
+   if(job.waitReason==='cleanup')return 'Refresh queued, waiting for earlier learned context to be cleared.'+(next?' Next cleanup check: '+next+'.':'')+(expiry?' Refresh expires '+expiry+'.':'')+' This panel will check automatically.';
+   return 'Refresh queued. Waiting for the background worker to start.'+(expiry?' Refresh expires '+expiry+'.':'')+' This panel will check for updates automatically.';
+  }
   if(job?.status==='running')return 'Refreshing your work context. You can close this panel while it runs.';
   if(job?.status==='cancelled')return 'Refresh cancelled because your lens or connected sources changed. Refresh again when you are ready.';
-  if(job?.status==='failed')return job.error==='deadline_exceeded'?'Refresh took too long. Your saved lens is unchanged. You can try again.':'Refresh could not finish. Your saved lens is unchanged. You can try again.';
+  if(job?.status==='failed'){
+   if(job.error==='deadline_exceeded'&&job.attempts===0)return value?.cleanupPending?'Refresh expired while earlier learned context was being cleared. Try again after cleanup finishes.':'Refresh expired before it started. Your saved lens is unchanged. Start a new refresh to try again.';
+   return job.error==='deadline_exceeded'?'Refresh took too long. Your saved lens is unchanged. You can try again.':'Refresh could not finish. Your saved lens is unchanged. You can try again.';
+  }
   if(model?.enabled===true&&value?.configured&&value.cleanupPending)return 'Updating stored context. Refresh again after cleanup finishes.';
   if(!value?.configured)return 'Honcho is not configured. You can still edit your lens and find people.';
   if(model?.refresh?.state==='no_sources')return 'No usable work sources found. Add a note about your work or connect a source, then refresh suggestions.';

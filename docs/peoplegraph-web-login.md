@@ -1,6 +1,6 @@
 # One People account, in your browser and terminal
 
-PeopleGraph 0.3.16 browser login creates one scoped People integration credential. The CLI saves it automatically and uses it for graph queries, your Lens, and private relationship context.
+PeopleGraph 0.3.17 browser login creates one scoped People integration credential. The CLI saves it automatically and uses it for graph queries, your Lens, and private relationship context.
 
 ```sh
 peoplegraph login
@@ -11,6 +11,8 @@ peoplegraph matches
 ```
 
 Login opens the website and prints an approval code. Check the displayed People account and permissions before approving. `login` requests `people:read`; `login --write` also requests `people:write` so an agent can save edits you request. `--scope sources:manage`, `sharing:manage`, `booking:manage`, and `integrations:manage` request additional permission groups explicitly. Repeat `--scope` for multiple groups. `login --no-browser` prints the URL for you to open. `login --url https://your-people-origin` selects another deployment.
+
+For source setup, use `peoplegraph login --write --scope sources:manage`, then check `status.data.credential.scopes` for `people:read`, `people:write`, and `sources:manage`. Login requires the granted scope set to exactly match the request; a missing or extra scope fails and the newly issued credential is revoked without replacing the saved key. Existing keys do not gain new scopes automatically.
 
 This authorizes the client, not a new Gmail inbox. Pending Lens suggestions do not become instructions automatically. Provider OAuth, source/calendar connection, and public booking visitor identity retain their own browser steps.
 
@@ -28,6 +30,8 @@ peoplegraph status
 Provide the key through stdin from a private file or secret manager, never in a command argument or chat. The client binds every stored credential to its origin and refuses redirects. `--url` selects only a key saved for that exact origin. Environment credentials remain supported; an explicit URL differing from `PEOPLEGRAPH_WEB_URL` cannot reuse `PEOPLEGRAPH_WEB_TOKEN`.
 
 `status` reports the installed CLI version, selected origin, configuration source, authenticated owner, credential scopes/expiry, and supported API operations. `status --offline` reports local metadata with authentication unverified. Neither command prints the key. `version`, `--version`, and `describe` always refer to the installed binary rather than a configured legacy daemon.
+
+A nonempty `PEOPLEGRAPH_WEB_TOKEN` takes precedence over the saved credential. Successful login reports the new saved `scopes`, plus `activeCredentialSource` and `savedCredentialActive`. If login or status reports `warnings[].code: "environment_credential_override"`, an environment token may still be selecting an older grant. To use the saved login, run `unset PEOPLEGRAPH_WEB_TOKEN PEOPLEGRAPH_WEB_URL`, then rerun live `peoplegraph status` and check its `credentialSource` and `credential.scopes`. Do not print either key. Offline status can report this warning but cannot verify server permissions.
 
 Credentials normally expire after 90 days and are independently revocable in **Accounts → Integrations**. `peoplegraph logout` revokes the selected saved credential and then removes that local profile. If the server cannot be reached, the profile remains for retry. Logging in again does not revoke older keys automatically.
 

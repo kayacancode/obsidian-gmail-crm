@@ -67,6 +67,7 @@ test('owner lens job queues without provider work, coalesces retries, and surviv
   const before=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
   const queued=await f.service.refreshOwnerLens({revision:before.revision,note:WORK});
   assert.equal(queued.refresh.job?.status,'queued');assert.equal(queued.refresh.nextAction,'poll');assert.equal(f.ai.calls.length,0);assert.equal(net.calls.length,0);assert.equal(typeof f.kv.get('alarm'),'number');
+  assert.equal(queued.refresh.job?.waitReason,'alarm');assert.equal(queued.refresh.job?.nextAttemptAt,new Date(f.kv.get('alarm') as number).toISOString());assert.ok(Date.parse(queued.refresh.job!.expiresAt!)>Date.now());assert.equal(queued.refresh.job?.deadlineAt,undefined);
   assert.equal(JSON.stringify(queued).includes(WORK),false,'queued raw notes are private job inputs');
   const repeat=await f.service.refreshOwnerLens({revision:before.revision});assert.equal(repeat.refresh.job?.id,queued.refresh.job?.id);
   const sameNote=await f.service.refreshOwnerLens({revision:before.revision,note:WORK});assert.equal(sameNote.refresh.job?.id,queued.refresh.job?.id);
@@ -111,6 +112,20 @@ test('owner lens job provider failure is terminal and does not retry on subseque
  }finally{globalThis.fetch=original;f.db.close();}
 });
 
+test('owner lens job failures remain failures when Honcho is unconfigured',async()=>{
+ for(const stage of ['note','collection']){
+  const f=fixture();let collections=0;
+  f.ai.run=async()=>{throw Error('ai_unavailable');};
+  try{
+   const state=await enabled(f.store);await f.store.queueRefresh({revision:state.revision,...(stage==='note'?{note:WORK}:{})});
+   await f.store.runRefreshJob(async()=>{collections++;return {failed:1,deferred:0};},async()=>{});
+   const failed=f.store.get();assert.equal(failed.honcho.status,'unconfigured');assert.equal(failed.refresh.job?.status,'failed');assert.equal(failed.refresh.job?.error,'refresh_unavailable');assert.equal(failed.refresh.nextAction,'refresh');
+   assert.equal(collections,stage==='collection'?1:0);assert.equal(await f.store.runRefreshJob(async()=>{collections++;},async()=>{}),false);assert.equal(collections,stage==='collection'?1:0);
+   assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  }finally{f.db.close();}
+ }
+});
+
 test('owner lens job frequent GET polls cannot postpone the queued alarm',async()=>{
  const f=fixture(),original=Date.now;let now=original();Date.now=()=>now;
  try{
@@ -131,6 +146,7 @@ test('owner lens job retains an unextracted note until preexisting cleanup finis
   state=await f.service.setOwnerLensEnabled({revision:state.revision,enabled:true});const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});
   const extractions=f.ai.calls.length;await f.service.alarm();
   state=await f.service.getOwnerLens();assert.equal(state.refresh.job?.id,queued.refresh.job?.id);assert.equal(state.refresh.job?.status,'queued');assert.equal(state.refresh.job?.attempts,0);assert.equal(f.ai.calls.length,extractions);
+  assert.equal(state.refresh.job?.waitReason,'cleanup');assert.equal(state.refresh.job?.nextAttemptAt,state.honcho.retryAt);assert.ok(Date.parse(state.refresh.job!.expiresAt!)>Date.now());
   assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,WORK);
   assert.equal(f.kv.get('alarm'),Date.parse(state.honcho.retryAt!),'queued work follows cleanup backoff instead of a busy alarm loop');
   holdCleanup=false;now=Date.parse(state.honcho.retryAt!)+1;await f.service.alarm();assert.equal((await f.service.getOwnerLens()).honcho.cleanupPending,false);
@@ -140,16 +156,17 @@ test('owner lens job retains an unextracted note until preexisting cleanup finis
 });
 
 test('owner lens job running projection remains readable and stale retries never restart it',async()=>{
- const f=fixture(true);let entered!:()=>void,release!:()=>void;
+ const f=fixture(true);let entered!:()=>void,release!:()=>void,running:Promise<void>|undefined;
  const ready=new Promise<void>(resolve=>entered=resolve),held=new Promise<void>(resolve=>release=resolve),net=honchoNetwork({chat:async()=>{entered();await held;}});
  try{
   const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
-  const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK}),running=f.service.alarm();await ready;
+  const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});running=f.service.alarm();await ready;
   const read=await f.service.getOwnerLens();assert.equal(read.refresh.job?.status,'running');assert.equal(read.refresh.nextAction,'poll');
+  assert.equal(read.refresh.job?.waitReason,undefined);assert.equal(read.refresh.job?.nextAttemptAt,undefined);assert.ok(Date.parse(read.refresh.job!.deadlineAt!)>Date.now());
   assert.equal((await f.service.refreshOwnerLens({revision:state.revision})).refresh.job?.id,queued.refresh.job?.id);
   assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
   release();await running;assert.equal((await f.service.getOwnerLens()).refresh.job?.status,'completed');assert.equal(net.calls.filter(call=>call.path.endsWith('/chat')).length,1);
- }finally{release();net.restore();f.db.close();}
+ }finally{release();await running;net.restore();f.db.close();}
 });
 
 test('owner lens job interrupted leases resume once and stop after the attempt bound',async()=>{
@@ -165,6 +182,20 @@ test('owner lens job interrupted leases resume once and stop after the attempt b
    assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
   }finally{net.restore();f.db.close();}
  }
+});
+
+test('owner lens inspection expires an unstarted job without provider calls and permits a fresh request',async()=>{
+ const f=fixture(true),originalNow=Date.now,originalFetch=globalThis.fetch;let now=originalNow(),providerCalls=0;Date.now=()=>now;
+ globalThis.fetch=async()=>{providerCalls++;throw Error('inspection must not call a provider');};
+ try{
+  const state=await f.service.setOwnerLensEnabled({revision:(await f.service.getOwnerLens()).revision,enabled:true});
+  const queued=await f.service.refreshOwnerLens({revision:state.revision,note:WORK});
+  now+=30*60_000+1;
+  const expired=await f.service.getOwnerLens();assert.equal(expired.refresh.job?.id,queued.refresh.job?.id);assert.equal(expired.refresh.job?.status,'failed');assert.equal(expired.refresh.job?.error,'deadline_exceeded');assert.equal(expired.refresh.job?.attempts,0);assert.equal(expired.refresh.nextAction,'refresh');
+  assert.equal(expired.refresh.job?.waitReason,undefined);assert.equal(expired.refresh.job?.nextAttemptAt,undefined);assert.equal(f.ai.calls.length,0);assert.equal(providerCalls,0);
+  assert.equal(JSON.parse(f.db.prepare('SELECT data FROM owner_lens_state').get()!.data as string).refreshJob.note,undefined);
+  const retry=await f.service.refreshOwnerLens({revision:expired.revision,note:WORK});assert.equal(retry.refresh.job?.status,'queued');assert.notEqual(retry.refresh.job?.id,queued.refresh.job?.id);assert.equal(providerCalls,0);
+ }finally{Date.now=originalNow;globalThis.fetch=originalFetch;f.db.close();}
 });
 
 test('owner lens job deadline rejects a held late provider result without restoring suggestions',async(t)=>{

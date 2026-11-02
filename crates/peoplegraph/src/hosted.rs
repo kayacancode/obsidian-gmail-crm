@@ -202,6 +202,11 @@ pub(crate) fn status(args: &StatusArgs, start: Instant) -> Response {
     };
     data["cliVersion"] = json!(crate::COMMAND_VERSION);
     data["authenticated"] = Value::Null;
+    if data["configured"] == true {
+        if let Some(warning) = config::environment_override_warning() {
+            data["warnings"] = json!([warning]);
+        }
+    }
     if let Ok(path) = crate::web_profile::profile_path() {
         match crate::web_profile::load_profile(&path) {
             Ok(Some(p)) => {

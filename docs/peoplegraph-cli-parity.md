@@ -1,6 +1,6 @@
 # PeopleGraph CLI and web parity
 
-PeopleGraph 0.3.16 gives an agent the same owner operations as the People website. Lens, source setup, and relationship memory have dedicated commands. Other owner operations use `peoplegraph api`, which calls a bounded registry of the existing web handlers. The server verifies the owner and permissions before dispatching; the request cannot choose a different owner.
+PeopleGraph 0.3.17 gives an agent the same owner operations as the People website. Lens, source setup, and relationship memory have dedicated commands. Other owner operations use `peoplegraph api`, which calls a bounded registry of the existing web handlers. The server verifies the owner and permissions before dispatching; the request cannot choose a different owner.
 
 ## One-time setup
 
@@ -94,6 +94,8 @@ These commands use the same revision and source controls as the web app. Refresh
 
 ## Source setup
 
+Verify live `status` after login. The CLI rejects missing or extra granted scopes; `environment_credential_override` instead warns that an environment token may still be overriding a newly saved key. Unset `PEOPLEGRAPH_WEB_TOKEN` and `PEOPLEGRAPH_WEB_URL` to select the saved login, then check its live permissions.
+
 Request `sources:manage` with `peoplegraph login --write --scope sources:manage`. Source operations are available through the same credential; `--write` alone deliberately does not grant them.
 
 ```sh
@@ -109,7 +111,7 @@ Granola connection uses a bounded key from stdin and never prints it. Gmail conn
 
 Connecting a source does not enable Lens learning. For authorized Granola learning use `lens learning on`, `lens granola on`, and `lens refresh`. Enabling learning alone queues no Honcho projection: idle without an active job will not finish by waiting. `lens inspect` exposes `refresh.job`, `refresh.state`, `refresh.nextAction`, and the last explicit request time. `honcho.lastSync` is set only by a completed projection. With no active job and no usable owner evidence, add an owner note or connect/sync a permitted source before requesting another refresh.
 
-Lens `sources` describe extracted owner-work evidence, not connected accounts. Enabling Gmail context starts its own recent-incoming-mail backfill; Lens refresh is not required. Matches are independent of Honcho: confirmed Lens fields guide ranking of eligible candidate evidence. `no_evidence` / `considered: 0` means no eligible candidate evidence, even if the Lens itself is populated. Inspect source/context ingestion instead of repeatedly refreshing the Lens. Imported metadata and contact scores do not substitute for substantive conversation, meeting, or saved person context. See the [source setup walkthrough](people-agent-onboarding.md#connect-and-sync-sources-from-the-cli).
+Lens `sources` describe extracted owner-work evidence, not connected accounts. Enabling Gmail context starts its own recent-incoming-mail backfill; Lens refresh is not required. Matches are independent of Honcho: confirmed Lens fields guide ranking of eligible candidate evidence. `no_evidence` / `considered: 0` means no eligible candidate evidence, even if the Lens itself is populated. Inspect source/context ingestion instead of repeatedly refreshing the Lens. Imported metadata and contact scores do not substitute for substantive conversation, meeting, or saved person context. Matches and `lens inspect` include `matchingSources` with aggregate Gmail account counts and consent-aware hints for disabled context, syncing, and context errors. `no_evidence` includes `guidance`. Result `name` comes only from the authorized graph label for its `personId`; the ranking layer adds no emails. Ranking considers at most 60 candidates, shortlists at most 6, and returns up to 3 verified suggestions; audits may reduce this further. `available` / `considered` describe eligible and first-pass candidate counts, not promised recommendation totals. See the [source setup walkthrough](people-agent-onboarding.md#connect-and-sync-sources-from-the-cli).
 
 ## Other web operations
 
@@ -146,4 +148,4 @@ Google account and Calendar consent still require Google's browser flow. Their c
 
 `peoplegraph --version`, `peoplegraph version` and `peoplegraph describe` now report the installed binary's version even if `PEOPLEGRAPH_HOST` points at an older daemon. Release CI checks both the tag/package versions and native release executable output.
 
-Deployments upgrading from before 0.3.15 require `apps/people-graph/migrations/20261030_cli_scopes.sql`. It adds the nullable requested-scopes field to the existing device challenge table, preserving older read-only clients. Existing People integration keys keep their original permissions. The 0.3.16 durable Lens job uses the existing owner store and needs no additional D1 migration. No plugin database migration or new Obsidian plugin release is required for these hosted CLI features.
+Deployments upgrading from before 0.3.15 require `apps/people-graph/migrations/20261030_cli_scopes.sql`. It adds the nullable requested-scopes field to the existing device challenge table, preserving older read-only clients. Existing People integration keys keep their original permissions. The durable Lens job introduced in 0.3.16 uses the existing owner store and needs no additional D1 migration. No plugin database migration or new Obsidian plugin release is required for these hosted CLI features.

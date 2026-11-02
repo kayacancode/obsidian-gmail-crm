@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="kayacancode/obsidian-gmail-crm"
-VERSION="0.3.16"
+VERSION="0.3.17"
 INSTALL_DIR="$HOME/.local/bin"
 SKILL_DIRS=()
 GUIDES=(people-agent-onboarding.md people-memory-integration.md peoplegraph-web-login.md)
@@ -13,7 +13,7 @@ usage() {
 Install a versioned PeopleGraph binary and optionally its agent skill.
 
 Usage: bash install-peoplegraph.sh [options]
-  --version X.Y.Z       Release version (default: 0.3.16; requires SHA256SUMS)
+  --version X.Y.Z       Release version (default: 0.3.17; requires SHA256SUMS)
   --bin-dir PATH        Binary directory (default: ~/.local/bin)
   --skill codex         Install skill in ${CODEX_HOME:-~/.codex}/skills/peoplegraph
   --skill claude        Install skill in ~/.claude/skills/peoplegraph

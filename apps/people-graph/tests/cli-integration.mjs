@@ -26,6 +26,8 @@ try{
  const learning=await command(['lens','learning','on']).done;assert.equal(learning.code,0,learning.out);const inspected=JSON.parse((await command(['lens','inspect']).done).out);assert.equal(inspected.data.honcho.lastSync,null);assert.notEqual(inspected.data.refresh.state,'pending');
  const refresh=await command(['lens','refresh','--revision',inspected.data.revision]).done;assert.equal(refresh.code,0,refresh.out);const queued=JSON.parse(refresh.out).data;
  assert.equal(queued.refresh.job.status,'queued');assert.equal(queued.refresh.nextAction,'poll');assert.ok(queued.refresh.job.id);
+ assert.equal(queued.refresh.job.waitReason,'alarm');assert.ok(Date.parse(queued.refresh.job.expiresAt)>Date.parse(queued.refresh.job.nextAttemptAt));
+ assert.deepEqual(queued.matchingSources,{gmail:{connected:0,contextEnabled:0,contextDisabled:0,syncing:0,contextErrors:0},hints:[]});
  const duplicate=await command(['lens','refresh','--revision',inspected.data.revision]).done;assert.equal(duplicate.code,0,duplicate.out);assert.equal(JSON.parse(duplicate.out).data.refresh.job.id,queued.refresh.job.id,'active stale retry coalesces');
  let completed;
  for(let i=0;i<100;i++){const poll=await command(['lens','inspect']).done;assert.equal(poll.code,0,poll.out);completed=JSON.parse(poll.out).data;assert.equal(completed.refresh.job.id,queued.refresh.job.id);if(!['queued','running'].includes(completed.refresh.job.status))break;await new Promise(r=>setTimeout(r,100));}

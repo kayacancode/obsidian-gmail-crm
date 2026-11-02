@@ -1,4 +1,4 @@
-export type PeopleFailurePhase='lens_read'|'memory_read'|'graph_read'|'helper_context_read'|'ranking'|'lens_recheck'|'memory_recheck'|'authenticate'|'request'|'mcp'|'matches'|'lookup'|'capture'|'save'|'lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph';
+export type PeopleFailurePhase='lens_read'|'memory_read'|'graph_read'|'helper_context_read'|'ranking'|'lens_recheck'|'graph_recheck'|'memory_recheck'|'authenticate'|'request'|'mcp'|'matches'|'lookup'|'capture'|'save'|'lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph';
 type PeopleFailureEvent='people_matches_failed'|'people_agent_failed'|'people_machine_failed';
 
 export function peopleFailureKind(error:unknown){

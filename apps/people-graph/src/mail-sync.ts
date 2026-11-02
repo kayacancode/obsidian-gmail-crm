@@ -235,10 +235,22 @@ export class MailSync extends DurableObject<MailEnv>{
   return save({status:'not_found'});
  }
  private ownerLens(){return this.ownerLensStore??=new OwnerLensStore(this.ctx,this.env,()=>this.ctx.storage.get<string>('owner'));}
+ /** Minimal read-only matching diagnostics; source management still requires its own scope. */
+ private matchingSources(){
+  const connected=this.rows().filter(account=>['connected','syncing'].includes(account.status));
+  const enabled=connected.filter(account=>account.contextEnabled);
+  const gmail={connected:connected.length,contextEnabled:enabled.length,contextDisabled:connected.length-enabled.length,syncing:enabled.filter(account=>account.status==='syncing').length,contextErrors:enabled.filter(account=>!!account.contextError).length};
+  const hints:Array<{code:string;message:string;command?:string}>=[];
+  if(gmail.contextDisabled)hints.push({code:'gmail_context_disabled',message:`Gmail content is off for ${gmail.contextDisabled} connected account(s). Their email content cannot feed matches; calendar, photo and metadata sync counts do not establish conversation evidence. With the owner's permission and sources:manage scope, enable context for each intended account.`,command:'peoplegraph sources context gmail --email <account-email> on'});
+  if(gmail.syncing)hints.push({code:'gmail_context_syncing',message:'A source sync is queued or in progress for a context-enabled Gmail account. This can include calendar work or retry waits before content extraction. Matches use eligible evidence already ingested; sync completion does not guarantee a useful match.',command:'peoplegraph sources status'});
+  if(gmail.contextErrors)hints.push({code:'gmail_context_errors',message:'Some Gmail content could not be analysed. Inspect source status with sources:manage; the next source sync retries extraction.',command:'peoplegraph sources status'});
+  return {gmail,hints};
+ }
  private ownerLensResult(value:OwnerLens){
-  if(!value.enabled||!value.granolaEnabled)return value;
+  const matchingSources=this.matchingSources();
+  if(!value.enabled||!value.granolaEnabled)return {...value,matchingSources};
   const versions=this.granola().ownerLensVersions(),checked=this.ctx.storage.sql.exec<{id:string;version:string}>('SELECT id,version FROM owner_lens_granola').toArray().filter(row=>versions.get(row.id)===row.version).length;
-  return {...value,granolaProgress:{available:versions.size,checked,excerpts:value.sources.filter(source=>source.id.startsWith('owner-granola:')).length}};
+  return {...value,matchingSources,granolaProgress:{available:versions.size,checked,excerpts:value.sources.filter(source=>source.id.startsWith('owner-granola:')).length}};
  }
  async getOwnerLens(){await this.ownerLens().reconcileGranola(this.granola().ownerLensVersions());const value=this.ownerLens().get();await this.scheduleNextAlarm();return this.ownerLensResult(value);}
  async updateOwnerLens(input:{revision:string;fields:OwnerLensFields}){const value=this.ownerLens().update(input);await this.scheduleNextAlarm();return this.ownerLensResult(value);}
