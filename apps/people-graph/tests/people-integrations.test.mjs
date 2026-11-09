@@ -51,10 +51,15 @@ test('agent handoff uses this deployment and never copies the visible key or acc
  const {doc,root,create}=await fixture();await create();
  await control(root,'Copy instructions for your agent').onclick();
  assert.ok(doc.copied.includes('https://people.test/agent-setup.md'));
+ assert.ok(doc.copied.includes('https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md'));
+ assert.ok(doc.copied.includes('People server: https://people.test'));
+ assert.ok(doc.copied.includes('--url "https://people.test"'));
+ assert.ok(doc.copied.includes('terminal'));
  assert.ok(!doc.copied.includes('people_fake_test_key'));
  assert.ok(!doc.copied.includes('owner@example.test'));
  assert.ok(!doc.copied.includes('?tab='));
  assert.ok(descendants(root).some(node=>node.tag==='a'&&node.href==='https://people.test/agent-setup.md'));
+ assert.ok(descendants(root).some(node=>node.tag==='a'&&node.textContent==='GitHub setup guide ↗'&&node.href.startsWith('https://raw.githubusercontent.com/')));
  assert.equal(control(root,'New API key').value,'people_fake_test_key');
 });
 

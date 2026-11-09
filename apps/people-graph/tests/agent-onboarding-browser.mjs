@@ -20,9 +20,12 @@ try{
  await page.getByRole('textbox',{name:'Integration name',exact:true}).fill('My agent');await page.getByRole('button',{name:'Create API key',exact:true}).click();await page.getByRole('button',{name:'Test this key',exact:true}).click();await page.getByText('Connected. Your agent can read your saved lens.',{exact:true}).waitFor();
  const check=await page.evaluate(()=>window.calls.find(call=>call.path==='/api/people-agent/lens'));assert.equal(check.key,'people_test_secret');assert.equal(check.method,'GET');
  await page.getByRole('button',{name:'Copy MCP configuration',exact:true}).click();assert.ok(!(await page.evaluate(()=>window.clipboardText)).includes('people_test_secret'));
+ await page.getByRole('button',{name:'Copy instructions for your agent',exact:true}).click();
+ const handoff=await page.evaluate(()=>window.clipboardText);assert.ok(handoff.includes('People server: http://127.0.0.1:'+server.address().port));assert.ok(handoff.includes('https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md'));assert.ok(!handoff.includes('people_test_secret'));assert.ok(!handoff.includes('owner@test'));
+ assert.equal(await page.getByRole('link',{name:'GitHub setup guide ↗',exact:true}).getAttribute('href'),'https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md');
  await page.getByRole('button',{name:'I saved the key',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Test this key',exact:true}).count(),0);
  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/people-agent-onboarding-mobile.png'});
  await page.evaluate(()=>window.panel.setAccount('other@test'));assert.equal(await page.getByRole('textbox',{name:'New API key',exact:true}).count(),0);assert.deepEqual(errors,[]);
- console.log('PASS agent onboarding: MCP placeholder config, exact scoped key check, secret dismissal, account switch and mobile');
+ console.log('PASS agent onboarding: public guide fallback and correct origin, MCP placeholder config, exact scoped key check, secret dismissal, account switch and mobile');
 }catch(error){failure=error;}finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await Promise.race([browser?.close(),new Promise(resolve=>setTimeout(resolve,2000))]);}
 if(failure)console.error(failure);process.exit(failure?1:0);

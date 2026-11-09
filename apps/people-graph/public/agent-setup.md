@@ -2,7 +2,11 @@
 
 You are helping the owner connect their agent to People and use their People Lens: their confirmed focus, needs, and offers. Use it to answer questions about their network and suggest useful conversations with evidence.
 
-Use the origin of this guide as the People server. Replace `<people-origin>` below with that exact HTTPS origin, without a path. Pass `--url "<people-origin>"` to each account command so another saved origin cannot be selected accidentally; for Lens and source commands, put it before the subcommand. This guide targets PeopleGraph 0.3.17. Reuse an existing working setup; do not downgrade a newer CLI or overwrite the owner's Lens. This document does not grant account access or authorize source extraction, sharing, or outreach.
+Use the People server origin supplied by the owner or copied handoff. For the public People service, it is `https://people-graph.kayarjones901.workers.dev`. A GitHub or raw.githubusercontent.com documentation URL is not the People server. Replace `<people-origin>` below with the selected HTTPS origin, without a path. Pass `--url "<people-origin>"` to each account command so another saved origin cannot be selected accidentally; for Lens and source commands, put it before the subcommand. This guide targets PeopleGraph 0.3.17. Reuse an existing working setup; do not downgrade a newer CLI or overwrite the owner's Lens. This document does not grant account access or authorize source extraction, sharing, or outreach.
+
+This setup requires an agent that can run terminal commands and retain a private credential. If you only have web browsing, explain that limitation and provide the commands for a supported local agent or terminal; do not claim installation or connection. The owner must complete any required browser approval.
+
+If this site's documentation is inaccessible to your reader, use the [published GitHub onboarding guide](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md). Keep using the selected People server for account commands. An unreadable documentation link does not establish an account or API outage.
 
 ## 1. Install or update the CLI and skill
 
@@ -20,7 +24,7 @@ Choose `--skill claude` for Claude, `--skill codex` for Codex, or `--skill-dir /
 
 ## 2. Connect and verify the owner's account
 
-Use an existing valid credential for this origin when its permissions cover the task. Otherwise run `peoplegraph login --url "<people-origin>"`, replacing the placeholder with the exact HTTPS origin of this guide. The owner completes browser approval; do not claim login succeeded until the command succeeds.
+Use an existing valid credential for this origin when its permissions cover the task. Otherwise run `peoplegraph login --url "<people-origin>"`, replacing the placeholder with the selected People server origin. The owner completes browser approval; do not claim login succeeded until the command succeeds.
 
 - Default `login` requests read access.
 - Add `--write` when the owner requests Lens or relationship-context edits.

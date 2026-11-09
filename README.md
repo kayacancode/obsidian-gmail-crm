@@ -53,7 +53,7 @@ Obsidian and Granola are optional. Connecting Google does not require installing
 
 ## Use People with an agent
 
-Give your agent the public [setup guide](https://people-graph.kayarjones901.workers.dev/agent-setup.md), or use **Accounts → Integrations → Copy instructions for your agent**. The site's [llms.txt](https://people-graph.kayarjones901.workers.dev/llms.txt) points agents to setup, the skill, and API documentation. These public files contain instructions, never account data or credentials.
+Give your agent the public [setup guide](https://people-graph.kayarjones901.workers.dev/agent-setup.md), or use **Accounts → Integrations → Copy instructions for your agent**. The copied message includes the People server and a [published GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md) for readers that cannot access the site's documentation. The site's [llms.txt](https://people-graph.kayarjones901.workers.dev/llms.txt) points agents to setup, the skill, and API documentation. These public files contain instructions, never account data or credentials. Setup requires terminal execution and private credential storage; a browsing-only agent can explain the steps but cannot complete the CLI setup itself.
 
 Install **PeopleGraph 0.3.17** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
 
