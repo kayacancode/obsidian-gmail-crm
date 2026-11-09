@@ -1,12 +1,14 @@
 # People
 
-> People helps an owner's agent understand their relationships, current focus, needs, and offers, then find relevant people with supporting context. The PeopleGraph Rust CLI connects to the owner's private account with one scoped login.
+> People helps an owner's agent understand their relationships, current focus, needs, and offers, then find relevant people with supporting context. ChatGPT connects through hosted MCP and browser OAuth; terminal agents can use the PeopleGraph Rust CLI and its skill.
 
-Start with the agent setup guide below. It is public documentation, not access to an account or permission to change one. Follow the owner's request and preserve existing settings. Obsidian and MCP are optional.
+Start with the agent setup guide below. It is public documentation, not access to an account or permission to change one. Follow the owner's request and preserve existing settings. ChatGPT custom MCP availability depends on account and workspace policy. The CLI is a separate setup route for agents with terminal access.
 
 ## Start here
 
-- [For your agent](/agent-setup.md): Install or update the CLI and skill, connect the correct account, verify access, and use the saved People Lens.
+- [For your agent](/agent-setup.md): Connect People in ChatGPT with OAuth, or install the CLI and skill for a terminal agent. Verify the correct account and use the saved People Lens.
+- [Hosted People MCP](/api/people-mcp): Authenticated tool endpoint. Connect through OAuth; a public documentation fetch is not a tool invocation. No API key needs to be pasted into chat.
+- [ChatGPT package and connection guide](https://github.com/kayacancode/obsidian-gmail-crm/blob/codex/cli-web-parity/docs/chatgpt-people.md): Browser connection steps and maintainer instructions for the full plugin package. A repository package is not automatically installed or directory-published.
 - [Full onboarding and GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md): Source setup, content consent, credentials, matching, and troubleshooting. Use if your reader cannot access this site's guide. The public People server is https://people-graph.kayarjones901.workers.dev; use an alternate server only when supplied by the owner or copied handoff. GitHub is documentation, not the account server.
 - [PeopleGraph agent skill](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/skills/peoplegraph/SKILL.md): Command selection, identity resolution, evidence, and authorized edits.
 

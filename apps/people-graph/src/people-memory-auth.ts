@@ -42,8 +42,24 @@ export async function createPeopleMemoryCredential(db:D1Database,owner:string,in
  await db.prepare('INSERT INTO people_memory_credentials(id,owner,name,token_hash,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').bind(result.id,owner,result.name,tokenHash,JSON.stringify(result.scopes),result.createdAt,result.expiresAt).run();
  return {token,credential:result};
 }
+/** An OAuth approval is visible and revocable like a key, but never exposes a key or outlives its grant. */
+export async function createPeopleMemoryOAuthGrant(db:D1Database,owner:string,name:string,allowed:PeopleMemoryScope[],lifetimeSeconds:3600|2592000){
+ const {credential:result,tokenHash}=await preparePeopleMemoryCredential(db,owner,{name,scopes:allowed});
+ result.expiresAt=result.createdAt+lifetimeSeconds*1000;
+ await db.prepare('INSERT INTO people_memory_credentials(id,owner,name,token_hash,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?)').bind(result.id,owner,result.name,tokenHash,JSON.stringify(result.scopes),result.createdAt,result.expiresAt).run();
+ return result;
+}
 export async function listPeopleMemoryCredentials(db:D1Database,owner:string){await initialize(db);const rows=await db.prepare('SELECT id,owner,name,scopes,created_at,expires_at,revoked_at,last_used_at FROM people_memory_credentials WHERE owner=? ORDER BY created_at DESC').bind(owner).all<CredentialRow>();return rows.results.map(credential);}
 export async function revokePeopleMemoryCredential(db:D1Database,owner:string,id:string){await initialize(db);const row=await db.prepare('UPDATE people_memory_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND owner=? RETURNING id').bind(Date.now(),id,owner).first();if(!row)throw Error('not_found');}
+/** OAuth grants retain the same owner-visible revocation fence as integration keys. */
+export async function authenticatePeopleMemoryGrant(db:D1Database,owner:string,id:string):Promise<PeopleMemoryPrincipal>{
+ await initialize(db);
+ const now=Date.now();
+ const row=await db.prepare('UPDATE people_memory_credentials SET last_used_at=? WHERE id=? AND owner=? AND revoked_at IS NULL AND expires_at>? RETURNING id,owner,name,scopes,created_at,expires_at,revoked_at,last_used_at').bind(now,id,owner,now).first<CredentialRow>();
+ if(!row)throw Error('people_memory_unauthorized');
+ let allowed:PeopleMemoryScope[];try{allowed=scopes(JSON.parse(row.scopes));}catch{throw Error('people_memory_unauthorized');}
+ return {owner:row.owner,credentialId:row.id,scopes:allowed,expiresAt:row.expires_at,name:row.name};
+}
 /** This credential cannot authorize browser sessions or graph pushes. Explicit grants govern machine adapters. */
 export async function authenticatePeopleMemory(request:Request,db:D1Database):Promise<PeopleMemoryPrincipal>{
  const token=request.headers.get('authorization')?.match(/^Bearer (people_[A-Za-z0-9_-]{43})$/i)?.[1];if(!token)throw Error('people_memory_unauthorized');

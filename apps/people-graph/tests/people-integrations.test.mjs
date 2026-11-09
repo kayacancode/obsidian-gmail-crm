@@ -63,6 +63,20 @@ test('agent handoff uses this deployment and never copies the visible key or acc
  assert.equal(control(root,'New API key').value,'people_fake_test_key');
 });
 
+test('ChatGPT setup copies only this deployment’s public MCP address and leads with browser sign-in',async()=>{
+ const {doc,root,create}=await fixture();await create();
+ const headings=descendants(root).filter(node=>node.tag==='h3').map(node=>node.textContent);
+ assert.ok(headings.indexOf('Use People in ChatGPT')<headings.indexOf('For your terminal agent'));
+ await control(root,'Copy ChatGPT server URL').onclick();
+ assert.equal(doc.copied,'https://people.test/api/people-mcp');
+ assert.ok(!doc.copied.includes('people_fake_test_key'));
+ assert.ok(!doc.copied.includes('owner@example.test'));
+ assert.ok(descendants(root).some(node=>node.textContent.includes('OAuth')));
+ assert.ok(descendants(root).some(node=>node.textContent.includes('Select People')));
+ const cli=descendants(root).find(node=>node.tag==='details'&&node.children.some(child=>child.textContent==='Use the Rust CLI'));
+ assert.notEqual(cli.open,true,'terminal setup should not dominate the ChatGPT path');
+});
+
 test('leaving integrations clears the one-time key even when the panel is reopened',async()=>{
  const {root,panel,create}=await fixture();await create();panel.suspend();panel.refresh();
  await new Promise(resolve=>setImmediate(resolve));assert.equal(control(root,'New API key'),undefined);

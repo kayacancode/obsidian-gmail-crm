@@ -13,8 +13,9 @@
 		// Graph viewer UI. Served for any non-/api route.
 		"directory": "./public",
 		"binding": "ASSETS",
-		"run_worker_first": ["/api/*", "/booking", "/book/*"]
+		"run_worker_first": ["/api/*", "/booking", "/book/*", "/oauth/*", "/.well-known/*"]
 	},
+	"kv_namespaces": [{"binding": "OAUTH_KV", "id": "eaa76a6d082146d7bad0b3dc9e40cd64"}],
 	"d1_databases": [
 		{
 			"binding": "DB",

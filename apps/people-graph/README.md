@@ -33,9 +33,10 @@ Run the following from `apps/people-graph/`. You need Node.js with `node:sqlite`
 npm ci
 npx wrangler login
 npx wrangler d1 create people-graph
+npx wrangler kv namespace create people-graph-oauth --binding OAUTH_KV
 ```
 
-Replace the D1 `database_id` in `wrangler.jsonc` with the returned ID. If you use a different database name, update the config and database commands accordingly.
+Replace the D1 `database_id` and the `OAUTH_KV` namespace ID in `wrangler.jsonc` with your returned IDs. Give People its own OAuth namespace. If you use a different database name, update the config and database commands accordingly.
 
 5. Initialize the database and configure secrets:
 
@@ -57,6 +58,8 @@ npm run deploy
 ```
 
 Keep the configured `MAIL` Durable Object binding, SQLite migration, `DB` binding, and `AI` binding. Then open your deployment, sign in, and complete a real Google connection and import. OAuth access and publication/verification requirements are deployment-specific and cannot be validated by fixture tests.
+
+The ChatGPT connection uses `OAUTH_KV` for the maintained OAuth provider and D1 for owner consent and revocation checks. Keep `/oauth/*` and `/.well-known/*` in `assets.run_worker_first` alongside `/api/*`. Discovery, registration, token exchange and PKCE-protected browser approval serve the existing `/api/people-mcp` resource. Only `people:read`, optional `people:write`, and optional `offline_access` are supported. Revoke a connection under Accounts → Integrations. Existing CLI/integration keys continue to work. See [ChatGPT setup and package](../../docs/chatgpt-people.md); a package in this repository is not a public directory listing.
 
 For local development, initialize local D1 with `npm run db:init`, configure local secret values in an untracked `.dev.vars`, and run `npm run dev`. Register the local origin and callback with your development OAuth client and set `APP_ORIGIN` to the matching local origin for that run.
 

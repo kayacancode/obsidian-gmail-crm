@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {readFile,mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const dir=await mkdtemp(join(tmpdir(),'people-oauth-browser-')),cleanup=[];let browser;
+try{
+ await build({entryPoints:['tests/people-oauth-fixture.ts'],alias:{'cloudflare:workers':'./tests/worker-stub.ts'},outfile:join(dir,'fixture.mjs'),bundle:true,platform:'node',format:'esm',banner:{js:"import {createRequire} from 'node:module';const require=createRequire(import.meta.url);"}});
+ const {fixture,origin,resource,redirect,verifier}=await import(pathToFileURL(join(dir,'fixture.mjs')).href);
+ const f=await fixture({after(fn){cleanup.push(fn);}}),client=await f.register();
+ browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
+ const context=await browser.newContext({viewport:{width:1200,height:1000}});
+ const session=await f.session();await context.addCookies([{name:'__Host-people-session',value:session.split('=')[1],domain:'people.test',path:'/',secure:true,httpOnly:true,sameSite:'Lax'}]);
+ const errors=[];const page=await context.newPage();page.setDefaultTimeout(5000);page.on('console',msg=>{if(msg.type()==='error')console.error(msg.text());});page.on('pageerror',error=>errors.push(error.message));
+ await context.route('**/*',async route=>{
+  const request=route.request(),url=new URL(request.url());
+  if(url.origin===new URL(redirect).origin)return route.fulfill({contentType:'text/html',body:'<h1>Returned to the app</h1>'});
+  assert.equal(url.origin,origin,'No external network access in the consent test');
+  if(['/oauth-consent.mjs','/oauth-consent.css'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.css')?'text/css':'text/javascript',body:await readFile('public'+url.pathname,'utf8')});
+  const response=await f.send(url.pathname+url.search,{method:request.method(),headers:await request.allHeaders(),...(request.postData()?{body:request.postData()}:{} )});
+  if(response.status>=400)console.error('Worker response',request.method(),url.pathname,request.headers().origin,response.status,await response.clone().text());
+  await route.fulfill({status:response.status,headers:Object.fromEntries(response.headers),body:await response.text()});
+ });
+ const authorization=origin+await f.authUrl(client);
+ await page.goto(authorization);await page.getByRole('button',{name:'Connect People',exact:true}).waitFor();
+ assert.ok((await page.locator('body').innerText()).includes('owner@example.test'));
+ assert.ok((await page.locator('body').innerText()).includes('chatgpt.example.test'));
+ assert.equal(await page.locator('.oauth-permissions li').count(),3);
+ assert.equal(await page.locator('.oauth-card').evaluate(element=>getComputedStyle(element).maxWidth),'560px');
+ await page.screenshot({path:'/tmp/people-oauth-real-desktop.png'});
+ await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:'/tmp/people-oauth-real-mobile.png',fullPage:true});
+ await page.getByRole('button',{name:'Connect People',exact:true}).click();await page.waitForURL(redirect+'?**');
+ const returned=new URL(page.url());assert.equal(returned.searchParams.get('state'),'test-state');const code=returned.searchParams.get('code');assert.ok(code);
+ const exchange=await f.exchange({grant_type:'authorization_code',client_id:client.client_id,code,redirect_uri:redirect,code_verifier:verifier,resource});assert.equal(exchange.status,200);const tokens=await exchange.json();
+ const list=await f.mcp(tokens.access_token);assert.equal(list.status,200);assert.equal((await f.result(list)).result.tools.length,9);
+ await page.goto(authorization);await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.waitForURL(redirect+'?**');assert.equal(new URL(page.url()).searchParams.get('error'),'access_denied');
+ assert.deepEqual(errors,[]);console.log('PASS real Worker browser consent: owner/scopes, secure cookie binding, mobile layout, approval redirect, code exchange, nine MCP tools, denial');
+}finally{await browser?.close();for(const fn of cleanup.reverse())await fn();await rm(dir,{recursive:true,force:true});}
