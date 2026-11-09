@@ -5,7 +5,7 @@ import {createPeopleIntegrations} from '../public/people-integrations.mjs';
 // Minimal DOM for the panel's focus, copy and account lifecycle; viewport layout
 // is checked separately on the complete Accounts page.
 function documentFixture(){
- const doc={activeElement:null,copied:null,defaultView:{navigator:{clipboard:{writeText:async value=>{doc.copied=value;}}}}};
+ const doc={activeElement:null,copied:null,defaultView:{location:{href:'https://people.test/accounts?tab=integrations'},navigator:{clipboard:{writeText:async value=>{doc.copied=value;}}}}};
  doc.createElement=tag=>({tag,ownerDocument:doc,children:[],attributes:{},style:{},textContent:'',value:'',disabled:false,
   append(...nodes){this.children.push(...nodes);},replaceChildren(...nodes){this.children=nodes;},
   setAttribute(name,value){this.attributes[name]=value;},
@@ -45,6 +45,17 @@ test('acknowledging a copied key removes it and allows another integration',asyn
  assert.equal(control(root,'Create API key').disabled,false);
  assert.ok(descendants(root).some(node=>node.textContent==='botwick'));
  assert.ok(!descendants(root).some(node=>node.value==='people_fake_test_key'));
+});
+
+test('agent handoff uses this deployment and never copies the visible key or account data',async()=>{
+ const {doc,root,create}=await fixture();await create();
+ await control(root,'Copy instructions for your agent').onclick();
+ assert.ok(doc.copied.includes('https://people.test/agent-setup.md'));
+ assert.ok(!doc.copied.includes('people_fake_test_key'));
+ assert.ok(!doc.copied.includes('owner@example.test'));
+ assert.ok(!doc.copied.includes('?tab='));
+ assert.ok(descendants(root).some(node=>node.tag==='a'&&node.href==='https://people.test/agent-setup.md'));
+ assert.equal(control(root,'New API key').value,'people_fake_test_key');
 });
 
 test('leaving integrations clears the one-time key even when the panel is reopened',async()=>{

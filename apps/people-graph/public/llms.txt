@@ -1,0 +1,16 @@
+# People
+
+> People helps an owner's agent understand their relationships, current focus, needs, and offers, then find relevant people with supporting context. The PeopleGraph Rust CLI connects to the owner's private account with one scoped login.
+
+Start with the agent setup guide below. It is public documentation, not access to an account or permission to change one. Follow the owner's request and preserve existing settings. Obsidian and MCP are optional.
+
+## Start here
+
+- [For your agent](/agent-setup.md): Install or update the CLI and skill, connect the correct account, verify access, and use the saved People Lens.
+- [Full onboarding guide](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md): Source setup, content consent, credentials, matching, and troubleshooting.
+- [PeopleGraph agent skill](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/skills/peoplegraph/SKILL.md): Command selection, identity resolution, evidence, and authorized edits.
+
+## Optional
+
+- [API and context contract](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-memory-integration.md): Scoped APIs and private relationship memory.
+- [CLI and web capabilities](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/peoplegraph-cli-parity.md): Available operations and their permissions.
