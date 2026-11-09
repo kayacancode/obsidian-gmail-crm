@@ -5,7 +5,8 @@ import {fixture,origin,resource,owner,redirect,verifier} from './people-oauth-fi
 
 test('People OAuth discovery advertises the canonical resource and browser sign-in without a key',async t=>{
  const f=await fixture(t),challenge=await f.send('/api/people-mcp');assert.equal(challenge.status,401);assert.match(challenge.headers.get('www-authenticate')??'',/oauth-protected-resource/);
- const metadata=await (await f.send('/.well-known/oauth-protected-resource/api/people-mcp')).json() as any;assert.equal(metadata.resource,resource);assert.deepEqual(metadata.authorization_servers,[origin]);
+ const metadata=await (await f.send('/.well-known/oauth-protected-resource/api/people-mcp')).json() as any;assert.equal(metadata.resource,resource);assert.deepEqual(metadata.authorization_servers,[origin]);assert.deepEqual(metadata.scopes_supported,['people:read','people:write','offline_access']);
+ const head=await f.send('/.well-known/oauth-protected-resource/api/people-mcp',{method:'HEAD'});assert.equal(head.status,200);assert.equal(await head.text(),'');
  const authorization=await (await f.send('/.well-known/oauth-authorization-server')).json() as any;assert.equal(authorization.authorization_endpoint,origin+'/oauth/authorize');assert.equal(authorization.token_endpoint,origin+'/oauth/token');assert.equal(authorization.registration_endpoint,origin+'/oauth/register');assert.deepEqual(authorization.code_challenge_methods_supported,['S256']);
  const client=await f.register(),signin=await f.send(await f.authUrl(client));const html=await signin.text();assert.equal(signin.status,200);assert.match(html,/google-signin/);assert.ok(!html.includes('name="handle"'));assert.equal(signin.headers.get('cache-control'),'no-store');assert.match(signin.headers.get('content-security-policy')??'',/frame-ancestors 'none'/);
 });

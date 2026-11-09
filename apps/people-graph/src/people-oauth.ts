@@ -182,6 +182,12 @@ export async function peopleOAuthRoute(request:Request,env:PeopleOAuthEnv,contex
   const bindings:PeopleOAuthEnv={...env,OAUTH_KV:revocationAwareKV(env.OAUTH_KV,env.DB),OAUTH_PROVIDER:undefined};
   const response=await provider.fetch(request,bindings,ctx);
   const headers=safeHeaders(response.headers);
+  // The provider uses requiredScopes for its resource discovery too. Advertise optional
+  // capabilities without requiring write/offline access from a read-only connection.
+  if(request.method==='GET'&&response.status===200&&url.pathname.startsWith('/.well-known/oauth-protected-resource')){
+   const metadata=await response.json() as Record<string,unknown>;
+   return Response.json({...metadata,scopes_supported:supportedScopes},{headers});
+  }
   if(response.headers.get('content-type')?.startsWith('text/html'))headers.set('referrer-policy','same-origin');
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
  }catch(error){return json({error:error instanceof Error&&error.message==='invalid_request'?'invalid_request':'oauth_unavailable'},error instanceof Error&&error.message==='invalid_request'?400:503);}
