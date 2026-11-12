@@ -290,7 +290,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Graph URL")
-			.setDesc("Deployment to push your people graph to. Empty disables pushing.")
+			.setDesc("Deployment to push your people graph to and open with View people graph. Empty opens the hosted graph and disables pushing.")
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.graphPushUrl)
@@ -425,8 +425,8 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Enrich on sync")
-			.setDesc("Automatically run enrichment after sync")
+			.setName("AI enrichment on sync")
+			.setDesc("Optional AI rewrite after sync. Local relationship mapping runs automatically without AI.")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.enrichOnSync)

@@ -7,7 +7,7 @@ const dir = await mkdtemp(join(tmpdir(), "people-intelligence-"));
 try {
   await build({
     stdin: {
-      contents: "import './tests/intelligence.test.ts'; import './tests/theme-candidates.test.ts';",
+      contents: "import './tests/intelligence.test.ts'; import './tests/theme-candidates.test.ts'; import './tests/graph-view.test.ts';",
       resolveDir: process.cwd(),
     },
     outfile: join(dir, "test.cjs"),

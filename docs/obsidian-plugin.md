@@ -143,7 +143,7 @@ Run **Gmail CRM: Create quadrant view** to generate `_Quadrants.md` — a visual
 
 #### Relationship Mapping
 
-Run **Gmail CRM: Map relationships** to build a graph of connections between your contacts. The engine detects relationships from:
+Each successful manual or scheduled contact sync maps relationships locally without AI. You can also run **Gmail CRM: Map relationships only (no AI)** to refresh the mapping on demand. The engine detects relationships from:
 
 - Wiki-links between people pages (`[[p- Jane Smith]]` mentioned in another person's page)
 - Shared email threads (introduced-by patterns)
@@ -191,6 +191,8 @@ This verifies release checksums, installs the binary to `~/.local/bin/peoplegrap
 | Enrich current person | AI-rewrite the current people page (requires Anthropic API key) |
 | Enrich all people pages | AI-rewrite all people pages |
 | Map relationships | Build relationship edges from wiki-links and shared meetings |
+| View people graph | Open the configured web graph, or the hosted People graph if no URL is configured; does not upload data |
+| Push people graph to web | Explicitly publish the local graph to the configured deployment |
 | Sync calendar | Pull Google Calendar meeting history into contact records |
 
 ## How Scoring Works

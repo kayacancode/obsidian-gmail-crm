@@ -11,6 +11,11 @@ interface NameTrieNode {
 	name?: string;
 }
 
+/** Generated links describe the previous mapping result, not independent evidence. */
+function sourceContentForMapping(content: string): string {
+	return content.replace(/\n## Relationships\n[\s\S]*?(?=\n## |\s*$)/, "");
+}
+
 /** Character trie over every candidate name, built once per graph pass. */
 function buildNameTrie(names: string[]): NameTrieNode {
 	const root: NameTrieNode = { children: new Map() };
@@ -81,18 +86,19 @@ export class RelationshipEngine {
 			if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
 
 			const content = await this.vault.read(child);
+			const sourceContent = sourceContentForMapping(content);
 			const name = child.basename.replace(/^p-\s*/, "");
 
 			// Wiki links: [[p- Name]] or [[p- Name|alias]]
 			const wikiLinks: string[] = [];
 			const linkRegex = /\[\[p-\s*([^\]|]+?)(?:\|[^\]]*?)?\]\]/g;
 			let match;
-			while ((match = linkRegex.exec(content)) !== null) {
+			while ((match = linkRegex.exec(sourceContent)) !== null) {
 				wikiLinks.push(match[1].trim());
 			}
 
 			// Email(s) — support multiple via comma/space separation or YAML list
-			const emailMatch = content.match(/\*\*Email:\*\*\s*(.+)/);
+			const emailMatch = sourceContent.match(/\*\*Email:\*\*\s*(.+)/);
 			const emails: string[] = [];
 			const addEmail = (value: string) => {
 				const cleaned = value.replace(/[<>]/g, "").replace(/^["']|["']$/g, "").trim().toLowerCase();
@@ -108,7 +114,7 @@ export class RelationshipEngine {
 			// Also check YAML frontmatter for emails list and scalar email field.
 			// Scalar `email:` is what FrontmatterManager writes, so pages without a
 			// `**Email:**` body line still resolve their gmailStats via the YAML.
-			const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+			const fmMatch = sourceContent.match(/^---\n([\s\S]*?)\n---/);
 			if (fmMatch) {
 				for (const field of ["emails", "aliases"]) {
 					const yamlList = fmMatch[1].match(new RegExp(`${field}:\\s*\\n((?:\\s+-\\s+\\S+@\\S+\\n?)+)`));
@@ -125,25 +131,25 @@ export class RelationshipEngine {
 			}
 
 			// Role
-			const roleMatch = content.match(/\*\*Role\/Company:\*\*\s*(.+)/);
+			const roleMatch = sourceContent.match(/\*\*Role\/Company:\*\*\s*(.+)/);
 
 			// Introducer
-			const introMatch = content.match(
+			const introMatch = sourceContent.match(
 				/(?:introduced by|via|through)\s+(?:\[\[p-\s*)?([A-Z][a-z]+ [A-Z][a-z]+)/i
 			);
 
 			// Meetings
 			const meetings: { date: string; title: string }[] = [];
 			const meetingRegex = /###\s+(\d{4}-\d{2}-\d{2})\s*[—–-]\s*(.+)/g;
-			while ((match = meetingRegex.exec(content)) !== null) {
+			while ((match = meetingRegex.exec(sourceContent)) !== null) {
 				meetings.push({ date: match[1], title: match[2].trim() });
 			}
 
 			// How known — match "How <owner name> knows them:" for any owner
-			const howMatch = content.match(/\*\*How .+? knows them:\*\*\s*(.+)/);
+			const howMatch = sourceContent.match(/\*\*How .+? knows them:\*\*\s*(.+)/);
 
 			// Key context
-			const ctxMatch = content.match(/\*\*Key context:\*\*\s*(.+)/);
+			const ctxMatch = sourceContent.match(/\*\*Key context:\*\*\s*(.+)/);
 
 			pages[name] = {
 				name,
@@ -212,7 +218,7 @@ export class RelationshipEngine {
 
 			// Text mentions of full names
 			const wikiLinks = new Set(page.wikiLinks);
-			const mentioned = findMentionedNames(page.content, nameTrie);
+			const mentioned = findMentionedNames(sourceContentForMapping(page.content), nameTrie);
 			// Sorted back into vault order so edge order matches the original scan.
 			const ordered = Array.from(mentioned).sort(
 				(a, b) => (nameOrder.get(a) ?? 0) - (nameOrder.get(b) ?? 0)
