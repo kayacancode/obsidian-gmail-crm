@@ -18,6 +18,29 @@ function fixture(t:TestContext){
  return {sqlite,service,env,calls,management,request,mint};
 }
 
+test('People Lens writes share the web store and enforce scopes, exact fields and revision conflicts',async t=>{
+ const f=fixture(t),own=await mailFixture();t.after(()=>own.db.close());f.env.MAIL=own.env.MAIL;
+ const key=await f.mint(),read=await f.mint(['people:read']),write=await f.mint(['people:write']);
+ const before=await own.service.getOwnerLens(),fields={focus:'Agent interfaces',needs:'Design partners',offers:'Founder introductions'};
+ assert.equal((await f.request('/api/people-agent/lens',read.token,{revision:before.revision,fields})).status,403);
+ for(const extra of [{owner:'foreign@example.test'},{fields:{...fields,private:'no'}},{fields:{focus:'only'}},{revision:''}])assert.equal((await f.request('/api/people-agent/lens',key.token,{revision:before.revision,fields,...extra})).status,400);
+ const saved=await f.request('/api/people-agent/lens',key.token,{revision:before.revision,fields});assert.equal(saved.status,200);
+ const result:any=await saved.json();assert.deepEqual(result.fields,fields);assert.notEqual(result.revision,before.revision);
+ assert.deepEqual((await own.service.getOwnerLens()).fields,fields);
+ const stale=await f.request('/api/people-agent/lens',key.token,{revision:before.revision,fields:{...fields,focus:'Stale'}});assert.equal(stale.status,409);assert.deepEqual(await stale.json(),{error:'owner_lens_conflict'});
+ const receipt=await f.request('/api/people-agent/lens',write.token,{revision:result.revision,fields});assert.equal(receipt.status,200);assert.deepEqual(Object.keys(await receipt.json() as object).sort(),['revision','updatedAt']);
+ const current:any=await (await f.request('/api/people-agent/lens',read.token)).json();assert.deepEqual(current.fields,fields);
+});
+
+test('People MCP exposes Lens edits only to writers and uses the same revision contract',async t=>{
+ const f=fixture(t),own=await mailFixture();t.after(()=>own.db.close());f.env.MAIL=own.env.MAIL;
+ const key=await f.mint(),headers={host:'people.test',accept:'application/json, text/event-stream','mcp-protocol-version':'2025-11-25'};
+ const input={revision:(await own.service.getOwnerLens()).revision,fields:{focus:'Clinic tools',needs:'Pilots',offers:'Research'}};
+ const response=await f.request('/api/people-mcp',key.token,{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'update_people_lens',arguments:input}},headers);assert.equal(response.status,200);
+ const raw=await response.text(),data=JSON.parse(raw.includes('data: ')?raw.split('\n').find(line=>line.startsWith('data: '))!.slice(6):raw);assert.deepEqual(data.result.structuredContent.fields,input.fields);
+ assert.deepEqual((await own.service.getOwnerLens()).fields,input.fields);
+});
+
 test('People credentials bind the owner, hide stored secrets, and expire or revoke independently',async t=>{
  const f=fixture(t),key=await f.mint();assert.match(key.token,/^people_[A-Za-z0-9_-]{43}$/);
  const row:any=f.sqlite.prepare('SELECT * FROM people_memory_credentials').get();assert.equal(row.owner,owner);assert.equal(row.token_hash.length,64);assert.ok(!JSON.stringify(row).includes(key.token));

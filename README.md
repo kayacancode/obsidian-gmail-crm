@@ -18,7 +18,7 @@ People brings together **Gmail activity, Google Calendar invitations, and option
 | --- | --- | --- |
 | **Web app** | Personal graphs, shared networks, Discover, and introduction requests | A configured People deployment and a Google account |
 | **Obsidian plugin** | Markdown people pages and a CRM inside your vault | Obsidian desktop and your own Google OAuth credentials |
-| **PeopleGraph CLI / agent skill** | Graph questions, private relationship context, and evidence-backed recommendations | Browser login for graph reads; a People key for private context; optional local Obsidian cache |
+| **PeopleGraph CLI / agent skill** | Graph questions, private relationship context, and evidence-backed recommendations | One saved scoped People credential; optional local Obsidian cache |
 
 - [Web app setup and deployment](apps/people-graph/README.md)
 - [Obsidian installation, commands, and scoring guide](docs/obsidian-plugin.md)
@@ -53,13 +53,23 @@ Obsidian and Granola are optional. Connecting Google does not require installing
 
 ## Use People with an agent
 
-Install **PeopleGraph 0.3.12** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+**In ChatGPT:** connect People as a custom MCP plugin using `https://people-graph.kayarjones901.workers.dev/api/people-mcp` with OAuth. Sign in to People, review access, and select People in a new chat. No terminal or API-key paste is needed. Ask “Show my saved People Lens” or “Help me prepare for this founder meeting.” See the [ChatGPT connection guide](docs/chatgpt-people.md) for account requirements, read/write scopes and the portable plugin package. The package includes reusable instructions; a custom MCP connection alone imports the tools. This repository does not imply a public directory listing.
 
-Run `peoplegraph login` for read-only access to your visible web graph. For your saved People Lens, recommendations, connections, and private memory, create a separate People key in **Accounts → Integrations** and configure `PEOPLEGRAPH_WEB_URL` and `PEOPLEGRAPH_WEB_TOKEN`. Enable write access only for clients you want to save context. Compatible MCP clients can use `/api/people-mcp` with a custom bearer header; REST clients use `/api/people-agent`.
+**For terminal-enabled agents:**
 
-Try “Who could help with my saved needs, and why?”, “What connects Maya and Sam?”, or “Remember this note for Maya.” The agent distinguishes confirmed saved context from inferred suggestions, resolves ambiguous people, and reports the evidence behind recommendations. These People tools do not send email or schedule meetings. Scheduling is a separate opt-in integration.
+Give your agent the public [setup guide](https://people-graph.kayarjones901.workers.dev/agent-setup.md), or use **Accounts → Integrations → Copy instructions for your agent**. The copied message includes the People server and a [published GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md) for readers that cannot access the site's documentation. The site's [llms.txt](https://people-graph.kayarjones901.workers.dev/llms.txt) points agents to setup, the skill, and API documentation. These public files contain instructions, never account data or credentials. Setup requires terminal execution and private credential storage; a browsing-only agent can explain the steps but cannot complete the CLI setup itself.
+
+Install **PeopleGraph 0.3.17** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+
+Run `peoplegraph login` for graph and private People reads, or `peoplegraph login --write` to approve requested Lens and context edits. The CLI stores one origin-bound key in `~/.config/peoplegraph/config.json` (or `$XDG_CONFIG_HOME/peoplegraph/config.json`) and loads it automatically. `peoplegraph status` verifies the account, permissions, and API capabilities; `peoplegraph lens set --needs "…"` preserves the other Lens fields with revision checking. `peoplegraph api METHOD /api/path --file payload.json` covers registered website operations under their required scopes. Existing keys can be saved with `configure --url <origin> --token-stdin`. MCP is optional for terminal agents; clients supporting custom Bearer headers can still use the same People key. ChatGPT uses browser OAuth instead.
+
+Try “Who could help with my saved needs, and why?”, “What connects Maya and Sam?”, or “Remember this note for Maya.” The agent distinguishes confirmed saved context from inferred suggestions, resolves ambiguous people, and reports the evidence behind recommendations. Lens and memory operations do not send outreach. Generic sharing and booking operations require their explicit scopes and an owner-requested action; direct scheduling MCP remains a separate opt-in integration.
 
 **Obsidian plugin 0.9.5** is optional and keeps the local vault workflow available. Installing or updating it does not grant an agent access to your private web account.
+
+For source setup, approve `peoplegraph login --write --scope sources:manage`, then run `peoplegraph sources status`. Dedicated commands connect Granola using a key supplied through stdin, sync connected Gmail/Granola sources, and control automatic Gmail context. Gmail connection still requires Google's browser consent. [Source setup and empty-match troubleshooting](docs/people-agent-onboarding.md#connect-and-sync-sources-from-the-cli) explains the distinction between imports, Lens learning, and evidence for recommendations.
+
+PeopleGraph 0.3.17 makes onboarding state explicit: login/status warn when an environment token overrides a saved login; Lens inspection and matches report Gmail context counts and consent-aware ingestion hints; recommendations can include the authorized graph name. Follow the [six-step setup](docs/people-agent-onboarding.md#six-steps-from-installation-to-matches). Lens refresh remains a separate durable job: inspect queued/running work, and check Honcho readiness separately from job completion. Gmail context backfill and matches do not require Lens refresh. A 30-second refresh timeout is a failure to investigate, not expected progress. See the [0.3.17 release notes](docs/releases/peoplegraph-0.3.17.md).
 
 ## What each source contributes
 

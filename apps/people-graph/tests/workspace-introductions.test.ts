@@ -454,3 +454,53 @@ test('private recommendation routes reject feedback changes during graph loading
   assert.equal(response.status,409,kind+' must read the baseline revision before the graph');
  }
 });
+
+test('verified helper and owner matches include each exact graph name without exporting contact fields',async()=>{
+ const {rankHelperBrief,rankOwnerLens}=await import('../src/helper-brief'),previous=globalThis.fetch;
+ const graph={nodes:[{id:'anchor',name:'Owner'},{id:'first',name:'Maya Chen',email:'maya@example.test',company:'Private company'},{id:'second',name:'Sam Rivera',email:'sam@example.test'}],themeSignals:[helperSignal('first','first-source','I interviewed nurses about clinic handoffs.'),helperSignal('second','second-source','We researched nurse handoff workflows in clinics.')]};
+ const AI:any={run:async(_model:any,input:any)=>{
+  const state=JSON.parse(input.input[1].content);
+  return helperResponse(state.candidates?{matches:state.candidates.map((candidate:any)=>({candidate:candidate.candidate,reason:`${state.selected.label==='YOU'?'You':'PERSON_A'} need nurse handoff validation. PERSON_B researched clinic handoff workflows.`,conversation:'Which handoff assumptions should the clinic scheduling prototype test with nurses first?',anchorRefs:[],candidateRefs:[candidate.evidence[0].ref]}))}:helperAuditValue(input));
+ }};
+ try{
+  globalThis.fetch=groundedJev();
+  for(const owner of [false,true]){
+   const env={TYPESAFE_API_KEY:'test',AI},result=owner?await rankOwnerLens(env,graph,{focus:'Clinic scheduling tools.',needs:'Validate nurse handoffs.',offers:''}):await rankHelperBrief(env,graph,'anchor','Validate nurse handoffs.');
+   assert.equal(result.status,'ready');assert.equal(result.available,2);assert.equal(result.considered,2);
+   assert.deepEqual(result.results.map((row:any)=>({personId:row.personId,name:row.name})),[{personId:'first',name:'Maya Chen'},{personId:'second',name:'Sam Rivera'}]);
+   assert.ok(result.results.every(row=>!('email' in row)&&!('company' in row)&&!('pointPerson' in row)));
+   assert.doesNotMatch(JSON.stringify(result),/maya@example|sam@example|Private company/);
+  }
+ }finally{globalThis.fetch=previous;}
+});
+
+test('helper candidate identity excludes ambiguous IDs and disallowed people before selecting evidence',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');
+ const nodes=[{id:'anchor'},{id:'visible',name:'Visible Person'},{id:'duplicate',name:'Wrong First Name'},{id:'duplicate',name:'Other Name',permission:'denied'},{id:'denied',permission:'denied'},{id:'conflicted',permissionConflict:true},{id:'unresolved',identityResolved:false},{id:'unresolved-status',identityStatus:'unresolved'},{id:'suppressed'}];
+ const graph={nodes,themeSignals:[...new Set(nodes.map(node=>node.id))].filter(id=>id!=='anchor').map(id=>helperSignal(id,id,'I interviewed nurses about clinic handoffs.')),personFeedback:{suppressed:{action:'suppress'}}};
+ const result=await rankHelperBrief({},graph,'anchor','Validate nurse handoffs.');
+ assert.equal(result.available,1);assert.equal(result.considered,1);assert.deepEqual(result.results,[]);
+});
+
+test('helper results attach only a unique allowed resolved saved point person',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief'),previous=globalThis.fetch;
+ try{globalThis.fetch=groundedJev();
+  for(const point of [{},{permission:'denied'},{permission:'conflicted'},{permissionConflict:true},{identityResolved:false},{identityStatus:'unresolved'},{sources:['obsidian']},{suppressed:true},{duplicate:true}]){
+   const graph:any=clinicGraph();graph.nodes.push({id:'point',name:'Saved Point Person',...point});
+   if('duplicate' in point)graph.nodes.push({id:'point',name:'Other Point Person'});
+   if('suppressed' in point)graph.personFeedback={point:{action:'suppress'}};
+   graph.recommendationMemory={revision:'one',people:{b:memoryPerson('b',{pointPersonId:'point'})}};
+   const result=await rankHelperBrief({TYPESAFE_API_KEY:'test',AI:helperAI()},graph,'a','');
+   assert.equal(result.results.length,1);
+   if(!Object.keys(point).length)assert.deepEqual(result.results[0].pointPerson,{personId:'point',name:'Saved Point Person'});
+   else assert.equal(result.results[0].pointPerson,undefined,JSON.stringify(point));
+  }
+ }finally{globalThis.fetch=previous;}
+});
+
+test('helper rejects a duplicate selected identity before reading its saved evidence',async()=>{
+ const {rankHelperBrief}=await import('../src/helper-brief');
+ const graph:any=clinicGraph();graph.nodes.push({id:'a',name:'Ambiguous Other Person',permission:'denied'});
+ graph.recommendationMemory={revision:'one',people:{a:memoryPerson('a',{text:'Private saved note for an ambiguous person.'})}};
+ await assert.rejects(()=>rankHelperBrief({},graph,'a',''),/invalid_request/);
+});

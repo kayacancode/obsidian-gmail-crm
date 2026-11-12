@@ -4,6 +4,7 @@ import {loadPeopleNetwork} from './people-service';
 import {queryPeople} from './cli-query';
 import {memoryBrief,rankHelperBrief,rankOwnerLens} from './helper-brief';
 import {validMemoryEmail} from './relationship-memory';
+import {peopleFailureDiagnostic,type PeopleFailurePhase} from './people-diagnostics';
 
 type Store=ReturnType<MailEnv['MAIL']['getByName']>;
 type Person={id:string;name?:string;type?:string;permission?:string;permissionConflict?:boolean;identityResolved?:boolean;identityStatus?:string};
@@ -20,14 +21,20 @@ export async function confirmedPeopleLens(stub:Store){
 
 /** Shared by the browser and machine adapters; pending suggestions never define a request. */
 export async function savedPeopleMatches(env:MailEnv,stub:Store){
- const lens=await stub.getOwnerLens();
- if(!Object.values(lens.fields).some(value=>value.trim()))return rankOwnerLens(env,{nodes:[]},lens.fields);
- const recommendationMemory=await stub.recommendationMemory(),graph=await stub.graph(),helperContext=await stub.helperContext();
- const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext,recommendationMemory},lens.fields);
- const current=await stub.getOwnerLens();
- if(fields.some(key=>current.fields[key]!==lens.fields[key]))throw Error('owner_lens_conflict');
- if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)throw Error('person_context_conflict');
- return result;
+ const started=Date.now();let phase:PeopleFailurePhase='lens_read';
+ try{
+  const lens=await stub.getOwnerLens();
+  if(!Object.values(lens.fields).some(value=>value.trim())){phase='ranking';return {...await rankOwnerLens(env,{nodes:[]},lens.fields),...(lens.matchingSources?{matchingSources:lens.matchingSources}:{})};}
+  phase='memory_read';const recommendationMemory=await stub.recommendationMemory();
+  phase='graph_read';const graph=await stub.graph();
+  phase='helper_context_read';const helperContext=await stub.helperContext();
+  phase='ranking';const result=await rankOwnerLens(env,{...(graph??{nodes:[]}),helperContext,recommendationMemory},lens.fields);
+  phase='lens_recheck';const current=await stub.getOwnerLens();
+  if(fields.some(key=>current.fields[key]!==lens.fields[key]))throw Error('owner_lens_conflict');
+  phase='graph_recheck';await recheckMatchPeople(stub,graph,result.results);
+  phase='memory_recheck';if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)throw Error('person_context_conflict');
+  return {...result,...(current.matchingSources?{matchingSources:current.matchingSources}:{}),...(result.status==='no_evidence'?{guidance:'No eligible recent person context was found. Enable Gmail content with permission, sync connected sources such as Granola, or save specific person context. Lens refresh updates owner suggestions and is not required for matches; contact counts and photos are not conversation evidence.'}:{})};
+ }catch(error){peopleFailureDiagnostic('people_matches_failed',phase,error,started);throw error;}
 }
 
 /** Preserve the website's saved-report, source refresh, ranking and explanation path. */
@@ -46,6 +53,7 @@ export async function selectedPeopleHelpers(env:MailEnv,stub:Store,requestedId:s
  const brief=explicit||memoryBrief(recommendationMemory.people[personId]),contextSource=explicit?'brief':brief?'saved_note':'automatic';
  const helperContext=await stub.helperContext();
  const result=await rankHelperBrief(env,{...graph,helperContext,recommendationMemory},personId,explicit);
+ await recheckMatchPeople(stub,graph,result.results);
  if((await stub.recommendationMemory()).revision!==recommendationMemory.revision)throw Error('person_context_conflict');
  return {...result,contextSource,brief};
 }
@@ -74,6 +82,18 @@ function exactPerson(graph:Graph,id:string):Person{
  if(matches.length!==1||matches[0].permission==='conflicted'||matches[0].permissionConflict||matches[0].identityResolved===false||matches[0].identityStatus==='unresolved')throw Error('ambiguous_person');
  if(matches[0].permission==='denied'||matches[0].type==='company')throw Error('unknown_person');
  return matches[0];
+}
+/** Identity labels are supplied by the current authorized graph, never by the model. */
+async function recheckMatchPeople(stub:Store,before:Graph|null,results:Array<{personId:string;pointPerson?:{personId:string}}>){
+ if(!results.length)return;
+ const ids=[...new Set(results.flatMap(result=>[result.personId,...(result.pointPerson?[result.pointPerson.personId]:[])]))].sort();
+ const snapshot=(graph:Graph|null)=>{
+  if(!graph)throw Error('person_context_conflict');
+  return ids.map(id=>{const person=exactPerson(graph,id);return {id:person.id,name:person.name??''};});
+ };
+ const current=await stub.graph();
+ try{if(JSON.stringify(snapshot(before))!==JSON.stringify(snapshot(current)))throw Error('person_context_conflict');}
+ catch{throw Error('person_context_conflict');}
 }
 function connectionResult(graph:Graph,fromId:string,toId:string){
  const from=exactPerson(graph,fromId),to=exactPerson(graph,toId);

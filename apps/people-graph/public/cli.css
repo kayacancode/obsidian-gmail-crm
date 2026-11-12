@@ -1,0 +1,6 @@
+#code-form{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+#code-form input{margin:0!important;border:1px solid #ffffffa8;border-radius:8px;background:#ffffff40}
+#code-form button{justify-self:start;width:auto;height:auto;font-size:14px}
+#approval{overflow-wrap:anywhere}
+#scopes{padding-left:20px;line-height:1.6}
+#scopes li+li{margin-top:10px}

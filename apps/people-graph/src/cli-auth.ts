@@ -1,5 +1,6 @@
 import {boundedJSON} from './bounded-json';
-/** Read-only, origin-bound device authorization. Raw credentials are never persisted. */
+import {authenticatePeopleMemory,peopleMemoryScopes,peopleMemoryScopeDescriptions,preparePeopleMemoryCredential,revokePeopleMemoryCredential,type PeopleMemoryScope} from './people-memory-auth';
+/** Origin-bound browser authorization. Legacy grants remain read-only; raw credentials are never persisted. */
 export interface DeviceEnv {DB:D1Database;TOKEN_SECRET:string}
 const seconds=()=>Math.floor(Date.now()/1000);
 const response=(data:unknown,status=200)=>Response.json(data,{status,headers:{'cache-control':'no-store',...(status===429?{'retry-after':'5'}:{})}});
@@ -17,7 +18,11 @@ export async function authenticateDevice(request:Request,env:DeviceEnv){
  const row=await env.DB.prepare('SELECT id,owner FROM cli_devices WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?').bind(await hash(token),seconds()).first<{id:string;owner:string}>();
  return row?{owner:row.owner,deviceId:row.id}:null;
 }
-type Challenge={id:string;poll_hash:string;user_code:string;name:string;status:string;owner:string|null;expires_at:number;last_poll:number};
+type Challenge={id:string;poll_hash:string;user_code:string;name:string;status:string;owner:string|null;requested_scopes:string|null;expires_at:number;last_poll:number};
+function requestedScopes(value:unknown):PeopleMemoryScope[]{
+ if(!Array.isArray(value)||!value.length||value.length>peopleMemoryScopes.length||value.some(scope=>!peopleMemoryScopes.includes(scope))||new Set(value).size!==value.length)throw Error('invalid_scopes');
+ return [...value].sort() as PeopleMemoryScope[];
+}
 export async function deviceRoute(request:Request,env:DeviceEnv,owner:string|null):Promise<Response>{
  const path=new URL(request.url).pathname.replace('/api/cli/',''),now=seconds();
  if(path==='devices'&&request.method==='GET'){
@@ -33,25 +38,29 @@ export async function deviceRoute(request:Request,env:DeviceEnv,owner:string|nul
   if(!await allowDeviceRequest(env,'approve:'+owner,20,600))return bad('rate_limited',429);
  }
  if(path==='device/start'){
-  if(typeof body.deviceName!=='string'||!body.deviceName.trim()||body.deviceName.length>80)return bad('invalid_request');
+  if(typeof body.deviceName!=='string'||!body.deviceName.trim()||body.deviceName.length>80||/[\u0000-\u001f\u007f]/.test(body.deviceName))return bad('invalid_request');
+  let scopes:PeopleMemoryScope[]|null=null;try{if(Object.hasOwn(body,'scopes'))scopes=requestedScopes(body.scopes);}catch{return bad('invalid_scopes');}
   const key=await hash(env.TOKEN_SECRET+'\0'+(request.headers.get('cf-connecting-ip')??'local'));
   if(!await allowDeviceRequest(env,'start:'+key,10,600))return bad('rate_limited',429);
   // Bounded cleanup keeps expired pending credentials from accumulating.
   await env.DB.prepare('DELETE FROM cli_challenges WHERE id IN (SELECT id FROM cli_challenges WHERE expires_at<? LIMIT 100)').bind(now).run();
   await env.DB.prepare('DELETE FROM cli_rate_limits WHERE key IN (SELECT key FROM cli_rate_limits WHERE window<? LIMIT 100)').bind(now-1200).run();
   const id=random(),secret=random(),userCode=random().slice(0,12).toUpperCase();
-  await env.DB.prepare('INSERT INTO cli_challenges(id,poll_hash,user_code,name,created_at,expires_at) VALUES(?,?,?,?,?,?)').bind(id,await hash(secret),userCode,body.deviceName.trim(),now,now+600).run();
+  await env.DB.prepare('INSERT INTO cli_challenges(id,poll_hash,user_code,name,created_at,expires_at,requested_scopes) VALUES(?,?,?,?,?,?,?)').bind(id,await hash(secret),userCode,body.deviceName.trim(),now,now+600,scopes?JSON.stringify(scopes):null).run();
   return response({challengeId:id,pollSecret:secret,userCode,verificationUri:new URL('/cli',request.url).href,expiresAt:now+600,interval:5});
  }
  if(path==='device/preview'||path==='device/approve'){
   if(typeof body.userCode!=='string'||!/^[A-Fa-f0-9]{12}$/.test(body.userCode))return bad('invalid_code');
   if(path==='device/approve'&&body.expectedOwner!==owner)return bad('account_changed',409);
   const code=body.userCode.toUpperCase();
+  const row=await env.DB.prepare("SELECT name,expires_at,requested_scopes FROM cli_challenges WHERE user_code=? AND status='pending' AND expires_at>?").bind(code,now).first<Pick<Challenge,'name'|'expires_at'|'requested_scopes'>>();
+  if(!row)return bad('invalid_code');
+  let scopes:PeopleMemoryScope[]|null=null;try{if(row.requested_scopes!==null)scopes=requestedScopes(JSON.parse(row.requested_scopes));}catch{return bad('invalid_code');}
   if(path==='device/preview'){
-   const row=await env.DB.prepare("SELECT name,expires_at FROM cli_challenges WHERE user_code=? AND status='pending' AND expires_at>?").bind(code,now).first<{name:string;expires_at:number}>();
-   return row?response({deviceName:row.name,owner,expiresAt:row.expires_at,scope:'Read-only People queries'}):bad('invalid_code');
+   return response({deviceName:row.name,owner,expiresAt:row.expires_at,...(scopes?{scopes,scopeDescriptions:scopes.map(scope=>({scope,description:peopleMemoryScopeDescriptions[scope]})),credentialExpiresInDays:90}:{scope:'Read-only People queries',credentialExpiresInDays:30})});
   }
-  const approved=await env.DB.prepare("UPDATE cli_challenges SET owner=?,status='approved' WHERE user_code=? AND status='pending' AND expires_at>? RETURNING id").bind(owner,code,now).first();
+  if(scopes){try{if(JSON.stringify(requestedScopes(body.expectedScopes))!==JSON.stringify(scopes))return bad('scope_changed',409);}catch{return bad('scope_changed',409);}}
+  const approved=await env.DB.prepare("UPDATE cli_challenges SET owner=?,status='approved' WHERE user_code=? AND status='pending' AND expires_at>? AND requested_scopes IS ? RETURNING id").bind(owner,code,now,row.requested_scopes).first();
   return approved?response({approved:true}):bad('invalid_code');
  }
  if(path==='device/poll'){
@@ -63,6 +72,17 @@ export async function deviceRoute(request:Request,env:DeviceEnv,owner:string|nul
   if(row.status==='pending'){
    const changed=await env.DB.prepare("UPDATE cli_challenges SET last_poll=? WHERE id=? AND last_poll<=? AND status='pending' RETURNING id").bind(now,row.id,now-5).first();
    return changed?response({status:'pending'},202):bad('slow_down',429);
+  }
+  if(row.requested_scopes!==null){
+   if(!row.owner)return bad('invalid_challenge');
+   let scopes:PeopleMemoryScope[];try{scopes=requestedScopes(JSON.parse(row.requested_scopes));}catch{return bad('invalid_challenge');}
+   const {token,credential,tokenHash}=await preparePeopleMemoryCredential(env.DB,row.owner,{name:row.name,scopes});
+   // Mint and consume in one transaction. A second redemption inserts no credential.
+   const result=await env.DB.batch([
+    env.DB.prepare("INSERT INTO people_memory_credentials(id,owner,name,token_hash,scopes,created_at,expires_at) SELECT ?,owner,name,?,requested_scopes,?,? FROM cli_challenges WHERE id=? AND poll_hash=? AND status='approved' AND expires_at>? AND owner=? AND requested_scopes=?").bind(credential.id,tokenHash,credential.createdAt,credential.expiresAt,row.id,secretHash,now,row.owner,row.requested_scopes),
+    env.DB.prepare("UPDATE cli_challenges SET status='consumed' WHERE id=? AND status='approved' AND EXISTS (SELECT 1 FROM people_memory_credentials WHERE id=?)").bind(row.id,credential.id)
+   ]);
+   return result[0].meta.changes===1?response({token,owner:row.owner,expiresAt:Math.floor(credential.expiresAt/1000),scopes:credential.scopes}):bad('invalid_challenge');
   }
   const token='pgd1_'+random(),id=random(),expiresAt=now+30*86400;
   // Atomic INSERT...SELECT + consumption: a racing redemption sees consumed and inserts nothing.
@@ -78,8 +98,9 @@ export async function deviceRoute(request:Request,env:DeviceEnv,owner:string|nul
   return row?response({revoked:true}):bad('not_found',404);
  }
  if(path==='logout'){
-  const auth=await authenticateDevice(request,env);if(!auth)return bad('unauthorized',401);
-  await env.DB.prepare('UPDATE cli_devices SET revoked_at=? WHERE id=?').bind(now,auth.deviceId).run();return response({revoked:true});
+  const auth=await authenticateDevice(request,env);
+  if(auth){await env.DB.prepare('UPDATE cli_devices SET revoked_at=? WHERE id=?').bind(now,auth.deviceId).run();return response({revoked:true});}
+  try{const principal=await authenticatePeopleMemory(request,env.DB);await revokePeopleMemoryCredential(env.DB,principal.owner,principal.credentialId);return response({revoked:true});}catch{return bad('unauthorized',401);}
  }
  return bad('not_found',404);
 }

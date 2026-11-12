@@ -1,2 +1,9 @@
 /*
   Cache-Control: no-cache
+  Link: </llms.txt>; rel="describedby"
+
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+
+/agent-setup.md
+  Content-Type: text/plain; charset=utf-8

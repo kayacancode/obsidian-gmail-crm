@@ -13,6 +13,7 @@ import {ownerLensRoute} from './owner-lens-routes';
 import {personContextRoute} from './person-context-routes';
 import {relationshipMemoryRoute} from './relationship-memory-routes';
 import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-agent';
+import {isPeopleOAuthRequest,peopleOAuthRoute} from './people-oauth';
 import {matchingWorkspaces} from './workspace-identity';
 import {makeSession,readSession,sessionCookie} from "./session";
 import {mailRoute,mailCallback,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from "./mail-routes";
@@ -50,6 +51,7 @@ interface Env extends BookingEnv, SchedulingEmailEnv {
 	ASSETS: Fetcher;
 	GOOGLE_CLIENT_ID: string;
 	TOKEN_SECRET: string;
+	OAUTH_KV?: KVNamespace;
 }
 
 // D1 caps a row at 2MB, so that's the real ceiling; leave headroom under it.
@@ -63,6 +65,7 @@ export default {
 		const { pathname } = url;
 
 		try {
+            if(isPeopleOAuthRequest(request))return await peopleOAuthRoute(request,env,ctx);
             if(pathname.startsWith('/api/cli/')){
                 const browser=['/api/cli/device/approve','/api/cli/device/preview','/api/cli/devices','/api/cli/devices/revoke'].includes(pathname);
                 const auth=browser?await requireGoogleUser(request,env):null;
@@ -275,7 +278,7 @@ export async function requireGoogleUser(
 	const token = bearer(request);
 	if (!token) { const email = await readSession(request,env.TOKEN_SECRET); return email ? {email} : { error: "missing_token" }; }
 	// Scheduling credentials are scoped to our API; never send them to Google.
-	if (token.startsWith("sched_") || token.startsWith("people_") || token.startsWith("pgd1_")) return {error:"invalid_token"};
+	if (token.startsWith("sched_") || token.startsWith("people_") || token.startsWith("pgd1_") || token.includes(':')) return {error:"invalid_token"};
 
 	let resp:Response,info:{aud?:string;email?:string;email_verified?:string|boolean};
 	try{

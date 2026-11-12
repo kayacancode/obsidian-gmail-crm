@@ -144,15 +144,20 @@ peoplegraph --local --cache /path/to/contact-index.json propose-merge maya.river
 
     <section>
       <h2>Your saved Lens and relationship context</h2>
-      <p>Set <code>PEOPLEGRAPH_WEB_URL</code> to your hosted People origin and <code>PEOPLEGRAPH_WEB_TOKEN</code> to your People integration credential. Each command also accepts <code>--url &lt;https-origin&gt;</code>.</p>
+      <p>Run <code>peoplegraph login --write</code> and approve the displayed People permissions. The CLI saves one origin-bound key in <code>~/.config/peoplegraph/config.json</code> (or your XDG config directory). Use <code>peoplegraph status</code> to verify access. Existing keys can be supplied through <code>configure --url &lt;origin&gt; --token-stdin</code>.</p>
       <pre><code>peoplegraph lens
+peoplegraph lens set --needs "Clinical design partners"
+peoplegraph api GET /api/lens
 peoplegraph matches
 peoplegraph search "clinical design partners" --limit 20
 peoplegraph connection --from person-123 --to ada@example.com
 peoplegraph helpers --person-id person-123
 peoplegraph memory lookup --email ada@example.com</code></pre>
       <p>These commands use your confirmed saved Lens, matches and source-backed relationship evidence from People. Search accepts 1–200 characters and a limit of 1–50 (default 20). Resolve names with search, then supply exact IDs or emails to connection; helpers requires an exact person ID. The CLI preserves the returned evidence and never guesses an identity.</p>
-      <p>Private Lens and memory commands require the explicit People integration credential. Device credentials from <code>peoplegraph login</code> retain read-only graph access. Private requests have no local-cache or legacy-remote fallback, reject <code>--local</code>, <code>--remote</code>, <code>--host</code>, <code>--token</code> and <code>--cache</code>, and return structured errors on conflicts or failed requests. Run <code>peoplegraph describe</code> for the agent-readable command and authentication contract.</p>
+      <p><code>lens refresh</code> returns HTTP 202 after saving a background <code>refresh.job</code>. Follow it with <code>lens inspect</code> or <code>api GET /api/lens</code>; do not refresh again while queued or running. A completed job is separate from Honcho readiness: check <code>refresh.state</code>, <code>refresh.nextAction</code>, and <code>honcho.lastSync</code>. Idle without an active job is not ongoing work. Gmail context backfill runs independently, and matches do not require Lens refresh.</p>
+      <p>PeopleGraph 0.3.17 warns when an environment token overrides a saved login. Source setup needs <code>login --write --scope sources:manage</code> and a live scope check. Gmail content extraction is a separate explicit opt-in. Matches and Lens inspection report aggregate source-context counts and hints; candidate counts do not promise the same number of recommendations. See the <a href="../../docs/people-agent-onboarding.md">six-step onboarding guide</a>.</p>
+      <p><code>web_request_timeout</code> identifies the client's deadline; <code>stats.httpStatus</code>, when present, records the status actually received. An absent status does not imply HTTP 503. Safe server errors such as <code>people_memory_failed</code> remain distinguishable. Matches/helpers allow 180 seconds for ranking's 15 + 60 + 60 second model stages and data reads; ordinary reads and refresh enqueue retain 30 seconds. A 30-second refresh timeout is not expected progress. Inspect mutation status before retrying a timeout.</p>
+      <p>New browser login creates a scoped People integration credential for graph and private commands. Old device credentials remain graph-only until explicit reauthorization. Partial Lens edits preserve other fields and reject stale revisions. Private requests have no local-cache or legacy-remote fallback, reject <code>--local</code>, <code>--remote</code>, <code>--host</code>, <code>--token</code> and <code>--cache</code>, and return structured errors on conflicts or failed requests. Run <code>peoplegraph describe</code> for the agent-readable command and authentication contract.</p>
     </section>
 
     <section>
