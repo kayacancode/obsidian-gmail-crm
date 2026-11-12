@@ -28,6 +28,7 @@ import { syncContactPhotos } from "./people-photos";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
+import { graphViewUrl } from "./graph-view";
 import { writeQuadrantView } from "./quadrant-view";
 import type {
 	GmailCrmSettings,
@@ -192,6 +193,12 @@ export default class GmailCrmPlugin extends Plugin {
 			id: "push-people-graph",
 			name: "Push people graph to web",
 			callback: () => { void this.pushPeopleGraph(); },
+		});
+
+		this.addCommand({
+			id: "view-people-graph",
+			name: "View people graph",
+			callback: () => { this.viewPeopleGraph(); },
 		});
 
 		// Command: full rescore, including a rebuilt relationship graph
@@ -433,6 +440,10 @@ export default class GmailCrmPlugin extends Plugin {
 					}
 				}
 			}
+
+			// Keep local relationships current on both manual and scheduled syncs.
+			// Mapping uses vault notes and Gmail metadata; it does not invoke AI.
+			await this.enrichAllPeople(true);
 
 			notice.setMessage(`Synced ${contactCount} contacts — updating scores...`);
 
@@ -753,6 +764,14 @@ export default class GmailCrmPlugin extends Plugin {
 			const graph = engine.buildGraph(pages, this.contactIndex);
 			const connected = Object.values(graph).filter((edges) => edges.length > 0).length;
 			notice.setMessage(`Graph: ${connected}/${count} connected. Enriching...`);
+			if (skipAi && this.contactIndex) {
+				for (const [name, page] of Object.entries(pages)) {
+					const contact = this.getContactForPage(page);
+					if (contact) contact.connections = graph[name]?.length ?? 0;
+				}
+				this.contactIndex.edges = this.buildContactEdges(pages, graph);
+				await this.saveContactIndex();
+			}
 
 			let harper: HarperSkill | null = null;
 			if (!skipAi) {
@@ -792,14 +811,14 @@ export default class GmailCrmPlugin extends Plugin {
 						(r) => `- [[p- ${r.target}]] — ${r.type.replace(/_/g, " ")}: ${r.context}`
 					);
 					const relSection = relLines.length > 0 ? relLines.join("\n") : "- No mapped relationships yet.";
-					let content = await this.app.vault.read(file);
+					const currentContent = await this.app.vault.read(file);
 					// Strip old relationship section
-					content = content.replace(
+					const content = currentContent.replace(
 						/\n## Relationships\n[\s\S]*?(?=\n## |\s*$)/,
 						""
 					);
-					content = content.trimEnd() + `\n\n## Relationships\n${relSection}\n`;
-					await this.app.vault.modify(file, content);
+					const updated = content.trimEnd() + `\n\n## Relationships\n${relSection}\n`;
+					if (updated !== currentContent) await this.app.vault.modify(file, updated);
 				}
 			}
 
@@ -998,6 +1017,15 @@ export default class GmailCrmPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Score push failed: ${msg}`);
 		}
+	}
+
+	viewPeopleGraph() {
+		const url = graphViewUrl(this.settings.graphPushUrl);
+		if (!url) {
+			new Notice("Enter a valid HTTP or HTTPS graph URL in plugin settings.");
+			return;
+		}
+		window.open(url);
 	}
 
 	async pushPeopleGraph() {

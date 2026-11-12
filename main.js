@@ -2074,7 +2074,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       })
     );
     new import_obsidian3.Setting(containerEl).setName("People graph web view").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Graph URL").setDesc("Deployment to push your people graph to. Empty disables pushing.").addText(
+    new import_obsidian3.Setting(containerEl).setName("Graph URL").setDesc("Deployment to push your people graph to and open with View people graph. Empty opens the hosted graph and disables pushing.").addText(
       (text) => text.setValue(this.plugin.settings.graphPushUrl).onChange(async (value) => {
         this.plugin.settings.graphPushUrl = value.trim();
         await this.plugin.saveSettings();
@@ -2148,7 +2148,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("Enrich on sync").setDesc("Automatically run enrichment after sync").addToggle(
+    new import_obsidian3.Setting(containerEl).setName("AI enrichment on sync").setDesc("Optional AI rewrite after sync. Local relationship mapping runs automatically without AI.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.enrichOnSync).onChange(async (value) => {
         this.plugin.settings.enrichOnSync = value;
         await this.plugin.saveSettings();
@@ -2259,6 +2259,9 @@ function startOAuthCallbackServer() {
 
 // src/relationships.ts
 var import_obsidian4 = require("obsidian");
+function sourceContentForMapping(content) {
+  return content.replace(/\n## Relationships\n[\s\S]*?(?=\n## |\s*$)/, "");
+}
 function buildNameTrie(names) {
   const root = { children: /* @__PURE__ */ new Map() };
   for (const name of names) {
@@ -2305,14 +2308,15 @@ var RelationshipEngine = class {
       if (!(child instanceof import_obsidian4.TFile) || child.extension !== "md") continue;
       if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
       const content = await this.vault.read(child);
+      const sourceContent = sourceContentForMapping(content);
       const name = child.basename.replace(/^p-\s*/, "");
       const wikiLinks = [];
       const linkRegex = /\[\[p-\s*([^\]|]+?)(?:\|[^\]]*?)?\]\]/g;
       let match;
-      while ((match = linkRegex.exec(content)) !== null) {
+      while ((match = linkRegex.exec(sourceContent)) !== null) {
         wikiLinks.push(match[1].trim());
       }
-      const emailMatch = content.match(/\*\*Email:\*\*\s*(.+)/);
+      const emailMatch = sourceContent.match(/\*\*Email:\*\*\s*(.+)/);
       const emails = [];
       const addEmail = (value) => {
         const cleaned = value.replace(/[<>]/g, "").replace(/^["']|["']$/g, "").trim().toLowerCase();
@@ -2324,7 +2328,7 @@ var RelationshipEngine = class {
           addEmail(token);
         }
       }
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      const fmMatch = sourceContent.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
         for (const field of ["emails", "aliases"]) {
           const yamlList = fmMatch[1].match(new RegExp(`${field}:\\s*\\n((?:\\s+-\\s+\\S+@\\S+\\n?)+)`));
@@ -2339,17 +2343,17 @@ var RelationshipEngine = class {
           addEmail(yamlEmailScalar[1]);
         }
       }
-      const roleMatch = content.match(/\*\*Role\/Company:\*\*\s*(.+)/);
-      const introMatch = content.match(
+      const roleMatch = sourceContent.match(/\*\*Role\/Company:\*\*\s*(.+)/);
+      const introMatch = sourceContent.match(
         /(?:introduced by|via|through)\s+(?:\[\[p-\s*)?([A-Z][a-z]+ [A-Z][a-z]+)/i
       );
       const meetings = [];
       const meetingRegex = /###\s+(\d{4}-\d{2}-\d{2})\s*[—–-]\s*(.+)/g;
-      while ((match = meetingRegex.exec(content)) !== null) {
+      while ((match = meetingRegex.exec(sourceContent)) !== null) {
         meetings.push({ date: match[1], title: match[2].trim() });
       }
-      const howMatch = content.match(/\*\*How .+? knows them:\*\*\s*(.+)/);
-      const ctxMatch = content.match(/\*\*Key context:\*\*\s*(.+)/);
+      const howMatch = sourceContent.match(/\*\*How .+? knows them:\*\*\s*(.+)/);
+      const ctxMatch = sourceContent.match(/\*\*Key context:\*\*\s*(.+)/);
       pages[name] = {
         name,
         path: child.path,
@@ -2404,7 +2408,7 @@ var RelationshipEngine = class {
         }
       }
       const wikiLinks = new Set(page.wikiLinks);
-      const mentioned = findMentionedNames(page.content, nameTrie);
+      const mentioned = findMentionedNames(sourceContentForMapping(page.content), nameTrie);
       const ordered = Array.from(mentioned).sort(
         (a, b) => {
           var _a2, _b2;
@@ -4427,6 +4431,19 @@ async function createBaseView(vault, peopleFolder) {
   return basePath;
 }
 
+// src/graph-view.ts
+var HOSTED_PEOPLE_GRAPH_URL = "https://people-graph.kayarjones901.workers.dev/";
+function graphViewUrl(configuredUrl) {
+  const value = configuredUrl.trim();
+  if (!value) return HOSTED_PEOPLE_GRAPH_URL;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // src/quadrant-view.ts
 var import_obsidian12 = require("obsidian");
 var QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize", "suppressed"];
@@ -4692,6 +4709,13 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
       }
     });
     this.addCommand({
+      id: "view-people-graph",
+      name: "View people graph",
+      callback: () => {
+        this.viewPeopleGraph();
+      }
+    });
+    this.addCommand({
       id: "rescore-all",
       name: "Rescore all contacts (full rebuild)",
       callback: () => {
@@ -4905,6 +4929,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
           }
         }
       }
+      await this.enrichAllPeople(true);
       notice.setMessage(`Synced ${contactCount} contacts \u2014 updating scores...`);
       if (this.settings.autoUpdateStaleness) {
         await this.updateStaleness();
@@ -5177,7 +5202,7 @@ ${body}`;
     }
   }
   async enrichAllPeople(skipAi = false) {
-    var _a;
+    var _a, _b, _c;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
     const notice = new import_obsidian13.Notice("Loading people pages...", 0);
     try {
@@ -5187,6 +5212,14 @@ ${body}`;
       const graph = engine.buildGraph(pages, this.contactIndex);
       const connected = Object.values(graph).filter((edges) => edges.length > 0).length;
       notice.setMessage(`Graph: ${connected}/${count} connected. Enriching...`);
+      if (skipAi && this.contactIndex) {
+        for (const [name, page] of Object.entries(pages)) {
+          const contact = this.getContactForPage(page);
+          if (contact) contact.connections = (_b = (_a = graph[name]) == null ? void 0 : _a.length) != null ? _b : 0;
+        }
+        this.contactIndex.edges = this.buildContactEdges(pages, graph);
+        await this.saveContactIndex();
+      }
       let harper = null;
       if (!skipAi) {
         if (!this.settings.anthropicApiKey) {
@@ -5204,7 +5237,7 @@ ${body}`;
       for (const [name, page] of Object.entries(pages)) {
         done++;
         notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
-        const relationships = (_a = graph[name]) != null ? _a : [];
+        const relationships = (_c = graph[name]) != null ? _c : [];
         const file = this.app.vault.getAbstractFileByPath(page.path);
         if (!(file instanceof import_obsidian13.TFile)) continue;
         if (harper) {
@@ -5221,17 +5254,17 @@ ${body}`;
             (r) => `- [[p- ${r.target}]] \u2014 ${r.type.replace(/_/g, " ")}: ${r.context}`
           );
           const relSection = relLines.length > 0 ? relLines.join("\n") : "- No mapped relationships yet.";
-          let content = await this.app.vault.read(file);
-          content = content.replace(
+          const currentContent = await this.app.vault.read(file);
+          const content = currentContent.replace(
             /\n## Relationships\n[\s\S]*?(?=\n## |\s*$)/,
             ""
           );
-          content = content.trimEnd() + `
+          const updated = content.trimEnd() + `
 
 ## Relationships
 ${relSection}
 `;
-          await this.app.vault.modify(file, content);
+          if (updated !== currentContent) await this.app.vault.modify(file, updated);
         }
       }
       notice.setMessage(`Enriched ${count} people pages!`);
@@ -5397,6 +5430,14 @@ ${relSection}
       const msg = e instanceof Error ? e.message : String(e);
       new import_obsidian13.Notice(`Score push failed: ${msg}`);
     }
+  }
+  viewPeopleGraph() {
+    const url = graphViewUrl(this.settings.graphPushUrl);
+    if (!url) {
+      new import_obsidian13.Notice("Enter a valid HTTP or HTTPS graph URL in plugin settings.");
+      return;
+    }
+    window.open(url);
   }
   async pushPeopleGraph() {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
