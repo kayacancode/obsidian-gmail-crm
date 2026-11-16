@@ -1,6 +1,6 @@
 # Privacy Policy — Gmail CRM for Obsidian
 
-**Last updated:** October 13, 2026
+**Last updated:** November 16, 2026
 
 ## What This Plugin Does
 
@@ -12,9 +12,11 @@ The plugin uses this metadata to build a local contact relationship graph inside
 
 The plugin requests the following Google API scopes:
 
-- **gmail.metadata** — read-only access to email headers (From, To, Date, Subject). No access to email body content.
+- **gmail.readonly** — read-only Gmail access, including the ability to read message bodies. Normal plugin sync requests metadata only; the granted permission is broader than normal sync usage.
 - **calendar.events.readonly** (optional) — read-only access to calendar events for meeting history.
-- **userinfo.email** — your email address, used to identify your account.
+- **contacts.readonly** and **contacts.other.readonly** — read-only contact access for contact photos.
+
+These scopes are requested together during connection, even if you do not use the calendar or photo features.
 
 The separate web app requests `gmail.readonly`, `calendar.events.readonly`, and read-only Google Contacts scopes for authorized contact photos. Normal web sync imports email metadata only. Calendar invitation/RSVP counts can appear on shared connection cards for contributed contacts; event titles are not included in those shared activity summaries. Invitations do not establish attendance.
 
@@ -24,7 +26,7 @@ The desktop plugin stores the following data on your device:
 
 - Contact index (names, emails, scores) in your Obsidian vault's plugin data folder
 - People pages (markdown notes) in your vault
-- OAuth tokens in Obsidian's plugin settings (local to your device)
+- OAuth tokens and API keys in Obsidian's plugin settings, without plugin-level encryption. Vault sync and backups may copy them to other devices or providers.
 
 Local Obsidian content stays local unless you explicitly push a bounded graph snapshot to the People Graph service. Connecting Granola directly to the web app imports meeting content into your account’s cloud storage; workspace sharing is a separate choice. A pushed snapshot uses vault-hashed contact IDs and contains only the graph fields shown for upload; it does not contain raw email bodies. Cloud inbox metadata and encrypted refresh grants are isolated inside the signed-in owner's Durable Object. Public, firm and private evidence are stored and returned as separate visibility classes: Firm views receive only firm evidence, Public views receive only public evidence, and the owner's My view can use all evidence authorized for that owner.
 
@@ -32,7 +34,7 @@ Explicit deeper retrieval holds decoded body text only in transient memory while
 
 ## AI Enrichment (Optional)
 
-If you choose to enable AI enrichment, the plugin sends contact metadata (not email content) to Anthropic's API using **your own API key**. This is entirely optional and must be explicitly enabled.
+If you choose to enable AI enrichment, the plugin sends the existing person note (including meeting history and other content in that note), mapped relationships, connected-person names, and Gmail statistics/recent subjects to Anthropic's API using **your own API key**. Normal sync does not retrieve email bodies, but notes may contain sensitive text you added yourself. This is entirely optional and must be explicitly enabled.
 
 ## Third-Party Services
 
@@ -66,3 +68,9 @@ You can also disconnect within the plugin: Settings → Gmail CRM → Disconnect
 ## Contact
 
 For questions about this privacy policy or the plugin's data practices, please open an issue at [github.com/kayacancode/obsidian-gmail-crm](https://github.com/kayacancode/obsidian-gmail-crm/issues).
+
+## Embedded People graph sign-in
+
+Opening the graph connects to the configured People server, or the hosted Cloudflare deployment. Browser authorization creates a five-minute, single-use connection request bound to the requesting tab. Approval establishes an HttpOnly, Secure, partitioned embedded session lasting up to 24 hours. Sign out using the People app to clear that session. Opening the graph does not itself upload vault notes.
+
+The optional custom score endpoint receives contact scores and the configured owner identity when score push is used. The local Google OAuth callback listens temporarily on `127.0.0.1:42813`.

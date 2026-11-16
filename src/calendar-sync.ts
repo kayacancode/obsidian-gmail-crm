@@ -62,7 +62,7 @@ export async function syncCalendarData(
 	// Persistence failures must reach the caller; only optional API failures are non-fatal.
 	await onInteractions?.([...stats.values()].flatMap(s => s.events));
 	mergeCalendarStats(contacts, stats);
-	console.log(`[Gmail CRM] Calendar sync complete — updated ${stats.size} contacts`);
+	console.debug(`[Gmail CRM] Calendar sync complete — updated ${stats.size} contacts`);
 }
 
 async function getHeaders(settings: GmailCrmSettings): Promise<Record<string, string>> {
@@ -111,7 +111,7 @@ async function fetchCalendarStats(
 			throw new Error(`Calendar API HTTP ${resp.status}: ${(resp.text ?? "").slice(0, 300)}`);
 		}
 
-		const data: CalendarListResponse = resp.json;
+		const data = resp.json as CalendarListResponse;
 		const events = data.items ?? [];
 
 		for (const event of events) {

@@ -552,7 +552,7 @@ export class PeopleWorkspace {
     const terms = el("input", termsLabel);
     terms.required = true;
     terms.maxLength = 500;
-    terms.placeholder = "developer infrastructure, CTO, platform engineering";
+    terms.placeholder = "Developer infrastructure, CTO, platform engineering";
     const submit = el("button", form, "Add goal", "pi-button");
     submit.type = "submit";
     form.onsubmit = (e) => {
@@ -810,7 +810,7 @@ export class PeopleWorkspace {
       });
       node.addEventListener("click", () => this.choose(n.person));
       node.addEventListener("keydown", (event) => {
-        const e = event as KeyboardEvent;
+        const e = event;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           this.choose(n.person);

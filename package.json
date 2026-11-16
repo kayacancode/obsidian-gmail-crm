@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-gmail-crm",
-	"version": "0.9.6",
+	"version": "1.0.0",
 	"description": "Obsidian plugin — lightweight CRM from Gmail metadata",
 	"main": "main.js",
 	"scripts": {
@@ -10,7 +10,11 @@
 		"package:peoplegraph": "node scripts/copy-peoplegraph.mjs",
 		"peoplegraph:telegram-review": "node scripts/peoplegraph-telegram-review.mjs",
 		"test:intelligence": "node scripts/test-intelligence.mjs",
-		"preview:intelligence": "node scripts/preview-intelligence.mjs"
+		"preview:intelligence": "node scripts/preview-intelligence.mjs",
+		"typecheck": "tsc --noEmit",
+		"package:plugin": "node scripts/package-plugin.mjs",
+		"check:release": "npm run lint && npm run test:intelligence && npm run typecheck && npm run build && npm run package:plugin",
+		"lint": "eslint src"
 	},
 	"keywords": [
 		"obsidian",
@@ -22,17 +26,19 @@
 	"devDependencies": {
 		"@codemirror/state": "6.5.0",
 		"@codemirror/view": "6.38.6",
-		"@eslint/json": "^1.2.0",
+		"@eslint/json": "0.14.0",
 		"@microsoft/eslint-plugin-sdl": "^1.1.0",
 		"@types/node": "^25.5.0",
 		"@typescript-eslint/eslint-plugin": "^8.58.0",
 		"@typescript-eslint/parser": "^8.58.0",
+		"@typescript-eslint/utils": "^8.72.2",
 		"builtin-modules": "^5.0.0",
 		"esbuild": "^0.27.4",
+		"eslint": "^9.39.4",
 		"eslint-plugin-depend": "^1.5.0",
 		"eslint-plugin-import": "^2.32.0",
-		"eslint-plugin-obsidian": "^2.29.0",
 		"eslint-plugin-obsidianmd": "^0.1.9",
+		"globals": "^16.5.0",
 		"obsidian": "^1.12.3",
 		"tslib": "^2.8.1",
 		"typescript": "^6.0.2",

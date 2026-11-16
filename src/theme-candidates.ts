@@ -134,7 +134,7 @@ function sectionPhrases(content: string): string[] {
 	for (let index = 0; index < headings.length; index++) {
 		if (!THEME_SECTIONS.has(headings[index][1].trim().toLocaleLowerCase())) continue;
 		const start = (headings[index].index ?? 0) + headings[index][0].length;
-		const end = index + 1 < headings.length ? headings[index + 1].index! : body.length;
+		const end = index + 1 < headings.length ? headings[index + 1].index : body.length;
 		for (const line of body.slice(start, end).split(/\r?\n/)) {
 			const value = line.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, "").trim();
 			if (value) out.push(value);

@@ -63,7 +63,7 @@ export interface GraphPayload {
 	themeSignals: GraphThemeSignalOut[];
 }
 
-export interface GraphThemeInput extends LocalThemeCandidate {}
+export type GraphThemeInput = LocalThemeCandidate;
 
 export interface GraphThemeOut {
 	id: string;
@@ -158,7 +158,7 @@ export async function buildGraphPayload(
 			nodes.push({
 				id: await idFor(email),
                 ...(measuredContact(c.measuredContact)?{measuredContact:measuredContact(c.measuredContact)!}:{}),
-                ...(workspaces.length ? {workspaceIdentities:Object.fromEntries(await Promise.all(workspaces.map(async w=>[w.id,await workspaceIdentity(w.key,email)])))} : {}),
+                ...(workspaces.length ? {workspaceIdentities:Object.fromEntries(await Promise.all(workspaces.map(async w=>[w.id,await workspaceIdentity(w.key,email)] as const)))} : {}),
 				name: c.name,
 				role: c.role?.slice(0, 200),
 				photoUrl: safeGraphPhoto(c.photoUrl),
@@ -356,9 +356,16 @@ export async function fetchMatchingWorkspaces(config:GraphPushConfig):Promise<Ar
  const res=await requestUrl({url:`${config.url.replace(/\/$/, "")}/api/matching-workspaces`,method:'GET',headers:{Authorization:`Bearer ${config.token}`},throw:false});
  if(res.status===404)return []; // Compatible with an older self-hosted viewer.
  if(res.status!==200)throw new Error(`Could not prepare shared identity matching (${res.status}). Retry the push.`);
- const value=res.json;
- if(!Array.isArray(value?.workspaces)||value.workspaces.length>8||value.workspaces.some((w:any)=>typeof w.id!=='string'||!/^[a-zA-Z0-9-]{1,80}$/.test(w.id)||typeof w.key!=='string'||!w.key))throw new Error('Invalid shared matching configuration');
- return value.workspaces;
+ const value=res.json as {workspaces?:unknown};
+ if(!value || !Array.isArray(value.workspaces) || value.workspaces.length>8)throw new Error('Invalid shared matching configuration');
+ const workspaces: Array<{id:string;key:string}> = [];
+ for(const raw of value.workspaces as unknown[]){
+  if(!raw || typeof raw!=='object')throw new Error('Invalid shared matching configuration');
+  const item=raw as Record<string,unknown>;
+  if(typeof item.id!=='string'||!/^[a-zA-Z0-9-]{1,80}$/.test(item.id)||typeof item.key!=='string'||!item.key)throw new Error('Invalid shared matching configuration');
+  workspaces.push({id:item.id,key:item.key});
+ }
+ return workspaces;
 }
 export async function workspaceIdentity(key:string,email:string):Promise<string>{
  const enc=new TextEncoder(),k=await crypto.subtle.importKey('raw',enc.encode(key),{name:'HMAC',hash:'SHA-256'},false,['sign']);

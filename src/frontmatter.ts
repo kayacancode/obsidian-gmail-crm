@@ -463,7 +463,7 @@ export class FrontmatterManager {
 				}
 			}
 
-			for (const [key, val] of Object.entries(fields)) {
+			for (const [key, val] of (Object.entries(fields) as [string, CrmFrontmatter[keyof CrmFrontmatter]][])) {
 				if (!existingKeys.has(key) && val !== undefined) {
 					updatedLines.push(this.formatField(key, val));
 				}
@@ -473,7 +473,7 @@ export class FrontmatterManager {
 			return content.replace(/^---\n[\s\S]*?\n---/, newFm);
 		} else {
 			const lines: string[] = [];
-			for (const [key, val] of Object.entries(fields)) {
+			for (const [key, val] of (Object.entries(fields) as [string, CrmFrontmatter[keyof CrmFrontmatter]][])) {
 				if (val !== undefined) {
 					lines.push(this.formatField(key, val));
 				}

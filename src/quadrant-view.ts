@@ -1,4 +1,4 @@
-import { TFile, TFolder, Vault, normalizePath } from "obsidian";
+import { TFile, TFolder, Vault, normalizePath, type FileManager } from "obsidian";
 
 interface PersonRow {
 	name: string;
@@ -20,7 +20,8 @@ const QUADRANT_LABELS: Record<string, { title: string; subtitle: string }> = {
 
 export async function writeQuadrantView(
 	vault: Vault,
-	peopleFolder: string
+	peopleFolder: string,
+ fileManager: FileManager
 ): Promise<string> {
 	const folder = vault.getAbstractFileByPath(normalizePath(peopleFolder));
 	if (!(folder instanceof TFolder)) {
@@ -88,7 +89,7 @@ export async function writeQuadrantView(
 	const legacy = vault.getAbstractFileByPath(legacyPath);
 	if (legacy instanceof TFile) {
 		try {
-			await vault.delete(legacy);
+			await fileManager.trashFile(legacy);
 		} catch {
 			// non-fatal — user can delete manually
 		}

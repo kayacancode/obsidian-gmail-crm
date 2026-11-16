@@ -131,7 +131,7 @@ COPY ALL EXISTING MEETING ENTRIES EXACTLY AS THEY APPEAR. Do not summarize, merg
 			}),
 		});
 
-		const data = resp.json;
+		const data = resp.json as {content:Array<{text:string}>};
 		return data.content[0].text;
 	}
 }

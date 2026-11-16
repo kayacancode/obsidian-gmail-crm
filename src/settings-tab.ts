@@ -38,7 +38,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 						const clientId = this.plugin.getEffectiveClientId();
 						const clientSecret = this.plugin.getEffectiveClientSecret();
 						if (!clientId || !clientSecret) {
-							new Notice("Please enter client ID and client secret in advanced OAuth settings, or wait for shared credentials to be configured.");
+							new Notice("Enter your client ID and client secret in the advanced Google sign-in settings.");
 							return;
 						}
 						await this.plugin.startOAuthFlow();
@@ -63,7 +63,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		// Advanced OAuth toggle
 		new Setting(containerEl)
-			.setName("Use custom OAuth credentials")
+			.setName("Use custom Google credentials")
 			.setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials")
 			.addToggle((toggle) =>
 				toggle
@@ -109,10 +109,10 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Blocked domains")
-			.setDesc("Comma-separated domains to exclude (e.g. substack.com, readwise.io). Common services like noreply senders are auto-filtered.")
+			.setDesc("Domains to skip during sync, separated by commas. Automated senders are also filtered.")
 			.addTextArea((text) =>
 				text
-					.setPlaceholder("substack.com, readwise.io, beehiiv.com")
+					.setPlaceholder("Enter newsletter domains")
 					.setValue(this.plugin.settings.blockedDomains)
 					.onChange(async (value) => {
 						this.plugin.settings.blockedDomains = value;
@@ -125,7 +125,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 			.setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.")
 			.addText((text) =>
 				text
-					.setPlaceholder("promotions, social")
+					.setPlaceholder("Example: promotions, social")
 					.setValue(this.plugin.settings.excludeCategories)
 					.onChange(async (value) => {
 						this.plugin.settings.excludeCategories = value;
@@ -135,10 +135,10 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Exclude Gmail labels")
-			.setDesc("Comma-separated Gmail labels to skip during sync (e.g. shop@, service@). These are custom labels in your Gmail.")
+			.setDesc("Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.")
 			.addText((text) =>
 				text
-					.setPlaceholder("shop@, service@")
+					.setPlaceholder("Example: shop@, service@")
 					.setValue(this.plugin.settings.excludeLabels)
 					.onChange(async (value) => {
 						this.plugin.settings.excludeLabels = value;
@@ -152,7 +152,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Sync interval")
 			.setDesc(
-				"How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch — so a long interval still happens on a machine that gets restarted. On daily or weekly, raise \"Max messages to scan\" above the volume you receive in that window, or older messages fall outside it and are never scanned."
+				"How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch — so a long interval still happens on a machine that gets restarted. On daily or weekly, raise \"max messages to scan\" above the volume you receive in that window, or older messages fall outside it and are never scanned."
 			)
 			.addDropdown((dd) => {
 				const choices: [number, string][] = [
@@ -184,7 +184,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Max messages to scan")
-			.setDesc("Number of recent messages to pull metadata from. \"All\" pulls your entire mailbox — slow on first run, but incremental syncs after that only fetch new messages.")
+			.setDesc("Number of recent messages to pull metadata from. \"all\" pulls your entire mailbox — slow on first run, but incremental syncs after that only fetch new messages.")
 			.addDropdown((dd) => {
 				for (const n of [100, 250, 500, 1000, 2000, 5000, 10000, 25000, 50000]) {
 					dd.addOption(String(n), String(n));
@@ -238,7 +238,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Endpoint URL")
-			.setDesc("Server to push relationship scores to (receives POST /api/scores/push). Empty disables pushing.")
+			.setDesc("Server that receives relationship scores. Leave empty to disable uploads.")
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.scorePushUrl)
@@ -250,7 +250,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Your email")
-			.setDesc("Identity sent with each push, e.g. you@example.com.")
+			.setDesc("Identity sent with each push, for example: you@example.com.")
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.scorePushEmail)
@@ -290,7 +290,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Graph URL")
-			.setDesc("Deployment to push your people graph to and open with View people graph. Empty opens the hosted graph and disables pushing.")
+			.setDesc("Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.")
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.graphPushUrl)
@@ -361,7 +361,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Your name")
-			.setDesc("How you should be referred to on enriched people pages (e.g., 'How Alex knows them'). Leave blank to use 'the vault owner'.")
+			.setDesc("Your name on enriched people pages. Leave blank to refer to you as the vault owner.")
 			.addText((text) =>
 				text
 					.setPlaceholder("Your full name")
@@ -374,7 +374,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("People pages folder")
-			.setDesc("Vault folder containing your people notes (e.g., 'people pages')")
+			.setDesc("Vault folder containing your people notes (for example, 'people pages')")
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.peopleFolder)

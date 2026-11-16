@@ -18,18 +18,25 @@ test("graph view rejects malformed and non-web URLs", () => {
   assert.equal(graphViewUrl("not a URL"), null);
 });
 
-test("view command opens the hosted graph without a push token", () => {
-	const plugin = Object.create(GmailCrmPlugin.prototype) as any;
-	plugin.settings = { graphPushUrl: "", graphPushToken: "" };
-	const previousWindow = (globalThis as any).window;
-	let opened = "";
-	(globalThis as any).window = { open: (url: string) => { opened = url; } };
-	try {
-		plugin.viewPeopleGraph();
-	} finally {
-		(globalThis as any).window = previousWindow;
-	}
-	assert.equal(opened, "https://people-graph.kayarjones901.workers.dev/");
+test("view command opens a People tab without a push token and reuses it", async () => {
+ const plugin = Object.create(GmailCrmPlugin.prototype) as any;
+ plugin.settings = { graphPushUrl: "", graphPushToken: "" };
+ const states: unknown[] = [];
+ const leaf = { setViewState: async (state: unknown) => { states.push(state); } };
+ let existing = false;
+ let created = 0;
+ let revealed = 0;
+ plugin.app = { workspace: {
+  getLeavesOfType: () => existing ? [leaf] : [],
+  getLeaf: () => { created++; return leaf; },
+  revealLeaf: async (value: unknown) => { assert.equal(value, leaf); revealed++; },
+ } };
+ await plugin.viewPeopleGraph();
+ existing = true;
+ await plugin.viewPeopleGraph();
+ assert.equal(created, 1);
+ assert.equal(revealed, 2);
+ assert.equal((states[0] as any).type, "gmail-crm-people-graph");
 });
 
 test("contact sync maps relationships without AI after writing new pages and before scoring", async () => {

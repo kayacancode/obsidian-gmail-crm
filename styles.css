@@ -325,3 +325,9 @@
 /* Long real-world contact/company names must not widen native select controls. */
 .pi-workspace .pi-field select { min-width: 0; width: 100%; }
 .pi-workspace .pi-toolbar > input { min-width: 0; }
+
+/* Hosted People workspace */
+.gmail-crm-people-graph { display: flex; flex-direction: column; height: 100%; padding: 0; overflow: hidden; }
+.gmail-crm-people-graph-toolbar { display: flex; gap: var(--size-4-2); padding: var(--size-4-2); }
+.gmail-crm-people-graph-help { color: var(--text-muted); font-size: var(--font-ui-small); margin: 0; padding: 0 var(--size-4-2) var(--size-4-2); }
+.gmail-crm-people-graph-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: var(--background-primary); }
