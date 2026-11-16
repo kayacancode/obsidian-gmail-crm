@@ -4,9 +4,6 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -29,647 +26,642 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// src/types.ts
-var CONTACT_INDEX_SCHEMA_VERSION, DEFAULT_SETTINGS;
-var init_types = __esm({
-  "src/types.ts"() {
-    CONTACT_INDEX_SCHEMA_VERSION = 1;
-    DEFAULT_SETTINGS = {
-      clientId: "",
-      clientSecret: "",
-      useCustomOAuth: false,
-      accessToken: "",
-      refreshToken: "",
-      tokenExpiry: 0,
-      syncIntervalMinutes: 60,
-      maxResults: 500,
-      createContactNotes: false,
-      contactNotesFolder: "People pages",
-      vaultOwnerName: "",
-      peopleFolder: "People pages",
-      companiesFolder: "Companies",
-      anthropicApiKey: "",
-      harperModel: "claude-sonnet-4-6",
-      enrichOnSync: false,
-      blockedDomains: "",
-      autoUpdateStaleness: true,
-      stalenessUpdateInterval: 0,
-      // 0 = only after sync, not on its own timer
-      excludeCategories: "promotions,social",
-      // skip promo and social by default
-      excludeLabels: "",
-      // user-configured labels to skip
-      scorePushUrl: "",
-      scorePushEmail: "",
-      scorePushApiKey: "",
-      autoPushScores: true,
-      graphPushUrl: "",
-      graphPushToken: "",
-      graphPushSalt: "",
-      // generated on first push
-      debugScoring: false,
-      lastSyncAt: 0,
-      lastScoredAt: 0,
-      fetchContactPhotos: false
-    };
-  }
-});
-
-// src/gmail-api.ts
-var gmail_api_exports = {};
-__export(gmail_api_exports, {
-  GmailApi: () => GmailApi,
-  SHARED_CLIENT_ID: () => SHARED_CLIENT_ID,
-  SHARED_CLIENT_SECRET: () => SHARED_CLIENT_SECRET
-});
-var import_obsidian, GOOGLE_AUTH_URL, GOOGLE_TOKEN_URL, GMAIL_API_BASE, SCOPES, REDIRECT_URI, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET, RSVP_SUBJECT_PATTERN, AUTOMATED_EMAIL_PATTERN, AUTOMATED_DOMAINS, GmailApi;
-var init_gmail_api = __esm({
-  "src/gmail-api.ts"() {
-    import_obsidian = require("obsidian");
-    init_types();
-    GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-    GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-    GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-    SCOPES = [
-      "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/calendar.events.readonly",
-      "https://www.googleapis.com/auth/contacts.readonly",
-      "https://www.googleapis.com/auth/contacts.other.readonly"
-    ].join(" ");
-    REDIRECT_URI = "http://127.0.0.1:42813/callback";
-    SHARED_CLIENT_ID = "726397126192-kuv4nprnrumuekateh37t3abne2r5893.apps.googleusercontent.com";
-    SHARED_CLIENT_SECRET = "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";
-    RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
-    AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
-    AUTOMATED_DOMAINS = /* @__PURE__ */ new Set([
-      // Cloud / SaaS
-      "dropbox.com",
-      "dropboxmail.com",
-      "google.com",
-      "accounts.google.com",
-      "docs.google.com",
-      "amazonses.com",
-      "amazonaws.com",
-      "aws.amazon.com",
-      "microsoft.com",
-      "sharepointonline.com",
-      // Dev tools
-      "github.com",
-      "gitlab.com",
-      "bitbucket.org",
-      "vercel.com",
-      "netlify.com",
-      "heroku.com",
-      "circleci.com",
-      "travis-ci.com",
-      // Newsletters / content
-      "substack.com",
-      "substackmail.com",
-      "readwise.io",
-      "medium.com",
-      "mailchimp.com",
-      "sendgrid.net",
-      "sendgrid.com",
-      "mailgun.org",
-      "mandrillapp.com",
-      "constantcontact.com",
-      "hubspot.com",
-      "hubspotmail.com",
-      // Productivity / signing
-      "dropboxsign.com",
-      "hellosign.com",
-      "docusign.net",
-      "docusign.com",
-      "pandadoc.com",
-      "adobesign.com",
-      // Social
-      "facebookmail.com",
-      "linkedin.com",
-      "twitter.com",
-      "x.com",
-      "instagrammail.com",
-      "tiktok.com",
-      // Payments / commerce
-      "paypal.com",
-      "stripe.com",
-      "squareup.com",
-      "shopify.com",
-      "intuit.com",
-      "quickbooks.intuit.com",
-      // Scheduling / calendar
-      "calendly.com",
-      "savvycal.com",
-      "cal.com",
-      // Project management
-      "notion.so",
-      "asana.com",
-      "trello.com",
-      "monday.com",
-      "clickup.com",
-      "jira.atlassian.com",
-      "atlassian.com",
-      "atlassian.net",
-      // Design
-      "figma.com",
-      "canva.com",
-      // Other common services
-      "zoom.us",
-      "loom.com",
-      "slack.com",
-      "slackbot.com",
-      "intercom.io",
-      "intercom-mail.com",
-      "zendesk.com",
-      "eventbrite.com",
-      "meetup.com"
-    ]);
-    GmailApi = class {
-      // lock to prevent parallel refreshes
-      constructor(settings, onSettingsUpdate) {
-        this.refreshPromise = null;
-        this.settings = settings;
-        this.onSettingsUpdate = onSettingsUpdate;
-      }
-      updateSettings(settings) {
-        this.settings = settings;
-      }
-      effectiveClientId() {
-        if (this.settings.useCustomOAuth && this.settings.clientId) {
-          return this.settings.clientId;
-        }
-        return SHARED_CLIENT_ID;
-      }
-      effectiveClientSecret() {
-        if (this.settings.useCustomOAuth && this.settings.clientSecret) {
-          return this.settings.clientSecret;
-        }
-        return SHARED_CLIENT_SECRET;
-      }
-      getAuthUrl() {
-        const params = new URLSearchParams({
-          client_id: this.effectiveClientId(),
-          redirect_uri: REDIRECT_URI,
-          response_type: "code",
-          scope: SCOPES,
-          access_type: "offline",
-          prompt: "consent"
-        });
-        return `${GOOGLE_AUTH_URL}?${params.toString()}`;
-      }
-      async exchangeCode(code) {
-        var _a;
-        const resp = await this.apiRequest({
-          url: GOOGLE_TOKEN_URL,
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            code,
-            client_id: this.effectiveClientId(),
-            client_secret: this.effectiveClientSecret(),
-            redirect_uri: REDIRECT_URI,
-            grant_type: "authorization_code"
-          }).toString()
-        });
-        const data = resp.json;
-        await this.onSettingsUpdate({
-          accessToken: data.access_token,
-          refreshToken: (_a = data.refresh_token) != null ? _a : this.settings.refreshToken,
-          tokenExpiry: Date.now() + data.expires_in * 1e3
-        });
-      }
-      async refreshAccessToken() {
-        const resp = await this.apiRequest({
-          url: GOOGLE_TOKEN_URL,
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: this.effectiveClientId(),
-            client_secret: this.effectiveClientSecret(),
-            refresh_token: this.settings.refreshToken,
-            grant_type: "refresh_token"
-          }).toString()
-        });
-        const data = resp.json;
-        await this.onSettingsUpdate({
-          accessToken: data.access_token,
-          tokenExpiry: Date.now() + data.expires_in * 1e3
-        });
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async apiRequest(options, retries = 5) {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i;
-        const url = typeof options === "string" ? options : options.url;
-        const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
-        let resp;
-        try {
-          resp = await (0, import_obsidian.requestUrl)(reqOptions);
-        } catch (e) {
-          const err = e;
-          console.error(`[Gmail CRM] Network error`, { url, error: err });
-          throw new Error((_a = err == null ? void 0 : err.message) != null ? _a : "Network request failed");
-        }
-        if (resp.status >= 200 && resp.status < 300) {
-          return resp;
-        }
-        const isRateLimit = resp.status === 429 || resp.status === 403 && ((_b = resp.text) != null ? _b : "").includes("rateLimitExceeded");
-        if (isRateLimit && retries > 0) {
-          const attempt = 6 - retries;
-          const backoff = Math.min(attempt * 15e3, 6e4);
-          console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
-          await this.sleep(backoff);
-          return this.apiRequest(options, retries - 1);
-        }
-        if (resp.status === 401 && retries > 0) {
-          console.warn(`[Gmail CRM] Token expired, refreshing and retrying...`);
-          try {
-            if (!this.refreshPromise) {
-              this.refreshPromise = this.refreshAccessToken().finally(() => {
-                this.refreshPromise = null;
-              });
-            }
-            await this.refreshPromise;
-            if (typeof options !== "string" && options.headers) {
-              options.headers["Authorization"] = `Bearer ${this.settings.accessToken}`;
-            }
-            return this.apiRequest(options, retries - 1);
-          } catch (refreshErr) {
-            console.error(`[Gmail CRM] Token refresh failed`, refreshErr);
-          }
-        }
-        if ((resp.status === 500 || resp.status === 503) && retries > 0) {
-          const backoff = Math.min((6 - retries) * 5e3, 3e4);
-          console.warn(`[Gmail CRM] Server error ${resp.status}, retrying in ${backoff / 1e3}s (${retries} retries left)`);
-          await this.sleep(backoff);
-          return this.apiRequest(options, retries - 1);
-        }
-        const status = resp.status;
-        const rawBody = (_c = resp.text) != null ? _c : "";
-        console.error(`[Gmail CRM] API request failed`, {
-          url,
-          status,
-          body: rawBody,
-          headers: resp.headers
-        });
-        let detail = "";
-        if (rawBody) {
-          try {
-            const parsed = JSON.parse(rawBody);
-            detail = (_h = (_g = (_e = (_d = parsed == null ? void 0 : parsed.error) == null ? void 0 : _d.message) != null ? _e : parsed == null ? void 0 : parsed.error_description) != null ? _g : (_f = parsed == null ? void 0 : parsed.error) == null ? void 0 : _f.status) != null ? _h : JSON.stringify(parsed).slice(0, 300);
-          } catch (e) {
-            detail = rawBody.slice(0, 300);
-          }
-        }
-        if (!detail) {
-          const hints = {
-            401: "Token expired or invalid. Try disconnecting and reconnecting.",
-            403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
-            404: "Endpoint not found. The Gmail API may not be enabled.",
-            429: "Rate limited by Google. Wait a few minutes and try again."
-          };
-          detail = (_i = hints[status]) != null ? _i : `HTTP ${status}`;
-        }
-        throw new Error(`HTTP ${status}: ${detail}`);
-      }
-      sleep(ms) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
-      }
-      async getHeaders() {
-        if (Date.now() >= this.settings.tokenExpiry - 6e4) {
-          if (!this.refreshPromise) {
-            this.refreshPromise = this.refreshAccessToken().finally(() => {
-              this.refreshPromise = null;
-            });
-          }
-          await this.refreshPromise;
-        }
-        return { Authorization: `Bearer ${this.settings.accessToken}` };
-      }
-      /** Refresh the access token if it is about to expire. For callers that hit Google APIs directly. */
-      async ensureFreshToken() {
-        await this.getHeaders();
-      }
-      async getUserEmail() {
-        const headers = await this.getHeaders();
-        const resp = await this.apiRequest({
-          url: `${GMAIL_API_BASE}/profile`,
-          headers
-        });
-        return resp.json.emailAddress;
-      }
-      async fetchAllMessageIds(maxResults, afterDate) {
-        var _a, _b;
-        const headers = await this.getHeaders();
-        const allMessages = [];
-        let pageToken;
-        const unlimited = maxResults <= 0;
-        if (afterDate) {
-          console.info(
-            "[Gmail CRM] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
-            { afterDate }
-          );
-        }
-        while (unlimited || allMessages.length < maxResults) {
-          const remaining = unlimited ? 100 : maxResults - allMessages.length;
-          const params = new URLSearchParams({
-            maxResults: String(Math.min(100, remaining))
-          });
-          if (pageToken) params.set("pageToken", pageToken);
-          const excludes = [];
-          const cats = ((_a = this.settings.excludeCategories) != null ? _a : "").split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
-          for (const cat of cats) {
-            excludes.push(`-category:${cat}`);
-          }
-          const labels = ((_b = this.settings.excludeLabels) != null ? _b : "").split(",").map((l) => l.trim()).filter(Boolean);
-          for (const label of labels) {
-            excludes.push(`-label:${label}`);
-          }
-          for (const domain of this.blockedDomains) {
-            excludes.push(`-from:${domain}`);
-          }
-          const q = excludes.join(" ");
-          if (q) params.set("q", q);
-          const resp = await this.apiRequest({
-            url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
-            headers
-          });
-          const data = resp.json;
-          if (!data.messages) break;
-          allMessages.push(...data.messages);
-          pageToken = data.nextPageToken;
-          if (!pageToken) break;
-        }
-        return allMessages;
-      }
-      async fetchMessageMetadata(messageId) {
-        const headers = await this.getHeaders();
-        const resp = await this.apiRequest({
-          url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
-          headers
-        });
-        return resp.json;
-      }
-      async buildContactIndex(maxResults, onProgress, existingIndex, messageCache, onCheckpoint, onInteractions) {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
-        const userEmail = await this.getUserEmail();
-        const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
-        const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
-        const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
-        const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
-        const contacts = existingIndex ? JSON.parse(JSON.stringify(existingIndex.contacts)) : {};
-        const edges = (_c = existingIndex == null ? void 0 : existingIndex.edges) != null ? _c : [];
-        let interactions = [];
-        const threadStates = /* @__PURE__ */ new Map();
-        if (existingIndex && newMessageIds.length > 0) {
-          for (const [key, c] of Object.entries(contacts)) {
-            threadStates.set(key, /* @__PURE__ */ new Map());
-          }
-        }
-        const BATCH_SIZE = 10;
-        const BATCH_DELAY_MS = 100;
-        const CHECKPOINT_INTERVAL = 2e3;
-        const processedIds = new Set((_d = messageCache == null ? void 0 : messageCache.processedIds) != null ? _d : []);
-        let lastCheckpoint = 0;
-        for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
-          const batch = newMessageIds.slice(i, i + BATCH_SIZE);
-          const results = await Promise.all(
-            batch.map((m) => this.fetchMessageMetadata(m.id))
-          );
-          for (const msg of results) {
-            const event = this.processMessage(msg, userEmail, contacts, threadStates);
-            if (event) interactions.push(event);
-          }
-          for (const m of batch) processedIds.add(m.id);
-          const done = Math.min(i + BATCH_SIZE, newMessageIds.length);
-          onProgress == null ? void 0 : onProgress(done, newMessageIds.length);
-          if (onCheckpoint && done - lastCheckpoint >= CHECKPOINT_INTERVAL) {
-            lastCheckpoint = done;
-            this.finalizeContactMetrics(contacts, threadStates);
-            const checkpointIndex = {
-              schemaVersion: 1,
-              lastSync: (/* @__PURE__ */ new Date()).toISOString(),
-              userEmail,
-              contacts,
-              edges: (_e = existingIndex == null ? void 0 : existingIndex.edges) != null ? _e : []
-            };
-            const checkpointCache = {
-              lastSync: (/* @__PURE__ */ new Date()).toISOString(),
-              processedIds: [...processedIds]
-            };
-            await (onInteractions == null ? void 0 : onInteractions(interactions));
-            interactions = [];
-            await onCheckpoint(checkpointIndex, checkpointCache);
-          }
-          if (i + BATCH_SIZE < newMessageIds.length) {
-            await this.sleep(BATCH_DELAY_MS);
-          }
-        }
-        if (newMessageIds.length > 0) {
-          this.finalizeContactMetrics(contacts, threadStates);
-        }
-        console.log(`[Gmail CRM] Sync complete`, {
-          mode: afterDate ? "incremental" : "full",
-          afterDate: afterDate != null ? afterDate : "n/a",
-          totalListed: allMessageIds.length,
-          alreadyCached: allMessageIds.length - newMessageIds.length,
-          newProcessed: newMessageIds.length,
-          totalContacts: Object.keys(contacts).length
-        });
-        const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
-        for (const c of sorted.slice(0, 20)) {
-          console.log(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
-            exchanges: c.totalExchanges,
-            sent: c.sentCount,
-            received: c.receivedCount,
-            threads: (_f = c.threadCount) != null ? _f : 0,
-            backAndForth: (_g = c.backAndForthThreads) != null ? _g : 0,
-            maxDepth: (_h = c.maxThreadDepth) != null ? _h : 0,
-            lastDepth: (_i = c.lastThreadDepth) != null ? _i : 0,
-            rsvpOnly: (_j = c.rsvpOnlyThreads) != null ? _j : 0,
-            firstContact: c.firstContact,
-            lastContact: c.lastContact,
-            domain: c.domain
-          });
-        }
-        for (const m of allMessageIds) {
-          cachedIds.add(m.id);
-        }
-        const updatedCache = {
-          processedIds: Array.from(cachedIds),
-          lastSync: (/* @__PURE__ */ new Date()).toISOString()
-        };
-        await (onInteractions == null ? void 0 : onInteractions(interactions));
-        return {
-          index: {
-            schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
-            lastSync: (/* @__PURE__ */ new Date()).toISOString(),
-            userEmail,
-            contacts,
-            edges
-          },
-          cache: updatedCache
-        };
-      }
-      processMessage(msg, userEmail, contacts, threadStates) {
-        var _a;
-        const headers = msg.payload.headers;
-        const from = this.getHeader(headers, "From");
-        const to = this.getHeader(headers, "To");
-        const subject = (_a = this.getHeader(headers, "Subject")) != null ? _a : "";
-        const date = new Date(parseInt(msg.internalDate)).toISOString();
-        const threadId = msg.threadId;
-        const fromParsed = this.parseEmailAddress(from != null ? from : "");
-        const toParsed = this.parseEmailAddress(to != null ? to : "");
-        if (!fromParsed) return;
-        const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
-        if (isSent && toParsed) {
-          if (this.isFiltered(toParsed.email)) {
-            console.debug(`[Gmail CRM] Filtered out: ${toParsed.email}`);
-            return;
-          }
-          this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
-          return { id: msg.id, email: toParsed.email, date, kind: "email", direction: "sent", title: subject, sourceId: threadId };
-        } else if (!isSent) {
-          if (this.isFiltered(fromParsed.email)) {
-            console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
-            return;
-          }
-          this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
-          return { id: msg.id, email: fromParsed.email, date, kind: "email", direction: "received", title: subject, sourceId: threadId };
-        }
-      }
-      isFiltered(email) {
-        var _a;
-        const lower = email.toLowerCase();
-        const domain = (_a = lower.split("@")[1]) != null ? _a : "";
-        if (AUTOMATED_EMAIL_PATTERN.test(lower)) return true;
-        if (AUTOMATED_DOMAINS.has(domain)) return true;
-        if (this.blockedDomains.has(domain)) return true;
-        return false;
-      }
-      get blockedDomains() {
-        var _a;
-        const raw = (_a = this.settings.blockedDomains) != null ? _a : "";
-        return new Set(
-          raw.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean)
-        );
-      }
-      upsertContact(contacts, threadStates, parsed, date, subject, threadId, direction) {
-        var _a, _b;
-        const key = parsed.email.toLowerCase();
-        const domain = (_b = (_a = parsed.email.split("@")[1]) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
-        if (!contacts[key]) {
-          contacts[key] = {
-            name: parsed.name || parsed.email,
-            email: parsed.email,
-            lastContact: date,
-            firstContact: date,
-            sentCount: 0,
-            receivedCount: 0,
-            totalExchanges: 0,
-            subjects: [],
-            lastSubject: "",
-            domain
-          };
-        }
-        const c = contacts[key];
-        if (parsed.name && (!c.name || c.name === c.email)) {
-          c.name = parsed.name;
-        }
-        if (date > c.lastContact) {
-          c.lastContact = date;
-          if (subject) c.lastSubject = subject;
-        }
-        if (date < c.firstContact) c.firstContact = date;
-        if (direction === "sent") c.sentCount++;
-        else c.receivedCount++;
-        c.totalExchanges++;
-        if (subject && c.subjects.length < 10) {
-          c.subjects.push(subject);
-        }
-        let contactThreads = threadStates.get(key);
-        if (!contactThreads) {
-          contactThreads = /* @__PURE__ */ new Map();
-          threadStates.set(key, contactThreads);
-        }
-        let thread = contactThreads.get(threadId);
-        if (!thread) {
-          thread = { sent: 0, received: 0, subject, lastDate: date };
-          contactThreads.set(threadId, thread);
-        }
-        if (direction === "sent") thread.sent++;
-        else thread.received++;
-        if (date > thread.lastDate) {
-          thread.lastDate = date;
-          if (subject) thread.subject = subject;
-        }
-      }
-      // Finalize metadata pattern signals (thread count, back-and-forth, RSVP-only)
-      // into the persisted Contact records. See task #4 — metadata heuristics per
-      // John Borthwick's feedback: focus on patterns, not email content.
-      finalizeContactMetrics(contacts, threadStates) {
-        for (const [key, threads] of threadStates) {
-          const contact = contacts[key];
-          if (!contact) continue;
-          let maxDepth = 0;
-          let backAndForth = 0;
-          let rsvpOnly = 0;
-          let lastThreadDepth = 0;
-          let latestDate = "";
-          for (const state of threads.values()) {
-            const depth = state.sent + state.received;
-            if (depth > maxDepth) maxDepth = depth;
-            if (state.sent > 0 && state.received > 0 && depth >= 3) {
-              backAndForth++;
-            }
-            if (depth === 1 && RSVP_SUBJECT_PATTERN.test(state.subject)) {
-              rsvpOnly++;
-            }
-            if (state.lastDate > latestDate) {
-              latestDate = state.lastDate;
-              lastThreadDepth = depth;
-            }
-          }
-          contact.threadCount = threads.size;
-          contact.maxThreadDepth = maxDepth;
-          contact.backAndForthThreads = backAndForth;
-          contact.rsvpOnlyThreads = rsvpOnly;
-          contact.lastThreadDepth = lastThreadDepth;
-        }
-      }
-      getHeader(headers, name) {
-        var _a;
-        return (_a = headers.find((h) => h.name.toLowerCase() === name.toLowerCase())) == null ? void 0 : _a.value;
-      }
-      parseEmailAddress(raw) {
-        var _a;
-        const trimmed = raw.trim();
-        const bareEmail = trimmed.match(/^([^@\s<>"]+@[^@\s<>"]+)$/);
-        if (bareEmail) {
-          return {
-            name: "",
-            email: bareEmail[1].trim()
-          };
-        }
-        const angleMatch = trimmed.match(/^(?:"?([^"<]*)"?\s*)<([^<>\s]+@[^<>\s]+)>$/);
-        const match = angleMatch != null ? angleMatch : trimmed.match(/^"?([^"<]*)"?\s+([^@\s<>"]+@[^@\s<>"]+)$/);
-        if (!match) return null;
-        return {
-          name: ((_a = match[1]) != null ? _a : "").trim(),
-          email: match[2].trim()
-        };
-      }
-    };
-  }
-});
-
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
   default: () => GmailCrmPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian13 = require("obsidian");
-init_gmail_api();
+var import_crypto2 = require("crypto");
+var import_obsidian14 = require("obsidian");
+var import_electron2 = require("electron");
+
+// src/gmail-api.ts
+var import_crypto = require("crypto");
+var import_obsidian = require("obsidian");
+
+// src/types.ts
+var CONTACT_INDEX_SCHEMA_VERSION = 1;
+var DEFAULT_SETTINGS = {
+  clientId: "",
+  clientSecret: "",
+  useCustomOAuth: false,
+  accessToken: "",
+  refreshToken: "",
+  tokenExpiry: 0,
+  syncIntervalMinutes: 60,
+  maxResults: 500,
+  createContactNotes: false,
+  contactNotesFolder: "People pages",
+  vaultOwnerName: "",
+  peopleFolder: "People pages",
+  companiesFolder: "Companies",
+  anthropicApiKey: "",
+  harperModel: "claude-sonnet-4-6",
+  enrichOnSync: false,
+  blockedDomains: "",
+  autoUpdateStaleness: true,
+  stalenessUpdateInterval: 0,
+  // 0 = only after sync, not on its own timer
+  excludeCategories: "promotions,social",
+  // skip promo and social by default
+  excludeLabels: "",
+  // user-configured labels to skip
+  scorePushUrl: "",
+  scorePushEmail: "",
+  scorePushApiKey: "",
+  autoPushScores: true,
+  graphPushUrl: "",
+  graphPushToken: "",
+  graphPushSalt: "",
+  // generated on first push
+  debugScoring: false,
+  lastSyncAt: 0,
+  lastScoredAt: 0,
+  fetchContactPhotos: false
+};
+
+// src/gmail-api.ts
+var GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+var GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+var SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/calendar.events.readonly",
+  "https://www.googleapis.com/auth/contacts.readonly",
+  "https://www.googleapis.com/auth/contacts.other.readonly"
+].join(" ");
+var REDIRECT_URI = "http://127.0.0.1:42813/callback";
+var SHARED_CLIENT_ID = "726397126192-kuv4nprnrumuekateh37t3abne2r5893.apps.googleusercontent.com";
+var SHARED_CLIENT_SECRET = "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";
+var RSVP_SUBJECT_PATTERN = /\b(invitation|invited|rsvp|calendar invite|meeting invite|you're invited|save the date|event)\b/i;
+var AUTOMATED_EMAIL_PATTERN = /^(noreply|no-reply|donotreply|do-not-reply|notifications?|updates?|support|info|hello|team|news|newsletter|mailer|digest|alerts?|billing|receipts?|feedback|marketing|sales|admin|system|automated|bounce|postmaster|webmaster)@/i;
+var AUTOMATED_DOMAINS = /* @__PURE__ */ new Set([
+  // Cloud / SaaS
+  "dropbox.com",
+  "dropboxmail.com",
+  "google.com",
+  "accounts.google.com",
+  "docs.google.com",
+  "amazonses.com",
+  "amazonaws.com",
+  "aws.amazon.com",
+  "microsoft.com",
+  "sharepointonline.com",
+  // Dev tools
+  "github.com",
+  "gitlab.com",
+  "bitbucket.org",
+  "vercel.com",
+  "netlify.com",
+  "heroku.com",
+  "circleci.com",
+  "travis-ci.com",
+  // Newsletters / content
+  "substack.com",
+  "substackmail.com",
+  "readwise.io",
+  "medium.com",
+  "mailchimp.com",
+  "sendgrid.net",
+  "sendgrid.com",
+  "mailgun.org",
+  "mandrillapp.com",
+  "constantcontact.com",
+  "hubspot.com",
+  "hubspotmail.com",
+  // Productivity / signing
+  "dropboxsign.com",
+  "hellosign.com",
+  "docusign.net",
+  "docusign.com",
+  "pandadoc.com",
+  "adobesign.com",
+  // Social
+  "facebookmail.com",
+  "linkedin.com",
+  "twitter.com",
+  "x.com",
+  "instagrammail.com",
+  "tiktok.com",
+  // Payments / commerce
+  "paypal.com",
+  "stripe.com",
+  "squareup.com",
+  "shopify.com",
+  "intuit.com",
+  "quickbooks.intuit.com",
+  // Scheduling / calendar
+  "calendly.com",
+  "savvycal.com",
+  "cal.com",
+  // Project management
+  "notion.so",
+  "asana.com",
+  "trello.com",
+  "monday.com",
+  "clickup.com",
+  "jira.atlassian.com",
+  "atlassian.com",
+  "atlassian.net",
+  // Design
+  "figma.com",
+  "canva.com",
+  // Other common services
+  "zoom.us",
+  "loom.com",
+  "slack.com",
+  "slackbot.com",
+  "intercom.io",
+  "intercom-mail.com",
+  "zendesk.com",
+  "eventbrite.com",
+  "meetup.com"
+]);
+var GmailApi = class {
+  // lock to prevent parallel refreshes
+  constructor(settings, onSettingsUpdate) {
+    this.refreshPromise = null;
+    this.oauthVerifier = "";
+    this.settings = settings;
+    this.onSettingsUpdate = onSettingsUpdate;
+  }
+  updateSettings(settings) {
+    this.settings = settings;
+  }
+  effectiveClientId() {
+    if (this.settings.useCustomOAuth && this.settings.clientId) {
+      return this.settings.clientId;
+    }
+    return SHARED_CLIENT_ID;
+  }
+  effectiveClientSecret() {
+    if (this.settings.useCustomOAuth && this.settings.clientSecret) {
+      return this.settings.clientSecret;
+    }
+    return SHARED_CLIENT_SECRET;
+  }
+  getAuthUrl(state) {
+    this.oauthVerifier = (0, import_crypto.randomBytes)(32).toString("base64url");
+    const params = new URLSearchParams({
+      client_id: this.effectiveClientId(),
+      redirect_uri: REDIRECT_URI,
+      response_type: "code",
+      state,
+      code_challenge: (0, import_crypto.createHash)("sha256").update(this.oauthVerifier).digest("base64url"),
+      code_challenge_method: "S256",
+      scope: SCOPES,
+      access_type: "offline",
+      prompt: "consent"
+    });
+    return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+  }
+  async exchangeCode(code) {
+    var _a;
+    if (!this.oauthVerifier) throw new Error("Start Google sign-in before exchanging a code");
+    const verifier = this.oauthVerifier;
+    this.oauthVerifier = "";
+    const resp = await this.apiRequest({
+      url: GOOGLE_TOKEN_URL,
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: this.effectiveClientId(),
+        client_secret: this.effectiveClientSecret(),
+        redirect_uri: REDIRECT_URI,
+        grant_type: "authorization_code",
+        code_verifier: verifier
+      }).toString()
+    });
+    const data = resp.json;
+    await this.onSettingsUpdate({
+      accessToken: data.access_token,
+      refreshToken: (_a = data.refresh_token) != null ? _a : this.settings.refreshToken,
+      tokenExpiry: Date.now() + data.expires_in * 1e3
+    });
+  }
+  async refreshAccessToken() {
+    const resp = await this.apiRequest({
+      url: GOOGLE_TOKEN_URL,
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: this.effectiveClientId(),
+        client_secret: this.effectiveClientSecret(),
+        refresh_token: this.settings.refreshToken,
+        grant_type: "refresh_token"
+      }).toString()
+    });
+    const data = resp.json;
+    await this.onSettingsUpdate({
+      accessToken: data.access_token,
+      tokenExpiry: Date.now() + data.expires_in * 1e3
+    });
+  }
+  async apiRequest(options, retries = 5) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const url = typeof options === "string" ? options : options.url;
+    const reqOptions = typeof options === "string" ? { url: options, throw: false } : { ...options, throw: false };
+    let resp;
+    try {
+      resp = await (0, import_obsidian.requestUrl)(reqOptions);
+    } catch (e) {
+      const err = e;
+      console.error(`[Gmail CRM] Network error`, { url, error: err });
+      throw new Error(typeof (err == null ? void 0 : err.message) === "string" ? err.message : "Network request failed");
+    }
+    if (resp.status >= 200 && resp.status < 300) {
+      return resp;
+    }
+    const isRateLimit = resp.status === 429 || resp.status === 403 && ((_a = resp.text) != null ? _a : "").includes("rateLimitExceeded");
+    if (isRateLimit && retries > 0) {
+      const attempt = 6 - retries;
+      const backoff = Math.min(attempt * 15e3, 6e4);
+      console.warn(`[Gmail CRM] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
+      await this.sleep(backoff);
+      return this.apiRequest(options, retries - 1);
+    }
+    if (resp.status === 401 && retries > 0) {
+      console.warn(`[Gmail CRM] Token expired, refreshing and retrying...`);
+      try {
+        if (!this.refreshPromise) {
+          this.refreshPromise = this.refreshAccessToken().finally(() => {
+            this.refreshPromise = null;
+          });
+        }
+        await this.refreshPromise;
+        if (typeof options !== "string" && options.headers) {
+          options.headers["Authorization"] = `Bearer ${this.settings.accessToken}`;
+        }
+        return this.apiRequest(options, retries - 1);
+      } catch (refreshErr) {
+        console.error(`[Gmail CRM] Token refresh failed`, refreshErr);
+      }
+    }
+    if ((resp.status === 500 || resp.status === 503) && retries > 0) {
+      const backoff = Math.min((6 - retries) * 5e3, 3e4);
+      console.warn(`[Gmail CRM] Server error ${resp.status}, retrying in ${backoff / 1e3}s (${retries} retries left)`);
+      await this.sleep(backoff);
+      return this.apiRequest(options, retries - 1);
+    }
+    const status = resp.status;
+    const rawBody = (_b = resp.text) != null ? _b : "";
+    console.error(`[Gmail CRM] API request failed`, {
+      url,
+      status,
+      body: rawBody,
+      headers: resp.headers
+    });
+    let detail = "";
+    if (rawBody) {
+      try {
+        const parsed = JSON.parse(rawBody);
+        detail = (_g = (_f = (_d = (_c = parsed == null ? void 0 : parsed.error) == null ? void 0 : _c.message) != null ? _d : parsed == null ? void 0 : parsed.error_description) != null ? _f : (_e = parsed == null ? void 0 : parsed.error) == null ? void 0 : _e.status) != null ? _g : JSON.stringify(parsed).slice(0, 300);
+      } catch (e) {
+        detail = rawBody.slice(0, 300);
+      }
+    }
+    if (!detail) {
+      const hints = {
+        401: "Token expired or invalid. Try disconnecting and reconnecting.",
+        403: "Access denied. Check that: (1) Gmail API is enabled in Google Cloud Console, (2) your OAuth consent screen has your email as a test user, (3) the gmail.metadata scope is approved.",
+        404: "Endpoint not found. The Gmail API may not be enabled.",
+        429: "Rate limited by Google. Wait a few minutes and try again."
+      };
+      detail = (_h = hints[status]) != null ? _h : `HTTP ${status}`;
+    }
+    throw new Error(`HTTP ${status}: ${detail}`);
+  }
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  async getHeaders() {
+    if (Date.now() >= this.settings.tokenExpiry - 6e4) {
+      if (!this.refreshPromise) {
+        this.refreshPromise = this.refreshAccessToken().finally(() => {
+          this.refreshPromise = null;
+        });
+      }
+      await this.refreshPromise;
+    }
+    return { Authorization: `Bearer ${this.settings.accessToken}` };
+  }
+  /** Refresh the access token if it is about to expire. For callers that hit Google APIs directly. */
+  async ensureFreshToken() {
+    await this.getHeaders();
+  }
+  async getUserEmail() {
+    const headers = await this.getHeaders();
+    const resp = await this.apiRequest({
+      url: `${GMAIL_API_BASE}/profile`,
+      headers
+    });
+    return resp.json.emailAddress;
+  }
+  async fetchAllMessageIds(maxResults, afterDate) {
+    var _a, _b;
+    const headers = await this.getHeaders();
+    const allMessages = [];
+    let pageToken;
+    const unlimited = maxResults <= 0;
+    if (afterDate) {
+      console.debug(
+        "[Gmail CRM] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
+        { afterDate }
+      );
+    }
+    while (unlimited || allMessages.length < maxResults) {
+      const remaining = unlimited ? 100 : maxResults - allMessages.length;
+      const params = new URLSearchParams({
+        maxResults: String(Math.min(100, remaining))
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+      const excludes = [];
+      const cats = ((_a = this.settings.excludeCategories) != null ? _a : "").split(",").map((c) => c.trim().toLowerCase()).filter(Boolean);
+      for (const cat of cats) {
+        excludes.push(`-category:${cat}`);
+      }
+      const labels = ((_b = this.settings.excludeLabels) != null ? _b : "").split(",").map((l) => l.trim()).filter(Boolean);
+      for (const label of labels) {
+        excludes.push(`-label:${label}`);
+      }
+      for (const domain of this.blockedDomains) {
+        excludes.push(`-from:${domain}`);
+      }
+      const q = excludes.join(" ");
+      if (q) params.set("q", q);
+      const resp = await this.apiRequest({
+        url: `${GMAIL_API_BASE}/messages?${params.toString()}`,
+        headers
+      });
+      const data = resp.json;
+      if (!data.messages) break;
+      allMessages.push(...data.messages);
+      pageToken = data.nextPageToken;
+      if (!pageToken) break;
+    }
+    return allMessages;
+  }
+  async fetchMessageMetadata(messageId) {
+    const headers = await this.getHeaders();
+    const resp = await this.apiRequest({
+      url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
+      headers
+    });
+    return resp.json;
+  }
+  async buildContactIndex(maxResults, onProgress, existingIndex, messageCache, onCheckpoint, onInteractions) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+    const userEmail = await this.getUserEmail();
+    const afterDate = (_a = messageCache == null ? void 0 : messageCache.lastSync) != null ? _a : void 0;
+    const cachedIds = new Set((_b = messageCache == null ? void 0 : messageCache.processedIds) != null ? _b : []);
+    const allMessageIds = await this.fetchAllMessageIds(maxResults, afterDate);
+    const newMessageIds = allMessageIds.filter((m) => !cachedIds.has(m.id));
+    const contacts = existingIndex ? structuredClone(existingIndex.contacts) : {};
+    const edges = (_c = existingIndex == null ? void 0 : existingIndex.edges) != null ? _c : [];
+    let interactions = [];
+    const threadStates = /* @__PURE__ */ new Map();
+    if (existingIndex && newMessageIds.length > 0) {
+      for (const key of Object.keys(contacts)) {
+        threadStates.set(key, /* @__PURE__ */ new Map());
+      }
+    }
+    const BATCH_SIZE = 10;
+    const BATCH_DELAY_MS = 100;
+    const CHECKPOINT_INTERVAL = 2e3;
+    const processedIds = new Set((_d = messageCache == null ? void 0 : messageCache.processedIds) != null ? _d : []);
+    let lastCheckpoint = 0;
+    for (let i = 0; i < newMessageIds.length; i += BATCH_SIZE) {
+      const batch = newMessageIds.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map((m) => this.fetchMessageMetadata(m.id))
+      );
+      for (const msg of results) {
+        const event = this.processMessage(msg, userEmail, contacts, threadStates);
+        if (event) interactions.push(event);
+      }
+      for (const m of batch) processedIds.add(m.id);
+      const done = Math.min(i + BATCH_SIZE, newMessageIds.length);
+      onProgress == null ? void 0 : onProgress(done, newMessageIds.length);
+      if (onCheckpoint && done - lastCheckpoint >= CHECKPOINT_INTERVAL) {
+        lastCheckpoint = done;
+        this.finalizeContactMetrics(contacts, threadStates);
+        const checkpointIndex = {
+          schemaVersion: 1,
+          lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+          userEmail,
+          contacts,
+          edges: (_e = existingIndex == null ? void 0 : existingIndex.edges) != null ? _e : []
+        };
+        const checkpointCache = {
+          lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+          processedIds: [...processedIds]
+        };
+        await (onInteractions == null ? void 0 : onInteractions(interactions));
+        interactions = [];
+        await onCheckpoint(checkpointIndex, checkpointCache);
+      }
+      if (i + BATCH_SIZE < newMessageIds.length) {
+        await this.sleep(BATCH_DELAY_MS);
+      }
+    }
+    if (newMessageIds.length > 0) {
+      this.finalizeContactMetrics(contacts, threadStates);
+    }
+    console.debug(`[Gmail CRM] Sync complete`, {
+      mode: afterDate ? "incremental" : "full",
+      afterDate: afterDate != null ? afterDate : "n/a",
+      totalListed: allMessageIds.length,
+      alreadyCached: allMessageIds.length - newMessageIds.length,
+      newProcessed: newMessageIds.length,
+      totalContacts: Object.keys(contacts).length
+    });
+    const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
+    for (const c of sorted.slice(0, 20)) {
+      console.debug(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
+        exchanges: c.totalExchanges,
+        sent: c.sentCount,
+        received: c.receivedCount,
+        threads: (_f = c.threadCount) != null ? _f : 0,
+        backAndForth: (_g = c.backAndForthThreads) != null ? _g : 0,
+        maxDepth: (_h = c.maxThreadDepth) != null ? _h : 0,
+        lastDepth: (_i = c.lastThreadDepth) != null ? _i : 0,
+        rsvpOnly: (_j = c.rsvpOnlyThreads) != null ? _j : 0,
+        firstContact: c.firstContact,
+        lastContact: c.lastContact,
+        domain: c.domain
+      });
+    }
+    for (const m of allMessageIds) {
+      cachedIds.add(m.id);
+    }
+    const updatedCache = {
+      processedIds: Array.from(cachedIds),
+      lastSync: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await (onInteractions == null ? void 0 : onInteractions(interactions));
+    return {
+      index: {
+        schemaVersion: CONTACT_INDEX_SCHEMA_VERSION,
+        lastSync: (/* @__PURE__ */ new Date()).toISOString(),
+        userEmail,
+        contacts,
+        edges
+      },
+      cache: updatedCache
+    };
+  }
+  processMessage(msg, userEmail, contacts, threadStates) {
+    var _a;
+    const headers = msg.payload.headers;
+    const from = this.getHeader(headers, "From");
+    const to = this.getHeader(headers, "To");
+    const subject = (_a = this.getHeader(headers, "Subject")) != null ? _a : "";
+    const date = new Date(parseInt(msg.internalDate)).toISOString();
+    const threadId = msg.threadId;
+    const fromParsed = this.parseEmailAddress(from != null ? from : "");
+    const toParsed = this.parseEmailAddress(to != null ? to : "");
+    if (!fromParsed) return;
+    const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
+    if (isSent && toParsed) {
+      if (this.isFiltered(toParsed.email)) {
+        console.debug(`[Gmail CRM] Filtered out: ${toParsed.email}`);
+        return;
+      }
+      this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
+      return { id: msg.id, email: toParsed.email, date, kind: "email", direction: "sent", title: subject, sourceId: threadId };
+    } else if (!isSent) {
+      if (this.isFiltered(fromParsed.email)) {
+        console.debug(`[Gmail CRM] Filtered out: ${fromParsed.email}`);
+        return;
+      }
+      this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
+      return { id: msg.id, email: fromParsed.email, date, kind: "email", direction: "received", title: subject, sourceId: threadId };
+    }
+  }
+  isFiltered(email) {
+    var _a;
+    const lower = email.toLowerCase();
+    const domain = (_a = lower.split("@")[1]) != null ? _a : "";
+    if (AUTOMATED_EMAIL_PATTERN.test(lower)) return true;
+    if (AUTOMATED_DOMAINS.has(domain)) return true;
+    if (this.blockedDomains.has(domain)) return true;
+    return false;
+  }
+  get blockedDomains() {
+    var _a;
+    const raw = (_a = this.settings.blockedDomains) != null ? _a : "";
+    return new Set(
+      raw.split(",").map((d) => d.trim().toLowerCase()).filter(Boolean)
+    );
+  }
+  upsertContact(contacts, threadStates, parsed, date, subject, threadId, direction) {
+    var _a, _b;
+    const key = parsed.email.toLowerCase();
+    const domain = (_b = (_a = parsed.email.split("@")[1]) == null ? void 0 : _a.toLowerCase()) != null ? _b : "";
+    if (!contacts[key]) {
+      contacts[key] = {
+        name: parsed.name || parsed.email,
+        email: parsed.email,
+        lastContact: date,
+        firstContact: date,
+        sentCount: 0,
+        receivedCount: 0,
+        totalExchanges: 0,
+        subjects: [],
+        lastSubject: "",
+        domain
+      };
+    }
+    const c = contacts[key];
+    if (parsed.name && (!c.name || c.name === c.email)) {
+      c.name = parsed.name;
+    }
+    if (date > c.lastContact) {
+      c.lastContact = date;
+      if (subject) c.lastSubject = subject;
+    }
+    if (date < c.firstContact) c.firstContact = date;
+    if (direction === "sent") c.sentCount++;
+    else c.receivedCount++;
+    c.totalExchanges++;
+    if (subject && c.subjects.length < 10) {
+      c.subjects.push(subject);
+    }
+    let contactThreads = threadStates.get(key);
+    if (!contactThreads) {
+      contactThreads = /* @__PURE__ */ new Map();
+      threadStates.set(key, contactThreads);
+    }
+    let thread = contactThreads.get(threadId);
+    if (!thread) {
+      thread = { sent: 0, received: 0, subject, lastDate: date };
+      contactThreads.set(threadId, thread);
+    }
+    if (direction === "sent") thread.sent++;
+    else thread.received++;
+    if (date > thread.lastDate) {
+      thread.lastDate = date;
+      if (subject) thread.subject = subject;
+    }
+  }
+  // Finalize metadata pattern signals (thread count, back-and-forth, RSVP-only)
+  // into the persisted Contact records. See task #4 — metadata heuristics per
+  // John Borthwick's feedback: focus on patterns, not email content.
+  finalizeContactMetrics(contacts, threadStates) {
+    for (const [key, threads] of threadStates) {
+      const contact = contacts[key];
+      if (!contact) continue;
+      let maxDepth = 0;
+      let backAndForth = 0;
+      let rsvpOnly = 0;
+      let lastThreadDepth = 0;
+      let latestDate = "";
+      for (const state of threads.values()) {
+        const depth = state.sent + state.received;
+        if (depth > maxDepth) maxDepth = depth;
+        if (state.sent > 0 && state.received > 0 && depth >= 3) {
+          backAndForth++;
+        }
+        if (depth === 1 && RSVP_SUBJECT_PATTERN.test(state.subject)) {
+          rsvpOnly++;
+        }
+        if (state.lastDate > latestDate) {
+          latestDate = state.lastDate;
+          lastThreadDepth = depth;
+        }
+      }
+      contact.threadCount = threads.size;
+      contact.maxThreadDepth = maxDepth;
+      contact.backAndForthThreads = backAndForth;
+      contact.rsvpOnlyThreads = rsvpOnly;
+      contact.lastThreadDepth = lastThreadDepth;
+    }
+  }
+  getHeader(headers, name) {
+    var _a;
+    return (_a = headers.find((h) => h.name.toLowerCase() === name.toLowerCase())) == null ? void 0 : _a.value;
+  }
+  parseEmailAddress(raw) {
+    var _a;
+    const trimmed = raw.trim();
+    const bareEmail = trimmed.match(/^([^@\s<>"]+@[^@\s<>"]+)$/);
+    if (bareEmail) {
+      return {
+        name: "",
+        email: bareEmail[1].trim()
+      };
+    }
+    const angleMatch = trimmed.match(/^(?:"?([^"<]*)"?\s*)<([^<>\s]+@[^<>\s]+)>$/);
+    const match = angleMatch != null ? angleMatch : trimmed.match(/^"?([^"<]*)"?\s+([^@\s<>"]+@[^@\s<>"]+)$/);
+    if (!match) return null;
+    return {
+      name: ((_a = match[1]) != null ? _a : "").trim(),
+      email: match[2].trim()
+    };
+  }
+};
 
 // src/intelligence-model.ts
 var emptyIntelligence = () => ({
@@ -1397,7 +1389,7 @@ var PeopleWorkspace = class {
     const terms = el("input", termsLabel);
     terms.required = true;
     terms.maxLength = 500;
-    terms.placeholder = "developer infrastructure, CTO, platform engineering";
+    terms.placeholder = "Developer infrastructure, CTO, platform engineering";
     const submit = el("button", form, "Add goal", "pi-button");
     submit.type = "submit";
     form.onsubmit = (e) => {
@@ -1934,7 +1926,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         const clientId = this.plugin.getEffectiveClientId();
         const clientSecret = this.plugin.getEffectiveClientSecret();
         if (!clientId || !clientSecret) {
-          new import_obsidian3.Notice("Please enter client ID and client secret in advanced OAuth settings, or wait for shared credentials to be configured.");
+          new import_obsidian3.Notice("Enter your client ID and client secret in the advanced Google sign-in settings.");
           return;
         }
         await this.plugin.startOAuthFlow();
@@ -1952,7 +1944,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         })
       );
     }
-    new import_obsidian3.Setting(containerEl).setName("Use custom OAuth credentials").setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials").addToggle(
+    new import_obsidian3.Setting(containerEl).setName("Use custom Google credentials").setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.useCustomOAuth).onChange(async (value) => {
         this.plugin.settings.useCustomOAuth = value;
         await this.plugin.saveSettings();
@@ -1975,27 +1967,27 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       });
     }
     new import_obsidian3.Setting(containerEl).setName("Filtering").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Blocked domains").setDesc("Comma-separated domains to exclude (e.g. substack.com, readwise.io). Common services like noreply senders are auto-filtered.").addTextArea(
-      (text) => text.setPlaceholder("substack.com, readwise.io, beehiiv.com").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Blocked domains").setDesc("Domains to skip during sync, separated by commas. Automated senders are also filtered.").addTextArea(
+      (text) => text.setPlaceholder("Enter newsletter domains").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
         this.plugin.settings.blockedDomains = value;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Exclude Gmail categories").setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.").addText(
-      (text) => text.setPlaceholder("promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
+      (text) => text.setPlaceholder("Example: promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
         this.plugin.settings.excludeCategories = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (e.g. shop@, service@). These are custom labels in your Gmail.").addText(
-      (text) => text.setPlaceholder("shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.").addText(
+      (text) => text.setPlaceholder("Example: shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
         this.plugin.settings.excludeLabels = value;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Sync").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Sync interval").setDesc(
-      'How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "Max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.'
+      'How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.'
     ).addDropdown((dd) => {
       const choices = [
         [15, "Every 15 minutes"],
@@ -2020,7 +2012,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
         this.plugin.startAutoSync();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "All" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
+    new import_obsidian3.Setting(containerEl).setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "all" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
       for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4, 25e3, 5e4]) {
         dd.addOption(String(n), String(n));
       }
@@ -2048,13 +2040,13 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Score push").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Endpoint URL").setDesc("Server to push relationship scores to (receives POST /api/scores/push). Empty disables pushing.").addText(
+    new import_obsidian3.Setting(containerEl).setName("Endpoint URL").setDesc("Server that receives relationship scores. Leave empty to disable uploads.").addText(
       (text) => text.setValue(this.plugin.settings.scorePushUrl).onChange(async (value) => {
         this.plugin.settings.scorePushUrl = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Your email").setDesc("Identity sent with each push, e.g. you@example.com.").addText(
+    new import_obsidian3.Setting(containerEl).setName("Your email").setDesc("Identity sent with each push, for example: you@example.com.").addText(
       (text) => text.setValue(this.plugin.settings.scorePushEmail).onChange(async (value) => {
         this.plugin.settings.scorePushEmail = value.trim();
         await this.plugin.saveSettings();
@@ -2074,7 +2066,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       })
     );
     new import_obsidian3.Setting(containerEl).setName("People graph web view").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Graph URL").setDesc("Deployment to push your people graph to and open with View people graph. Empty opens the hosted graph and disables pushing.").addText(
+    new import_obsidian3.Setting(containerEl).setName("Graph URL").setDesc("Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.").addText(
       (text) => text.setValue(this.plugin.settings.graphPushUrl).onChange(async (value) => {
         this.plugin.settings.graphPushUrl = value.trim();
         await this.plugin.saveSettings();
@@ -2113,13 +2105,13 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       text: "Relationship mapping and AI-powered people enrichment. Scans your people pages and builds a relationship graph.",
       cls: "setting-item-description"
     });
-    new import_obsidian3.Setting(containerEl).setName("Your name").setDesc("How you should be referred to on enriched people pages (e.g., 'How Alex knows them'). Leave blank to use 'the vault owner'.").addText(
+    new import_obsidian3.Setting(containerEl).setName("Your name").setDesc("Your name on enriched people pages. Leave blank to refer to you as the vault owner.").addText(
       (text) => text.setPlaceholder("Your full name").setValue(this.plugin.settings.vaultOwnerName).onChange(async (value) => {
         this.plugin.settings.vaultOwnerName = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (e.g., 'people pages')").addText(
+    new import_obsidian3.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (for example, 'people pages')").addText(
       (text) => text.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
         this.plugin.settings.peopleFolder = value;
         await this.plugin.saveSettings();
@@ -2210,13 +2202,18 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
 var import_http = __toESM(require("http"));
 var PORT = 42813;
 var HOST = "127.0.0.1";
-function startOAuthCallbackServer() {
+function startOAuthCallbackServer(expectedState) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const server = import_http.default.createServer((req, res) => {
       var _a;
       const url = new URL((_a = req.url) != null ? _a : "/", `http://${HOST}:${PORT}`);
       if (url.pathname === "/callback") {
+        if (req.method !== "GET" || url.searchParams.get("state") !== expectedState) {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("Invalid authorization state. Return to Obsidian and try again.");
+          return;
+        }
         const code = url.searchParams.get("code");
         const error = url.searchParams.get("error");
         res.writeHead(200, { "Content-Type": "text/html" });
@@ -2229,7 +2226,7 @@ function startOAuthCallbackServer() {
           resolve(code);
         } else {
           res.end(
-            `<html><body><h2>Authorization failed</h2><p>${error != null ? error : "Unknown error"}</p></body></html>`
+            "<html><body><h2>Authorization failed</h2><p>Return to Obsidian and try connecting again.</p></body></html>"
           );
           settled = true;
           server.close();
@@ -2240,14 +2237,17 @@ function startOAuthCallbackServer() {
         res.end();
       }
     });
+    let timer;
+    server.once("close", () => clearTimeout(timer));
     server.once("error", (error) => {
+      clearTimeout(timer);
       if (!settled) {
         settled = true;
         reject(error);
       }
     });
     server.listen(PORT, HOST);
-    setTimeout(() => {
+    timer = setTimeout(() => {
       if (!settled) {
         settled = true;
         server.close();
@@ -2585,7 +2585,7 @@ var RelationshipEngine = class {
           };
         }
       }
-      console.log(`[Gmail CRM] Page-to-contact match: ${matched}/${attempted}`, {
+      console.debug(`[Gmail CRM] Page-to-contact match: ${matched}/${attempted}`, {
         totalPages: Object.keys(pages).length,
         unmatchedSample: unmatchedSamples
       });
@@ -2823,7 +2823,7 @@ function setScoringDebug(enabled) {
   scoringDebugEnabled = enabled;
 }
 function logScoring(name, details) {
-  console.log(`[Gmail CRM] Scoring: ${name}`, details);
+  console.debug(`[Gmail CRM] Scoring: ${name}`, details);
 }
 function computeStaleness(page, relationships) {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i;
@@ -3345,8 +3345,15 @@ async function fetchMatchingWorkspaces(config) {
   if (res.status === 404) return [];
   if (res.status !== 200) throw new Error(`Could not prepare shared identity matching (${res.status}). Retry the push.`);
   const value = res.json;
-  if (!Array.isArray(value == null ? void 0 : value.workspaces) || value.workspaces.length > 8 || value.workspaces.some((w) => typeof w.id !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(w.id) || typeof w.key !== "string" || !w.key)) throw new Error("Invalid shared matching configuration");
-  return value.workspaces;
+  if (!value || !Array.isArray(value.workspaces) || value.workspaces.length > 8) throw new Error("Invalid shared matching configuration");
+  const workspaces = [];
+  for (const raw of value.workspaces) {
+    if (!raw || typeof raw !== "object") throw new Error("Invalid shared matching configuration");
+    const item = raw;
+    if (typeof item.id !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(item.id) || typeof item.key !== "string" || !item.key) throw new Error("Invalid shared matching configuration");
+    workspaces.push({ id: item.id, key: item.key });
+  }
+  return workspaces;
 }
 async function workspaceIdentity(key, email) {
   const enc = new TextEncoder(), k = await crypto.subtle.importKey("raw", enc.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -3518,7 +3525,7 @@ async function syncCalendarData(settings, contacts, userEmail, onInteractions) {
   }
   await (onInteractions == null ? void 0 : onInteractions([...stats.values()].flatMap((s) => s.events)));
   mergeCalendarStats(contacts, stats);
-  console.log(`[Gmail CRM] Calendar sync complete \u2014 updated ${stats.size} contacts`);
+  console.debug(`[Gmail CRM] Calendar sync complete \u2014 updated ${stats.size} contacts`);
 }
 async function getHeaders(settings) {
   return { Authorization: `Bearer ${settings.accessToken}` };
@@ -4444,8 +4451,82 @@ function graphViewUrl(configuredUrl) {
   }
 }
 
-// src/quadrant-view.ts
+// src/people-graph-view.ts
+var import_electron = require("electron");
 var import_obsidian12 = require("obsidian");
+var PEOPLE_GRAPH_VIEW = "gmail-crm-people-graph";
+var PeopleGraphView = class extends import_obsidian12.ItemView {
+  constructor(leaf, getUrl) {
+    super(leaf);
+    this.getUrl = getUrl;
+  }
+  getViewType() {
+    return PEOPLE_GRAPH_VIEW;
+  }
+  getDisplayText() {
+    return "People graph";
+  }
+  getIcon() {
+    return "git-fork";
+  }
+  async onOpen() {
+    this.render();
+  }
+  render() {
+    var _a;
+    (_a = this.stopListening) == null ? void 0 : _a.call(this);
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("gmail-crm-people-graph");
+    const toolbar = root.createDiv({ cls: "gmail-crm-people-graph-toolbar" });
+    const refresh = toolbar.createEl("button", { text: "Refresh" });
+    refresh.onclick = () => this.render();
+    const browser = toolbar.createEl("button", { text: "Open in browser" });
+    browser.onclick = () => {
+      const url2 = this.getUrl();
+      if (url2) void import_electron.shell.openExternal(url2);
+    };
+    root.createEl("p", {
+      cls: "gmail-crm-people-graph-help",
+      text: "Online people workspace. Choose your shared network in the app. Sign in using your browser, approve the connection, then return here."
+    });
+    const url = this.getUrl();
+    browser.disabled = !url;
+    if (!url) {
+      root.createEl("p", { text: "Set a valid HTTP or HTTPS graph URL in plugin settings, then refresh." });
+      return;
+    }
+    const frame = root.createEl("iframe", { cls: "gmail-crm-people-graph-frame" });
+    frame.title = "People personal and shared networks";
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads");
+    frame.referrerPolicy = "no-referrer";
+    const embedded = new URL(url);
+    embedded.searchParams.set("obsidian", "1");
+    const receive = (event) => {
+      const data = event.data;
+      if (!data || typeof data !== "object" || !("type" in data) || !("url" in data) || typeof data.url !== "string") return;
+      if (event.source !== frame.contentWindow || event.origin !== embedded.origin || data.type !== "people:browser-signin") return;
+      try {
+        const target = new URL(data.url);
+        if (target.origin !== embedded.origin || target.pathname !== "/desktop-signin.html" || !/^#[a-f0-9]{64}$/.test(target.hash)) return;
+        void import_electron.shell.openExternal(target.href);
+      } catch (e) {
+      }
+    };
+    window.addEventListener("message", receive);
+    this.stopListening = () => window.removeEventListener("message", receive);
+    frame.src = embedded.href;
+  }
+  async onClose() {
+    var _a;
+    (_a = this.stopListening) == null ? void 0 : _a.call(this);
+    this.stopListening = void 0;
+    this.contentEl.empty();
+  }
+};
+
+// src/quadrant-view.ts
+var import_obsidian13 = require("obsidian");
 var QUADRANT_ORDER = ["nurture", "re-engage", "developing", "deprioritize", "suppressed"];
 var QUADRANT_LABELS = {
   nurture: { title: "NURTURE", subtitle: "strong + active" },
@@ -4454,10 +4535,10 @@ var QUADRANT_LABELS = {
   deprioritize: { title: "DEPRIORITIZE", subtitle: "weak + dormant" },
   suppressed: { title: "SUPPRESSED", subtitle: "human-overridden (suppress / delete)" }
 };
-async function writeQuadrantView(vault, peopleFolder) {
+async function writeQuadrantView(vault, peopleFolder, fileManager) {
   var _a, _b, _c;
-  const folder = vault.getAbstractFileByPath((0, import_obsidian12.normalizePath)(peopleFolder));
-  if (!(folder instanceof import_obsidian12.TFolder)) {
+  const folder = vault.getAbstractFileByPath((0, import_obsidian13.normalizePath)(peopleFolder));
+  if (!(folder instanceof import_obsidian13.TFolder)) {
     throw new Error(`People folder not found: ${peopleFolder}`);
   }
   const buckets = {
@@ -4468,7 +4549,7 @@ async function writeQuadrantView(vault, peopleFolder) {
     suppressed: []
   };
   for (const child of folder.children) {
-    if (!(child instanceof import_obsidian12.TFile) || child.extension !== "md") continue;
+    if (!(child instanceof import_obsidian13.TFile) || child.extension !== "md") continue;
     const content = await vault.read(child);
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (!fmMatch) continue;
@@ -4497,9 +4578,9 @@ async function writeQuadrantView(vault, peopleFolder) {
     });
   }
   const html = renderGrid(buckets, peopleFolder);
-  const path = (0, import_obsidian12.normalizePath)(`${peopleFolder}/_Quadrants.md`);
+  const path = (0, import_obsidian13.normalizePath)(`${peopleFolder}/_Quadrants.md`);
   const existing = vault.getAbstractFileByPath(path);
-  if (existing instanceof import_obsidian12.TFile) {
+  if (existing instanceof import_obsidian13.TFile) {
     await vault.modify(existing, html);
   } else {
     try {
@@ -4508,11 +4589,11 @@ async function writeQuadrantView(vault, peopleFolder) {
       await vault.adapter.write(path, html);
     }
   }
-  const legacyPath = (0, import_obsidian12.normalizePath)(`${peopleFolder}/Quadrants.md`);
+  const legacyPath = (0, import_obsidian13.normalizePath)(`${peopleFolder}/Quadrants.md`);
   const legacy = vault.getAbstractFileByPath(legacyPath);
-  if (legacy instanceof import_obsidian12.TFile) {
+  if (legacy instanceof import_obsidian13.TFile) {
     try {
-      await vault.delete(legacy);
+      await fileManager.trashFile(legacy);
     } catch (e) {
     }
   }
@@ -4576,12 +4657,11 @@ function escapeHtml(s) {
 }
 
 // src/main.ts
-init_types();
 var STARTUP_SYNC_DELAY_MS = 6e4;
 var SCORING_BATCH_SIZE = 50;
 var INCREMENTAL_BATCH_SIZE = 500;
 var SCORE_DRIFT_THRESHOLD = 3;
-var GmailCrmPlugin = class extends import_obsidian13.Plugin {
+var GmailCrmPlugin = class extends import_obsidian14.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4595,17 +4675,19 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     this.intelligenceNotesLoad = null;
     this.syncInterval = null;
     this.stalenessInterval = null;
+    this.oauthInProgress = false;
     /** Scored snapshot from the last staleness update, reused by the manual push command. */
     this.lastScoredPages = null;
   }
   async onload() {
+    this.registerView(PEOPLE_GRAPH_VIEW, (leaf) => new PeopleGraphView(leaf, () => graphViewUrl(this.settings.graphPushUrl)));
     await this.loadSettings();
-    this.intelligence = new IntelligenceStore(this.app.vault.adapter, (0, import_obsidian13.normalizePath)(`${this.app.vault.configDir}/plugins/gmail-crm/people-intelligence.json`));
+    this.intelligence = new IntelligenceStore(this.app.vault.adapter, (0, import_obsidian14.normalizePath)(`${this.app.vault.configDir}/plugins/gmail-crm/people-intelligence.json`));
     try {
       await this.intelligence.load();
       this.intelligenceReady = true;
     } catch (error) {
-      new import_obsidian13.Notice(`People intelligence: ${String(error)}`);
+      new import_obsidian14.Notice(`People intelligence: ${String(error)}`);
     }
     this.registerView(PEOPLE_INTELLIGENCE_VIEW, (leaf) => new PeopleIntelligenceView(leaf, (refreshNotes) => this.loadIntelligenceWorkspace(refreshNotes), {
       save: () => this.intelligence.save(),
@@ -4656,7 +4738,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
       name: "Enrich current person",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
-        if (!file || !file.path.startsWith((0, import_obsidian13.normalizePath)(this.settings.peopleFolder))) {
+        if (!file || !file.path.startsWith((0, import_obsidian14.normalizePath)(this.settings.peopleFolder))) {
           return false;
         }
         if (!checking) {
@@ -4712,7 +4794,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
       id: "view-people-graph",
       name: "View people graph",
       callback: () => {
-        this.viewPeopleGraph();
+        void this.viewPeopleGraph();
       }
     });
     this.addCommand({
@@ -4798,30 +4880,36 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     if (this.settings.useCustomOAuth && this.settings.clientId) {
       return this.settings.clientId;
     }
-    const { SHARED_CLIENT_ID: SHARED_CLIENT_ID2 } = (init_gmail_api(), __toCommonJS(gmail_api_exports));
-    return SHARED_CLIENT_ID2;
+    return SHARED_CLIENT_ID;
   }
   getEffectiveClientSecret() {
     if (this.settings.useCustomOAuth && this.settings.clientSecret) {
       return this.settings.clientSecret;
     }
-    const { SHARED_CLIENT_SECRET: SHARED_CLIENT_SECRET2 } = (init_gmail_api(), __toCommonJS(gmail_api_exports));
-    return SHARED_CLIENT_SECRET2;
+    return SHARED_CLIENT_SECRET;
   }
   async startOAuthFlow() {
+    if (this.oauthInProgress) {
+      new import_obsidian14.Notice("Google sign-in is already in progress.");
+      return;
+    }
+    this.oauthInProgress = true;
     try {
-      const authUrl = this.gmailApi.getAuthUrl();
-      const codePromise = startOAuthCallbackServer();
-      window.open(authUrl);
-      new import_obsidian13.Notice("Opening browser for authorization...");
+      const state = (0, import_crypto2.randomBytes)(32).toString("hex");
+      const authUrl = this.gmailApi.getAuthUrl(state);
+      const codePromise = startOAuthCallbackServer(state);
+      void import_electron2.shell.openExternal(authUrl);
+      new import_obsidian14.Notice("Opening browser for authorization...");
       const code = await codePromise;
       await this.gmailApi.exchangeCode(code);
-      new import_obsidian13.Notice("Gmail connected successfully!");
+      new import_obsidian14.Notice("Gmail connected successfully!");
       this.startAutoSync();
       await this.syncContacts();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Gmail auth failed: ${msg}`);
+      new import_obsidian14.Notice(`Gmail auth failed: ${msg}`);
+    } finally {
+      this.oauthInProgress = false;
     }
   }
   startAutoSync() {
@@ -4854,10 +4942,10 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
   }
   async syncContacts() {
     if (!this.settings.refreshToken) {
-      new import_obsidian13.Notice("Connect your account first in plugin settings");
+      new import_obsidian14.Notice("Connect your account first in plugin settings");
       return;
     }
-    const notice = new import_obsidian13.Notice("Syncing contacts...", 0);
+    const notice = new import_obsidian14.Notice("Syncing contacts...", 0);
     try {
       const isIncremental = !!(this.contactIndex && this.messageCache);
       const result = await this.gmailApi.buildContactIndex(
@@ -4879,7 +4967,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
           await this.saveContactIndex();
           await this.saveMessageCache();
           const count = Object.keys(checkpointIndex.contacts).length;
-          console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
+          console.debug(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
         },
         async (events) => {
           if (this.intelligenceReady) await this.intelligence.record(events);
@@ -4907,7 +4995,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
       } catch (e) {
         const calMsg = e instanceof Error ? e.message : String(e);
         if (calMsg.includes("401") || calMsg.includes("403")) {
-          new import_obsidian13.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
+          new import_obsidian14.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
         } else {
           console.warn(`[Gmail CRM] Calendar sync skipped: ${calMsg}`);
         }
@@ -4919,11 +5007,11 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
         try {
           const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
           await this.saveContactIndex();
-          console.log(`[Gmail CRM] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
+          console.debug(`[Gmail CRM] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (msg.includes("401") || msg.includes("403")) {
-            new import_obsidian13.Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
+            new import_obsidian14.Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
           } else {
             console.warn(`[Gmail CRM] Photo sync skipped: ${msg}`);
           }
@@ -4946,25 +5034,25 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Sync failed: ${msg}`);
+      new import_obsidian14.Notice(`Sync failed: ${msg}`);
     }
   }
   async fullResync() {
     this.messageCache = null;
     this.contactIndex = null;
-    new import_obsidian13.Notice("Cache cleared \u2014 running full re-sync...");
+    new import_obsidian14.Notice("Cache cleared \u2014 running full re-sync...");
     await this.syncContacts();
   }
   async syncCalendar() {
     if (!this.settings.refreshToken) {
-      new import_obsidian13.Notice("Connect your account first in plugin settings");
+      new import_obsidian14.Notice("Connect your account first in plugin settings");
       return;
     }
     if (!this.contactIndex) {
-      new import_obsidian13.Notice("No contact index found. Run a contact sync first.");
+      new import_obsidian14.Notice("No contact index found. Run a contact sync first.");
       return;
     }
-    const notice = new import_obsidian13.Notice("Syncing calendar meeting data...", 0);
+    const notice = new import_obsidian14.Notice("Syncing calendar meeting data...", 0);
     try {
       await syncCalendarData(
         this.settings,
@@ -4985,23 +5073,23 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("401") || msg.includes("403")) {
-        new import_obsidian13.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
+        new import_obsidian14.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
       } else {
-        new import_obsidian13.Notice(`Calendar sync failed: ${msg}`);
+        new import_obsidian14.Notice(`Calendar sync failed: ${msg}`);
       }
     }
   }
   async fetchContactPhotos() {
     var _a;
     if (!this.settings.refreshToken) {
-      new import_obsidian13.Notice("Connect your account first in plugin settings");
+      new import_obsidian14.Notice("Connect your account first in plugin settings");
       return;
     }
     if (!this.contactIndex) {
-      new import_obsidian13.Notice("No contact index found. Run a contact sync first.");
+      new import_obsidian14.Notice("No contact index found. Run a contact sync first.");
       return;
     }
-    const notice = new import_obsidian13.Notice("Fetching contact photos...", 0);
+    const notice = new import_obsidian14.Notice("Fetching contact photos...", 0);
     try {
       await ((_a = this.gmailApi) == null ? void 0 : _a.ensureFreshToken());
       const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
@@ -5013,9 +5101,9 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.includes("401") || msg.includes("403")) {
-        new import_obsidian13.Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
+        new import_obsidian14.Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
       } else {
-        new import_obsidian13.Notice(`Photo sync failed: ${msg}`);
+        new import_obsidian14.Notice(`Photo sync failed: ${msg}`);
       }
     }
   }
@@ -5072,23 +5160,23 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     (_b = (_a = this.contactIndex).edges) != null ? _b : _a.edges = [];
     const path = this.getIndexPath();
     const content = JSON.stringify(this.contactIndex);
-    await this.app.vault.adapter.write((0, import_obsidian13.normalizePath)(path), content);
+    await this.app.vault.adapter.write((0, import_obsidian14.normalizePath)(path), content);
     for (const leaf of this.app.workspace.getLeavesOfType(PEOPLE_INTELLIGENCE_VIEW)) {
       if (leaf.view instanceof PeopleIntelligenceView) void leaf.view.refresh(false);
     }
   }
   getIndexPath() {
-    return (0, import_obsidian13.normalizePath)(
+    return (0, import_obsidian14.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/contact-index.json`
     );
   }
   getCachePath() {
-    return (0, import_obsidian13.normalizePath)(
+    return (0, import_obsidian14.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/message-cache.json`
     );
   }
   getMergeQueuePath() {
-    return (0, import_obsidian13.normalizePath)(
+    return (0, import_obsidian14.normalizePath)(
       `${this.app.vault.configDir}/plugins/gmail-crm/merge-queue.json`
     );
   }
@@ -5117,11 +5205,11 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     if (!this.messageCache) return;
     const path = this.getCachePath();
     const content = JSON.stringify(this.messageCache);
-    await this.app.vault.adapter.write((0, import_obsidian13.normalizePath)(path), content);
+    await this.app.vault.adapter.write((0, import_obsidian14.normalizePath)(path), content);
   }
   async writeContactNotes() {
     if (!this.contactIndex) return;
-    const folder = (0, import_obsidian13.normalizePath)(this.settings.contactNotesFolder);
+    const folder = (0, import_obsidian14.normalizePath)(this.settings.contactNotesFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
@@ -5130,9 +5218,9 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     }
     const existingPages = /* @__PURE__ */ new Map();
     const folderObj = this.app.vault.getAbstractFileByPath(folder);
-    if (folderObj instanceof import_obsidian13.TFolder) {
+    if (folderObj instanceof import_obsidian14.TFolder) {
       for (const child of folderObj.children) {
-        if (child instanceof import_obsidian13.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian14.TFile && child.extension === "md") {
           const pageName = child.basename.replace(/^p-\s*/, "").toLowerCase();
           existingPages.set(pageName, child);
         }
@@ -5140,7 +5228,7 @@ var GmailCrmPlugin = class extends import_obsidian13.Plugin {
     }
     for (const contact of Object.values(this.contactIndex.contacts)) {
       const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-      const notePath = (0, import_obsidian13.normalizePath)(`${folder}/p- ${safeName}.md`);
+      const notePath = (0, import_obsidian14.normalizePath)(`${folder}/p- ${safeName}.md`);
       const existingFile = existingPages.get(contact.name.toLowerCase());
       const frontmatter = [
         "---",
@@ -5173,7 +5261,7 @@ ${body}`;
         continue;
       }
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
-      if (noteFile instanceof import_obsidian13.TFile) {
+      if (noteFile instanceof import_obsidian14.TFile) {
         continue;
       }
       try {
@@ -5191,20 +5279,20 @@ ${body}`;
   }
   async openContactNote(contact) {
     const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
-    const notePath = (0, import_obsidian13.normalizePath)(
+    const notePath = (0, import_obsidian14.normalizePath)(
       `${this.settings.contactNotesFolder}/${safeName}.md`
     );
     const file = this.app.vault.getAbstractFileByPath(notePath);
-    if (file instanceof import_obsidian13.TFile) {
+    if (file instanceof import_obsidian14.TFile) {
       await this.app.workspace.getLeaf().openFile(file);
     } else {
-      new import_obsidian13.Notice(`No note found for ${contact.name}. Run sync first.`);
+      new import_obsidian14.Notice(`No note found for ${contact.name}. Run sync first.`);
     }
   }
   async enrichAllPeople(skipAi = false) {
     var _a, _b, _c;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian13.Notice("Loading people pages...", 0);
+    const notice = new import_obsidian14.Notice("Loading people pages...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -5224,7 +5312,7 @@ ${body}`;
       if (!skipAi) {
         if (!this.settings.anthropicApiKey) {
           notice.hide();
-          new import_obsidian13.Notice("Set your API key in plugin settings first.");
+          new import_obsidian14.Notice("Set your API key in plugin settings first.");
           return;
         }
         harper = new HarperSkill(
@@ -5239,7 +5327,7 @@ ${body}`;
         notice.setMessage(`Enriching ${done}/${count}: ${name}...`);
         const relationships = (_c = graph[name]) != null ? _c : [];
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (!(file instanceof import_obsidian13.TFile)) continue;
+        if (!(file instanceof import_obsidian14.TFile)) continue;
         if (harper) {
           try {
             const rewritten = await harper.rewritePersonPage(name, page, relationships, pages);
@@ -5247,7 +5335,7 @@ ${body}`;
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             console.error(`Harper skill failed for ${name}: ${msg}`);
-            new import_obsidian13.Notice(`Failed on ${name}: ${msg}`);
+            new import_obsidian14.Notice(`Failed on ${name}: ${msg}`);
           }
         } else {
           const relLines = relationships.map(
@@ -5272,25 +5360,25 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian14.Notice(`Enrichment failed: ${msg}`);
     }
   }
   async enrichSinglePerson(name) {
     var _a;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
-    const notice = new import_obsidian13.Notice(`Enriching ${name}...`, 0);
+    const notice = new import_obsidian14.Notice(`Enriching ${name}...`, 0);
     try {
       const pages = await engine.loadPeoplePages();
       if (!pages[name]) {
         notice.hide();
-        new import_obsidian13.Notice(`Person "${name}" not found in people pages.`);
+        new import_obsidian14.Notice(`Person "${name}" not found in people pages.`);
         return;
       }
       const graph = engine.buildGraph(pages, this.contactIndex);
       const relationships = (_a = graph[name]) != null ? _a : [];
       if (!this.settings.anthropicApiKey) {
         notice.hide();
-        new import_obsidian13.Notice("Set your API key in plugin settings first.");
+        new import_obsidian14.Notice("Set your API key in plugin settings first.");
         return;
       }
       const harper = new HarperSkill(
@@ -5300,7 +5388,7 @@ ${relSection}
       );
       const rewritten = await harper.rewritePersonPage(name, pages[name], relationships, pages);
       const file = this.app.vault.getAbstractFileByPath(pages[name].path);
-      if (file instanceof import_obsidian13.TFile) {
+      if (file instanceof import_obsidian14.TFile) {
         await this.app.vault.modify(file, rewritten);
       }
       notice.setMessage(`Enriched ${name}!`);
@@ -5308,7 +5396,7 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Enrichment failed: ${msg}`);
+      new import_obsidian14.Notice(`Enrichment failed: ${msg}`);
     }
   }
   /** Load people pages, build the graph, and score every page without writing anything. */
@@ -5329,7 +5417,7 @@ ${relSection}
     const { push = true } = options;
     const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
     const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
-    const notice = new import_obsidian13.Notice("Computing staleness scores...", 0);
+    const notice = new import_obsidian14.Notice("Computing staleness scores...", 0);
     try {
       const pages = await engine.loadPeoplePages();
       const count = Object.keys(pages).length;
@@ -5348,7 +5436,7 @@ ${relSection}
           staleCount++;
         }
         const file = this.app.vault.getAbstractFileByPath(page.path);
-        if (file instanceof import_obsidian13.TFile) {
+        if (file instanceof import_obsidian14.TFile) {
           const updated = await fm.updateFrontmatter(
             file,
             page,
@@ -5396,23 +5484,23 @@ ${relSection}
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.error("[Gmail CRM] score push failed", e);
-          new import_obsidian13.Notice(`Score push failed: ${msg}`);
+          new import_obsidian14.Notice(`Score push failed: ${msg}`);
         }
       }
       setTimeout(() => notice.hide(), 4e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Staleness update failed: ${msg}`);
+      new import_obsidian14.Notice(`Staleness update failed: ${msg}`);
     }
   }
   async pushScoresToEndpoint() {
     var _a;
     if (!this.settings.scorePushUrl || !this.settings.scorePushEmail || !this.settings.scorePushApiKey) {
-      new import_obsidian13.Notice("Set the score push endpoint URL, email, and API key in settings first");
+      new import_obsidian14.Notice("Set the score push endpoint URL, email, and API key in settings first");
       return;
     }
-    const notice = new import_obsidian13.Notice("Pushing scores...", 0);
+    const notice = new import_obsidian14.Notice("Pushing scores...", 0);
     try {
       const scoredPages = (_a = this.lastScoredPages) != null ? _a : await this.computeScoredPages();
       const pushed = await pushScores(
@@ -5428,28 +5516,32 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Score push failed: ${msg}`);
+      new import_obsidian14.Notice(`Score push failed: ${msg}`);
     }
   }
-  viewPeopleGraph() {
+  async viewPeopleGraph() {
+    var _a;
     const url = graphViewUrl(this.settings.graphPushUrl);
     if (!url) {
-      new import_obsidian13.Notice("Enter a valid HTTP or HTTPS graph URL in plugin settings.");
+      new import_obsidian14.Notice("Enter a valid HTTP or HTTPS graph URL in plugin settings.");
       return;
     }
-    window.open(url);
+    const workspace = this.app.workspace;
+    const leaf = (_a = workspace.getLeavesOfType(PEOPLE_GRAPH_VIEW)[0]) != null ? _a : workspace.getLeaf("tab");
+    await leaf.setViewState({ type: PEOPLE_GRAPH_VIEW, active: true });
+    await workspace.revealLeaf(leaf);
   }
   async pushPeopleGraph() {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     if (!this.settings.graphPushUrl || !this.settings.graphPushToken) {
-      new import_obsidian13.Notice("Set the graph URL and push token in settings first (mint the token on the graph page)");
+      new import_obsidian14.Notice("Set the graph URL and push token in settings first (mint the token on the graph page)");
       return;
     }
     if (!this.settings.graphPushSalt) {
       this.settings.graphPushSalt = generateGraphSalt();
       await this.saveSettings();
     }
-    const notice = new import_obsidian13.Notice("Pushing people graph...", 0);
+    const notice = new import_obsidian14.Notice("Pushing people graph...", 0);
     try {
       const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
       const pages = await engine.loadPeoplePages();
@@ -5476,7 +5568,7 @@ ${relSection}
         const candidatePages = [];
         for (const page of Object.values(pages)) {
           const file = this.app.vault.getAbstractFileByPath(page.path);
-          if (!(file instanceof import_obsidian13.TFile) || !Number.isFinite(file.stat.mtime)) continue;
+          if (!(file instanceof import_obsidian14.TFile) || !Number.isFinite(file.stat.mtime)) continue;
           candidatePages.push({ ...page, modifiedAt: new Date(file.stat.mtime).toISOString() });
         }
         themeCandidates = await buildLocalThemeCandidates(candidatePages, workspace.state.events);
@@ -5497,7 +5589,7 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`People graph push failed: ${msg}`);
+      new import_obsidian14.Notice(`People graph push failed: ${msg}`);
     }
   }
   /**
@@ -5511,16 +5603,16 @@ ${relSection}
     var _a;
     this.lastScoredPages = null;
     if (!this.contactIndex) {
-      new import_obsidian13.Notice("No contact index yet \u2014 run a sync first.");
+      new import_obsidian14.Notice("No contact index yet \u2014 run a sync first.");
       return;
     }
     if (this.settings.lastScoredAt === 0) {
-      new import_obsidian13.Notice("First scoring run \u2014 doing a full rebuild, then incremental from here.");
+      new import_obsidian14.Notice("First scoring run \u2014 doing a full rebuild, then incremental from here.");
       await this.rescoreAllContacts();
       return;
     }
     const fm = new FrontmatterManager(this.app.vault, this.settings.companiesFolder);
-    const notice = new import_obsidian13.Notice("Computing staleness scores...", 0);
+    const notice = new import_obsidian14.Notice("Computing staleness scores...", 0);
     try {
       const filesByName = this.buildPeoplePageMap();
       const contacts = Object.values(this.contactIndex.contacts);
@@ -5574,7 +5666,7 @@ ${relSection}
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Staleness update failed: ${msg}`);
+      new import_obsidian14.Notice(`Staleness update failed: ${msg}`);
     }
   }
   /**
@@ -5585,11 +5677,11 @@ ${relSection}
   buildPeoplePageMap() {
     const files = /* @__PURE__ */ new Map();
     const folder = this.app.vault.getAbstractFileByPath(
-      (0, import_obsidian13.normalizePath)(this.settings.peopleFolder)
+      (0, import_obsidian14.normalizePath)(this.settings.peopleFolder)
     );
-    if (!(folder instanceof import_obsidian13.TFolder)) return files;
+    if (!(folder instanceof import_obsidian14.TFolder)) return files;
     for (const child of folder.children) {
-      if (!(child instanceof import_obsidian13.TFile) || child.extension !== "md") continue;
+      if (!(child instanceof import_obsidian14.TFile) || child.extension !== "md") continue;
       if (child.basename === "_Quadrants" || child.basename === "Quadrants") continue;
       const name = child.basename.replace(/^p-\s*/, "").toLowerCase();
       if (!files.has(name)) files.set(name, child);
@@ -5859,27 +5951,27 @@ ${relSection}
       `Queue: \`${this.getMergeQueuePath()}\``,
       ""
     ];
-    const folder = (0, import_obsidian13.normalizePath)(this.settings.peopleFolder);
+    const folder = (0, import_obsidian14.normalizePath)(this.settings.peopleFolder);
     if (!this.app.vault.getAbstractFileByPath(folder)) {
       try {
         await this.app.vault.createFolder(folder);
       } catch (e) {
       }
     }
-    const path = (0, import_obsidian13.normalizePath)(`${folder}/_Merge Queue.md`);
+    const path = (0, import_obsidian14.normalizePath)(`${folder}/_Merge Queue.md`);
     const content = lines.join("\n");
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof import_obsidian13.TFile) {
+    if (file instanceof import_obsidian14.TFile) {
       await this.app.vault.modify(file, content);
       await this.app.workspace.getLeaf().openFile(file);
     } else {
       await this.app.vault.create(path, content);
       const created = this.app.vault.getAbstractFileByPath(path);
-      if (created instanceof import_obsidian13.TFile) {
+      if (created instanceof import_obsidian14.TFile) {
         await this.app.workspace.getLeaf().openFile(created);
       }
     }
-    new import_obsidian13.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
+    new import_obsidian14.Notice(`Merge queue: ${pending.length} pending, ${applied.length} applied, ${dismissed.length} dismissed`);
   }
   renderMergeCandidates(candidates) {
     var _a, _b;
@@ -5930,14 +6022,14 @@ ${relSection}
   async createBase() {
     try {
       const basePath = await createBaseView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian13.Notice(`CRM Base created at ${basePath}`);
+      new import_obsidian14.Notice(`CRM Base created at ${basePath}`);
       const file = this.app.vault.getAbstractFileByPath(basePath);
-      if (file instanceof import_obsidian13.TFile) {
+      if (file instanceof import_obsidian14.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Failed to create Base: ${msg}`);
+      new import_obsidian14.Notice(`Failed to create Base: ${msg}`);
     }
   }
   async refreshBaseView() {
@@ -5948,22 +6040,22 @@ ${relSection}
   }
   async refreshQuadrantView() {
     try {
-      await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+      await writeQuadrantView(this.app.vault, this.settings.peopleFolder, this.app.fileManager);
     } catch (e) {
       console.warn("[Gmail CRM] Quadrant view write failed", e);
     }
   }
   async createQuadrantView() {
     try {
-      const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
-      new import_obsidian13.Notice(`Quadrant view written to ${path}`);
+      const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder, this.app.fileManager);
+      new import_obsidian14.Notice(`Quadrant view written to ${path}`);
       const file = this.app.vault.getAbstractFileByPath(path);
-      if (file instanceof import_obsidian13.TFile) {
+      if (file instanceof import_obsidian14.TFile) {
         await this.app.workspace.getLeaf().openFile(file);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      new import_obsidian13.Notice(`Failed to write quadrant view: ${msg}`);
+      new import_obsidian14.Notice(`Failed to write quadrant view: ${msg}`);
     }
   }
 };
