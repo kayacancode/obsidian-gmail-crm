@@ -8,6 +8,7 @@ on:
       - "scripts/**"
       - "package*.json"
       - "manifest.json"
+      - "main.js"
       - "versions.json"
       - "eslint.config.mjs"
       - "styles.css"
