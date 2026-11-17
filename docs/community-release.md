@@ -16,7 +16,8 @@ Candidate: **Gmail CRM 1.0.0**, desktop only, minimum Obsidian **1.15.0** (the v
 ## Before publication
 
 - Recommended review lint now passes, and is enforced by `check:release`. Repeat the full release gate after any further changes.
-- Test the hardened Gmail OAuth flow with a real account in a clean vault; automated tests verify state rejection and PKCE binding.
+- Real-account Gmail reconnect verified on November 17, 2026 in the installed 1.0.0 candidate on Obsidian 1.15.1: Google returned to the loopback callback, and Obsidian proceeded to contact/photo reading and people-page loading. Automated tests separately verify state rejection and PKCE binding. This was an existing vault, not a clean-vault test.
+- Authenticated embedded personal graph verified in the same session: the Obsidian tab rendered 344 people. Shared-network switching and a complete sync were not asserted by this smoke test.
 - Verify first-run behavior, disconnect, refresh, shared network membership, and sign-out in a clean vault.
 - Confirm the shared Google Desktop OAuth client is available to outside users; document custom credentials as the fallback.
 - Capture screenshots using synthetic contacts or explicitly approved public data.
