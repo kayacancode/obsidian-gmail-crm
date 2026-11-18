@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import {
 	Plugin,
 	Notice,
@@ -5,10 +6,11 @@ import {
 	TFolder,
 	normalizePath,
 } from "obsidian";
-import { GmailApi } from "./gmail-api";
+import { shell } from "electron";
+import { GmailApi, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET } from "./gmail-api";
 import { IntelligenceStore } from "./intelligence-store";
 import { PeopleIntelligenceView, PEOPLE_INTELLIGENCE_VIEW } from "./intelligence-view";
-import type { Interaction, SourcedNote } from "./intelligence-model";
+import type { SourcedNote } from "./intelligence-model";
 import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
@@ -29,6 +31,7 @@ import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
 import { createBaseView } from "./base-view";
 import { graphViewUrl } from "./graph-view";
+import { PeopleGraphView, PEOPLE_GRAPH_VIEW } from "./people-graph-view";
 import { writeQuadrantView } from "./quadrant-view";
 import type {
 	GmailCrmSettings,
@@ -92,6 +95,7 @@ export default class GmailCrmPlugin extends Plugin {
 	private stalenessInterval: number | null = null;
 
 	async onload() {
+		this.registerView(PEOPLE_GRAPH_VIEW, leaf => new PeopleGraphView(leaf, () => graphViewUrl(this.settings.graphPushUrl)));
 		await this.loadSettings();
 		this.intelligence = new IntelligenceStore(this.app.vault.adapter, normalizePath(`${this.app.vault.configDir}/plugins/gmail-crm/people-intelligence.json`));
 		try { await this.intelligence.load(); this.intelligenceReady = true; }
@@ -198,7 +202,7 @@ export default class GmailCrmPlugin extends Plugin {
 		this.addCommand({
 			id: "view-people-graph",
 			name: "View people graph",
-			callback: () => { this.viewPeopleGraph(); },
+			callback: () => { void this.viewPeopleGraph(); },
 		});
 
 		// Command: full rescore, including a rebuilt relationship graph
@@ -295,7 +299,6 @@ export default class GmailCrmPlugin extends Plugin {
 			return this.settings.clientId;
 		}
 		// Fall back to shared credentials
-		const { SHARED_CLIENT_ID } = require("./gmail-api");
 		return SHARED_CLIENT_ID;
 	}
 
@@ -303,19 +306,23 @@ export default class GmailCrmPlugin extends Plugin {
 		if (this.settings.useCustomOAuth && this.settings.clientSecret) {
 			return this.settings.clientSecret;
 		}
-		const { SHARED_CLIENT_SECRET } = require("./gmail-api");
 		return SHARED_CLIENT_SECRET;
 	}
 
+	private oauthInProgress = false;
+
 	async startOAuthFlow() {
+		if (this.oauthInProgress) { new Notice("Google sign-in is already in progress."); return; }
+		this.oauthInProgress = true;
 		try {
-			const authUrl = this.gmailApi.getAuthUrl();
+			const state = randomBytes(32).toString("hex");
+			const authUrl = this.gmailApi.getAuthUrl(state);
 
 			// Start local callback server
-			const codePromise = startOAuthCallbackServer();
+			const codePromise = startOAuthCallbackServer(state);
 
 			// Open browser
-			window.open(authUrl);
+			void shell.openExternal(authUrl);
 			new Notice("Opening browser for authorization...");
 
 			const code = await codePromise;
@@ -327,6 +334,8 @@ export default class GmailCrmPlugin extends Plugin {
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
 			new Notice(`Gmail auth failed: ${msg}`);
+		} finally {
+			this.oauthInProgress = false;
 		}
 	}
 
@@ -384,7 +393,7 @@ export default class GmailCrmPlugin extends Plugin {
 					await this.saveContactIndex();
 					await this.saveMessageCache();
 					const count = Object.keys(checkpointIndex.contacts).length;
-					console.log(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
+					console.debug(`[Gmail CRM] Checkpoint: ${count} contacts saved to disk`);
 				},
 				async events => { if (this.intelligenceReady) await this.intelligence.record(events); }
 			);
@@ -430,7 +439,7 @@ export default class GmailCrmPlugin extends Plugin {
 				try {
 					const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
 					await this.saveContactIndex();
-					console.log(`[Gmail CRM] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
+					console.debug(`[Gmail CRM] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
 				} catch (e: unknown) {
 					const msg = e instanceof Error ? e.message : String(e);
 					if (msg.includes("401") || msg.includes("403")) {
@@ -638,7 +647,7 @@ export default class GmailCrmPlugin extends Plugin {
 		try {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const content = await this.app.vault.adapter.read(path);
-			this.messageCache = JSON.parse(content);
+			this.messageCache = JSON.parse(content) as MessageCache;
 		} catch {
 			// missing or corrupt — will do a full sync
 		}
@@ -1019,13 +1028,16 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 	}
 
-	viewPeopleGraph() {
+	async viewPeopleGraph() {
 		const url = graphViewUrl(this.settings.graphPushUrl);
 		if (!url) {
 			new Notice("Enter a valid HTTP or HTTPS graph URL in plugin settings.");
 			return;
 		}
-		window.open(url);
+		const workspace = this.app.workspace;
+		const leaf = workspace.getLeavesOfType(PEOPLE_GRAPH_VIEW)[0] ?? workspace.getLeaf("tab");
+		await leaf.setViewState({ type: PEOPLE_GRAPH_VIEW, active: true });
+		await workspace.revealLeaf(leaf);
 	}
 
 	async pushPeopleGraph() {
@@ -1068,7 +1080,7 @@ export default class GmailCrmPlugin extends Plugin {
 					if (!(file instanceof TFile) || !Number.isFinite(file.stat.mtime)) continue;
 					candidatePages.push({ ...page, modifiedAt: new Date(file.stat.mtime).toISOString() });
 				}
-				themeCandidates = await buildLocalThemeCandidates(candidatePages, workspace.state.events as Interaction[]);
+				themeCandidates = await buildLocalThemeCandidates(candidatePages, workspace.state.events);
 			} catch {
 				// Local intelligence is optional: preserve the existing graph push when
 				// its private workspace is unavailable or cannot be read.
@@ -1622,7 +1634,7 @@ export default class GmailCrmPlugin extends Plugin {
 
 	private async refreshQuadrantView() {
 		try {
-			await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+			await writeQuadrantView(this.app.vault, this.settings.peopleFolder, this.app.fileManager);
 		} catch (e) {
 			console.warn("[Gmail CRM] Quadrant view write failed", e);
 		}
@@ -1630,7 +1642,7 @@ export default class GmailCrmPlugin extends Plugin {
 
 	async createQuadrantView() {
 		try {
-			const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder);
+			const path = await writeQuadrantView(this.app.vault, this.settings.peopleFolder, this.app.fileManager);
 			new Notice(`Quadrant view written to ${path}`);
 			const file = this.app.vault.getAbstractFileByPath(path);
 			if (file instanceof TFile) {

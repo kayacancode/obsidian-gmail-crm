@@ -16,3 +16,5 @@ main.js
 
 /apps/people-graph/node_modules
 /node_modules
+
+/dist/

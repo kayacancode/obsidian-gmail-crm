@@ -1,3 +1,4 @@
+import { randomBytes, createHash } from "crypto";
 import { requestUrl } from "obsidian";
 import type { Interaction } from "./intelligence-model";
 import type {
@@ -115,11 +116,17 @@ export class GmailApi {
 		return SHARED_CLIENT_SECRET;
 	}
 
-	getAuthUrl(): string {
+	private oauthVerifier = "";
+
+	getAuthUrl(state: string): string {
+		this.oauthVerifier = randomBytes(32).toString("base64url");
 		const params = new URLSearchParams({
 			client_id: this.effectiveClientId(),
 			redirect_uri: REDIRECT_URI,
 			response_type: "code",
+			state,
+			code_challenge: createHash("sha256").update(this.oauthVerifier).digest("base64url"),
+			code_challenge_method: "S256",
 			scope: SCOPES,
 			access_type: "offline",
 			prompt: "consent",
@@ -128,6 +135,9 @@ export class GmailApi {
 	}
 
 	async exchangeCode(code: string): Promise<void> {
+		if (!this.oauthVerifier) throw new Error("Start Google sign-in before exchanging a code");
+		const verifier = this.oauthVerifier;
+		this.oauthVerifier = "";
 		const resp = await this.apiRequest({
 			url: GOOGLE_TOKEN_URL,
 			method: "POST",
@@ -138,10 +148,11 @@ export class GmailApi {
 				client_secret: this.effectiveClientSecret(),
 				redirect_uri: REDIRECT_URI,
 				grant_type: "authorization_code",
+				code_verifier: verifier,
 			}).toString(),
 		});
 
-		const data: GmailTokenResponse = resp.json;
+		const data = resp.json as GmailTokenResponse;
 		await this.onSettingsUpdate({
 			accessToken: data.access_token,
 			refreshToken: data.refresh_token ?? this.settings.refreshToken,
@@ -162,15 +173,14 @@ export class GmailApi {
 			}).toString(),
 		});
 
-		const data: GmailTokenResponse = resp.json;
+		const data = resp.json as GmailTokenResponse;
 		await this.onSettingsUpdate({
 			accessToken: data.access_token,
 			tokenExpiry: Date.now() + data.expires_in * 1000,
 		});
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	private async apiRequest(options: Parameters<typeof requestUrl>[0], retries = 5): Promise<any> {
+	private async apiRequest(options: Parameters<typeof requestUrl>[0], retries = 5): Promise<Awaited<ReturnType<typeof requestUrl>>> {
 		const url = typeof options === "string" ? options : options.url;
 		// Pass throw: false so we can read the actual response body on errors.
 		// Otherwise Obsidian throws a generic "Request failed, status N" with
@@ -183,9 +193,9 @@ export class GmailApi {
 		try {
 			resp = await requestUrl(reqOptions);
 		} catch (e: unknown) {
-			const err = e as Record<string, any>;
+			const err = e as Record<string, unknown>;
 			console.error(`[Gmail CRM] Network error`, { url, error: err });
-			throw new Error(err?.message ?? "Network request failed");
+			throw new Error(typeof err?.message === "string" ? err.message : "Network request failed");
 		}
 
 		if (resp.status >= 200 && resp.status < 300) {
@@ -241,11 +251,8 @@ export class GmailApi {
 		let detail = "";
 		if (rawBody) {
 			try {
-				const parsed = JSON.parse(rawBody);
-				detail = parsed?.error?.message
-					?? parsed?.error_description
-					?? parsed?.error?.status
-					?? JSON.stringify(parsed).slice(0, 300);
+                const parsed = JSON.parse(rawBody) as {error?:{message?:string;status?:string};error_description?:string};
+                detail = parsed?.error?.message ?? parsed?.error_description ?? parsed?.error?.status ?? JSON.stringify(parsed).slice(0,300);
 			} catch {
 				detail = rawBody.slice(0, 300);
 			}
@@ -292,7 +299,7 @@ export class GmailApi {
 			url: `${GMAIL_API_BASE}/profile`,
 			headers,
 		});
-		return resp.json.emailAddress;
+		return (resp.json as {emailAddress:string}).emailAddress;
 	}
 
 	async fetchAllMessageIds(
@@ -305,7 +312,7 @@ export class GmailApi {
 		// maxResults <= 0 means "no cap" — fetch until Gmail runs out of pages.
 		const unlimited = maxResults <= 0;
 		if (afterDate) {
-			console.info(
+			console.debug(
 				"[Gmail CRM] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
 				{ afterDate }
 			);
@@ -345,7 +352,7 @@ export class GmailApi {
 				headers,
 			});
 
-			const data: GmailListResponse = resp.json;
+			const data = resp.json as GmailListResponse;
 			if (!data.messages) break;
 
 			allMessages.push(...data.messages);
@@ -362,7 +369,7 @@ export class GmailApi {
 			url: `${GMAIL_API_BASE}/messages/${messageId}?format=METADATA&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
 			headers,
 		});
-		return resp.json;
+		return resp.json as GmailMessageMetadata;
 	}
 
 	async buildContactIndex(
@@ -386,7 +393,7 @@ export class GmailApi {
 
 		// Start from existing contacts or empty
 		const contacts: Record<string, Contact> = existingIndex
-			? JSON.parse(JSON.stringify(existingIndex.contacts))
+			? structuredClone(existingIndex.contacts)
 			: {};
 		const edges = existingIndex?.edges ?? [];
 		let interactions: Interaction[] = [];
@@ -399,7 +406,7 @@ export class GmailApi {
 		// (thread-level metrics are recomputed from all messages each full sync,
 		// but for incremental we need to carry forward existing metrics)
 		if (existingIndex && newMessageIds.length > 0) {
-			for (const [key, c] of Object.entries(contacts)) {
+			for (const key of Object.keys(contacts)) {
 				// We can't fully reconstruct thread states from aggregate Contact data,
 				// so on incremental syncs the thread-level metrics are approximate.
 				// A full re-sync (clear cache) will recompute them exactly.
@@ -460,7 +467,7 @@ export class GmailApi {
 			this.finalizeContactMetrics(contacts, threadStates);
 		}
 
-		console.log(`[Gmail CRM] Sync complete`, {
+		console.debug(`[Gmail CRM] Sync complete`, {
 			mode: afterDate ? "incremental" : "full",
 			afterDate: afterDate ?? "n/a",
 			totalListed: allMessageIds.length,
@@ -472,7 +479,7 @@ export class GmailApi {
 		// Log metadata summary for top contacts
 		const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
 		for (const c of sorted.slice(0, 20)) {
-			console.log(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
+			console.debug(`[Gmail CRM] Contact: ${c.name} <${c.email}>`, {
 				exchanges: c.totalExchanges,
 				sent: c.sentCount,
 				received: c.receivedCount,

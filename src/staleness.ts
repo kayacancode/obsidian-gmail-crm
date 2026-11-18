@@ -10,7 +10,7 @@ export function setScoringDebug(enabled: boolean) {
 }
 
 function logScoring(name: string, details: Record<string, unknown>) {
-	console.log(`[Gmail CRM] Scoring: ${name}`, details);
+	console.debug(`[Gmail CRM] Scoring: ${name}`, details);
 }
 
 export interface StalenessScore {

@@ -7,12 +7,13 @@ const dir = await mkdtemp(join(tmpdir(), "people-intelligence-"));
 try {
   await build({
     stdin: {
-      contents: "import './tests/intelligence.test.ts'; import './tests/theme-candidates.test.ts'; import './tests/graph-view.test.ts';",
+      contents: "import './tests/oauth-release.test.ts'; import './tests/intelligence.test.ts'; import './tests/theme-candidates.test.ts'; import './tests/graph-view.test.ts';",
       resolveDir: process.cwd(),
     },
     outfile: join(dir, "test.cjs"),
-    alias: { obsidian: "./tests/obsidian-stub.ts" },
+    alias: { electron: "./tests/electron-stub.ts", obsidian: "./tests/obsidian-stub.ts" },
     bundle: true,
+    external: ["electron"],
     platform: "node",
     format: "cjs",
   });

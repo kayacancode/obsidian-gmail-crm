@@ -24,7 +24,7 @@ Optional deeper Gmail context is a separate confirmation, capped at 50 matching 
 
 ### 1. Install the Plugin
 
-**Via BRAT (recommended for now):**
+**Via BRAT (optional beta installation):**
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) if you haven't
 2. Add `kayacancode/obsidian-gmail-crm` as a beta plugin
 3. Enable "Gmail CRM" in Community Plugins
@@ -36,7 +36,7 @@ Optional deeper Gmail context is a separate confirmation, capped at 50 matching 
 
 ### 2. Set Up Google OAuth
 
-The plugin needs read-only access to your Gmail metadata. You create your own OAuth credentials — no shared API key, no third-party server.
+Normal sync reads Gmail metadata, using a broader `gmail.readonly` OAuth grant. Calendar and Contacts read scopes are requested at the same time. The plugin includes a shared Desktop OAuth client; access may depend on its Google publication/testing status. You can configure your own credentials using these steps. The separate People graph uses its own hosted service and sign-in.
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
 2. Create a new project (or use an existing one)
@@ -46,6 +46,7 @@ The plugin needs read-only access to your Gmail metadata. You create your own OA
 5. Create **OAuth 2.0 Client ID** → Application type: **Desktop app**
 6. Copy the **Client ID** and **Client Secret**
 7. In Obsidian → Gmail CRM settings:
+   - Enable **Use custom Google credentials**
    - Paste Client ID and Client Secret
    - Click **Connect** — a browser window opens for Google sign-in
    - Authorize the app — you'll be redirected back automatically
@@ -59,7 +60,7 @@ The plugin needs read-only access to your Gmail metadata. You create your own OA
 
 ### 4. Explore Your CRM
 
-After your first sync, you'll have a **People/** folder with one markdown note per contact. Here's how to make sense of it all:
+Enable **Create contact notes** in plugin settings before syncing to generate people pages. With that option enabled, after your first sync you'll have a configured people folder (by default **People pages/**) with one markdown note per contact. Here's how to make sense of it all:
 
 #### People Pages
 
@@ -165,19 +166,15 @@ Calendar data feeds into the strength score (up to 20 bonus points) and can over
 
 ## PeopleGraph CLI (optional)
 
-The plugin works on its own. The companion `peoplegraph` CLI can query your local contact index, read your hosted People graph, or use an explicitly connected People key for private context. The [agent onboarding guide](people-agent-onboarding.md) covers these separate access choices.
+The plugin works on its own, but a companion CLI — `peoplegraph` — lets you (and your coding agents) query the contact index from the terminal: fuzzy person lookup, relationship scores, "who do I know at X", reconnect candidates, and duplicate/merge review.
 
-Install the versioned binary and explicitly choose an agent skill destination:
+Install the latest release binary:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.12/install-peoplegraph.sh \
-  -o install-peoplegraph.sh
-bash install-peoplegraph.sh --skill claude
-~/.local/bin/peoplegraph version
+curl -fsSL https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/main/scripts/install-peoplegraph.sh | bash
 ```
 
-This verifies release checksums, installs the binary to `~/.local/bin/peoplegraph`, and installs the skill plus offline guides to `~/.claude/skills/peoplegraph/`. Choose `--skill codex`, `--skill agents`, or `--skill-dir <path>` for another destination; omit skill options for only the binary. For the vault cache, use `peoplegraph --local`; override discovery with `--cache <path>` or `PEOPLEGRAPH_CACHE`. Run `peoplegraph describe` for the installed command surface. Installing the CLI does not connect or grant access to a web account.
+This installs the binary to `~/.local/bin/peoplegraph` and an agent skill to `~/.claude/skills/peoplegraph/` so Claude Code and similar agents know how to drive it. The CLI auto-discovers `contact-index.json` in your Obsidian vault; override with `--cache <path>` or `PEOPLEGRAPH_CACHE`. Run `peoplegraph --help` or `peoplegraph describe` for the full command surface.
 
 ## Commands
 
@@ -387,3 +384,9 @@ npm run preview:intelligence
 ```
 
 The preview at `http://127.0.0.1:4178` runs the same renderer with clearly labeled synthetic people, stored separately in browser demo storage. It never opens a real vault. With Playwright available, run `node tests/intelligence.browser.mjs` while the preview is running. Set `PLAYWRIGHT_MODULE` to an external Playwright module path and `CHROME_EXECUTABLE` to a Chrome binary if needed. Browser checks exercise all views, goals persistence, source links, filters, graph/detail consistency, narrow layout, and empty data.
+
+## People graph inside Obsidian
+
+Run **Gmail CRM: View people graph** to open the hosted People app in a reusable workspace tab. Use the app’s network selector to explore personal or shared networks. This requires internet and the normal People account and network permissions. The graph URL setting supports your own deployment; leaving it blank uses the hosted People app. Opening this tab does not upload vault data.
+
+**Refresh** reloads the app using the current configured URL. **Open in browser** is available if the deployment blocks embedding or Google sign-in does not work inside Obsidian. Use **Sign in using your browser** in the embedded graph, sign in to People, and explicitly approve the Obsidian connection. Return to Obsidian; the graph signs in automatically. Connection requests expire after five minutes and can be redeemed only once by the requesting tab. This view is the hosted graph, not an offline rendering of vault notes.
