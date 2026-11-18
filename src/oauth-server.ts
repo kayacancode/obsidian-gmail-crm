@@ -21,7 +21,7 @@ export function startOAuthCallbackServer(expectedState: string): Promise<string>
 				res.writeHead(200, { "Content-Type": "text/html" });
 				if (code) {
 					res.end(
-						"<html><body><h2>Gmail CRM connected!</h2><p>You can close this tab and return to Obsidian.</p></body></html>"
+						"<html><body><h2>People Plugin connected!</h2><p>You can close this tab and return to Obsidian.</p></body></html>"
 					);
 					settled = true;
 					server.close();

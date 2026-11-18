@@ -416,7 +416,7 @@ export class RelationshipEngine {
 				}
 			}
 
-			console.debug(`[Gmail CRM] Page-to-contact match: ${matched}/${attempted}`, {
+			console.debug(`[People Plugin] Page-to-contact match: ${matched}/${attempted}`, {
 				totalPages: Object.keys(pages).length,
 				unmatchedSample: unmatchedSamples,
 			});

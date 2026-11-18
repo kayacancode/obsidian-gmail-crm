@@ -1,10 +1,10 @@
-# Privacy Policy — Gmail CRM for Obsidian
+# Privacy Policy — People Plugin for Obsidian
 
 **Last updated:** November 16, 2026
 
 ## What This Plugin Does
 
-Gmail CRM for Obsidian's normal sync reads **email metadata only** — sender, recipient, date, subject line, and thread structure. It does not read email bodies during normal sync. If the separate People Graph service is enabled, a user can explicitly confirm a one-time deeper retrieval for a selected person, inbox and 30- or 90-day window. That retrieval is capped at 50 matching messages and 1 MB of decoded body text.
+People Plugin for Obsidian's normal sync reads **email metadata only** — sender, recipient, date, subject line, and thread structure. It does not read email bodies during normal sync. If the separate People Graph service is enabled, a user can explicitly confirm a one-time deeper retrieval for a selected person, inbox and 30- or 90-day window. That retrieval is capped at 50 matching messages and 1 MB of decoded body text.
 
 The plugin uses this metadata to build a local contact relationship graph inside your Obsidian vault.
 
@@ -63,7 +63,7 @@ To revoke the plugin's access to your Google account:
 2. Find "Gmail CRM for Obsidian" in the list of third-party apps
 3. Click "Remove Access"
 
-You can also disconnect within the plugin: Settings → Gmail CRM → Disconnect.
+You can also disconnect within the plugin: Settings → People Plugin → Disconnect.
 
 ## Contact
 

@@ -17,4 +17,4 @@ for(const name of ['main.js','manifest.json','styles.css']){
  hashes.push(createHash('sha256').update(bytes).digest('hex')+'  '+name);
 }
 await writeFile(new URL('SHA256SUMS',destination),hashes.join('\n')+'\n');
-console.log(`Packaged Gmail CRM ${manifest.version} in dist/plugin/`);
+console.log(`Packaged People Plugin ${manifest.version} in dist/plugin/`);

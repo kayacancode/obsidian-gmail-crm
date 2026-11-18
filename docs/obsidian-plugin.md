@@ -1,10 +1,10 @@
-# Gmail CRM for Obsidian
+# People Plugin for Obsidian
 
 A privacy-first CRM that builds its normal relationship graph from Gmail metadata inside Obsidian. Normal sync does not read email bodies. Optional People Graph cloud features require separate, explicit push or retrieval confirmation and apply the caps and retention rules described in [PRIVACY.md](../PRIVACY.md).
 
 ## What It Does
 
-Gmail CRM syncs your email metadata (sender, recipient, date, subject line, thread structure) and builds:
+People Plugin syncs your email metadata (sender, recipient, date, subject line, thread structure) and builds:
 
 - **People pages** — one markdown note per contact with frontmatter stats
 - **Company pages** — auto-created stubs linked to people
@@ -27,12 +27,12 @@ Optional deeper Gmail context is a separate confirmation, capped at 50 matching 
 **Via BRAT (optional beta installation):**
 1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) if you haven't
 2. Add `kayacancode/obsidian-gmail-crm` as a beta plugin
-3. Enable "Gmail CRM" in Community Plugins
+3. Enable "People Plugin" in Community Plugins
 
 **Manual install:**
 1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/kayacancode/obsidian-gmail-crm/releases)
 2. Create `<vault>/.obsidian/plugins/gmail-crm/` and place the files there
-3. Enable "Gmail CRM" in Community Plugins
+3. Enable "People Plugin" in Community Plugins
 
 ### 2. Set Up Google OAuth
 
@@ -45,7 +45,7 @@ Normal sync reads Gmail metadata, using a broader `gmail.readonly` OAuth grant. 
    - For personal Gmail: add your email as a test user
 5. Create **OAuth 2.0 Client ID** → Application type: **Desktop app**
 6. Copy the **Client ID** and **Client Secret**
-7. In Obsidian → Gmail CRM settings:
+7. In Obsidian → People Plugin settings:
    - Enable **Use custom Google credentials**
    - Paste Client ID and Client Secret
    - Click **Connect** — a browser window opens for Google sign-in
@@ -53,7 +53,7 @@ Normal sync reads Gmail metadata, using a broader `gmail.readonly` OAuth grant. 
 
 ### 3. Run Your First Sync
 
-- Open the command palette (Cmd/Ctrl + P) → **Gmail CRM: Sync Gmail contacts**
+- Open the command palette (Cmd/Ctrl + P) → **People Plugin: Sync Gmail contacts**
 - The plugin scans your email metadata and builds the contact index
 - First sync may take a few minutes depending on mailbox size
 - Subsequent syncs are incremental (only new messages)
@@ -97,7 +97,7 @@ The plugin auto-creates stub notes in the **Companies/** folder, linked from peo
 
 #### CRM Base View
 
-Run **Gmail CRM: Create base view** (Cmd/Ctrl + P) to generate `CRM.base` — a sortable, filterable table of all your contacts. It includes 6 pre-built views:
+Run **People Plugin: Create base view** (Cmd/Ctrl + P) to generate `CRM.base` — a sortable, filterable table of all your contacts. It includes 6 pre-built views:
 
 | View | What It Shows |
 |------|---------------|
@@ -112,7 +112,7 @@ You can sort by any column, filter by company or score range, and click through 
 
 #### Staleness Scores
 
-Run **Gmail CRM: Update staleness scores** to compute relationship scores for every contact. Each person gets:
+Run **People Plugin: Update staleness scores** to compute relationship scores for every contact. Each person gets:
 
 - **Staleness** (0–100) — how fresh is the relationship?
 - **Strength** (0–100) — how deep and balanced is it overall?
@@ -125,7 +125,7 @@ See [How Scoring Works](#how-scoring-works) below for the full algorithm.
 
 #### Quadrant View
 
-Run **Gmail CRM: Create quadrant view** to generate `_Quadrants.md` — a visual 2×2 grid showing your contacts organized by relationship health:
+Run **People Plugin: Create quadrant view** to generate `_Quadrants.md` — a visual 2×2 grid showing your contacts organized by relationship health:
 
 ```
          DEVELOPING        │        NURTURE
@@ -144,7 +144,7 @@ Run **Gmail CRM: Create quadrant view** to generate `_Quadrants.md` — a visual
 
 #### Relationship Mapping
 
-Each successful manual or scheduled contact sync maps relationships locally without AI. You can also run **Gmail CRM: Map relationships only (no AI)** to refresh the mapping on demand. The engine detects relationships from:
+Each successful manual or scheduled contact sync maps relationships locally without AI. You can also run **People Plugin: Map relationships only (no AI)** to refresh the mapping on demand. The engine detects relationships from:
 
 - Wiki-links between people pages (`[[p- Jane Smith]]` mentioned in another person's page)
 - Shared email threads (introduced-by patterns)
@@ -155,7 +155,7 @@ These edges feed into the strength score and show up in AI-enriched pages under 
 
 #### Calendar Integration
 
-Run **Gmail CRM: Sync calendar** to pull meeting history from Google Calendar. This adds:
+Run **People Plugin: Sync calendar** to pull meeting history from Google Calendar. This adds:
 
 - Total meetings with each contact
 - Meetings in the last 90 days
@@ -356,7 +356,7 @@ MIT — see [LICENSE](../LICENSE).
 
 ## People intelligence workspace
 
-Run **Gmail CRM: Open people intelligence** from the command palette, or select the **people** ribbon icon. This opens a native Obsidian tab alongside your existing Base and graph views.
+Run **People Plugin: Open people intelligence** from the command palette, or select the **people** ribbon icon. This opens a native Obsidian tab alongside your existing Base and graph views.
 
 - **Attention:** reconnect candidates and recorded activity changes, with explanations and local Important/Later preferences.
 - **Timeline:** a 12-week grid of email metadata and mutually accepted calendar events. Select a cell for the underlying events.
@@ -387,6 +387,6 @@ The preview at `http://127.0.0.1:4178` runs the same renderer with clearly label
 
 ## People graph inside Obsidian
 
-Run **Gmail CRM: View people graph** to open the hosted People app in a reusable workspace tab. Use the app’s network selector to explore personal or shared networks. This requires internet and the normal People account and network permissions. The graph URL setting supports your own deployment; leaving it blank uses the hosted People app. Opening this tab does not upload vault data.
+Run **People Plugin: View people graph** to open the hosted People app in a reusable workspace tab. Use the app’s network selector to explore personal or shared networks. This requires internet and the normal People account and network permissions. The graph URL setting supports your own deployment; leaving it blank uses the hosted People app. Opening this tab does not upload vault data.
 
 **Refresh** reloads the app using the current configured URL. **Open in browser** is available if the deployment blocks embedding or Google sign-in does not work inside Obsidian. Use **Sign in using your browser** in the embedded graph, sign in to People, and explicitly approve the Obsidian connection. Return to Obsidian; the graph signs in automatically. Connection requests expire after five minutes and can be redeemed only once by the requesting tab. This view is the hosted graph, not an offline rendering of vault notes.
