@@ -10,7 +10,7 @@ export function setScoringDebug(enabled: boolean) {
 }
 
 function logScoring(name: string, details: Record<string, unknown>) {
-	console.debug(`[People Plugin] Scoring: ${name}`, details);
+	console.debug(`[People Atlas] Scoring: ${name}`, details);
 }
 
 export interface StalenessScore {

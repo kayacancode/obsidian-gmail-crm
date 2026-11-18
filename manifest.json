@@ -1,7 +1,7 @@
 {
 	"id": "gmail-crm",
-	"name": "People Plugin",
-	"version": "1.0.1",
+	"name": "People Atlas",
+	"version": "1.0.2",
 	"minAppVersion": "1.15.0",
 	"description": "Build a CRM from Gmail activity, maintain people notes, and explore personal and shared relationship graphs.",
 	"author": "Kaya Jones",

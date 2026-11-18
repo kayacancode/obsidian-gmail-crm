@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 const readJSON=async path=>JSON.parse(await readFile(new URL('../'+path,import.meta.url),'utf8'));
 const manifest=await readJSON('manifest.json'),pkg=await readJSON('package.json'),versions=await readJSON('versions.json');
 assert.match(manifest.version,/^\d+\.\d+\.\d+$/);
+assert.ok(!/\bplugin\b/i.test(manifest.name), 'Obsidian directory names must not contain the word Plugin');
 assert.equal(pkg.version,manifest.version,'Package and manifest versions must match');
 assert.equal(versions[manifest.version],manifest.minAppVersion,'Missing or incorrect versions.json entry');
 assert.equal(manifest.isDesktopOnly,true);
@@ -17,4 +18,4 @@ for(const name of ['main.js','manifest.json','styles.css']){
  hashes.push(createHash('sha256').update(bytes).digest('hex')+'  '+name);
 }
 await writeFile(new URL('SHA256SUMS',destination),hashes.join('\n')+'\n');
-console.log(`Packaged People Plugin ${manifest.version} in dist/plugin/`);
+console.log(`Packaged People Atlas ${manifest.version} in dist/plugin/`);
