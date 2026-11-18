@@ -1,4 +1,4 @@
-# People Plugin
+# People Atlas
 
 Build a personal CRM in your Obsidian vault from Gmail activity, keep Markdown people notes, and explore your relationships in a People graph tab.
 
@@ -16,15 +16,15 @@ Build a personal CRM in your Obsidian vault from Gmail activity, keep Markdown p
 
 This plugin has been submitted to the [Obsidian Community directory](https://community.obsidian.md/plugins/gmail-crm) and is undergoing automated review.
 
-Until approval, download **main.js**, **manifest.json**, and **styles.css** from a [plugin release](https://github.com/kayacancode/obsidian-gmail-crm/releases), place them in `<vault>/.obsidian/plugins/gmail-crm/`, then enable **People Plugin** under **Settings → Community plugins**. BRAT remains an optional beta installation method.
+Until approval, download **main.js**, **manifest.json**, and **styles.css** from a [plugin release](https://github.com/kayacancode/obsidian-gmail-crm/releases), place them in `<vault>/.obsidian/plugins/gmail-crm/`, then enable **People Atlas** under **Settings → Community plugins**. BRAT remains an optional beta installation method.
 
-After the plugin is approved, install it from **Settings → Community plugins → Browse** by searching for **People Plugin**.
+After the plugin is approved, install it from **Settings → Community plugins → Browse** by searching for **People Atlas**.
 
 ## Start using it
 
-1. Open **Settings → People Plugin** and connect Google. If the shared OAuth client is unavailable to your account, configure your own Desktop app credentials using the [setup guide](docs/obsidian-plugin.md#2-set-up-google-oauth).
-2. Enable **Create contact notes** in settings if you want generated Markdown people pages, then run **People Plugin: Sync contacts** from the command palette. Review the generated people notes and relationship scores.
-3. Run **People Plugin: View people graph**. Choose **Sign in using your browser**, sign in to People, approve the Obsidian connection, and return to the tab. Select a shared network in the People app if you belong to one.
+1. Open **Settings → People Atlas** and connect Google. If the shared OAuth client is unavailable to your account, configure your own Desktop app credentials using the [setup guide](docs/obsidian-plugin.md#2-set-up-google-oauth).
+2. Enable **Create contact notes** in settings if you want generated Markdown people pages, then run **People Atlas: Sync contacts** from the command palette. Review the generated people notes and relationship scores.
+3. Run **People Atlas: View people graph**. Choose **Sign in using your browser**, sign in to People, approve the Obsidian connection, and return to the tab. Select a shared network in the People app if you belong to one.
 
 Opening the hosted graph does not upload your vault. Graph uploads are a separate command and require a configured server and push token. The hosted graph needs an online service; the plugin’s local notes and intelligence workspace are stored in your vault.
 
