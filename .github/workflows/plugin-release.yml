@@ -24,6 +24,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +41,14 @@ jobs:
       - name: Check release tag
         if: startsWith(github.ref, 'refs/tags/')
         run: node -e 'if (process.env.GITHUB_REF_NAME !== JSON.parse(require("fs").readFileSync("manifest.json")).version) process.exit(1)'
+      - name: Attest supported plugin release files
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/plugin/main.js
+            dist/plugin/manifest.json
+            dist/plugin/styles.css
       - uses: actions/upload-artifact@v4
         with:
           name: gmail-crm-plugin
@@ -59,4 +71,7 @@ jobs:
           name: People Atlas ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: release/*
+          files: |
+            release/main.js
+            release/manifest.json
+            release/styles.css
