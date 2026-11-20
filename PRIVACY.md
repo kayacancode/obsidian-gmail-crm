@@ -1,6 +1,8 @@
 # Privacy Policy — People Data Sync for Obsidian
 
-**Last updated:** November 16, 2026
+**Last updated:** November 20, 2026
+
+Public policy: [People Data Sync privacy policy](https://people-data-sync.kayarjones901.workers.dev/privacy).
 
 ## What This Plugin Does
 
@@ -18,7 +20,13 @@ The plugin requests the following Google API scopes:
 
 These scopes are requested together during connection, even if you do not use the calendar or photo features.
 
-The separate web app requests `gmail.readonly`, `calendar.events.readonly`, and read-only Google Contacts scopes for authorized contact photos. Normal web sync imports email metadata only. Calendar invitation/RSVP counts can appear on shared connection cards for contributed contacts; event titles are not included in those shared activity summaries. Invitations do not establish attendance.
+The separate web app requests `gmail.readonly`, `calendar.events.readonly`, and read-only Google Contacts scopes for authorized contact photos. Cloud contact sync imports email metadata. Optional hosted email-context and owner-lens features can also process message bodies as described below. Calendar invitation/RSVP counts can appear on shared connection cards for contributed contacts; event titles are not included in those shared activity summaries. Invitations do not establish attendance.
+
+## Optional ongoing hosted email context
+
+When you enable email context for a hosted connected account, subsequent syncs can retrieve eligible incoming message bodies and use Workers AI to extract facts and limited quotations. Separately enabled owner-lens learning can process eligible sent-message bodies to infer focus, needs, and offers. These ongoing features do not ask for confirmation for every eligible message. Extracted facts, source references, and excerpts can be retained as relationship or owner context.
+
+Disabling an account’s email context clears its stored email-context extractions and stops further collection. Use owner-lens deletion/reset controls or contact support for retained owner context; remote processor cleanup may be pending or retried. Revoking Google access alone does not erase all previously derived context. This is separate from both normal desktop metadata sync and explicitly confirmed one-time deeper retrieval.
 
 ## Where Data Is Stored
 
@@ -41,11 +49,11 @@ If you choose to enable AI enrichment, the plugin sends the existing person note
 - **Google APIs** — used to read email metadata and calendar events. Subject to [Google's Privacy Policy](https://policies.google.com/privacy).
 - **Anthropic API** (optional) — used only if you enable AI enrichment with your own API key. Subject to [Anthropic's Privacy Policy](https://www.anthropic.com/privacy).
 
-The optional People Graph service uses Cloudflare Workers, Durable Objects, D1 and Workers AI for the confirmed cloud features described above. There is no product analytics or advertising tracker.
+The optional People Graph service uses Cloudflare Workers, Durable Objects, D1 and Workers AI. Hosted context and suggestion features may also use Jev/Typesafe or a configured context service such as Honcho for relevant authorized context. See the public policy for the complete hosted-service disclosures. There is no product analytics or advertising tracker.
 
 ## Advisory outputs and user control
 
-Metadata heat is advisory and may be incomplete or wrong. Connector rings distinguish documented from inferred structure but do not establish closeness, willingness, consent or the ability to introduce someone. People Graph sends in-app introduction requests when a user explicitly submits them. It does not automatically email contacts. Shared cards include aggregate counts of requests marked completed within that workspace, not request messages or inferred email introductions.
+Metadata heat is advisory and may be incomplete or wrong. Connector rings distinguish documented from inferred structure but do not establish closeness, willingness, consent or the ability to introduce someone. People Graph sends in-app introduction requests when a user explicitly submits them. Graph introduction requests do not automatically email contacts. Separately authorized booking or scheduling workflows may create calendar events or send service emails. Shared cards include aggregate counts of requests marked completed within that workspace, not request messages or inferred email introductions.
 
 ## Data Retention
 
@@ -60,7 +68,7 @@ The plugin does not delete your data. Contact data persists in your vault until 
 To revoke the plugin's access to your Google account:
 
 1. Go to [Google Account Security](https://myaccount.google.com/permissions)
-2. Find "Gmail CRM for Obsidian" in the list of third-party apps
+2. Find People Data Sync or the earlier People application name shown when you connected
 3. Click "Remove Access"
 
 You can also disconnect within the plugin: Settings → People Data Sync → Disconnect.
