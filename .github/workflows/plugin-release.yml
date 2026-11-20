@@ -68,7 +68,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
-          name: People Atlas ${{ github.ref_name }}
+          name: People Data Sync ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

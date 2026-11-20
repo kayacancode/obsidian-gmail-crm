@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-gmail-crm",
-	"version": "1.0.4",
-	"description": "Obsidian plugin — lightweight CRM from Gmail metadata",
+	"version": "1.0.5",
+	"description": "Bring Gmail activity, meeting history, and people notes together in Obsidian to understand your relationships, find reasons to reconnect, and explore personal and shared networks.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

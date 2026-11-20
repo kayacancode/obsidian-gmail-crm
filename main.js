@@ -268,7 +268,7 @@ var GmailApi = class {
       resp = await (0, import_obsidian.requestUrl)(reqOptions);
     } catch (e) {
       const err = e;
-      console.error(`[People Atlas] Network error`, { url, error: err });
+      console.error(`[People Data Sync] Network error`, { url, error: err });
       throw new Error(typeof (err == null ? void 0 : err.message) === "string" ? err.message : "Network request failed");
     }
     if (resp.status >= 200 && resp.status < 300) {
@@ -278,12 +278,12 @@ var GmailApi = class {
     if (isRateLimit && retries > 0) {
       const attempt = 6 - retries;
       const backoff = Math.min(attempt * 15e3, 6e4);
-      console.warn(`[People Atlas] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
+      console.warn(`[People Data Sync] Rate limited, retrying in ${backoff / 1e3}s (${retries} retries left)`);
       await this.sleep(backoff);
       return this.apiRequest(options, retries - 1);
     }
     if (resp.status === 401 && retries > 0) {
-      console.warn(`[People Atlas] Token expired, refreshing and retrying...`);
+      console.warn(`[People Data Sync] Token expired, refreshing and retrying...`);
       try {
         if (!this.refreshPromise) {
           this.refreshPromise = this.refreshAccessToken().finally(() => {
@@ -296,18 +296,18 @@ var GmailApi = class {
         }
         return this.apiRequest(options, retries - 1);
       } catch (refreshErr) {
-        console.error(`[People Atlas] Token refresh failed`, refreshErr);
+        console.error(`[People Data Sync] Token refresh failed`, refreshErr);
       }
     }
     if ((resp.status === 500 || resp.status === 503) && retries > 0) {
       const backoff = Math.min((6 - retries) * 5e3, 3e4);
-      console.warn(`[People Atlas] Server error ${resp.status}, retrying in ${backoff / 1e3}s (${retries} retries left)`);
+      console.warn(`[People Data Sync] Server error ${resp.status}, retrying in ${backoff / 1e3}s (${retries} retries left)`);
       await this.sleep(backoff);
       return this.apiRequest(options, retries - 1);
     }
     const status = resp.status;
     const rawBody = (_b = resp.text) != null ? _b : "";
-    console.error(`[People Atlas] API request failed`, {
+    console.error(`[People Data Sync] API request failed`, {
       url,
       status,
       body: rawBody,
@@ -367,7 +367,7 @@ var GmailApi = class {
     const unlimited = maxResults <= 0;
     if (afterDate) {
       console.debug(
-        "[People Atlas] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
+        "[People Data Sync] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
         { afterDate }
       );
     }
@@ -469,7 +469,7 @@ var GmailApi = class {
     if (newMessageIds.length > 0) {
       this.finalizeContactMetrics(contacts, threadStates);
     }
-    console.debug(`[People Atlas] Sync complete`, {
+    console.debug(`[People Data Sync] Sync complete`, {
       mode: afterDate ? "incremental" : "full",
       afterDate: afterDate != null ? afterDate : "n/a",
       totalListed: allMessageIds.length,
@@ -479,7 +479,7 @@ var GmailApi = class {
     });
     const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
     for (const c of sorted.slice(0, 20)) {
-      console.debug(`[People Atlas] Contact: ${c.name} <${c.email}>`, {
+      console.debug(`[People Data Sync] Contact: ${c.name} <${c.email}>`, {
         exchanges: c.totalExchanges,
         sent: c.sentCount,
         received: c.receivedCount,
@@ -526,14 +526,14 @@ var GmailApi = class {
     const isSent = fromParsed.email.toLowerCase() === userEmail.toLowerCase();
     if (isSent && toParsed) {
       if (this.isFiltered(toParsed.email)) {
-        console.debug(`[People Atlas] Filtered out: ${toParsed.email}`);
+        console.debug(`[People Data Sync] Filtered out: ${toParsed.email}`);
         return;
       }
       this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
       return { id: msg.id, email: toParsed.email, date, kind: "email", direction: "sent", title: subject, sourceId: threadId };
     } else if (!isSent) {
       if (this.isFiltered(fromParsed.email)) {
-        console.debug(`[People Atlas] Filtered out: ${fromParsed.email}`);
+        console.debug(`[People Data Sync] Filtered out: ${fromParsed.email}`);
         return;
       }
       this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");
@@ -1909,7 +1909,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   getSettingDefinitions() {
     const definitions = [];
-    let group = { type: "group", heading: "People Atlas", items: [] };
+    let group = { type: "group", heading: "People Data Sync", items: [] };
     group = { type: "group", heading: "Authentication", items: [] };
     definitions.push(group);
     const isAuthenticated = !!this.plugin.settings.refreshToken;
@@ -2227,7 +2227,7 @@ function startOAuthCallbackServer(expectedState) {
         res.writeHead(200, { "Content-Type": "text/html" });
         if (code) {
           res.end(
-            "<html><body><h2>People Atlas connected!</h2><p>You can close this tab and return to Obsidian.</p></body></html>"
+            "<html><body><h2>People Data Sync connected!</h2><p>You can close this tab and return to Obsidian.</p></body></html>"
           );
           settled = true;
           server.close();
@@ -2593,7 +2593,7 @@ var RelationshipEngine = class {
           };
         }
       }
-      console.debug(`[People Atlas] Page-to-contact match: ${matched}/${attempted}`, {
+      console.debug(`[People Data Sync] Page-to-contact match: ${matched}/${attempted}`, {
         totalPages: Object.keys(pages).length,
         unmatchedSample: unmatchedSamples
       });
@@ -2831,7 +2831,7 @@ function setScoringDebug(enabled) {
   scoringDebugEnabled = enabled;
 }
 function logScoring(name, details) {
-  console.debug(`[People Atlas] Scoring: ${name}`, details);
+  console.debug(`[People Data Sync] Scoring: ${name}`, details);
 }
 function computeStaleness(page, relationships) {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i;
@@ -3520,7 +3520,7 @@ var import_obsidian8 = require("obsidian");
 var CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3";
 async function syncCalendarData(settings, contacts, userEmail, onInteractions) {
   if (!settings.accessToken) {
-    console.warn("[People Atlas] Calendar sync skipped \u2014 no access token");
+    console.warn("[People Data Sync] Calendar sync skipped \u2014 no access token");
     return;
   }
   let stats;
@@ -3528,12 +3528,12 @@ async function syncCalendarData(settings, contacts, userEmail, onInteractions) {
     stats = await fetchCalendarStats(settings, (userEmail != null ? userEmail : "").toLowerCase());
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.warn(`[People Atlas] Calendar sync failed (non-fatal): ${msg}`);
+    console.warn(`[People Data Sync] Calendar sync failed (non-fatal): ${msg}`);
     return;
   }
   await (onInteractions == null ? void 0 : onInteractions([...stats.values()].flatMap((s) => s.events)));
   mergeCalendarStats(contacts, stats);
-  console.debug(`[People Atlas] Calendar sync complete \u2014 updated ${stats.size} contacts`);
+  console.debug(`[People Data Sync] Calendar sync complete \u2014 updated ${stats.size} contacts`);
 }
 async function getHeaders(settings) {
   return { Authorization: `Bearer ${settings.accessToken}` };
@@ -4975,7 +4975,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
           await this.saveContactIndex();
           await this.saveMessageCache();
           const count = Object.keys(checkpointIndex.contacts).length;
-          console.debug(`[People Atlas] Checkpoint: ${count} contacts saved to disk`);
+          console.debug(`[People Data Sync] Checkpoint: ${count} contacts saved to disk`);
         },
         async (events) => {
           if (this.intelligenceReady) await this.intelligence.record(events);
@@ -5005,7 +5005,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
         if (calMsg.includes("401") || calMsg.includes("403")) {
           new import_obsidian14.Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
         } else {
-          console.warn(`[People Atlas] Calendar sync skipped: ${calMsg}`);
+          console.warn(`[People Data Sync] Calendar sync skipped: ${calMsg}`);
         }
       }
       this.settings.lastSyncAt = Date.now();
@@ -5015,13 +5015,13 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
         try {
           const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
           await this.saveContactIndex();
-          console.debug(`[People Atlas] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
+          console.debug(`[People Data Sync] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (msg.includes("401") || msg.includes("403")) {
             new import_obsidian14.Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
           } else {
-            console.warn(`[People Atlas] Photo sync skipped: ${msg}`);
+            console.warn(`[People Data Sync] Photo sync skipped: ${msg}`);
           }
         }
       }
@@ -5491,7 +5491,7 @@ ${relSection}
           notice.setMessage(`Scored ${count} contacts \u2014 pushed ${pushed} to endpoint`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          console.error("[People Atlas] score push failed", e);
+          console.error("[People Data Sync] score push failed", e);
           new import_obsidian14.Notice(`Score push failed: ${msg}`);
         }
       }
@@ -6050,7 +6050,7 @@ ${relSection}
     try {
       await writeQuadrantView(this.app.vault, this.settings.peopleFolder, this.app.fileManager);
     } catch (e) {
-      console.warn("[People Atlas] Quadrant view write failed", e);
+      console.warn("[People Data Sync] Quadrant view write failed", e);
     }
   }
   async createQuadrantView() {

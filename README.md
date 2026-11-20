@@ -1,6 +1,12 @@
-# People Atlas
+# People Data Sync
 
-Build a personal CRM in your Obsidian vault from Gmail activity, keep Markdown people notes, and explore your relationships in a People graph tab.
+Make the network you’ve spent years building more useful.
+
+People Data Sync brings context from Gmail, calendar activity, and your people notes into Obsidian. Track how relationships evolve, revisit past conversations, and explore connections through people notes, timelines, and network graphs.
+
+Recency can tell you when a relationship has gone quiet. Context can help you understand why reconnecting might matter. Your judgment determines what happens next.
+
+Keep your people notes in your vault, add your own context, and optionally connect to hosted personal and shared graphs. It’s a foundation for understanding your network and finding more meaningful reasons to connect.
 
 **Desktop only.** Requires Obsidian 1.15.0 or later. Gmail sync requires a Google account and Google OAuth authorization. The optional hosted People graph requires a separate People sign-in and internet access; shared networks require membership.
 
@@ -14,17 +20,15 @@ Build a personal CRM in your Obsidian vault from Gmail activity, keep Markdown p
 
 ## Install
 
-This plugin has been submitted to the [Obsidian Community directory](https://community.obsidian.md/plugins/gmail-crm) and is undergoing automated review.
+Install from **Settings → Community plugins → Browse** by searching for **People Data Sync**. You can also [open the community listing](https://community.obsidian.md/plugins/gmail-crm).
 
-Until approval, download **main.js**, **manifest.json**, and **styles.css** from a [plugin release](https://github.com/kayacancode/obsidian-gmail-crm/releases), place them in `<vault>/.obsidian/plugins/gmail-crm/`, then enable **People Atlas** under **Settings → Community plugins**. BRAT remains an optional beta installation method.
-
-After the plugin is approved, install it from **Settings → Community plugins → Browse** by searching for **People Atlas**.
+For manual installation, download **main.js**, **manifest.json**, and **styles.css** from a [plugin release](https://github.com/kayacancode/obsidian-gmail-crm/releases), place them in `<vault>/.obsidian/plugins/gmail-crm/`, then enable **People Data Sync** under **Settings → Community plugins**. BRAT remains an optional beta installation method.
 
 ## Start using it
 
-1. Open **Settings → People Atlas** and connect Google. If the shared OAuth client is unavailable to your account, configure your own Desktop app credentials using the [setup guide](docs/obsidian-plugin.md#2-set-up-google-oauth).
-2. Enable **Create contact notes** in settings if you want generated Markdown people pages, then run **People Atlas: Sync contacts** from the command palette. Review the generated people notes and relationship scores.
-3. Run **People Atlas: View people graph**. Choose **Sign in using your browser**, sign in to People, approve the Obsidian connection, and return to the tab. Select a shared network in the People app if you belong to one.
+1. Open **Settings → People Data Sync** and connect Google. If the shared OAuth client is unavailable to your account, configure your own Desktop app credentials using the [setup guide](docs/obsidian-plugin.md#2-set-up-google-oauth).
+2. Enable **Create contact notes** in settings if you want generated Markdown people pages, then run **People Data Sync: Sync contacts** from the command palette. Review the generated people notes and relationship scores.
+3. Run **People Data Sync: View people graph**. Choose **Sign in using your browser**, sign in to People, approve the Obsidian connection, and return to the tab. Select a shared network in the People app if you belong to one.
 
 Opening the hosted graph does not upload your vault. Graph uploads are a separate command and require a configured server and push token. The hosted graph needs an online service; the plugin’s local notes and intelligence workspace are stored in your vault.
 
@@ -50,7 +54,7 @@ npm run check:release
 
 Release assets are generated in `dist/plugin/`. The Git tag must exactly match the manifest version, without a `v` prefix. See the [release checklist](docs/community-release.md).
 
-This repository also contains a standalone People web app and CLI: [project overview](docs/people-overview.md).
+The hosted People app is maintained in the [services repository](https://github.com/kayacancode/people-atlas-services). This repository also contains the optional PeopleGraph CLI: [project overview](docs/people-overview.md).
 
 ## License and support
 

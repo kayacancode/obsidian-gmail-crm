@@ -10,7 +10,7 @@ export class GmailCrmSettingTab extends PluginSettingTab {
         const definitions: SettingDefinitionItem[] = [];
         let group: SettingDefinitionGroup & {
             items: SettingDefinition[];
-        } = { type: "group", heading: "People Atlas", items: [] };
+        } = { type: "group", heading: "People Data Sync", items: [] };
         group = { type: "group", heading: "Authentication", items: [] };
         definitions.push(group);
         const isAuthenticated = !!this.plugin.settings.refreshToken;

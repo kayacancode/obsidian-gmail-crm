@@ -416,7 +416,7 @@ export class RelationshipEngine {
 				}
 			}
 
-			console.debug(`[People Atlas] Page-to-contact match: ${matched}/${attempted}`, {
+			console.debug(`[People Data Sync] Page-to-contact match: ${matched}/${attempted}`, {
 				totalPages: Object.keys(pages).length,
 				unmatchedSample: unmatchedSamples,
 			});

@@ -1,9 +1,9 @@
 {
 	"id": "gmail-crm",
-	"name": "People Atlas",
-	"version": "1.0.4",
+	"name": "People Data Sync",
+	"version": "1.0.5",
 	"minAppVersion": "1.15.0",
-	"description": "Build a CRM from Gmail activity, maintain people notes, and explore personal and shared relationship graphs.",
+	"description": "Bring Gmail activity, meeting history, and people notes together in Obsidian to understand your relationships, find reasons to reconnect, and explore personal and shared networks.",
 	"author": "Kaya Jones",
 	"authorUrl": "https://github.com/kayacancode",
 	"isDesktopOnly": true
