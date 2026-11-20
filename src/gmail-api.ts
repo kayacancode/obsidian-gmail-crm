@@ -25,7 +25,7 @@ const SCOPES = [
 ].join(" ");
 const REDIRECT_URI = "http://127.0.0.1:42813/callback";
 
-// Shared OAuth credentials for the People Atlas plugin (Desktop app type).
+// Shared OAuth credentials for the People Data Sync plugin (Desktop app type).
 // Per Google: "In this context, the client secret is obviously not treated as a secret."
 // https://developers.google.com/identity/protocols/oauth2/native-app
 // Users can override with their own credentials in plugin settings.
@@ -194,7 +194,7 @@ export class GmailApi {
 			resp = await requestUrl(reqOptions);
 		} catch (e: unknown) {
 			const err = e as Record<string, unknown>;
-			console.error(`[People Atlas] Network error`, { url, error: err });
+			console.error(`[People Data Sync] Network error`, { url, error: err });
 			throw new Error(typeof err?.message === "string" ? err.message : "Network request failed");
 		}
 
@@ -208,14 +208,14 @@ export class GmailApi {
 		if (isRateLimit && retries > 0) {
 			const attempt = 6 - retries; // 1, 2, 3, 4, 5
 			const backoff = Math.min(attempt * 15000, 60000); // 15s, 30s, 45s, 60s, 60s
-			console.warn(`[People Atlas] Rate limited, retrying in ${backoff / 1000}s (${retries} retries left)`);
+			console.warn(`[People Data Sync] Rate limited, retrying in ${backoff / 1000}s (${retries} retries left)`);
 			await this.sleep(backoff);
 			return this.apiRequest(options, retries - 1);
 		}
 
 		// Retry on 401 (token expired) — refresh and retry once
 		if (resp.status === 401 && retries > 0) {
-			console.warn(`[People Atlas] Token expired, refreshing and retrying...`);
+			console.warn(`[People Data Sync] Token expired, refreshing and retrying...`);
 			try {
 				if (!this.refreshPromise) {
 					this.refreshPromise = this.refreshAccessToken().finally(() => {
@@ -229,14 +229,14 @@ export class GmailApi {
 				}
 				return this.apiRequest(options, retries - 1);
 			} catch (refreshErr) {
-				console.error(`[People Atlas] Token refresh failed`, refreshErr);
+				console.error(`[People Data Sync] Token refresh failed`, refreshErr);
 			}
 		}
 
 		// Retry on 500/503 (transient server errors)
 		if ((resp.status === 500 || resp.status === 503) && retries > 0) {
 			const backoff = Math.min((6 - retries) * 5000, 30000);
-			console.warn(`[People Atlas] Server error ${resp.status}, retrying in ${backoff / 1000}s (${retries} retries left)`);
+			console.warn(`[People Data Sync] Server error ${resp.status}, retrying in ${backoff / 1000}s (${retries} retries left)`);
 			await this.sleep(backoff);
 			return this.apiRequest(options, retries - 1);
 		}
@@ -244,7 +244,7 @@ export class GmailApi {
 		// Non-2xx: extract the real error from Google's response body
 		const status = resp.status;
 		const rawBody = resp.text ?? "";
-		console.error(`[People Atlas] API request failed`, {
+		console.error(`[People Data Sync] API request failed`, {
 			url, status, body: rawBody, headers: resp.headers,
 		});
 
@@ -313,7 +313,7 @@ export class GmailApi {
 		const unlimited = maxResults <= 0;
 		if (afterDate) {
 			console.debug(
-				"[People Atlas] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
+				"[People Data Sync] Incremental sync uses local message-cache filtering because gmail.metadata does not support server-side q=after filters.",
 				{ afterDate }
 			);
 		}
@@ -467,7 +467,7 @@ export class GmailApi {
 			this.finalizeContactMetrics(contacts, threadStates);
 		}
 
-		console.debug(`[People Atlas] Sync complete`, {
+		console.debug(`[People Data Sync] Sync complete`, {
 			mode: afterDate ? "incremental" : "full",
 			afterDate: afterDate ?? "n/a",
 			totalListed: allMessageIds.length,
@@ -479,7 +479,7 @@ export class GmailApi {
 		// Log metadata summary for top contacts
 		const sorted = Object.values(contacts).sort((a, b) => b.totalExchanges - a.totalExchanges);
 		for (const c of sorted.slice(0, 20)) {
-			console.debug(`[People Atlas] Contact: ${c.name} <${c.email}>`, {
+			console.debug(`[People Data Sync] Contact: ${c.name} <${c.email}>`, {
 				exchanges: c.totalExchanges,
 				sent: c.sentCount,
 				received: c.receivedCount,
@@ -539,14 +539,14 @@ export class GmailApi {
 
 		if (isSent && toParsed) {
 			if (this.isFiltered(toParsed.email)) {
-				console.debug(`[People Atlas] Filtered out: ${toParsed.email}`);
+				console.debug(`[People Data Sync] Filtered out: ${toParsed.email}`);
 				return;
 			}
 			this.upsertContact(contacts, threadStates, toParsed, date, subject, threadId, "sent");
 			return { id: msg.id, email: toParsed.email, date, kind: "email", direction: "sent", title: subject, sourceId: threadId };
 		} else if (!isSent) {
 			if (this.isFiltered(fromParsed.email)) {
-				console.debug(`[People Atlas] Filtered out: ${fromParsed.email}`);
+				console.debug(`[People Data Sync] Filtered out: ${fromParsed.email}`);
 				return;
 			}
 			this.upsertContact(contacts, threadStates, fromParsed, date, subject, threadId, "received");

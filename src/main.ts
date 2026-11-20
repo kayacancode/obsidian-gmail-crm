@@ -393,7 +393,7 @@ export default class GmailCrmPlugin extends Plugin {
 					await this.saveContactIndex();
 					await this.saveMessageCache();
 					const count = Object.keys(checkpointIndex.contacts).length;
-					console.debug(`[People Atlas] Checkpoint: ${count} contacts saved to disk`);
+					console.debug(`[People Data Sync] Checkpoint: ${count} contacts saved to disk`);
 				},
 				async events => { if (this.intelligenceReady) await this.intelligence.record(events); }
 			);
@@ -425,7 +425,7 @@ export default class GmailCrmPlugin extends Plugin {
 				if (calMsg.includes("401") || calMsg.includes("403")) {
 					new Notice("Calendar sync needs re-authentication. Disconnect and reconnect in settings to grant calendar access.");
 				} else {
-					console.warn(`[People Atlas] Calendar sync skipped: ${calMsg}`);
+					console.warn(`[People Data Sync] Calendar sync skipped: ${calMsg}`);
 				}
 			}
 
@@ -439,13 +439,13 @@ export default class GmailCrmPlugin extends Plugin {
 				try {
 					const r = await syncContactPhotos(this.settings, this.contactIndex.contacts, (m) => notice.setMessage(m));
 					await this.saveContactIndex();
-					console.debug(`[People Atlas] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
+					console.debug(`[People Data Sync] Photos: ${r.withPhoto} of ${r.checked} contacts have a photo`);
 				} catch (e: unknown) {
 					const msg = e instanceof Error ? e.message : String(e);
 					if (msg.includes("401") || msg.includes("403")) {
 						new Notice("Contact photos need re-authentication. Disconnect and reconnect in settings to grant contacts access.");
 					} else {
-						console.warn(`[People Atlas] Photo sync skipped: ${msg}`);
+						console.warn(`[People Data Sync] Photo sync skipped: ${msg}`);
 					}
 				}
 			}
@@ -987,7 +987,7 @@ export default class GmailCrmPlugin extends Plugin {
 				} catch (e: unknown) {
 					// Push failures never block scoring.
 					const msg = e instanceof Error ? e.message : String(e);
-					console.error("[People Atlas] score push failed", e);
+					console.error("[People Data Sync] score push failed", e);
 					new Notice(`Score push failed: ${msg}`);
 				}
 			}
@@ -1636,7 +1636,7 @@ export default class GmailCrmPlugin extends Plugin {
 		try {
 			await writeQuadrantView(this.app.vault, this.settings.peopleFolder, this.app.fileManager);
 		} catch (e) {
-			console.warn("[People Atlas] Quadrant view write failed", e);
+			console.warn("[People Data Sync] Quadrant view write failed", e);
 		}
 	}
 

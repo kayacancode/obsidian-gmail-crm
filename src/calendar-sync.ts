@@ -47,7 +47,7 @@ export async function syncCalendarData(
 	onInteractions?: (events: Interaction[]) => Promise<void>
 ): Promise<void> {
 	if (!settings.accessToken) {
-		console.warn("[People Atlas] Calendar sync skipped — no access token");
+		console.warn("[People Data Sync] Calendar sync skipped — no access token");
 		return;
 	}
 
@@ -56,13 +56,13 @@ export async function syncCalendarData(
 		stats = await fetchCalendarStats(settings, (userEmail ?? "").toLowerCase());
 	} catch (e: unknown) {
 		const msg = e instanceof Error ? e.message : String(e);
-		console.warn(`[People Atlas] Calendar sync failed (non-fatal): ${msg}`);
+		console.warn(`[People Data Sync] Calendar sync failed (non-fatal): ${msg}`);
 		return;
 	}
 	// Persistence failures must reach the caller; only optional API failures are non-fatal.
 	await onInteractions?.([...stats.values()].flatMap(s => s.events));
 	mergeCalendarStats(contacts, stats);
-	console.debug(`[People Atlas] Calendar sync complete — updated ${stats.size} contacts`);
+	console.debug(`[People Data Sync] Calendar sync complete — updated ${stats.size} contacts`);
 }
 
 async function getHeaders(settings: GmailCrmSettings): Promise<Record<string, string>> {

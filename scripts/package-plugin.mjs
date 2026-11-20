@@ -18,4 +18,4 @@ for(const name of ['main.js','manifest.json','styles.css']){
  hashes.push(createHash('sha256').update(bytes).digest('hex')+'  '+name);
 }
 await writeFile(new URL('SHA256SUMS',destination),hashes.join('\n')+'\n');
-console.log(`Packaged People Atlas ${manifest.version} in dist/plugin/`);
+console.log(`Packaged People Data Sync ${manifest.version} in dist/plugin/`);
