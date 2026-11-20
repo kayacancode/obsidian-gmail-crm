@@ -74,7 +74,7 @@ export interface PhotoSyncOptions {
 
 const RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_PAUSE_MS = 15_000;
-const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const defaultSleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
 export async function syncContactPhotos(
 	settings: GmailCrmSettings,

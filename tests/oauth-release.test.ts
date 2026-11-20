@@ -1,3 +1,5 @@
+// Obsidian supplies the browser window in Electron; the test runner supplies its timer equivalent.
+Object.defineProperty(globalThis, 'window', {value: globalThis, configurable: true});
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';

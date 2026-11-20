@@ -5,7 +5,7 @@ export async function requestUrl(options: unknown):Promise<unknown> {
 }
 export class Plugin {}
 export class ItemView {}
-export class PluginSettingTab {}
+export class PluginSettingTab { updates = 0; update() { this.updates++; } }
 export class Setting {}
 export class Notice {
  setMessage(_message: string) {}

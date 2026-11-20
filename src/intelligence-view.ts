@@ -42,10 +42,10 @@ export class PeopleIntelligenceView extends ItemView {
     } catch (e) {
       if (generation !== this.generation) return;
       root.replaceChildren();
-      const error = document.createElement("p");
+      const error = root.createEl("p");
       error.textContent = `Could not load people intelligence: ${e instanceof Error ? e.message : String(e)}`;
       root.appendChild(error);
-      const retry = document.createElement("button");
+      const retry = root.createEl("button");
       retry.textContent = "Retry";
       retry.onclick = () => void this.refresh();
       root.appendChild(retry);

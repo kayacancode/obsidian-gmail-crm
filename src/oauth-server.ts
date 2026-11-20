@@ -40,10 +40,10 @@ export function startOAuthCallbackServer(expectedState: string): Promise<string>
 			}
 		});
 
-		let timer: ReturnType<typeof setTimeout>;
-		server.once("close", () => clearTimeout(timer));
+		let timer: number;
+		server.once("close", () => window.clearTimeout(timer));
 		server.once("error", (error) => {
-            clearTimeout(timer);
+            window.clearTimeout(timer);
 			if (!settled) {
 				settled = true;
 				reject(error);
@@ -53,7 +53,7 @@ export function startOAuthCallbackServer(expectedState: string): Promise<string>
 		server.listen(PORT, HOST);
 
 		// Timeout after 2 minutes
-		timer = setTimeout(() => {
+		timer = window.setTimeout(() => {
 			if (!settled) {
 				settled = true;
 				server.close();

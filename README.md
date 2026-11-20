@@ -55,3 +55,9 @@ This repository also contains a standalone People web app and CLI: [project over
 ## License and support
 
 [MIT](LICENSE). Report problems or request features in [GitHub Issues](https://github.com/kayacancode/obsidian-gmail-crm/issues). Please remove tokens, email addresses, private notes, and contact indexes from reports.
+
+## Development checks
+
+Clone with `git clone --recurse-submodules` (or run `git submodule update --init --recursive` in an existing clone), then `npm ci` and `npm run check:release`. This runs the Obsidian checks and integration tests against the pinned service source.
+
+Hosted services live in [people-atlas-services](https://github.com/kayacancode/people-atlas-services) and have their own CI. For local service checks, run `npm ci` in `services/apps/people-graph` and `services/apps/reconnect-web`, then `npm run check:services`. Service deployments are managed separately.

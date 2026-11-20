@@ -465,7 +465,7 @@ export default class GmailCrmPlugin extends Plugin {
 			} else {
 				notice.setMessage(`Synced ${contactCount} contacts`);
 			}
-			setTimeout(() => notice.hide(), 3000);
+			window.setTimeout(() => notice.hide(), 3000);
 
 			if (this.settings.enrichOnSync) {
 				await this.enrichAllPeople();
@@ -507,7 +507,7 @@ export default class GmailCrmPlugin extends Plugin {
 			const withCal = Object.values(this.contactIndex.contacts)
 				.filter((c) => (c.calendarMeetings ?? 0) > 0).length;
 			notice.setMessage(`Calendar sync complete — ${withCal} contacts have meeting data`);
-			setTimeout(() => notice.hide(), 3000);
+			window.setTimeout(() => notice.hide(), 3000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -535,7 +535,7 @@ export default class GmailCrmPlugin extends Plugin {
 			await this.saveContactIndex();
 			notice.setMessage(`Photos: ${r.withPhoto} of ${r.checked} contacts have one, ${r.withOrg} have a title or company. Writing to pages...`);
 			await this.updateStaleness();
-			setTimeout(() => notice.hide(), 6000);
+			window.setTimeout(() => notice.hide(), 6000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -832,7 +832,7 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 
 			notice.setMessage(`Enriched ${count} people pages!`);
-			setTimeout(() => notice.hide(), 3000);
+			window.setTimeout(() => notice.hide(), 3000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -874,7 +874,7 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 
 			notice.setMessage(`Enriched ${name}!`);
-			setTimeout(() => notice.hide(), 3000);
+			window.setTimeout(() => notice.hide(), 3000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -991,7 +991,7 @@ export default class GmailCrmPlugin extends Plugin {
 					new Notice(`Score push failed: ${msg}`);
 				}
 			}
-			setTimeout(() => notice.hide(), 4000);
+			window.setTimeout(() => notice.hide(), 4000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -1020,7 +1020,7 @@ export default class GmailCrmPlugin extends Plugin {
 				scoredPages
 			);
 			notice.setMessage(`Pushed ${pushed} contacts`);
-			setTimeout(() => notice.hide(), 4000);
+			window.setTimeout(() => notice.hide(), 4000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -1099,7 +1099,7 @@ export default class GmailCrmPlugin extends Plugin {
 					? `Pushed your ${pushed.nodes} most-connected people (${pruned} excluded by publication size limits), ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
 					: `Pushed ${pushed.nodes} people, ${pushed.edges} connections, ${payload.themes.length} themes — open ${this.settings.graphPushUrl} to view`
 			);
-			setTimeout(() => notice.hide(), 6000);
+			window.setTimeout(() => notice.hide(), 6000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
@@ -1196,7 +1196,7 @@ export default class GmailCrmPlugin extends Plugin {
 			notice.setMessage(
 				`Scored ${count.toLocaleString()} contacts — ${rewritten.toLocaleString()} pages updated`
 			);
-			setTimeout(() => notice.hide(), 4000);
+			window.setTimeout(() => notice.hide(), 4000);
 		} catch (e: unknown) {
 			notice.hide();
 			const msg = e instanceof Error ? e.message : String(e);
