@@ -43,7 +43,7 @@ Read the [complete plugin guide](docs/obsidian-plugin.md) for setup, commands, s
 - OAuth credentials, API keys, contact indexes, and notes are stored in the vault’s plugin data or Markdown files. Vault sync and backups may copy these files to other devices or providers. Credentials are not encrypted by this plugin.
 - Google sign-in temporarily listens on `127.0.0.1:42813` for the browser callback. The plugin does not install executables or update itself. The separately installed PeopleGraph CLI is optional.
 
-See [PRIVACY.md](PRIVACY.md) for storage, retention, cloud processing, and revocation details. There is no client-side analytics or advertising tracker. Relationship scores are estimates, not proof of closeness, expertise, or willingness to make an introduction.
+See the [public privacy policy](https://people-data-sync.kayarjones901.workers.dev/privacy) and [PRIVACY.md](PRIVACY.md) for storage, retention, cloud processing, and revocation details. There is no client-side analytics or advertising tracker. Relationship scores are estimates, not proof of closeness, expertise, or willingness to make an introduction.
 
 ## Development
 
