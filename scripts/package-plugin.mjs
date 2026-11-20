@@ -8,7 +8,8 @@ assert.ok(!/\bplugin\b/i.test(manifest.name), 'Obsidian directory names must not
 assert.equal(pkg.version,manifest.version,'Package and manifest versions must match');
 assert.equal(versions[manifest.version],manifest.minAppVersion,'Missing or incorrect versions.json entry');
 assert.equal(manifest.isDesktopOnly,true);
-assert.ok(manifest.description.length<=250&&manifest.description.endsWith('.'));
+assert.ok(manifest.description.length<=200&&manifest.description.endsWith('.'));
+assert.ok(!/\bobsidian\b/i.test(manifest.description), 'Obsidian directory descriptions must not contain the word Obsidian');
 for(const name of ['README.md','PRIVACY.md','LICENSE'])assert.ok((await readFile(new URL('../'+name,import.meta.url),'utf8')).trim());
 const destination=new URL('../dist/plugin/',import.meta.url);await mkdir(destination,{recursive:true});
 const hashes=[];

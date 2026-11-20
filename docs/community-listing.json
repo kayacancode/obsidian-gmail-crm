@@ -1,5 +1,5 @@
 {
   "name": "People Data Sync",
-  "description": "Bring Gmail activity, meeting history, and people notes together in Obsidian to understand your relationships, find reasons to reconnect, and explore personal and shared networks.",
+  "description": "Bring Gmail activity, meeting history, and people notes together to understand your relationships, find reasons to reconnect, and explore personal and shared networks.",
   "about": "Make the network you’ve spent years building more useful.\n\nPeople Data Sync brings context from Gmail, calendar activity, and your people notes into Obsidian. Track how relationships evolve, revisit past conversations, and explore connections through people notes, timelines, and network graphs.\n\nRecency can tell you when a relationship has gone quiet. Context can help you understand why reconnecting might matter. Your judgment determines what happens next.\n\nKeep your people notes in your vault, add your own context, and optionally connect to hosted personal and shared graphs. It’s a foundation for understanding your network and finding more meaningful reasons to connect."
 }
