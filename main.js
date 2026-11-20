@@ -334,7 +334,7 @@ var GmailApi = class {
     throw new Error(`HTTP ${status}: ${detail}`);
   }
   sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
   async getHeaders() {
     if (Date.now() >= this.settings.tokenExpiry - 6e4) {
@@ -932,10 +932,9 @@ var import_obsidian2 = require("obsidian");
 
 // src/intelligence-workspace.ts
 function el(tag, parent, text, cls) {
-  const node = document.createElement(tag);
+  const node = parent.createEl(tag);
   if (text !== void 0) node.textContent = text;
   if (cls) node.className = cls;
-  parent.appendChild(node);
   return node;
 }
 function button(parent, text, action, cls = "pi-button") {
@@ -1344,7 +1343,7 @@ var PeopleWorkspace = class {
     this.eventList(section, events);
   }
   inspection() {
-    const section = document.createElement("section");
+    const section = this.panel.createEl("section");
     section.className = "pi-inspection";
     this.panel.insertBefore(section, this.panel.querySelector(".pi-stats"));
     return section;
@@ -1580,7 +1579,7 @@ var PeopleWorkspace = class {
       );
       return;
     }
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const svg = this.results.createSvg("svg");
     svg.setAttribute("viewBox", "0 0 800 480");
     svg.setAttribute("class", "pi-graph");
     svg.setAttribute("role", "img");
@@ -1588,12 +1587,10 @@ var PeopleWorkspace = class {
       "aria-label",
       `Connections around ${focus.contact.name}. Use the connection buttons below for details.`
     );
-    this.results.appendChild(svg);
     const draw = (tag, attrs, text) => {
-      const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      const n = svg.createSvg(tag);
       for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
       if (text) n.textContent = text;
-      svg.appendChild(n);
       return n;
     };
     const coords = neighbors.map((_, i) => ({
@@ -1885,10 +1882,10 @@ var PeopleIntelligenceView = class extends import_obsidian2.ItemView {
     } catch (e) {
       if (generation !== this.generation) return;
       root.replaceChildren();
-      const error = document.createElement("p");
+      const error = root.createEl("p");
       error.textContent = `Could not load people intelligence: ${e instanceof Error ? e.message : String(e)}`;
       root.appendChild(error);
-      const retry = document.createElement("button");
+      const retry = root.createEl("button");
       retry.textContent = "Retry";
       retry.onclick = () => void this.refresh();
       root.appendChild(retry);
@@ -1910,19 +1907,14 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    new import_obsidian3.Setting(containerEl).setName("Authentication").setHeading();
+  getSettingDefinitions() {
+    const definitions = [];
+    let group = { type: "group", heading: "People Atlas", items: [] };
+    group = { type: "group", heading: "Authentication", items: [] };
+    definitions.push(group);
     const isAuthenticated = !!this.plugin.settings.refreshToken;
-    if (!isAuthenticated) {
-      containerEl.createEl("p", {
-        text: "Connect your Google account to start syncing Gmail contacts.",
-        cls: "setting-item-description"
-      });
-    }
-    new import_obsidian3.Setting(containerEl).setName("Connection status").setDesc(isAuthenticated ? "Connected" : "Not connected").addButton(
-      (btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect with Google").setCta().onClick(async () => {
+    group.items.push({ name: "Connection status", desc: isAuthenticated ? "Connected" : "Not connected", render: (setting) => {
+      setting.setName("Connection status").setDesc(isAuthenticated ? "Connected" : "Not connected").addButton((btn) => btn.setButtonText(isAuthenticated ? "Reconnect" : "Connect with Google").setCta().onClick(async () => {
         const clientId = this.plugin.getEffectiveClientId();
         const clientSecret = this.plugin.getEffectiveClientSecret();
         if (!clientId || !clientSecret) {
@@ -1930,271 +1922,287 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
           return;
         }
         await this.plugin.startOAuthFlow();
-      })
-    );
+      }));
+    } });
     if (isAuthenticated) {
-      new import_obsidian3.Setting(containerEl).setName("Disconnect").addButton(
-        (btn) => btn.setButtonText("Disconnect").setWarning().onClick(async () => {
+      group.items.push({ name: "Disconnect", render: (setting) => {
+        setting.setName("Disconnect").addButton((btn) => btn.setButtonText("Disconnect").setDestructive().onClick(async () => {
           this.plugin.settings.accessToken = "";
           this.plugin.settings.refreshToken = "";
           this.plugin.settings.tokenExpiry = 0;
           await this.plugin.saveSettings();
           new import_obsidian3.Notice("Disconnected");
-          this.display();
-        })
-      );
+          this.update();
+        }));
+      } });
     }
-    new import_obsidian3.Setting(containerEl).setName("Use custom Google credentials").setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.useCustomOAuth).onChange(async (value) => {
+    group.items.push({ name: "Use custom Google credentials", desc: "For advanced users who want to use their own Google Cloud project instead of the shared credentials", render: (setting) => {
+      setting.setName("Use custom Google credentials").setDesc("For advanced users who want to use their own Google Cloud project instead of the shared credentials").addToggle((toggle) => toggle.setValue(this.plugin.settings.useCustomOAuth).onChange(async (value) => {
         this.plugin.settings.useCustomOAuth = value;
         await this.plugin.saveSettings();
-        this.display();
-      })
-    );
+        this.update();
+      }));
+    } });
     if (this.plugin.settings.useCustomOAuth) {
-      new import_obsidian3.Setting(containerEl).setName("Client ID").setDesc("From your Google Cloud Console API credentials").addText(
-        (text) => text.setPlaceholder("Your client ID").setValue(this.plugin.settings.clientId).onChange(async (value) => {
+      group.items.push({ name: "Client ID", desc: "From your Google Cloud Console API credentials", render: (setting) => {
+        setting.setName("Client ID").setDesc("From your Google Cloud Console API credentials").addText((text) => text.setPlaceholder("Your client ID").setValue(this.plugin.settings.clientId).onChange(async (value) => {
           this.plugin.settings.clientId = value;
           await this.plugin.saveSettings();
-        })
-      );
-      new import_obsidian3.Setting(containerEl).setName("Client secret").setDesc("From your Google Cloud Console API credentials").addText((text) => {
-        text.setPlaceholder("Your client secret").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
-          this.plugin.settings.clientSecret = value;
+        }));
+      } });
+      group.items.push({ name: "Client secret", desc: "From your Google Cloud Console API credentials", render: (setting) => {
+        setting.setName("Client secret").setDesc("From your Google Cloud Console API credentials").addText((text) => {
+          text.setPlaceholder("Your client secret").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
+            this.plugin.settings.clientSecret = value;
+            await this.plugin.saveSettings();
+          });
+          text.inputEl.type = "password";
+        });
+      } });
+    }
+    group = { type: "group", heading: "Filtering", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Blocked domains", desc: "Domains to skip during sync, separated by commas. Automated senders are also filtered.", render: (setting) => {
+      setting.setName("Blocked domains").setDesc("Domains to skip during sync, separated by commas. Automated senders are also filtered.").addTextArea((text) => text.setPlaceholder("Enter newsletter domains").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
+        this.plugin.settings.blockedDomains = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Exclude Gmail categories", desc: "Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.", render: (setting) => {
+      setting.setName("Exclude Gmail categories").setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.").addText((text) => text.setPlaceholder("Example: promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
+        this.plugin.settings.excludeCategories = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Exclude Gmail labels", desc: "Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.", render: (setting) => {
+      setting.setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.").addText((text) => text.setPlaceholder("Example: shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
+        this.plugin.settings.excludeLabels = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group = { type: "group", heading: "Sync", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Sync interval", desc: 'How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.', render: (setting) => {
+      setting.setName("Sync interval").setDesc('How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.').addDropdown((dd) => {
+        const choices = [
+          [15, "Every 15 minutes"],
+          [30, "Every 30 minutes"],
+          [60, "Hourly"],
+          [240, "Every 4 hours"],
+          [480, "Every 8 hours"],
+          [1440, "Daily"],
+          [10080, "Weekly"]
+        ];
+        for (const [minutes, label] of choices) {
+          dd.addOption(String(minutes), label);
+        }
+        const current = this.plugin.settings.syncIntervalMinutes;
+        if (!choices.some(([minutes]) => minutes === current)) {
+          dd.addOption(String(current), `Every ${current} minutes`);
+        }
+        dd.setValue(String(current));
+        dd.onChange(async (value) => {
+          this.plugin.settings.syncIntervalMinutes = Number(value);
+          await this.plugin.saveSettings();
+          this.plugin.startAutoSync();
+        });
+      });
+    } });
+    group.items.push({ name: "Max messages to scan", desc: 'Number of recent messages to pull metadata from. "all" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.', render: (setting) => {
+      setting.setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "all" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
+        for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4, 25e3, 5e4]) {
+          dd.addOption(String(n), String(n));
+        }
+        dd.addOption("0", "All messages");
+        dd.setValue(String(this.plugin.settings.maxResults));
+        dd.onChange(async (value) => {
+          this.plugin.settings.maxResults = parseInt(value);
+          await this.plugin.saveSettings();
+        });
+      });
+    } });
+    group.items.push({ name: "Sync now", desc: "Incremental sync \u2014 only fetches new messages since last sync", render: (setting) => {
+      setting.setName("Sync now").setDesc("Incremental sync \u2014 only fetches new messages since last sync").addButton((btn) => btn.setButtonText("Sync").setCta().onClick(async () => {
+        await this.plugin.syncContacts();
+      }));
+    } });
+    group.items.push({ name: "Full re-sync", desc: "Clear local cache and re-fetch all messages from Gmail", render: (setting) => {
+      setting.setName("Full re-sync").setDesc("Clear local cache and re-fetch all messages from Gmail").addButton((btn) => btn.setButtonText("Full re-sync").setDestructive().onClick(async () => {
+        await this.plugin.fullResync();
+      }));
+    } });
+    group.items.push({ name: "Fetch contact photos", desc: "After each sync, pull profile photos and job titles from Google Contacts. Adds a photo field to people pages and a logo to company pages. Needs a one-time reconnect to grant contacts access.", render: (setting) => {
+      setting.setName("Fetch contact photos").setDesc("After each sync, pull profile photos and job titles from Google Contacts. Adds a photo field to people pages and a logo to company pages. Needs a one-time reconnect to grant contacts access.").addToggle((toggle) => toggle.setValue(this.plugin.settings.fetchContactPhotos).onChange(async (value) => {
+        this.plugin.settings.fetchContactPhotos = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group = { type: "group", heading: "Score push", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Endpoint URL", desc: "Server that receives relationship scores. Leave empty to disable uploads.", render: (setting) => {
+      setting.setName("Endpoint URL").setDesc("Server that receives relationship scores. Leave empty to disable uploads.").addText((text) => text.setValue(this.plugin.settings.scorePushUrl).onChange(async (value) => {
+        this.plugin.settings.scorePushUrl = value.trim();
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Your email", desc: "Identity sent with each push, for example: you@example.com.", render: (setting) => {
+      setting.setName("Your email").setDesc("Identity sent with each push, for example: you@example.com.").addText((text) => text.setValue(this.plugin.settings.scorePushEmail).onChange(async (value) => {
+        this.plugin.settings.scorePushEmail = value.trim();
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "API key", desc: "Sent as the X-Api-Key header to authenticate the push.", render: (setting) => {
+      setting.setName("API key").setDesc("Sent as the X-Api-Key header to authenticate the push.").addText((text) => {
+        text.inputEl.type = "password";
+        text.setValue(this.plugin.settings.scorePushApiKey).onChange(async (value) => {
+          this.plugin.settings.scorePushApiKey = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+    } });
+    group.items.push({ name: "Auto-push after scoring", desc: "Push scores to the endpoint whenever staleness scores update.", render: (setting) => {
+      setting.setName("Auto-push after scoring").setDesc("Push scores to the endpoint whenever staleness scores update.").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoPushScores).onChange(async (value) => {
+        this.plugin.settings.autoPushScores = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group = { type: "group", heading: "People graph web view", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Graph URL", desc: "Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.", render: (setting) => {
+      setting.setName("Graph URL").setDesc("Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.").addText((text) => text.setValue(this.plugin.settings.graphPushUrl).onChange(async (value) => {
+        this.plugin.settings.graphPushUrl = value.trim();
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Graph push token", desc: "Mint it on the graph page after signing in \u2014 pushes are tied to your account.", render: (setting) => {
+      setting.setName("Graph push token").setDesc("Mint it on the graph page after signing in \u2014 pushes are tied to your account.").addText((text) => {
+        text.inputEl.type = "password";
+        text.setValue(this.plugin.settings.graphPushToken).onChange(async (value) => {
+          this.plugin.settings.graphPushToken = value.trim();
+          await this.plugin.saveSettings();
+        });
+      });
+    } });
+    group.items.push({ name: "Push people graph to web", desc: "Upload your current people and connections to the graph URL above, then refresh the web page.", render: (setting) => {
+      setting.setName("Push people graph to web").setDesc("Upload your current people and connections to the graph URL above, then refresh the web page.").addButton((button2) => button2.setButtonText("Push graph").setCta().onClick(async () => {
+        button2.setDisabled(true).setButtonText("Pushing\u2026");
+        try {
+          await this.plugin.pushPeopleGraph();
+        } finally {
+          button2.setDisabled(false).setButtonText("Push graph");
+        }
+      }));
+    } });
+    group = { type: "group", heading: "Contact notes", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Create contact notes", desc: "Auto-create a vault note for each contact in a people/ folder", render: (setting) => {
+      setting.setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a people/ folder").addToggle((toggle) => toggle.setValue(this.plugin.settings.createContactNotes).onChange(async (value) => {
+        this.plugin.settings.createContactNotes = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Contact notes folder", desc: "Vault folder for contact notes", render: (setting) => {
+      setting.setName("Contact notes folder").setDesc("Vault folder for contact notes").addText((text) => text.setValue(this.plugin.settings.contactNotesFolder).onChange(async (value) => {
+        this.plugin.settings.contactNotesFolder = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group = { type: "group", heading: "Enrichment", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Relationship mapping and AI-powered people enrichment. Scans your people pages and builds a relationship graph." });
+    group.items.push({ name: "Your name", desc: "Your name on enriched people pages. Leave blank to refer to you as the vault owner.", render: (setting) => {
+      setting.setName("Your name").setDesc("Your name on enriched people pages. Leave blank to refer to you as the vault owner.").addText((text) => text.setPlaceholder("Your full name").setValue(this.plugin.settings.vaultOwnerName).onChange(async (value) => {
+        this.plugin.settings.vaultOwnerName = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "People pages folder", desc: "Vault folder containing your people notes (for example, 'people pages')", render: (setting) => {
+      setting.setName("People pages folder").setDesc("Vault folder containing your people notes (for example, 'people pages')").addText((text) => text.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
+        this.plugin.settings.peopleFolder = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Companies folder", desc: "Vault folder for company pages. New companies are auto-created here.", render: (setting) => {
+      setting.setName("Companies folder").setDesc("Vault folder for company pages. New companies are auto-created here.").addText((text) => text.setValue(this.plugin.settings.companiesFolder).onChange(async (value) => {
+        this.plugin.settings.companiesFolder = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "API key", desc: "Required for AI analysis. Relationship mapping works without it.", render: (setting) => {
+      setting.setName("API key").setDesc("Required for AI analysis. Relationship mapping works without it.").addText((text) => {
+        text.setPlaceholder("Your API key").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
+          this.plugin.settings.anthropicApiKey = value;
           await this.plugin.saveSettings();
         });
         text.inputEl.type = "password";
       });
-    }
-    new import_obsidian3.Setting(containerEl).setName("Filtering").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Blocked domains").setDesc("Domains to skip during sync, separated by commas. Automated senders are also filtered.").addTextArea(
-      (text) => text.setPlaceholder("Enter newsletter domains").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
-        this.plugin.settings.blockedDomains = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Exclude Gmail categories").setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.").addText(
-      (text) => text.setPlaceholder("Example: promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
-        this.plugin.settings.excludeCategories = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.").addText(
-      (text) => text.setPlaceholder("Example: shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
-        this.plugin.settings.excludeLabels = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Sync").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Sync interval").setDesc(
-      'How often to re-sync metadata. If a sync is overdue when Obsidian starts, it runs a minute after launch \u2014 so a long interval still happens on a machine that gets restarted. On daily or weekly, raise "max messages to scan" above the volume you receive in that window, or older messages fall outside it and are never scanned.'
-    ).addDropdown((dd) => {
-      const choices = [
-        [15, "Every 15 minutes"],
-        [30, "Every 30 minutes"],
-        [60, "Hourly"],
-        [240, "Every 4 hours"],
-        [480, "Every 8 hours"],
-        [1440, "Daily"],
-        [10080, "Weekly"]
-      ];
-      for (const [minutes, label] of choices) {
-        dd.addOption(String(minutes), label);
-      }
-      const current = this.plugin.settings.syncIntervalMinutes;
-      if (!choices.some(([minutes]) => minutes === current)) {
-        dd.addOption(String(current), `Every ${current} minutes`);
-      }
-      dd.setValue(String(current));
-      dd.onChange(async (value) => {
-        this.plugin.settings.syncIntervalMinutes = Number(value);
-        await this.plugin.saveSettings();
-        this.plugin.startAutoSync();
+    } });
+    group.items.push({ name: "Model", desc: "Model for analysis", render: (setting) => {
+      setting.setName("Model").setDesc("Model for analysis").addDropdown((dd) => {
+        dd.addOption("claude-sonnet-4-6", "Sonnet 4.6 (fast)");
+        dd.addOption("claude-opus-4-6", "Opus 4.6 (thorough)");
+        dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheap)");
+        dd.setValue(this.plugin.settings.harperModel);
+        dd.onChange(async (value) => {
+          this.plugin.settings.harperModel = value;
+          await this.plugin.saveSettings();
+        });
       });
-    });
-    new import_obsidian3.Setting(containerEl).setName("Max messages to scan").setDesc('Number of recent messages to pull metadata from. "all" pulls your entire mailbox \u2014 slow on first run, but incremental syncs after that only fetch new messages.').addDropdown((dd) => {
-      for (const n of [100, 250, 500, 1e3, 2e3, 5e3, 1e4, 25e3, 5e4]) {
-        dd.addOption(String(n), String(n));
-      }
-      dd.addOption("0", "All messages");
-      dd.setValue(String(this.plugin.settings.maxResults));
-      dd.onChange(async (value) => {
-        this.plugin.settings.maxResults = parseInt(value);
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian3.Setting(containerEl).setName("Sync now").setDesc("Incremental sync \u2014 only fetches new messages since last sync").addButton(
-      (btn) => btn.setButtonText("Sync").setCta().onClick(async () => {
-        await this.plugin.syncContacts();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Full re-sync").setDesc("Clear local cache and re-fetch all messages from Gmail").addButton(
-      (btn) => btn.setButtonText("Full re-sync").setWarning().onClick(async () => {
-        await this.plugin.fullResync();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Fetch contact photos").setDesc("After each sync, pull profile photos and job titles from Google Contacts. Adds a photo field to people pages and a logo to company pages. Needs a one-time reconnect to grant contacts access.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.fetchContactPhotos).onChange(async (value) => {
-        this.plugin.settings.fetchContactPhotos = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Score push").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Endpoint URL").setDesc("Server that receives relationship scores. Leave empty to disable uploads.").addText(
-      (text) => text.setValue(this.plugin.settings.scorePushUrl).onChange(async (value) => {
-        this.plugin.settings.scorePushUrl = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Your email").setDesc("Identity sent with each push, for example: you@example.com.").addText(
-      (text) => text.setValue(this.plugin.settings.scorePushEmail).onChange(async (value) => {
-        this.plugin.settings.scorePushEmail = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("API key").setDesc("Sent as the X-Api-Key header to authenticate the push.").addText((text) => {
-      text.inputEl.type = "password";
-      text.setValue(this.plugin.settings.scorePushApiKey).onChange(async (value) => {
-        this.plugin.settings.scorePushApiKey = value.trim();
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian3.Setting(containerEl).setName("Auto-push after scoring").setDesc("Push scores to the endpoint whenever staleness scores update.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoPushScores).onChange(async (value) => {
-        this.plugin.settings.autoPushScores = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("People graph web view").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Graph URL").setDesc("Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.").addText(
-      (text) => text.setValue(this.plugin.settings.graphPushUrl).onChange(async (value) => {
-        this.plugin.settings.graphPushUrl = value.trim();
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Graph push token").setDesc("Mint it on the graph page after signing in \u2014 pushes are tied to your account.").addText((text) => {
-      text.inputEl.type = "password";
-      text.setValue(this.plugin.settings.graphPushToken).onChange(async (value) => {
-        this.plugin.settings.graphPushToken = value.trim();
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian3.Setting(containerEl).setName("Push people graph to web").setDesc("Upload your current people and connections to the graph URL above, then refresh the web page.").addButton((button2) => button2.setButtonText("Push graph").setCta().onClick(async () => {
-      button2.setDisabled(true).setButtonText("Pushing\u2026");
-      try {
-        await this.plugin.pushPeopleGraph();
-      } finally {
-        button2.setDisabled(false).setButtonText("Push graph");
-      }
-    }));
-    new import_obsidian3.Setting(containerEl).setName("Contact notes").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Create contact notes").setDesc("Auto-create a vault note for each contact in a people/ folder").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.createContactNotes).onChange(async (value) => {
-        this.plugin.settings.createContactNotes = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Contact notes folder").setDesc("Vault folder for contact notes").addText(
-      (text) => text.setValue(this.plugin.settings.contactNotesFolder).onChange(async (value) => {
-        this.plugin.settings.contactNotesFolder = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Enrichment").setHeading();
-    containerEl.createEl("p", {
-      text: "Relationship mapping and AI-powered people enrichment. Scans your people pages and builds a relationship graph.",
-      cls: "setting-item-description"
-    });
-    new import_obsidian3.Setting(containerEl).setName("Your name").setDesc("Your name on enriched people pages. Leave blank to refer to you as the vault owner.").addText(
-      (text) => text.setPlaceholder("Your full name").setValue(this.plugin.settings.vaultOwnerName).onChange(async (value) => {
-        this.plugin.settings.vaultOwnerName = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("People pages folder").setDesc("Vault folder containing your people notes (for example, 'people pages')").addText(
-      (text) => text.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
-        this.plugin.settings.peopleFolder = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Companies folder").setDesc("Vault folder for company pages. New companies are auto-created here.").addText(
-      (text) => text.setValue(this.plugin.settings.companiesFolder).onChange(async (value) => {
-        this.plugin.settings.companiesFolder = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("API key").setDesc("Required for AI analysis. Relationship mapping works without it.").addText((text) => {
-      text.setPlaceholder("Your API key").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
-        this.plugin.settings.anthropicApiKey = value;
-        await this.plugin.saveSettings();
-      });
-      text.inputEl.type = "password";
-    });
-    new import_obsidian3.Setting(containerEl).setName("Model").setDesc("Model for analysis").addDropdown((dd) => {
-      dd.addOption("claude-sonnet-4-6", "Sonnet 4.6 (fast)");
-      dd.addOption("claude-opus-4-6", "Opus 4.6 (thorough)");
-      dd.addOption("claude-haiku-4-5-20251001", "Haiku 4.5 (cheap)");
-      dd.setValue(this.plugin.settings.harperModel);
-      dd.onChange(async (value) => {
-        this.plugin.settings.harperModel = value;
-        await this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian3.Setting(containerEl).setName("AI enrichment on sync").setDesc("Optional AI rewrite after sync. Local relationship mapping runs automatically without AI.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.enrichOnSync).onChange(async (value) => {
+    } });
+    group.items.push({ name: "AI enrichment on sync", desc: "Optional AI rewrite after sync. Local relationship mapping runs automatically without AI.", render: (setting) => {
+      setting.setName("AI enrichment on sync").setDesc("Optional AI rewrite after sync. Local relationship mapping runs automatically without AI.").addToggle((toggle) => toggle.setValue(this.plugin.settings.enrichOnSync).onChange(async (value) => {
         this.plugin.settings.enrichOnSync = value;
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Enrich all people").setDesc("Run relationship mapping and AI enrichment on all people pages").addButton(
-      (btn) => btn.setButtonText("Enrich all").setCta().onClick(async () => {
+      }));
+    } });
+    group.items.push({ name: "Enrich all people", desc: "Run relationship mapping and AI enrichment on all people pages", render: (setting) => {
+      setting.setName("Enrich all people").setDesc("Run relationship mapping and AI enrichment on all people pages").addButton((btn) => btn.setButtonText("Enrich all").setCta().onClick(async () => {
         await this.plugin.enrichAllPeople();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Map relationships only").setDesc("Build relationship graph without AI analysis (free, instant)").addButton(
-      (btn) => btn.setButtonText("Map only").onClick(async () => {
+      }));
+    } });
+    group.items.push({ name: "Map relationships only", desc: "Build relationship graph without AI analysis (free, instant)", render: (setting) => {
+      setting.setName("Map relationships only").setDesc("Build relationship graph without AI analysis (free, instant)").addButton((btn) => btn.setButtonText("Map only").onClick(async () => {
         await this.plugin.enrichAllPeople(true);
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Base view").setHeading();
-    containerEl.createEl("p", {
-      text: "Staleness scoring tracks relationship freshness. The base view gives you a sortable table of all your contacts with status indicators.",
-      cls: "setting-item-description"
-    });
-    new import_obsidian3.Setting(containerEl).setName("Auto-update staleness after sync").setDesc("Automatically recompute scores and update people pages after each Gmail sync").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoUpdateStaleness).onChange(async (value) => {
+      }));
+    } });
+    group = { type: "group", heading: "Base view", items: [] };
+    definitions.push(group);
+    group.items.push({ name: "Staleness scoring tracks relationship freshness. The base view gives you a sortable table of all your contacts with status indicators." });
+    group.items.push({ name: "Auto-update staleness after sync", desc: "Automatically recompute scores and update people pages after each Gmail sync", render: (setting) => {
+      setting.setName("Auto-update staleness after sync").setDesc("Automatically recompute scores and update people pages after each Gmail sync").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoUpdateStaleness).onChange(async (value) => {
         this.plugin.settings.autoUpdateStaleness = value;
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Debug scoring").setDesc("Log every contact's score inputs to the console. Useful for tuning; slow and memory-hungry on large vaults.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.debugScoring).onChange(async (value) => {
+      }));
+    } });
+    group.items.push({ name: "Debug scoring", desc: "Log every contact's score inputs to the console. Useful for tuning; slow and memory-hungry on large vaults.", render: (setting) => {
+      setting.setName("Debug scoring").setDesc("Log every contact's score inputs to the console. Useful for tuning; slow and memory-hungry on large vaults.").addToggle((toggle) => toggle.setValue(this.plugin.settings.debugScoring).onChange(async (value) => {
         this.plugin.settings.debugScoring = value;
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Staleness update schedule").setDesc("Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.").addDropdown(
-      (drop) => drop.addOption("0", "Only after sync").addOption("6", "Every 6 hours").addOption("12", "Every 12 hours").addOption("24", "Every day").addOption("48", "Every 2 days").addOption("168", "Every week").setValue(String(this.plugin.settings.stalenessUpdateInterval)).onChange(async (value) => {
+      }));
+    } });
+    group.items.push({ name: "Staleness update schedule", desc: "Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.", render: (setting) => {
+      setting.setName("Staleness update schedule").setDesc("Run staleness updates on a timer (in addition to after-sync). Set to 0 to only update after syncs.").addDropdown((drop) => drop.addOption("0", "Only after sync").addOption("6", "Every 6 hours").addOption("12", "Every 12 hours").addOption("24", "Every day").addOption("48", "Every 2 days").addOption("168", "Every week").setValue(String(this.plugin.settings.stalenessUpdateInterval)).onChange(async (value) => {
         this.plugin.settings.stalenessUpdateInterval = parseInt(value);
         await this.plugin.saveSettings();
         this.plugin.resetStalenessTimer();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Update staleness scores").setDesc("Compute freshness scores and write to frontmatter on all people pages").addButton(
-      (btn) => btn.setButtonText("Score all").setCta().onClick(async () => {
+      }));
+    } });
+    group.items.push({ name: "Update staleness scores", desc: "Compute freshness scores and write to frontmatter on all people pages", render: (setting) => {
+      setting.setName("Update staleness scores").setDesc("Compute freshness scores and write to frontmatter on all people pages").addButton((btn) => btn.setButtonText("Score all").setCta().onClick(async () => {
         await this.plugin.updateStaleness();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Create base").setDesc("Generate an Obsidian base file with contact table views sorted by staleness").addButton(
-      (btn) => btn.setButtonText("Create base").setCta().onClick(async () => {
+      }));
+    } });
+    group.items.push({ name: "Create base", desc: "Generate an Obsidian base file with contact table views sorted by staleness", render: (setting) => {
+      setting.setName("Create base").setDesc("Generate an Obsidian base file with contact table views sorted by staleness").addButton((btn) => btn.setButtonText("Create base").setCta().onClick(async () => {
         await this.plugin.createBase();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Create quadrant view").setDesc("Generate a 2\xD72 quadrant map (Quadrants.md) showing all contacts grouped by nurture / re-engage / developing / deprioritize").addButton(
-      (btn) => btn.setButtonText("Create quadrants").setCta().onClick(async () => {
+      }));
+    } });
+    group.items.push({ name: "Create quadrant view", desc: "Generate a 2\xD72 quadrant map showing all contacts grouped by nurture / re-engage / developing / deprioritize", render: (setting) => {
+      setting.setName("Create quadrant view").setDesc("Generate a 2\xD72 quadrant map showing all contacts grouped by nurture / re-engage / developing / deprioritize").addButton((btn) => btn.setButtonText("Create quadrants").setCta().onClick(async () => {
         await this.plugin.createQuadrantView();
-      })
-    );
+      }));
+    } });
+    return definitions;
   }
 };
 
@@ -2238,16 +2246,16 @@ function startOAuthCallbackServer(expectedState) {
       }
     });
     let timer;
-    server.once("close", () => clearTimeout(timer));
+    server.once("close", () => window.clearTimeout(timer));
     server.once("error", (error) => {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
       if (!settled) {
         settled = true;
         reject(error);
       }
     });
     server.listen(PORT, HOST);
-    timer = setTimeout(() => {
+    timer = window.setTimeout(() => {
       if (!settled) {
         settled = true;
         server.close();
@@ -3641,7 +3649,7 @@ function logoUrlForDomain(domain) {
 }
 var RATE_LIMIT_RETRIES = 3;
 var RATE_LIMIT_PAUSE_MS = 15e3;
-var defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var defaultSleep = (ms) => new Promise((r) => window.setTimeout(r, ms));
 async function syncContactPhotos(settings, contacts, onProgress, options = {}) {
   var _a, _b, _c;
   if (!settings.accessToken) {
@@ -5027,7 +5035,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
       } else {
         notice.setMessage(`Synced ${contactCount} contacts`);
       }
-      setTimeout(() => notice.hide(), 3e3);
+      window.setTimeout(() => notice.hide(), 3e3);
       if (this.settings.enrichOnSync) {
         await this.enrichAllPeople();
       }
@@ -5068,7 +5076,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
         return ((_a = c.calendarMeetings) != null ? _a : 0) > 0;
       }).length;
       notice.setMessage(`Calendar sync complete \u2014 ${withCal} contacts have meeting data`);
-      setTimeout(() => notice.hide(), 3e3);
+      window.setTimeout(() => notice.hide(), 3e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5096,7 +5104,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
       await this.saveContactIndex();
       notice.setMessage(`Photos: ${r.withPhoto} of ${r.checked} contacts have one, ${r.withOrg} have a title or company. Writing to pages...`);
       await this.updateStaleness();
-      setTimeout(() => notice.hide(), 6e3);
+      window.setTimeout(() => notice.hide(), 6e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5356,7 +5364,7 @@ ${relSection}
         }
       }
       notice.setMessage(`Enriched ${count} people pages!`);
-      setTimeout(() => notice.hide(), 3e3);
+      window.setTimeout(() => notice.hide(), 3e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5392,7 +5400,7 @@ ${relSection}
         await this.app.vault.modify(file, rewritten);
       }
       notice.setMessage(`Enriched ${name}!`);
-      setTimeout(() => notice.hide(), 3e3);
+      window.setTimeout(() => notice.hide(), 3e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5487,7 +5495,7 @@ ${relSection}
           new import_obsidian14.Notice(`Score push failed: ${msg}`);
         }
       }
-      setTimeout(() => notice.hide(), 4e3);
+      window.setTimeout(() => notice.hide(), 4e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5512,7 +5520,7 @@ ${relSection}
         scoredPages
       );
       notice.setMessage(`Pushed ${pushed} contacts`);
-      setTimeout(() => notice.hide(), 4e3);
+      window.setTimeout(() => notice.hide(), 4e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5585,7 +5593,7 @@ ${relSection}
       notice.setMessage(
         pruned > 0 ? `Pushed your ${pushed.nodes} most-connected people (${pruned} excluded by publication size limits), ${pushed.edges} connections, ${payload.themes.length} themes \u2014 open ${this.settings.graphPushUrl} to view` : `Pushed ${pushed.nodes} people, ${pushed.edges} connections, ${payload.themes.length} themes \u2014 open ${this.settings.graphPushUrl} to view`
       );
-      setTimeout(() => notice.hide(), 6e3);
+      window.setTimeout(() => notice.hide(), 6e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);
@@ -5662,7 +5670,7 @@ ${relSection}
       notice.setMessage(
         `Scored ${count.toLocaleString()} contacts \u2014 ${rewritten.toLocaleString()} pages updated`
       );
-      setTimeout(() => notice.hide(), 4e3);
+      window.setTimeout(() => notice.hide(), 4e3);
     } catch (e) {
       notice.hide();
       const msg = e instanceof Error ? e.message : String(e);

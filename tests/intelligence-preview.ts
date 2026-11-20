@@ -1,3 +1,13 @@
+// The standalone synthetic preview supplies the helpers Obsidian installs in its windows.
+Element.prototype.createEl = function(tag, options) {
+ const child = this.ownerDocument.createElement(tag);
+ if (options && typeof options === 'object') {if (options.text) child.textContent = options.text; if (options.cls) child.className = options.cls;}
+ this.appendChild(child); return child;
+};
+Element.prototype.createSvg = function(tag) {
+ const child = this.ownerDocument.createElementNS('http://www.w3.org/2000/svg', tag);
+ this.appendChild(child); return child;
+};
 import { PeopleWorkspace } from "../src/intelligence-workspace";
 import { emptyIntelligence, type Interaction } from "../src/intelligence-model";
 import type { Contact, ContactEdge } from "../src/types";

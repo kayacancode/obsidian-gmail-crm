@@ -1,0 +1,3 @@
+[submodule "services"]
+	path = services
+	url = https://github.com/kayacancode/people-atlas-services.git

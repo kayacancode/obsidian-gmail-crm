@@ -7,7 +7,7 @@ import type { ContactEdge, PersonPage } from "../src/types";
 import GmailCrmPlugin from "../src/main";
 import { RelationshipEngine } from "../src/relationships";
 import { TFile } from "obsidian";
-import { normalizePushedGraph } from "../apps/people-graph/src/relevance-routes";
+import { normalizePushedGraph } from "../services/apps/people-graph/src/relevance-routes";
 
 const NOW = Date.parse("2026-09-14T12:00:00Z");
 
@@ -258,7 +258,7 @@ test('vault push includes 4900 unconnected contacts and reports actual publicati
 
 test('vault snapshots carry workspace-specific tokens without emails or matching keys',async()=>{
  const {workspaceIdentity}=await import('../src/graph-push');
- const {identityToken}=await import('../apps/people-graph/src/workspace-identity');
+ const {identityToken}=await import('../services/apps/people-graph/src/workspace-identity');
  const workspaces=[{id:'workspace-a',key:'private-key-a'},{id:'workspace-b',key:'private-key-b'}];
  const a=await buildGraphPayload(contacts,[],'salt-a',[],workspaces),b=await buildGraphPayload(contacts,[],'salt-b',[],workspaces);
  assert.notEqual(a.nodes[0].id,b.nodes[0].id);

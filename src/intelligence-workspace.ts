@@ -30,10 +30,9 @@ function el<K extends keyof HTMLElementTagNameMap>(
   text?: string,
   cls?: string,
 ): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
+  const node = parent.createEl(tag);
   if (text !== undefined) node.textContent = text;
   if (cls) node.className = cls;
-  parent.appendChild(node);
   return node;
 }
 function button(
@@ -507,7 +506,7 @@ export class PeopleWorkspace {
     this.eventList(section, events);
   }
   private inspection() {
-    const section = document.createElement("section");
+    const section = this.panel.createEl("section");
     section.className = "pi-inspection";
     this.panel.insertBefore(section, this.panel.querySelector(".pi-stats"));
     return section;
@@ -754,7 +753,7 @@ export class PeopleWorkspace {
       );
       return;
     }
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const svg = this.results.createSvg("svg");
     svg.setAttribute("viewBox", "0 0 800 480");
     svg.setAttribute("class", "pi-graph");
     svg.setAttribute("role", "img");
@@ -762,16 +761,14 @@ export class PeopleWorkspace {
       "aria-label",
       `Connections around ${focus.contact.name}. Use the connection buttons below for details.`,
     );
-    this.results.appendChild(svg);
-    const draw = (
-      tag: string,
+    const draw = <K extends keyof SVGElementTagNameMap>(
+      tag: K,
       attrs: Record<string, string>,
       text?: string,
     ) => {
-      const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      const n = svg.createSvg(tag);
       for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
       if (text) n.textContent = text;
-      svg.appendChild(n);
       return n;
     };
     const coords = neighbors.map((_, i) => ({
