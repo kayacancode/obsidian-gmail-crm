@@ -53,7 +53,7 @@ Normal sync reads Gmail metadata, using a broader `gmail.readonly` OAuth grant. 
 
 ### 3. Run Your First Sync
 
-- Open the command palette (Cmd/Ctrl + P) → **People Data Sync: Sync Gmail contacts**
+- Open the command palette (Cmd/Ctrl + P) → **People Data Sync: Sync contacts**
 - The plugin scans your email metadata and builds the contact index
 - First sync may take a few minutes depending on mailbox size
 - Subsequent syncs are incremental (only new messages)
