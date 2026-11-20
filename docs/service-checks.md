@@ -9,3 +9,5 @@ The services repository’s `Hosted service checks` workflow installs each packa
 For server development, work in the services repository and update its deployment independently. After reviewed server changes, update the submodule pin in a plugin PR and run graph-contract tests. If shared protocol files change, update both copies; the contract check rejects drift. Existing working copies of the former monorepo retain their files and are not silently migrated.
 
 Extraction baseline: fd12efe1b6f026b0cdfb737894046f47311cc719. No deployment, account permission, OAuth client, plugin identifier, or saved vault data changed during the extraction.
+
+Tagged plugin releases attest all three downloadable files in the build job using GitHub Actions OIDC and upload only `main.js`, `manifest.json`, and `styles.css` to the draft release. `SHA256SUMS` stays in the CI package. Before publication, download the draft assets and verify each using `gh attestation verify FILE --repo kayacancode/obsidian-gmail-crm`.
