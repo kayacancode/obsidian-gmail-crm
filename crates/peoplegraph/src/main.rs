@@ -81,6 +81,8 @@ enum Commands {
     Teammates(life::TeammatesArgs),
     /// Ask one natural-language question; returns the interpretation beside the answer.
     Ask(ask::AskArgs),
+    /// Ask trusted tailnet peers about a person, or answer their questions under your policy.
+    Peer(peer::PeerArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -661,6 +663,7 @@ fn run_with_profile(
             | Commands::Stints(_)
             | Commands::JobMoves(_)
             | Commands::Teammates(_)
+            | Commands::Peer(_)
             | Commands::Lens(_)
             | Commands::Sources(_)
             | Commands::Matches(_)
@@ -692,6 +695,7 @@ fn run_with_profile(
             | Commands::Stints(_)
             | Commands::JobMoves(_)
             | Commands::Teammates(_) => life::run(&cli.command, start),
+            Commands::Peer(args) => peer::run(args, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -837,6 +841,7 @@ fn run_with_profile(
         | Commands::JobMoves(_)
         | Commands::Teammates(_)
         | Commands::Ask(_)
+        | Commands::Peer(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -999,6 +1004,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::JobMoves(_)
         | Commands::Teammates(_)
         | Commands::Ask(_)
+        | Commands::Peer(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -5320,6 +5326,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::JobMoves(_) => "job-moves",
         Commands::Teammates(_) => "teammates",
         Commands::Ask(_) => "ask",
+        Commands::Peer(_) => "peer",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5434,6 +5441,12 @@ fn describe_payload() -> Value {
                 "usage": "peoplegraph ask \"<question>\" [--local|--cache <path>]",
                 "status": "implemented",
                 "notes": "Hosted: classifies into lookup, company, catch_up, reconnect, who_can_help, connection, network_ask or clarify and returns {interpretation, answers, result, gaps}. Check interpretation before answering; on clarify ask the owner which alternative they meant. Local rules answer company, reconnect, catch_up (activity only) and lookup; anything else is unsupported_locally."
+            },
+            {
+                "name": "peer",
+                "usage": "peoplegraph peer init --group <name> | join --group <name> --pepper-stdin | allow|disallow <login> | add <login> --address <url> | remove <login> | opt-out on --email <addr>... | opt-out off | policy [--open auto|approve|never] [--personal approve|never] [--reason-to-meet approve|never] | status | serve [--port 8790] | pending | approve <ticket> [--reason <text>] | deny <ticket> | log [--since YYYY-MM-DD] | ask knows|catch-up <email> | ask reason-to-meet --topic <text> | ask status --peer <login> <ticket>",
+                "status": "implemented",
+                "notes": "Agent-to-agent questions over a trusted tailnet. Callers are identified by Tailscale, never by headers. Answers are attributed per peer; unreachable peers are gaps. Personal signals and reasons to meet wait for the answering owner's approval (202 + ticket); sensitive signals are never shared. Only ask peers on the owner's request, never in the background."
             },
             {
                 "name": "stints",

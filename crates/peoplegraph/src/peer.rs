@@ -1,15 +1,20 @@
 //! Peer questions over a trusted tailnet: a member's agent asks another member's agent
 //! three fixed questions about a person. Answers are computed by the answering owner's
 //! own agent, under that owner's policy, and every request is logged locally.
-use crate::config;
+use crate::{Response, config, elapsed_ms, fail, ok, people_client, url_encode};
+use clap::{Args, Subcommand, ValueEnum};
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
+use std::time::{Duration, Instant};
 
 const MINUTE: u64 = 60;
 const DAY: u64 = 86_400;
@@ -19,7 +24,7 @@ const PER_SUBJECT_DAY: usize = 3;
 const MAX_BODY: usize = 4_096;
 const MAX_TEXT: usize = 200;
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Gate {
     Auto,
@@ -268,10 +273,14 @@ pub(crate) fn read_audit(since: u64) -> Result<Vec<Value>, config::Error> {
         .collect())
 }
 
+/// `(personId, emails)` for each of the owner's own contacts.
+pub(crate) type Directory = Vec<(String, Vec<String>)>;
+/// A peer's HTTP status and JSON body; `Err` when it could not be reached.
+type PeerReply = Result<(u16, Value), ()>;
+
 /// The owner's own People data, behind a trait so the handler is testable without a network.
 pub(crate) trait Source {
-    /// `(personId, emails)` for each of the owner's own contacts.
-    fn directory(&self) -> Result<Vec<(String, Vec<String>)>, String>;
+    fn directory(&self) -> Result<Directory, String>;
     /// The hosted coarse answer (`knows` or `catch_up`) for one person.
     fn answer(&self, person_id: &str, kind: &str) -> Result<Value, String>;
 }
@@ -436,8 +445,9 @@ fn respond(
             "answered",
         );
     }
-    if method == "GET" {
-        if let Some(id) = path.strip_prefix("/peer/v1/tickets/") {
+    if method == "GET"
+        && let Some(id) = path.strip_prefix("/peer/v1/tickets/")
+    {
             let Some(ticket) = state
                 .tickets
                 .iter()
@@ -631,6 +641,714 @@ pub(crate) fn deny(state: &mut PeerState, id: &str, now: u64) -> Result<Value, c
     Ok(json!({"ticket":id,"status":"denied"}))
 }
 
+// ---------- Command line, server and asker ----------
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct PeerArgs {
+    /// Hosted People origin used to answer questions; alternatively set PEOPLEGRAPH_WEB_URL.
+    #[arg(long, global = true)]
+    url: Option<String>,
+    #[command(subcommand)]
+    command: PeerCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PeerCommand {
+    /// Start a peer group and its shared secret; share the secret out of band for `peer join`.
+    Init {
+        #[arg(long)]
+        group: String,
+    },
+    /// Join a peer group; reads the group secret from standard input.
+    Join {
+        #[arg(long)]
+        group: String,
+        #[arg(long, required = true)]
+        pepper_stdin: bool,
+    },
+    /// Let a tailnet login ask you questions.
+    Allow { login: String },
+    /// Stop answering a tailnet login.
+    Disallow { login: String },
+    /// Add a peer you can ask, at its `peer serve` address.
+    Add {
+        login: String,
+        #[arg(long)]
+        address: String,
+    },
+    /// Stop asking a peer.
+    Remove { login: String },
+    /// Ask group members not to answer questions about you (by your email addresses).
+    OptOut {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+        #[arg(long = "email")]
+        emails: Vec<String>,
+    },
+    /// What you answer automatically, after approval, or never. Sensitive signals are never shared.
+    Policy {
+        #[arg(long)]
+        open: Option<Gate>,
+        #[arg(long)]
+        personal: Option<Gate>,
+        #[arg(long)]
+        reason_to_meet: Option<Gate>,
+    },
+    /// Show the group, allow list, peers and policy (never the secret).
+    Status,
+    /// Answer peer questions on this node's Tailscale address.
+    Serve {
+        #[arg(long, default_value_t = 8790)]
+        port: u16,
+        /// Debug builds only: bind a loopback address with a fixed caller for tests.
+        #[arg(long, hide = true)]
+        test_bind: Option<String>,
+    },
+    /// Questions waiting for your approval.
+    Pending,
+    /// Answer one pending question; reasons to meet need --reason.
+    Approve {
+        ticket: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Decline one pending question.
+    Deny { ticket: String },
+    /// Every question peers asked you, newest last.
+    Log {
+        /// YYYY-MM-DD
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Ask every configured peer one question. Only on the owner's request, never in the background.
+    Ask {
+        #[command(subcommand)]
+        question: PeerQuestion,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PeerQuestion {
+    /// Does each peer know this person, and how well?
+    Knows { email: String },
+    /// What each peer may share about this person's life lately.
+    CatchUp { email: String },
+    /// Would a peer like to meet about a topic? Always needs their approval.
+    ReasonToMeet {
+        #[arg(long)]
+        topic: String,
+    },
+    /// Fetch the answer to an earlier ticket.
+    Status {
+        #[arg(long)]
+        peer: String,
+        ticket: String,
+    },
+}
+
+const NOT_CONFIGURED: config::Error = (
+    "peer_not_configured",
+    "No peer group is configured; run peoplegraph peer init or peer join first.",
+);
+const INVALID_REQUEST: config::Error = ("invalid_request", "Check the command's arguments.");
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn configured() -> Result<PeerConfig, config::Error> {
+    load_config()?.ok_or(NOT_CONFIGURED)
+}
+
+fn login(value: &str) -> Result<String, config::Error> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > MAX_TEXT || value.chars().any(char::is_whitespace) {
+        return Err(INVALID_REQUEST);
+    }
+    Ok(value.to_owned())
+}
+
+pub(crate) fn run(args: &PeerArgs, start: Instant) -> Response {
+    match execute(args, unix_now()) {
+        Ok(data) => ok("peer", data, json!({"ms":elapsed_ms(start)})),
+        Err((kind, message)) => fail("peer", kind, message.to_owned(), start),
+    }
+}
+
+fn execute(args: &PeerArgs, now: u64) -> Result<Value, config::Error> {
+    let start_group = |group: &str, pepper: String| {
+        if load_config()?.is_some() {
+            return Err((
+                "peer_already_configured",
+                "A peer group is already configured; edit peers.json to leave it first.",
+            ));
+        }
+        let config = PeerConfig::new(group.trim(), pepper);
+        save_config(&config)?;
+        Ok(config.public())
+    };
+    match &args.command {
+        PeerCommand::Init { group } => start_group(group, random_hex(32)?),
+        PeerCommand::Join { group, .. } => {
+            let mut secret = String::new();
+            std::io::stdin()
+                .take(1_024)
+                .read_to_string(&mut secret)
+                .map_err(|_| INVALID_REQUEST)?;
+            let secret = secret.trim();
+            if secret.len() < 32 || secret.chars().any(char::is_whitespace) {
+                return Err((
+                    "invalid_request",
+                    "Pipe the group secret from peer init on standard input.",
+                ));
+            }
+            start_group(group, secret.to_owned())
+        }
+        PeerCommand::Serve { port, test_bind } => serve(args, *port, test_bind.as_deref()),
+        PeerCommand::Ask { question } => ask(&configured()?, question),
+        PeerCommand::Pending => {
+            configured()?;
+            let state = load_state()?;
+            Ok(json!({"tickets":state.pending(now).iter().map(|t| json!({
+                "id": t.id, "caller": t.caller, "type": t.kind, "personId": t.person_id,
+                "topic": t.topic, "expiresAt": t.created + TICKET_TTL,
+            })).collect::<Vec<_>>()}))
+        }
+        PeerCommand::Approve { ticket, reason } => {
+            let config = configured()?;
+            let mut state = load_state()?;
+            let kind = state
+                .tickets
+                .iter()
+                .find(|t| &t.id == ticket)
+                .map(|t| t.kind.clone())
+                .unwrap_or_default();
+            let answer = if kind == "catch_up" {
+                let source = Hosted::new(people_client::configure(args.url.as_deref())?);
+                approve(&config, &source, &mut state, ticket, reason.as_deref(), now)?
+            } else {
+                approve(
+                    &config,
+                    &Offline,
+                    &mut state,
+                    ticket,
+                    reason.as_deref(),
+                    now,
+                )?
+            };
+            save_state(&mut state, now)?;
+            Ok(answer)
+        }
+        PeerCommand::Deny { ticket } => {
+            configured()?;
+            let mut state = load_state()?;
+            let answer = deny(&mut state, ticket, now)?;
+            save_state(&mut state, now)?;
+            Ok(answer)
+        }
+        PeerCommand::Log { since } => {
+            configured()?;
+            let since = match since {
+                Some(date) => {
+                    date_to_unix(date).ok_or(("invalid_request", "Give --since as YYYY-MM-DD."))?
+                }
+                None => 0,
+            };
+            Ok(json!({"entries":read_audit(since)?}))
+        }
+        command => {
+            let mut config = configured()?;
+            match command {
+                PeerCommand::Allow { login: value } => {
+                    let value = login(value)?;
+                    if !config.allow.contains(&value) {
+                        config.allow.push(value);
+                    }
+                }
+                PeerCommand::Disallow { login: value } => {
+                    config.allow.retain(|l| l != value.trim());
+                }
+                PeerCommand::Add {
+                    login: value,
+                    address,
+                } => {
+                    let value = login(value)?;
+                    let address = address.trim().trim_end_matches('/');
+                    if !(address.starts_with("http://") || address.starts_with("https://"))
+                        || address.len() > MAX_TEXT
+                    {
+                        return Err((
+                            "invalid_request",
+                            "Give the peer's address as http://<tailscale-ip>:8790.",
+                        ));
+                    }
+                    config.peers.retain(|p| p.login != value);
+                    config.peers.push(PeerRef {
+                        login: value,
+                        url: address.to_owned(),
+                    });
+                }
+                PeerCommand::Remove { login: value } => {
+                    config.peers.retain(|p| p.login != value.trim());
+                }
+                PeerCommand::OptOut { state, emails } => {
+                    if state == "on" {
+                        if emails.is_empty() || emails.iter().any(|e| !e.contains('@')) {
+                            return Err((
+                                "invalid_request",
+                                "Give each of your addresses with --email.",
+                            ));
+                        }
+                        config.do_not_answer_about = emails
+                            .iter()
+                            .map(|e| person_ref(&config.pepper, e))
+                            .collect();
+                    } else {
+                        config.do_not_answer_about.clear();
+                    }
+                }
+                PeerCommand::Policy {
+                    open,
+                    personal,
+                    reason_to_meet,
+                } => {
+                    if *personal == Some(Gate::Auto) || *reason_to_meet == Some(Gate::Auto) {
+                        return Err((
+                            "invalid_request",
+                            "Personal signals and reasons to meet always need your approval; use approve or never.",
+                        ));
+                    }
+                    config.policy.open = open.unwrap_or(config.policy.open);
+                    config.policy.personal = personal.unwrap_or(config.policy.personal);
+                    config.policy.reason_to_meet =
+                        reason_to_meet.unwrap_or(config.policy.reason_to_meet);
+                }
+                _ => {}
+            }
+            save_config(&config)?;
+            Ok(config.public())
+        }
+    }
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm), as unix seconds.
+fn date_to_unix(date: &str) -> Option<u64> {
+    let mut parts = date.split('-');
+    let (y, m, d): (i64, i64, i64) = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    u64::try_from((era * 146_097 + doe - 719_468) * DAY as i64).ok()
+}
+
+/// The owner's hosted People data, read with the owner's own credential.
+struct Hosted {
+    client: people_client::Client,
+    directory: RefCell<Option<(Instant, Directory)>>,
+}
+
+impl Hosted {
+    fn new(client: people_client::Client) -> Self {
+        Self {
+            client,
+            directory: RefCell::new(None),
+        }
+    }
+
+    fn get(&self, path: &str) -> Result<Value, String> {
+        self.client
+            .request_json(
+                "POST",
+                "/api/people-agent/request",
+                Some(json!({"method":"GET","path":path})),
+            )
+            .map_err(|error| error.message)
+    }
+}
+
+impl Source for Hosted {
+    fn directory(&self) -> Result<Directory, String> {
+        if let Some((at, people)) = self.directory.borrow().as_ref()
+            && at.elapsed() < Duration::from_secs(600)
+        {
+            return Ok(people.clone());
+        }
+        let value = self.get("/api/people/peer-directory")?;
+        let people: Directory = value["people"]
+            .as_array()
+            .ok_or("People returned no directory")?
+            .iter()
+            .filter_map(|p| {
+                let id = p["personId"].as_str()?.to_owned();
+                let emails = p["emails"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|e| e.as_str().map(str::to_owned))
+                    .collect();
+                Some((id, emails))
+            })
+            .collect();
+        *self.directory.borrow_mut() = Some((Instant::now(), people.clone()));
+        Ok(people)
+    }
+
+    fn answer(&self, person_id: &str, kind: &str) -> Result<Value, String> {
+        self.get(&format!(
+            "/api/people/peer-answer?personId={}&type={kind}",
+            url_encode(person_id)
+        ))
+    }
+}
+
+/// Used when answering needs no People data (reasons to meet).
+struct Offline;
+
+impl Source for Offline {
+    fn directory(&self) -> Result<Directory, String> {
+        Err("offline".into())
+    }
+    fn answer(&self, _: &str, _: &str) -> Result<Value, String> {
+        Err("offline".into())
+    }
+}
+
+const NO_TAILSCALE: config::Error = (
+    "tailscale_unavailable",
+    "peer serve needs Tailscale running on this machine with an IPv4 tailnet address.",
+);
+
+/// This node's tailnet IPv4 address (100.64.0.0/10).
+fn tailscale_ip() -> Result<IpAddr, config::Error> {
+    let output = ProcessCommand::new("tailscale")
+        .args(["ip", "-4"])
+        .output()
+        .map_err(|_| NO_TAILSCALE)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let ip: Ipv4Addr = text
+        .lines()
+        .next()
+        .and_then(|line| line.trim().parse().ok())
+        .ok_or(NO_TAILSCALE)?;
+    let [a, b, ..] = ip.octets();
+    if !output.status.success() || a != 100 || b & 0xc0 != 64 {
+        return Err(NO_TAILSCALE);
+    }
+    Ok(IpAddr::V4(ip))
+}
+
+/// The tailnet user behind a connection, from Tailscale itself; tagged nodes have no user.
+fn whois(remote: SocketAddr) -> Option<String> {
+    let output = ProcessCommand::new("tailscale")
+        .args(["whois", "--json", &remote.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+    if value["Node"]["Tags"]
+        .as_array()
+        .is_some_and(|tags| !tags.is_empty())
+    {
+        return None;
+    }
+    value["UserProfile"]["LoginName"]
+        .as_str()
+        .filter(|login| !login.is_empty() && *login != "tagged-devices")
+        .map(str::to_owned)
+}
+
+fn serve(args: &PeerArgs, port: u16, test_bind: Option<&str>) -> Result<Value, config::Error> {
+    let config = configured()?;
+    let ip = match test_bind {
+        Some(bind) if cfg!(debug_assertions) => bind
+            .parse::<IpAddr>()
+            .ok()
+            .filter(IpAddr::is_loopback)
+            .ok_or(INVALID_REQUEST)?,
+        Some(_) => return Err(INVALID_REQUEST),
+        None => tailscale_ip()?,
+    };
+    // Tests fix the caller; this never applies to a tailnet address.
+    let test_caller = test_bind
+        .and_then(|_| std::env::var("PEOPLEGRAPH_PEER_TEST_IDENTITY").ok())
+        .filter(|_| cfg!(debug_assertions));
+    let source = Hosted::new(people_client::configure(args.url.as_deref())?);
+    let listener = TcpListener::bind((ip, port)).map_err(|_| {
+        (
+            "bind_failed",
+            "Cannot listen on the Tailscale address and port.",
+        )
+    })?;
+    let local = listener.local_addr().map_err(|_| INVALID_REQUEST)?;
+    let mut stdout = std::io::stdout();
+    let _ = writeln!(
+        stdout,
+        "{}",
+        json!({"ok":true,"command":"peer","data":{"listening":local.to_string(),"group":config.group}})
+    );
+    let _ = stdout.flush();
+    let mut opted = fetch_opt_outs(&config);
+    let mut fetched = Instant::now();
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        if fetched.elapsed() > Duration::from_secs(600) {
+            if let Ok(config) = configured() {
+                opted = fetch_opt_outs(&config);
+            }
+            fetched = Instant::now();
+        }
+        let caller = match &test_caller {
+            Some(login) => Some(login.clone()),
+            None => stream.peer_addr().ok().and_then(whois),
+        };
+        serve_one(&mut stream, caller.as_deref(), &source, &opted);
+    }
+    Ok(json!({"stopped":true}))
+}
+
+fn serve_one(
+    stream: &mut TcpStream,
+    caller: Option<&str>,
+    source: &Hosted,
+    opted: &HashSet<String>,
+) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let now = unix_now();
+    let Some((method, path, body)) = read_request(stream) else {
+        return write_reply(stream, 400, &error("invalid_request"));
+    };
+    let Some(caller) = caller else {
+        let _ = append_audit(
+            &json!({"at":now,"caller":Value::Null,"type":Value::Null,"person":Value::Null,"outcome":"peer_not_allowed","categories":[]}),
+        );
+        return write_reply(stream, 403, &error("peer_not_allowed"));
+    };
+    // Re-read each time so allow-list and policy changes apply without a restart.
+    let (Ok(config), Ok(mut state)) = (configured(), load_state()) else {
+        return write_reply(stream, 503, &error("peer_unavailable"));
+    };
+    let ctx = Context {
+        config: &config,
+        source,
+        opted_out: opted,
+    };
+    let reply = handle(&ctx, &mut state, caller, &method, &path, &body, now);
+    let _ = save_state(&mut state, now);
+    let _ = append_audit(&reply.audit);
+    write_reply(stream, reply.status, &reply.body);
+}
+
+/// One HTTP/1.1 request with at most 16 KB of headers and a 4 KB body.
+fn read_request(stream: &mut TcpStream) -> Option<(String, String, Vec<u8>)> {
+    let mut data = Vec::new();
+    let mut chunk = [0_u8; 4_096];
+    let head = loop {
+        let size = stream.read(&mut chunk).ok()?;
+        if size == 0 {
+            return None;
+        }
+        data.extend_from_slice(&chunk[..size]);
+        if let Some(offset) = data.windows(4).position(|b| b == b"\r\n\r\n") {
+            break offset;
+        }
+        if data.len() > 16_384 {
+            return None;
+        }
+    };
+    let headers = std::str::from_utf8(&data[..head]).ok()?;
+    let mut lines = headers.lines();
+    let mut first = lines.next()?.split_whitespace();
+    let (method, path) = (first.next()?.to_owned(), first.next()?.to_owned());
+    let length = lines
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+        .map(|(_, value)| value.trim().parse::<usize>().ok())
+        .unwrap_or(Some(0))?;
+    if length > MAX_BODY {
+        return None;
+    }
+    let mut body = data[head + 4..].to_vec();
+    while body.len() < length {
+        let size = stream.read(&mut chunk).ok()?;
+        if size == 0 {
+            return None;
+        }
+        body.extend_from_slice(&chunk[..size]);
+    }
+    body.truncate(length);
+    Some((method, path, body))
+}
+
+fn write_reply(stream: &mut TcpStream, status: u16, body: &Value) {
+    let reason = match status {
+        200 => "OK",
+        202 => "Accepted",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        410 => "Gone",
+        429 => "Too Many Requests",
+        _ => "Service Unavailable",
+    };
+    let body = body.to_string();
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+}
+
+/// One request to a peer; `Err` means the peer could not be reached or did not answer HTTP.
+fn peer_http(method: &str, url: &str, body: Option<&Value>, timeout: Duration) -> PeerReply {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .timeout_global(Some(timeout))
+        .build()
+        .into();
+    let request = ureq::http::Request::builder().method(method).uri(url);
+    let response = match body {
+        Some(body) => agent.run(
+            request
+                .header("content-type", "application/json")
+                .body(body.to_string())
+                .map_err(|_| ())?,
+        ),
+        None => agent.run(request.body(()).map_err(|_| ())?),
+    };
+    let mut response = response.map_err(|_| ())?;
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(64 * 1_024)
+        .read_to_string()
+        .map_err(|_| ())?;
+    Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+}
+
+/// Every group member's published opt-outs; unreachable peers contribute nothing.
+fn fetch_opt_outs(config: &PeerConfig) -> HashSet<String> {
+    config
+        .peers
+        .iter()
+        .filter_map(|peer| {
+            peer_http(
+                "GET",
+                &format!("{}/peer/v1/opt-outs", peer.url),
+                None,
+                Duration::from_secs(5),
+            )
+            .ok()
+        })
+        .flat_map(|(_, body)| {
+            body["refs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.as_str().filter(|r| is_ref(r)).map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Ask every configured peer in parallel; answers are attributed, unreachable peers become gaps.
+fn ask(config: &PeerConfig, question: &PeerQuestion) -> Result<Value, config::Error> {
+    let email = |email: &str| {
+        if email.contains('@') && email.len() <= 320 {
+            Ok(person_ref(&config.pepper, email))
+        } else {
+            Err(("invalid_request", "Ask about a person by email address."))
+        }
+    };
+    let body = match question {
+        PeerQuestion::Status { peer, ticket } => {
+            let peer = config
+                .peers
+                .iter()
+                .find(|p| &p.login == peer)
+                .ok_or(("not_found", "No configured peer has that login."))?;
+            if ticket.len() != 32 || !ticket.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(INVALID_REQUEST);
+            }
+            let (status, answer) = peer_http(
+                "GET",
+                &format!("{}/peer/v1/tickets/{ticket}", peer.url),
+                None,
+                Duration::from_secs(10),
+            )
+            .map_err(|_| ("peer_unreachable", "That peer did not answer."))?;
+            return Ok(json!({"peer":peer.login,"status":status,"answer":answer}));
+        }
+        PeerQuestion::Knows { email: value } => {
+            json!({"type":"knows","person":email(value)?,"requestId":random_hex(8)?})
+        }
+        PeerQuestion::CatchUp { email: value } => {
+            json!({"type":"catch_up","person":email(value)?,"requestId":random_hex(8)?})
+        }
+        PeerQuestion::ReasonToMeet { topic } => {
+            let topic = topic.trim();
+            if topic.is_empty() || topic.chars().count() > MAX_TEXT {
+                return Err(("invalid_request", "Give a topic of 1–200 characters."));
+            }
+            json!({"type":"reason_to_meet","topic":topic,"requestId":random_hex(8)?})
+        }
+    };
+    if config.peers.is_empty() {
+        return Err((
+            "peer_none",
+            "No peers are configured; add one with peoplegraph peer add.",
+        ));
+    }
+    let replies: Vec<(String, PeerReply)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = config
+            .peers
+            .iter()
+            .map(|peer| {
+                let body = &body;
+                scope.spawn(move || {
+                    peer_http(
+                        "POST",
+                        &format!("{}/peer/v1/query", peer.url),
+                        Some(body),
+                        Duration::from_secs(10),
+                    )
+                })
+            })
+            .collect();
+        config
+            .peers
+            .iter()
+            .zip(handles)
+            .map(|(peer, handle)| (peer.login.clone(), handle.join().unwrap_or(Err(()))))
+            .collect()
+    });
+    let mut results = vec![];
+    let mut gaps = vec![];
+    for (peer, reply) in replies {
+        match reply {
+            Ok((status, answer)) => {
+                results.push(json!({"peer":peer,"status":status,"answer":answer}))
+            }
+            Err(()) => gaps.push(json!({"peer":peer,"reason":"unreachable"})),
+        }
+    }
+    Ok(json!({"question":body["type"],"results":results,"gaps":gaps}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,7 +1361,7 @@ mod tests {
     }
 
     impl Source for Fake {
-        fn directory(&self) -> Result<Vec<(String, Vec<String>)>, String> {
+        fn directory(&self) -> Result<Directory, String> {
             Ok(vec![
                 ("p-ada".into(), vec!["ada@example.test".into()]),
                 ("p-bo".into(), vec!["bo@example.test".into()]),
