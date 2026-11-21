@@ -8,6 +8,8 @@ export interface Interaction {
   direction?: "sent" | "received";
   title: string;
   sourceId: string;
+  /** Where a meeting came from; missing means the calendar, so older stored events stay valid. */
+  source?: "calendar" | "granola";
 }
 export interface Goal {
   id: string;

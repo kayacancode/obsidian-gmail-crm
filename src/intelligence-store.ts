@@ -54,11 +54,20 @@ export class IntelligenceStore {
   }
   async replaceCalendar(events: Interaction[]) {
     // Calendar sync is an authoritative rolling one-year snapshot, including cancellations.
+    // It replaces calendar meetings only; Granola meetings are owned by replaceGranola.
     const cutoff = Date.now() - 365 * 86400000;
     this.state.events = mergeEvents(
       this.state.events.filter(
-        (e) => e.kind !== "meeting" || Date.parse(e.date) < cutoff,
+        (e) => e.kind !== "meeting" || e.source === "granola" || Date.parse(e.date) < cutoff,
       ),
+      events,
+    );
+    await this.save();
+  }
+  /** Granola linking is rebuilt from the vault each run: its events replace the previous set. */
+  async replaceGranola(events: Interaction[]) {
+    this.state.events = mergeEvents(
+      this.state.events.filter((e) => e.source !== "granola"),
       events,
     );
     await this.save();
