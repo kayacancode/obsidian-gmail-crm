@@ -2014,6 +2014,7 @@ ${sorted.join("\n")}
 var DAY2 = 864e5;
 var BRIEF_DAYS = 7;
 var MAX_STEPS = 3;
+var NOT_A_PERSON = /@(group|resource)\.calendar\.google\.com$/;
 function upcomingMeetings(events, ownerEmails2) {
   var _a, _b, _c, _d, _e;
   const meetings = [];
@@ -2026,18 +2027,25 @@ function upcomingMeetings(events, ownerEmails2) {
     const others = [...new Set(attendees.flatMap((a) => {
       var _a2;
       const email = (_a2 = a.email) == null ? void 0 : _a2.trim().toLowerCase();
-      return email && !a.self && !ownerEmails2.has(email) ? [email] : [];
+      return email && !a.self && !ownerEmails2.has(email) && !NOT_A_PERSON.test(email) ? [email] : [];
     }))];
     if (!others.length) continue;
     meetings.push({ id: event.id, title: ((_e = event.summary) == null ? void 0 : _e.trim()) || "Untitled meeting", start, attendees: others });
   }
   return meetings.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
-function openNextSteps(markdown) {
+function forSomeoneElse(title, ownerName) {
+  var _a, _b;
+  const named = (_b = (_a = /\(([^()]+)\)\s*$/.exec(title)) == null ? void 0 : _a[1]) == null ? void 0 : _b.trim().toLowerCase();
+  if (!named) return false;
+  const owner = ownerName.trim().toLowerCase();
+  return !owner || named !== owner && named !== owner.split(/\s+/)[0];
+}
+function findNextSteps(markdown, ownerName) {
   var _a, _b, _c, _d;
   const lines = markdown.split("\n");
   const start = lines.findIndex((line) => /^#{1,6}\s+next steps\s*$/i.test(line));
-  if (start < 0) return [];
+  if (start < 0) return null;
   const level = ((_b = (_a = /^#+/.exec(lines[start])) == null ? void 0 : _a[0]) != null ? _b : "#").length;
   const steps = [];
   for (const line of lines.slice(start + 1)) {
@@ -2052,16 +2060,24 @@ function openNextSteps(markdown) {
     const last = steps[steps.length - 1];
     if (last && /^\s+\S/.test(line)) last.detail = `${last.detail} ${line.trim()}`.trim();
   }
-  return steps.filter((s) => !s.done && s.title).slice(0, MAX_STEPS).map(({ title, detail }) => ({ title, detail }));
+  return steps.filter((s) => !s.done && s.title && !forSomeoneElse(s.title, ownerName)).slice(0, MAX_STEPS).map(({ title, detail }) => ({ title, detail }));
 }
-async function latestWithSteps(meetings, read) {
-  const newest = [...meetings].sort((a, b) => b.date.localeCompare(a.date));
-  for (const meeting of newest.slice(0, 5)) {
-    const text2 = await read(meeting.path);
-    const steps = text2 ? openNextSteps(text2) : [];
-    if (steps.length) return { meeting, steps };
-  }
-  return newest.length ? { meeting: newest[0], steps: [] } : null;
+async function relatedNextSteps(meeting, notes, read, ownerName) {
+  const at = Date.parse(meeting.start);
+  const earlier = notes.filter((n) => Date.parse(n.date) < at).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  const title = normalizeEventTitle(meeting.title);
+  const people = [...new Set(meeting.attendees)].sort().join(",");
+  const groups = [
+    earlier.filter((n) => n.calendarTitle && normalizeEventTitle(n.calendarTitle) === title),
+    earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people)
+  ];
+  for (const group of groups)
+    for (const note of group) {
+      const text2 = await read(note.path);
+      const steps = text2 === null ? null : findNextSteps(text2, ownerName);
+      if (steps) return { note, steps };
+    }
+  return null;
 }
 var when = (start) => {
   var _a;
@@ -2070,16 +2086,22 @@ var when = (start) => {
   return `${start.slice(0, 10)} ${start.slice(11, 16)}${zone ? ` (UTC${zone === "Z" ? "" : zone})` : ""}`;
 };
 var link = (path, label) => `[[${path}|${label.replace(/[|\]]/g, " ")}]]`;
-function renderBrief(meetings, people, now) {
+function renderBrief(entries, people, now) {
   const out = [
     "# Pre-meeting brief",
     "",
     `Updated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC by People Data Sync. Rebuilt on every sync; edits here are overwritten.`,
     ""
   ];
-  if (!meetings.length) out.push(`No meetings with other people in the next ${BRIEF_DAYS} days.`, "");
-  for (const meeting of meetings) {
+  if (!entries.length) out.push(`No meetings with other people in the next ${BRIEF_DAYS} days.`, "");
+  for (const { meeting, steps } of entries) {
     out.push(`## ${when(meeting.start)} \xB7 ${meeting.title}`, "");
+    if (steps) {
+      out.push(`Open next steps, from ${link(steps.path, steps.title)} on ${steps.date}:`, "");
+      if (steps.steps.length) for (const step of steps.steps) out.push(`- [ ] ${step.title}${step.detail ? `: ${step.detail.slice(0, 200)}` : ""}`);
+      else out.push("No open next steps.");
+      out.push("", "Attendees:", "");
+    }
     for (const email of meeting.attendees) {
       const person = people.get(email);
       if (!(person == null ? void 0 : person.page)) {
@@ -2089,13 +2111,6 @@ function renderBrief(meetings, people, now) {
       const last = person.lastContact ? ` \xB7 last contact ${person.lastContact.slice(0, 10)} (${Math.max(0, Math.floor((now.getTime() - Date.parse(person.lastContact)) / DAY2))} days ago)` : "";
       out.push(`- ${link(person.page, person.name)}${last}`);
       if (person.nudge) out.push(`  - Nudge: ${person.nudge}`);
-      const granola = person.lastGranola;
-      if (granola) {
-        out.push(`  - From your meeting ${link(granola.path, granola.title)} on ${granola.date}:`);
-        if (granola.steps.length)
-          for (const step of granola.steps) out.push(`    - [ ] ${step.title}${step.detail ? `: ${step.detail.slice(0, 200)}` : ""}`);
-        else out.push("    - No open next steps.");
-      }
     }
     out.push("");
   }
@@ -6132,8 +6147,9 @@ ${relSection}
   }
   /**
    * Rebuilds the pre-meeting brief note: the next days' meetings from the calendar invite, each
-   * attendee's people page, last contact, nudge and open next steps from their most recent
-   * Granola meeting that has some. The brief note is the only file written.
+   * with the open next steps from the last related Granola meeting (same calendar title, else the
+   * same attendees), then each attendee's people page, last contact and nudge. The brief note is
+   * the only file written.
    */
   async buildPreMeetingBrief(open) {
     var _a, _b, _c, _d, _e;
@@ -6143,7 +6159,7 @@ ${relSection}
     }
     try {
       await ((_a = this.gmailApi) == null ? void 0 : _a.ensureFreshToken());
-      const { links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
+      const { notes, links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
       const meetings = upcomingMeetings(await fetchUpcomingInvites(this.settings, BRIEF_DAYS), owner);
       const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
       const pageByEmail = /* @__PURE__ */ new Map();
@@ -6155,25 +6171,38 @@ ${relSection}
         const file = this.app.vault.getAbstractFileByPath(path2);
         return file instanceof import_obsidian14.TFile ? this.app.vault.cachedRead(file) : null;
       };
+      const primaryOf = (email) => {
+        var _a2, _b2;
+        return (_b2 = (_a2 = identity.get(email)) == null ? void 0 : _a2.contact.email.toLowerCase()) != null ? _b2 : email;
+      };
       const people = /* @__PURE__ */ new Map();
       for (const email of new Set(meetings.flatMap((m) => m.attendees))) {
         const person = identity.get(email);
-        const primary = person ? person.contact.email.toLowerCase() : email;
-        const page = pageByEmail.get(primary);
+        const page = pageByEmail.get(primaryOf(email));
         if (!page) continue;
-        const latest = await latestWithSteps((_b = links.meetings.get(primary)) != null ? _b : [], read);
         const pageFile = this.app.vault.getAbstractFileByPath(page.path);
-        const nudge = pageFile instanceof import_obsidian14.TFile ? (_d = (_c = this.app.metadataCache.getFileCache(pageFile)) == null ? void 0 : _c.frontmatter) == null ? void 0 : _d.nudge : void 0;
+        const nudge = pageFile instanceof import_obsidian14.TFile ? (_c = (_b = this.app.metadataCache.getFileCache(pageFile)) == null ? void 0 : _b.frontmatter) == null ? void 0 : _c.nudge : void 0;
         people.set(email, {
           name: page.name,
           page: page.path.replace(/\.md$/, ""),
-          lastContact: (_e = person == null ? void 0 : person.contact.lastContact) != null ? _e : null,
-          nudge: typeof nudge === "string" && nudge.trim() ? nudge.trim() : null,
-          lastGranola: latest ? { title: latest.meeting.title, date: latest.meeting.date, path: latest.meeting.path.replace(/\.md$/, ""), steps: latest.steps } : null
+          lastContact: (_d = person == null ? void 0 : person.contact.lastContact) != null ? _d : null,
+          nudge: typeof nudge === "string" && nudge.trim() ? nudge.trim() : null
         });
       }
+      const linked = /* @__PURE__ */ new Map();
+      for (const [primary, list] of links.meetings) for (const m of list) linked.set(m.path, [...(_e = linked.get(m.path)) != null ? _e : [], primary]);
+      const candidates = notes.flatMap((n) => {
+        var _a2, _b2;
+        const date = (_a2 = n.calendarStart) != null ? _a2 : n.created;
+        return date ? [{ path: n.path, title: n.title, date, calendarTitle: n.calendarTitle, attendees: (_b2 = linked.get(n.path)) != null ? _b2 : [] }] : [];
+      });
+      const entries = [];
+      for (const meeting of meetings) {
+        const found = await relatedNextSteps({ ...meeting, attendees: meeting.attendees.map(primaryOf) }, candidates, read, this.settings.vaultOwnerName);
+        entries.push({ meeting, steps: found ? { title: found.note.title, date: found.note.date.slice(0, 10), path: found.note.path.replace(/\.md$/, ""), steps: found.steps } : null });
+      }
       const path = (0, import_obsidian14.normalizePath)(this.settings.briefPath || "Pre-meeting brief.md");
-      const content = renderBrief(meetings, people, /* @__PURE__ */ new Date());
+      const content = renderBrief(entries, people, /* @__PURE__ */ new Date());
       const existing = this.app.vault.getAbstractFileByPath(path);
       if (existing instanceof import_obsidian14.TFile) {
         await this.app.vault.modify(existing, content);
