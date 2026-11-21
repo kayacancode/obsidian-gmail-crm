@@ -364,6 +364,10 @@ fn query_credential(
                 if let Some(owner) = owner {
                     stats["owner"] = json!(owner);
                 }
+                // The server's `source` names its data snapshot; `source` here is the origin.
+                if let Some(data_source) = stats.get("source").cloned() {
+                    stats["dataSource"] = data_source;
+                }
                 stats["backend"] = json!("hosted");
                 stats["source"] = json!(origin);
                 result
@@ -443,6 +447,39 @@ mod tests {
         let cli = Cli::try_parse_from(["peoplegraph", "find-person", "Ada"]).unwrap();
         let result = query(&profile, &cli, "find-person", Instant::now());
         assert_eq!(result.error.unwrap().kind, "web_query_failed");
+        task.join().unwrap();
+    }
+    #[test]
+    fn hosted_stats_keep_server_owner_and_data_source_beside_the_origin() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", server.local_addr().unwrap());
+        let task = thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            drain_request(&mut stream);
+            let body = r#"{"ok":true,"command":"find-person","data":{},"stats":{"owner":"owner@test","source":"email_accounts"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let cli = Cli::try_parse_from(["peoplegraph", "find-person", "Ada"]).unwrap();
+        let result = query_credential(
+            &origin,
+            "people_test",
+            None,
+            None,
+            &cli,
+            "find-person",
+            Instant::now(),
+        );
+        let stats = result.stats.unwrap();
+        assert_eq!(stats["owner"], "owner@test");
+        assert_eq!(stats["dataSource"], "email_accounts");
+        assert_eq!(stats["source"], origin.as_str());
+        assert_eq!(stats["backend"], "hosted");
         task.join().unwrap();
     }
     #[test]

@@ -1,7 +1,7 @@
 import {loadPeopleNetwork,type PeopleEnv} from './people-service';
 export type QueryCommand='find-person'|'contact-card'|'who-knows'|'score'|'get-neighbors'|'get-edges'|'reconnect';
 export type QueryInput={command:QueryCommand;query?:string;personId?:string;email?:string;company?:string;from?:string;to?:string;limit?:number;min_score?:number};
-export type QueryEnvelope={ok:boolean;command:string;data?:Record<string,unknown>;stats?:{contractVersion:1;source:string;scoreModel:string|null;updatedAt:number|null};error?:{kind:string;message:string}};
+export type QueryEnvelope={ok:boolean;command:string;data?:Record<string,unknown>;stats?:{contractVersion:1;owner:string;source:string;scoreModel:string|null;updatedAt:number|null};error?:{kind:string;message:string}};
 type Person={id:string;name?:string;company?:string;role?:string;combined?:number;strength?:number;momentum?:number;lastContact?:string|null;[key:string]:unknown};
 type Edge={source:string;target:string;[key:string]:unknown};
 const commands=new Set(['find-person','contact-card','who-knows','score','get-neighbors','get-edges','reconnect']);
@@ -17,7 +17,7 @@ export async function queryPeople(env:PeopleEnv,owner:string,input:QueryInput):P
  const nodes=graph?.nodes??[],ids=new Set(nodes.map(n=>n.id));
  const edges=(graph?.edges??[]).filter(e=>ids.has(e.source)&&ids.has(e.target));
  const stamp=graph?.pushedAt?Date.parse(graph.pushedAt):NaN;
- const stats={contractVersion:1 as const,source:graph?.source??'obsidian',scoreModel:graph?.scoreModel??null,updatedAt:loaded.updatedAt??(Number.isFinite(stamp)?Math.floor(stamp/1000):null)};
+ const stats={contractVersion:1 as const,owner,source:graph?.source??'obsidian',scoreModel:graph?.scoreModel??null,updatedAt:loaded.updatedAt??(Number.isFinite(stamp)?Math.floor(stamp/1000):null)};
  const ok=(data:Record<string,unknown>):QueryEnvelope=>({ok:true,command:input.command,data,stats});
  const rank=(a:Person,b:Person)=>(b.combined??-1)-(a.combined??-1)||a.id.localeCompare(b.id);
  const resolve=async(value:string|undefined)=>{

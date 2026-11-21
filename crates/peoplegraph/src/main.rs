@@ -3533,16 +3533,22 @@ fn resolve_person(index: &ContactIndex, query: &str) -> PersonResolution {
     let query_norm = normalize(query);
     let query_token_key = sorted_token_key(query);
     let mut groups: Vec<(String, f64, ContactRow)> = Vec::new();
+    // A fuzzy-only similarity is a "did you mean", never an identity: it becomes a hint.
+    let mut fuzzy: Vec<(f64, String)> = Vec::new();
     for row in rows(index)
         .into_iter()
         .filter(|row| !is_owner_row(&owner, row))
     {
-        let Some((confidence, _)) =
+        let Some((confidence, kind)) =
             match_confidence(&row, &query_norm, &query_lower, &query_token_key, false)
                 .filter(|(confidence, _)| *confidence >= 0.72)
         else {
             continue;
         };
+        if kind == NameMatchKind::Fuzzy {
+            fuzzy.push((confidence, row.contact.name.clone()));
+            continue;
+        }
         let key = identity_key(&row);
         match groups.iter_mut().find(|(k, _, _)| *k == key) {
             Some((_, best, primary)) => {
@@ -3559,7 +3565,22 @@ fn resolve_person(index: &ContactIndex, query: &str) -> PersonResolution {
             .then_with(|| a.2.contact.name.cmp(&b.2.contact.name))
     });
     match groups.len() {
-        0 => PersonResolution::NotFound(name_hints(index, &query_norm, &owner, false)),
+        0 => {
+            fuzzy.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            let mut hints: Vec<String> = Vec::new();
+            for name in fuzzy.into_iter().map(|(_, name)| name).chain(name_hints(
+                index,
+                &query_norm,
+                &owner,
+                false,
+            )) {
+                if hints.len() < 3 && !hints.iter().any(|seen| normalize(seen) == normalize(&name))
+                {
+                    hints.push(name);
+                }
+            }
+            PersonResolution::NotFound(hints)
+        }
         1 => PersonResolution::Found(groups.remove(0).2),
         _ if groups[0].1 >= 0.99 && groups[1].1 < 0.99 => {
             PersonResolution::Found(groups.remove(0).2)
@@ -5855,6 +5876,18 @@ mod tests {
         let response = get_neighbors(&resolution_index(), "stranger@else.com", Instant::now());
         assert!(response.ok);
         assert_eq!(response.data.unwrap()["email"], "stranger@else.com");
+    }
+
+    #[test]
+    fn fuzzy_only_name_is_a_hint_not_an_answer() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Jon Chen",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+        assert_eq!(response.data.unwrap()["hints"][0], "Jon Chin");
     }
 
     #[test]
