@@ -56,6 +56,7 @@ var DEFAULT_SETTINGS = {
   vaultOwnerName: "",
   peopleFolder: "People pages",
   companiesFolder: "Companies",
+  briefPath: "Pre-meeting brief.md",
   anthropicApiKey: "",
   harperModel: "claude-sonnet-4-6",
   enrichOnSync: false,
@@ -1841,10 +1842,10 @@ var PeopleWorkspace = class {
       );
       el("div", item, event.title || "(No subject)");
       if (event.kind === "email") {
-        const link = el("a", item, "Open email thread");
-        link.href = `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(this.data.index.userEmail)}#all/${encodeURIComponent(event.sourceId)}`;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
+        const link2 = el("a", item, "Open email thread");
+        link2.href = `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(this.data.index.userEmail)}#all/${encodeURIComponent(event.sourceId)}`;
+        link2.target = "_blank";
+        link2.rel = "noopener noreferrer";
       }
     }
   }
@@ -1980,7 +1981,7 @@ function linkGranolaMeetings(notes, calendarEvents, identity, ownerEmails2) {
     const target = note.path.replace(/\.md$/, "");
     const line = `- ${date} \xB7 [[${target}|${note.title.replace(/[|\]]/g, " ")}]]`;
     for (const primary of people) {
-      result.meetings.set(primary, [...(_e = result.meetings.get(primary)) != null ? _e : [], { date, line }]);
+      result.meetings.set(primary, [...(_e = result.meetings.get(primary)) != null ? _e : [], { date, line, path: note.path, title: note.title }]);
       const at = (_f = note.calendarStart) != null ? _f : note.created;
       if (method === "email" && at)
         result.events.push({
@@ -2007,6 +2008,98 @@ ${sorted.join("\n")}
   if (SECTION.test(content)) return content.replace(SECTION, section);
   if (!section) return content;
   return (content.endsWith("\n") ? content : content + "\n") + section;
+}
+
+// src/brief.ts
+var DAY2 = 864e5;
+var BRIEF_DAYS = 7;
+var MAX_STEPS = 3;
+function upcomingMeetings(events, ownerEmails2) {
+  var _a, _b, _c, _d, _e;
+  const meetings = [];
+  for (const event of events) {
+    const start = (_c = (_a = event.start) == null ? void 0 : _a.dateTime) != null ? _c : (_b = event.start) == null ? void 0 : _b.date;
+    if (!event.id || event.status === "cancelled" || !start) continue;
+    const attendees = (_d = event.attendees) != null ? _d : [];
+    const self = attendees.find((a) => a.self || a.email && ownerEmails2.has(a.email.toLowerCase()));
+    if ((self == null ? void 0 : self.responseStatus) === "declined") continue;
+    const others = [...new Set(attendees.flatMap((a) => {
+      var _a2;
+      const email = (_a2 = a.email) == null ? void 0 : _a2.trim().toLowerCase();
+      return email && !a.self && !ownerEmails2.has(email) ? [email] : [];
+    }))];
+    if (!others.length) continue;
+    meetings.push({ id: event.id, title: ((_e = event.summary) == null ? void 0 : _e.trim()) || "Untitled meeting", start, attendees: others });
+  }
+  return meetings.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+}
+function openNextSteps(markdown) {
+  var _a, _b, _c, _d;
+  const lines = markdown.split("\n");
+  const start = lines.findIndex((line) => /^#{1,6}\s+next steps\s*$/i.test(line));
+  if (start < 0) return [];
+  const level = ((_b = (_a = /^#+/.exec(lines[start])) == null ? void 0 : _a[0]) != null ? _b : "#").length;
+  const steps = [];
+  for (const line of lines.slice(start + 1)) {
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading && heading[1].length <= level) break;
+    if (heading) continue;
+    const item = (_c = /^[-*]\s+(?:\[( |x|X)\]\s+)?(.+)$/.exec(line)) != null ? _c : /^\d+[.)]\s+()(.+)$/.exec(line);
+    if (item) {
+      steps.push({ title: item[2].replace(/\*\*|__/g, "").trim(), detail: "", done: ((_d = item[1]) == null ? void 0 : _d.toLowerCase()) === "x" });
+      continue;
+    }
+    const last = steps[steps.length - 1];
+    if (last && /^\s+\S/.test(line)) last.detail = `${last.detail} ${line.trim()}`.trim();
+  }
+  return steps.filter((s) => !s.done && s.title).slice(0, MAX_STEPS).map(({ title, detail }) => ({ title, detail }));
+}
+async function latestWithSteps(meetings, read) {
+  const newest = [...meetings].sort((a, b) => b.date.localeCompare(a.date));
+  for (const meeting of newest.slice(0, 5)) {
+    const text2 = await read(meeting.path);
+    const steps = text2 ? openNextSteps(text2) : [];
+    if (steps.length) return { meeting, steps };
+  }
+  return newest.length ? { meeting: newest[0], steps: [] } : null;
+}
+var when = (start) => {
+  var _a;
+  if (start.length <= 10) return `${start} (all day)`;
+  const zone = (_a = /(Z|[+-]\d{2}:\d{2})$/.exec(start)) == null ? void 0 : _a[1];
+  return `${start.slice(0, 10)} ${start.slice(11, 16)}${zone ? ` (UTC${zone === "Z" ? "" : zone})` : ""}`;
+};
+var link = (path, label) => `[[${path}|${label.replace(/[|\]]/g, " ")}]]`;
+function renderBrief(meetings, people, now) {
+  const out = [
+    "# Pre-meeting brief",
+    "",
+    `Updated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC by People Data Sync. Rebuilt on every sync; edits here are overwritten.`,
+    ""
+  ];
+  if (!meetings.length) out.push(`No meetings with other people in the next ${BRIEF_DAYS} days.`, "");
+  for (const meeting of meetings) {
+    out.push(`## ${when(meeting.start)} \xB7 ${meeting.title}`, "");
+    for (const email of meeting.attendees) {
+      const person = people.get(email);
+      if (!(person == null ? void 0 : person.page)) {
+        out.push(`- ${email} \xB7 no people page`);
+        continue;
+      }
+      const last = person.lastContact ? ` \xB7 last contact ${person.lastContact.slice(0, 10)} (${Math.max(0, Math.floor((now.getTime() - Date.parse(person.lastContact)) / DAY2))} days ago)` : "";
+      out.push(`- ${link(person.page, person.name)}${last}`);
+      if (person.nudge) out.push(`  - Nudge: ${person.nudge}`);
+      const granola = person.lastGranola;
+      if (granola) {
+        out.push(`  - From your meeting ${link(granola.path, granola.title)} on ${granola.date}:`);
+        if (granola.steps.length)
+          for (const step of granola.steps) out.push(`    - [ ] ${step.title}${step.detail ? `: ${step.detail.slice(0, 200)}` : ""}`);
+        else out.push("    - No open next steps.");
+      }
+    }
+    out.push("");
+  }
+  return out.join("\n");
 }
 
 // src/settings-tab.ts
@@ -2234,6 +2327,12 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
     group.items.push({ name: "Companies folder", desc: "Vault folder for company pages. New companies are auto-created here.", render: (setting) => {
       setting.setName("Companies folder").setDesc("Vault folder for company pages. New companies are auto-created here.").addText((text2) => text2.setValue(this.plugin.settings.companiesFolder).onChange(async (value) => {
         this.plugin.settings.companiesFolder = value;
+        await this.plugin.saveSettings();
+      }));
+    } });
+    group.items.push({ name: "Pre-meeting brief note", desc: "Vault path of the brief note. It is rebuilt after each sync; edits there are overwritten.", render: (setting) => {
+      setting.setName("Pre-meeting brief note").setDesc("Vault path of the brief note. It is rebuilt after each sync; edits there are overwritten.").addText((text2) => text2.setValue(this.plugin.settings.briefPath).onChange(async (value) => {
+        this.plugin.settings.briefPath = value;
         await this.plugin.saveSettings();
       }));
     } });
@@ -2500,10 +2599,10 @@ var RelationshipEngine = class {
     multiWordNames.forEach((name, position) => nameOrder.set(name, position));
     const nameTrie = buildNameTrie(multiWordNames);
     for (const [name, page] of Object.entries(pages)) {
-      for (const link of page.wikiLinks) {
-        if (allNames.has(link) && link !== name) {
+      for (const link2 of page.wikiLinks) {
+        if (allNames.has(link2) && link2 !== name) {
           graph[name].push({
-            target: link,
+            target: link2,
             type: "wiki_link",
             context: "Referenced in notes"
           });
@@ -3478,7 +3577,7 @@ async function workspaceIdentity(key, email) {
 }
 
 // src/theme-candidates.ts
-var DAY2 = 864e5;
+var DAY3 = 864e5;
 var MAX_PER_PERSON = 12;
 var MAX_PHRASE_CHARS = 80;
 var MEETING_LOOKBACK_DAYS = 90;
@@ -3538,7 +3637,7 @@ async function buildLocalThemeCandidates(pages, events, now = Date.now()) {
     if (event.kind !== "meeting") continue;
     const email = validEmail(event.email);
     const observedAt = iso(event.date);
-    if (!email || !observedAt || Date.parse(observedAt) > now || now - Date.parse(observedAt) > MEETING_LOOKBACK_DAYS * DAY2) continue;
+    if (!email || !observedAt || Date.parse(observedAt) > now || now - Date.parse(observedAt) > MEETING_LOOKBACK_DAYS * DAY3) continue;
     const canonicalName = phrase(event.title);
     if (!canonicalName) continue;
     const fragment = `calendar:${event.id}:${event.sourceId}:${observedAt}:${canonicalName}`;
@@ -3646,6 +3745,30 @@ async function syncCalendarData(settings, contacts, userEmail, onInteractions) {
 }
 async function getHeaders(settings) {
   return { Authorization: `Bearer ${settings.accessToken}` };
+}
+async function fetchUpcomingInvites(settings, days) {
+  var _a;
+  const headers = await getHeaders(settings);
+  const now = /* @__PURE__ */ new Date();
+  const invites = [];
+  let pageToken;
+  do {
+    const params = new URLSearchParams({
+      timeMin: now.toISOString(),
+      timeMax: new Date(now.getTime() + days * 864e5).toISOString(),
+      maxResults: "250",
+      singleEvents: "true",
+      orderBy: "startTime",
+      fields: "items(id,summary,start,attendees,status),nextPageToken"
+    });
+    if (pageToken) params.set("pageToken", pageToken);
+    const resp = await (0, import_obsidian8.requestUrl)({ url: `${CALENDAR_API_BASE}/calendars/primary/events?${params.toString()}`, headers, throw: false });
+    if (resp.status < 200 || resp.status >= 300) throw new Error(`Calendar API HTTP ${resp.status}`);
+    const data = resp.json;
+    invites.push(...(_a = data.items) != null ? _a : []);
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return invites;
 }
 async function fetchCalendarStats(settings, ownerEmail) {
   var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
@@ -4145,14 +4268,14 @@ ${content}`;
     }
     return { role, company: null };
   }
-  async setCanonicalLink(file, link, cachedContent) {
+  async setCanonicalLink(file, link2, cachedContent) {
     var _a;
     const content = cachedContent != null ? cachedContent : await this.vault.read(file);
     const fields = {
-      canonical_id: link.canonicalId,
-      last_canonical_sync: (_a = link.syncedAt) != null ? _a : (/* @__PURE__ */ new Date()).toISOString()
+      canonical_id: link2.canonicalId,
+      last_canonical_sync: (_a = link2.syncedAt) != null ? _a : (/* @__PURE__ */ new Date()).toISOString()
     };
-    if (link.aliases && link.aliases.length > 0) fields.aliases = link.aliases;
+    if (link2.aliases && link2.aliases.length > 0) fields.aliases = link2.aliases;
     const updated = this.mergeFrontmatter(content, fields);
     if (updated !== content) {
       await this.vault.modify(file, updated);
@@ -4821,6 +4944,9 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
     this.addCommand({ id: "link-granola-meetings", name: "Link Granola meetings to people", callback: () => {
       void this.linkGranolaMeetings(true);
     } });
+    this.addCommand({ id: "open-pre-meeting-brief", name: "Open pre-meeting brief", callback: () => {
+      void this.buildPreMeetingBrief(true);
+    } });
     const relink = (0, import_obsidian14.debounce)(() => {
       void this.linkGranolaMeetings(false);
     }, 3e3, true);
@@ -5155,6 +5281,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
         notice.setMessage(`Synced ${contactCount} contacts`);
       }
       await this.linkGranolaMeetings(false);
+      await this.buildPreMeetingBrief(false);
       window.setTimeout(() => notice.hide(), 3e3);
       if (this.settings.enrichOnSync) {
         await this.enrichAllPeople();
@@ -5192,6 +5319,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
       );
       await this.saveContactIndex();
       await this.linkGranolaMeetings(false);
+      await this.buildPreMeetingBrief(false);
       const withCal = Object.values(this.contactIndex.contacts).filter((c) => {
         var _a;
         return ((_a = c.calendarMeetings) != null ? _a : 0) > 0;
@@ -5966,15 +6094,7 @@ ${relSection}
       return;
     }
     try {
-      const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
-        var _a2;
-        const note = granolaNote(file.path, (_a2 = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a2.frontmatter);
-        return note ? [note] : [];
-      });
-      const contacts = this.contactIndex.contacts;
-      const identity = identityMap(Object.values(contacts).map((contact) => ({ contact, notes: [], events: [] })));
-      const owner = ownerEmails(contacts, [this.contactIndex.userEmail, this.settings.scorePushEmail], this.settings.vaultOwnerName);
-      const links = linkGranolaMeetings(notes, this.intelligenceReady ? this.intelligence.state.events : [], identity, owner);
+      const { notes, links } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
       const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
       let written = 0;
       for (const page of Object.values(pages)) {
@@ -5996,6 +6116,78 @@ ${relSection}
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[People Data Sync] Granola linking skipped: ${msg}`);
       if (announce) new import_obsidian14.Notice(`Granola linking failed: ${msg}`);
+    }
+  }
+  /** Granola notes joined to people, with the identity map and owner addresses used for it. */
+  granolaContext(contacts, userEmail) {
+    const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
+      var _a;
+      const note = granolaNote(file.path, (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter);
+      return note ? [note] : [];
+    });
+    const identity = identityMap(Object.values(contacts).map((contact) => ({ contact, notes: [], events: [] })));
+    const owner = ownerEmails(contacts, [userEmail, this.settings.scorePushEmail], this.settings.vaultOwnerName);
+    const links = linkGranolaMeetings(notes, this.intelligenceReady ? this.intelligence.state.events : [], identity, owner);
+    return { notes, links, identity, owner };
+  }
+  /**
+   * Rebuilds the pre-meeting brief note: the next days' meetings from the calendar invite, each
+   * attendee's people page, last contact, nudge and open next steps from their most recent
+   * Granola meeting that has some. The brief note is the only file written.
+   */
+  async buildPreMeetingBrief(open) {
+    var _a, _b, _c, _d, _e;
+    if (!this.contactIndex || !this.settings.refreshToken) {
+      if (open) new import_obsidian14.Notice("Connect your account and run a contact sync first.");
+      return;
+    }
+    try {
+      await ((_a = this.gmailApi) == null ? void 0 : _a.ensureFreshToken());
+      const { links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
+      const meetings = upcomingMeetings(await fetchUpcomingInvites(this.settings, BRIEF_DAYS), owner);
+      const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
+      const pageByEmail = /* @__PURE__ */ new Map();
+      for (const page of Object.values(pages)) {
+        const email = this.getEmailForPage(page);
+        if (email && !pageByEmail.has(email)) pageByEmail.set(email, page);
+      }
+      const read = async (path2) => {
+        const file = this.app.vault.getAbstractFileByPath(path2);
+        return file instanceof import_obsidian14.TFile ? this.app.vault.cachedRead(file) : null;
+      };
+      const people = /* @__PURE__ */ new Map();
+      for (const email of new Set(meetings.flatMap((m) => m.attendees))) {
+        const person = identity.get(email);
+        const primary = person ? person.contact.email.toLowerCase() : email;
+        const page = pageByEmail.get(primary);
+        if (!page) continue;
+        const latest = await latestWithSteps((_b = links.meetings.get(primary)) != null ? _b : [], read);
+        const pageFile = this.app.vault.getAbstractFileByPath(page.path);
+        const nudge = pageFile instanceof import_obsidian14.TFile ? (_d = (_c = this.app.metadataCache.getFileCache(pageFile)) == null ? void 0 : _c.frontmatter) == null ? void 0 : _d.nudge : void 0;
+        people.set(email, {
+          name: page.name,
+          page: page.path.replace(/\.md$/, ""),
+          lastContact: (_e = person == null ? void 0 : person.contact.lastContact) != null ? _e : null,
+          nudge: typeof nudge === "string" && nudge.trim() ? nudge.trim() : null,
+          lastGranola: latest ? { title: latest.meeting.title, date: latest.meeting.date, path: latest.meeting.path.replace(/\.md$/, ""), steps: latest.steps } : null
+        });
+      }
+      const path = (0, import_obsidian14.normalizePath)(this.settings.briefPath || "Pre-meeting brief.md");
+      const content = renderBrief(meetings, people, /* @__PURE__ */ new Date());
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing instanceof import_obsidian14.TFile) {
+        await this.app.vault.modify(existing, content);
+      } else {
+        const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+        if (folder && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+        await this.app.vault.create(path, content);
+      }
+      console.debug(`[People Data Sync] Brief: ${meetings.length} meetings, ${people.size} attendees with people pages`);
+      if (open) await this.app.workspace.openLinkText(path, "", true);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[People Data Sync] Pre-meeting brief skipped: ${msg}`);
+      if (open) new import_obsidian14.Notice(`Pre-meeting brief failed: ${msg}`);
     }
   }
   getContactForPage(page) {
