@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {DatabaseSync,type SQLInputValue} from 'node:sqlite';
 import {fixture} from './person-context.test';
 import {defaultBookingSettings} from '../src/booking-policy';
 import {guestAskPublicRoute,type GuestAskDeps} from '../src/guest-ask-routes';
@@ -12,7 +13,9 @@ const SETTINGS={...defaultBookingSettings(OWNER),slug:'test-host',displayName:'T
 /** The owner's network (Maya Rivera at acme.test), with the booking sign-in replaced by a switchable visitor. */
 async function guestPage(){
  const f=await fixture();
- f.env.DB={prepare:()=>({bind(){return this;},all:async()=>({results:[]}),first:async()=>null,run:async()=>({})})};
+ // Real SQL for the guest agent tokens; D1's prepare/bind/first/all/run over node:sqlite.
+ const sqlite=new DatabaseSync(':memory:');
+ f.env.DB={prepare(sql:string){let args:SQLInputValue[]=[];const statement={bind(...values:SQLInputValue[]){args=values;return statement;},async run(){sqlite.prepare(sql).run(...args);return {success:true};},async first(){return sqlite.prepare(sql).get(...args)??null;},async all(){return {results:sqlite.prepare(sql).all(...args)};}};return statement;}};
  f.add('maya@acme.test','Maya Rivera');
  let visitor:{email:string;subject:string}|null=null;
  const deps:GuestAskDeps={
@@ -23,7 +26,14 @@ async function guestPage(){
  };
  const call=(path:string,init:{method?:string;body?:unknown;origin?:string}={})=>guestAskPublicRoute(new Request('https://people.test/api/public/ask/test-host'+path,{method:init.method??(init.body===undefined?'GET':'POST'),headers:{origin:init.origin??'https://people.test','content-type':'application/json'},...(init.body===undefined?{}:{body:JSON.stringify(init.body)})}),f.env,deps);
  const signIn=(subject:string)=>{visitor={email:subject+'@startup.test',subject};};
- return {f,call,signIn};
+ /** One JSON-RPC call to the guest MCP endpoint with a bearer token. */
+ const mcp=async(token:string,method:string,params:Record<string,unknown>={})=>{
+  const response=await guestAskPublicRoute(new Request('https://people.test/api/public/ask/test-host/mcp',{method:'POST',headers:{authorization:'Bearer '+token,host:'people.test','content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':'2025-11-25'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),f.env,deps);
+  if(response.status!==200)return {status:response.status,result:null};
+  const raw=await response.text(),line=raw.includes('data: ')?raw.split('\n').find(l=>l.startsWith('data: '))!.slice(6):raw;
+  return {status:200,result:(JSON.parse(line) as {result:{tools?:{name:string}[];isError?:boolean;content?:{text:string}[];structuredContent?:Record<string,unknown>}}).result};
+ };
+ return {f,call,signIn,mcp,sqlite};
 }
 
 test('guest public: the page says whether guest ask is on; nothing is accepted while it is off',async()=>{
@@ -89,4 +99,50 @@ test('guest public: guest-started introductions count against the owner\'s open 
  assert.throws(()=>proposeIntroduction({introducer:'owner',parties:['guest:g9','p-9'],reason:'A guest asked',evidence:[]},existing,now,'guest'),/introduction_budget/);
  // The owner's own proposals are not blocked by guest requests.
  assert.doesNotThrow(()=>proposeIntroduction({introducer:'owner',parties:['p-a','p-b'],reason:'Both build agents',evidence:[]},existing,now));
+});
+
+test('guest agent: a signed-in guest mints a token for their own agent while guest ask is on',async()=>{
+ const {f,call,signIn}=await guestPage();
+ assert.equal((await call('/agent-token',{body:{}})).status,401);
+ signIn('founder');
+ const off=await call('/agent-token',{body:{}});
+ assert.equal(off.status,403);assert.deepEqual(await off.json(),{error:'guest_ask_disabled'});
+ await f.service.setGuestAsk(true);
+ assert.equal((await call('/agent-token',{body:{},origin:'https://evil.test'})).status,403);
+ const minted=await (await call('/agent-token',{body:{}})).json() as {token:string;expiresAt:string;mcp:string};
+ assert.match(minted.token,/^[A-Za-z0-9_-]{43}$/);
+ assert.equal(minted.mcp,'https://people.test/api/public/ask/test-host/mcp');
+ assert.ok(Date.parse(minted.expiresAt)>Date.now()+6*86_400_000);
+});
+
+test('guest agent: ask_network shares the guest\'s daily limit and the owner\'s switch; my_questions shows only answers',async()=>{
+ const {f,call,signIn,mcp}=await guestPage();
+ await f.service.setGuestAsk(true);signIn('founder');
+ const {token}=await (await call('/agent-token',{body:{}})).json() as {token:string};
+ assert.deepEqual((await mcp(token,'tools/list')).result?.tools?.map(t=>t.name),['ask_network','my_questions']);
+ for(const question of ['Who knows acme?','Anyone at acme?'])assert.equal((await call('/questions',{body:{question}})).status,200);
+ const asked=(await mcp(token,'tools/call',{name:'ask_network',arguments:{question:'Who builds with acme?'}})).result;
+ assert.equal(asked?.isError,undefined);
+ assert.equal((asked?.structuredContent?.question as GuestView).status,'pending');
+ const limited=(await mcp(token,'tools/call',{name:'ask_network',arguments:{question:'One more?'}})).result;
+ assert.equal(limited?.isError,true);assert.equal(limited?.content?.[0].text,'guest_rate_limited');
+ const mine=(await mcp(token,'tools/call',{name:'my_questions',arguments:{}})).result?.structuredContent as {questions:GuestView[]};
+ assert.equal(mine.questions.length,3);
+ assert.ok(!/maya|rivera|draft|personId/i.test(JSON.stringify(mine)),JSON.stringify(mine));
+ await f.service.setGuestAsk(false);
+ const off=(await mcp(token,'tools/call',{name:'ask_network',arguments:{question:'Still there?'}})).result;
+ assert.equal(off?.content?.[0].text,'guest_ask_disabled');
+});
+
+test('guest agent: missing, unknown and expired tokens are refused; a guest holds at most five',async()=>{
+ const {f,call,signIn,mcp,sqlite}=await guestPage();
+ await f.service.setGuestAsk(true);signIn('founder');
+ assert.equal((await mcp('','tools/list')).status,401);
+ assert.equal((await mcp('x'.repeat(43),'tools/list')).status,401);
+ const tokens:string[]=[];
+ for(let i=0;i<6;i++)tokens.push(((await (await call('/agent-token',{body:{}})).json()) as {token:string}).token);
+ assert.equal((await mcp(tokens[0],'tools/list')).status,401,'the oldest token is revoked by the sixth');
+ for(const token of tokens.slice(1))assert.equal((await mcp(token,'tools/list')).status,200);
+ sqlite.prepare('UPDATE guest_agent_tokens SET expires=0').run();
+ assert.equal((await mcp(tokens[5],'tools/list')).status,401);
 });

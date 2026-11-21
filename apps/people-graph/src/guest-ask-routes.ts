@@ -3,6 +3,8 @@ import {BookingStore} from './booking-store';
 import {bookingReadiness} from './booking-coordinator';
 import {beginBookingSignIn,bookingVisitor,GUEST_ASK_MARKER} from './booking-verification';
 import {boundedJSON} from './bounded-json';
+import {createMcpHandler} from 'agents/mcp/server';
+import {GuestAgentTokens,guestMcpServer} from './guest-agent';
 
 const HEADERS={'cache-control':'no-store','referrer-policy':'no-referrer'};
 const json=(data:unknown,status=200,cookie?:string)=>Response.json(data,{status,headers:cookie?{...HEADERS,'set-cookie':cookie}:HEADERS});
@@ -40,6 +42,18 @@ export async function guestAskPublicRoute(request:Request,env:BookingEnv,deps:Gu
    let visitor=null;try{visitor={email:(await deps.visitor(settings,request)).email};}catch{}
    return json({page:{displayName:settings.displayName},enabled,visitor});
   }
+  // The guest's own agent: bearer token instead of the browser session, same limits and switch.
+  if(path==='/mcp'){
+   const token=/^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.get('authorization')??'')?.[1]??'';
+   const guest=token?await new GuestAgentTokens(env.DB,env.TOKEN_SECRET).resolve(settings.owner,settings.slug,token):null;
+   if(!guest)return Response.json({error:'guest_token_invalid'},{status:401,headers:{...HEADERS,'www-authenticate':'Bearer realm="guest-ask"'}});
+   const parsed=request.method==='POST'?await boundedJSON(new Response(request.body,{headers:request.headers}),16_000).catch(()=>null):undefined;
+   if(parsed===null)throw Error('invalid_request');
+   const handler=createMcpHandler(()=>guestMcpServer(stub,guest,enabled),{route:url.pathname,corsOptions:false,allowedHostnames:[url.hostname],allowedOriginHostnames:[url.hostname]});
+   const response=await handler.fetch(request,parsed===undefined?undefined:{parsedBody:parsed});
+   response.headers.set('cache-control','no-store');response.headers.set('referrer-policy','no-referrer');
+   return response;
+  }
   if(request.method!=='GET'&&request.method!=='POST')return json({error:'not_found'},404);
   let input:Record<string,unknown>={};
   if(request.method==='POST'){
@@ -53,6 +67,11 @@ export async function guestAskPublicRoute(request:Request,env:BookingEnv,deps:Gu
    const result=await deps.signIn(settings,request);return json({url:result.url},200,result.cookie);
   }
   const visitor=await deps.visitor(settings,request);
+  if(path==='/agent-token'&&request.method==='POST'){
+   if(!enabled)throw Error('guest_ask_disabled');
+   const minted=await new GuestAgentTokens(env.DB,env.TOKEN_SECRET).mint(settings.owner,settings.slug,{email:visitor.email,subject:visitor.subject});
+   return json({...minted,mcp:`${url.origin}/api/public/ask/${settings.slug}/mcp`});
+  }
   if(path==='/questions'&&request.method==='GET')return json(await stub.guestAsksFor(visitor.subject));
   if(path==='/questions'&&request.method==='POST'){
    if(!enabled)throw Error('guest_ask_disabled');

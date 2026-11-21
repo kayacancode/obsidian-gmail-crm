@@ -67,7 +67,21 @@ async function render(){
  if(!page.visitor)return show(el('h2','','Sign in to ask'),el('p','muted','Your Google email goes to the owner with your question, so they know who is asking.'),button('Sign in with Google',signIn,'button primary'));
  const {questions}=await api('/questions');
  const list=el('div','ask-questions');for(const q of questions)list.append(questionItem(q));
- show(el('p','muted',`Signed in as ${page.visitor.email}`),questionForm(),...(questions.length?[el('h2','','Your questions'),list]:[]));
+ show(el('p','muted',`Signed in as ${page.visitor.email}`),questionForm(),...(questions.length?[el('h2','','Your questions'),list]:[]),agentSection());
+}
+
+/** A token for the guest's own agent (MCP tools ask_network and my_questions), shown once. */
+function agentSection(){
+ const section=el('section','ask-agent');
+ section.append(el('h2','','Ask from your own agent'),el('p','muted','Connect an MCP client to ask and check answers for you. The token lasts seven days and is shown once; anyone holding it can ask as you.'));
+ section.append(button('Create an agent token',async()=>{
+  try{
+   const {token,mcp,expiresAt}=await api('/agent-token',{});
+   const field=(label,value)=>{const wrap=el('label','field'),input=el('input');input.readOnly=true;input.value=value;wrap.append(el('span','',label),input);return wrap;};
+   section.replaceChildren(el('h2','','Ask from your own agent'),field('MCP endpoint',mcp),field('Bearer token',token),el('p','muted',`Valid until ${new Date(expiresAt).toLocaleDateString()}.`));
+  }catch(error){notice(errorText(error),true);}
+ }));
+ return section;
 }
 
 const params=new URL(location.href).searchParams;
