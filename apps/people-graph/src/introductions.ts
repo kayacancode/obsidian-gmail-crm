@@ -14,7 +14,8 @@ export interface Introduction {
  /** Written by the owner as introducer; seen only by the owner, never exported or shared. */
  vouch:string|null;
  outcome:{result:'met'|'not_met';note:string|null}|null;
- startedBy:'owner'|'introducer';alternativePersonId?:string|null;createdAt:string;updatedAt:string;
+ /** `guest`: a guest ask visitor asked to meet someone the owner described; the owner introduces. */
+ startedBy:'owner'|'introducer'|'guest';alternativePersonId?:string|null;createdAt:string;updatedAt:string;
 }
 export interface ProposalInput {introducer:string;parties:[string,string];reason:string;evidence:IntroductionEvidence[]}
 export const isIntroductionStatus=(value:unknown):value is IntroductionStatus=>typeof value==='string'&&Object.hasOwn(NEXT,value);
@@ -32,8 +33,8 @@ const text=(value:unknown,max:number)=>typeof value==='string'&&value.trim()&&va
 const invalid=()=>Error('invalid_request');
 const stateInvalid=()=>Error('introduction_state_invalid');
 
-/** One proposal at a time: five open asks per introducer, five proposals a day. */
-export function proposeIntroduction(input:ProposalInput,existing:Introduction[],now:number):Introduction{
+/** One proposal at a time: five open asks per introducer, five owner proposals a day, five open guest requests. */
+export function proposeIntroduction(input:ProposalInput,existing:Introduction[],now:number,startedBy:'owner'|'guest'='owner'):Introduction{
  const introducer=text(input.introducer,200),reason=text(input.reason,500);
  const parties=Array.isArray(input.parties)&&input.parties.length===2?input.parties.map(p=>text(p,200)):[];
  if(!introducer||!reason||parties.length!==2||parties.some(p=>!p)||parties[0]===parties[1]||parties.includes(introducer))throw invalid();
@@ -42,10 +43,11 @@ export function proposeIntroduction(input:ProposalInput,existing:Introduction[],
  if(!Array.isArray(input.evidence)||input.evidence.length>5)throw invalid();
  if(existing.filter(i=>i.source==='owner'&&i.startedBy==='owner'&&Date.parse(i.createdAt)>now-DAY).length>=5)throw Error('introduction_rate_limited');
  if(introducer!=='owner'&&existing.filter(i=>i.introducer===introducer&&isOpen(i)).length>=5)throw Error('introduction_budget');
+ if(startedBy==='guest'&&existing.filter(i=>i.startedBy==='guest'&&isOpen(i)).length>=5)throw Error('introduction_budget');
  const at=new Date(now).toISOString();
  return {id:'intro_'+crypto.randomUUID().replace(/-/g,''),source:'owner',introducer,parties:[parties[0]!,parties[1]!],reason,
   evidence:input.evidence.map(e=>({personId:String(e.personId).slice(0,200),source:String(e.source).slice(0,40),date:String(e.date).slice(0,40),summary:String(e.summary).slice(0,300)})),
-  status:'proposed',vouch:null,outcome:null,startedBy:'owner',createdAt:at,updatedAt:at};
+  status:'proposed',vouch:null,outcome:null,startedBy,createdAt:at,updatedAt:at};
 }
 
 /** One step forward, never back. The owner as introducer goes straight to accepting. */

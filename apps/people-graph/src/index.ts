@@ -17,6 +17,7 @@ import {structureRoute} from './structure-routes';
 import {momentsRoute} from './moments-routes';
 import {ownerIntroductionRoute} from './owner-introduction-routes';
 import {guestOwnerRoute,GUEST_OWNER_PATHS} from './guest-owner-routes';
+import {guestAskPublicRoute} from './guest-ask-routes';
 import {askRoute} from './ask';
 import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-agent';
 import {isPeopleOAuthRequest,peopleOAuthRoute} from './people-oauth';
@@ -79,6 +80,7 @@ export default {
             }
 			if(pathname.startsWith('/api/scheduling/'))return await schedulingMachineRoute(request,env,ctx);
 			if(pathname.startsWith('/api/public/booking/'))return await bookingPublicRoute(request,env);
+			if(pathname.startsWith('/api/public/ask/'))return await guestAskPublicRoute(request,env);
 			if(pathname==='/api/booking'||pathname.startsWith('/api/booking/')){
 				const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
 				return await bookingOwnerRoute(request,env,user.email);
@@ -214,10 +216,10 @@ export default {
 			return json({ error: "server_error" }, 500);
 		}
 
-		if(pathname==='/booking'||pathname.startsWith('/book/')){
+		if(pathname==='/booking'||pathname.startsWith('/book/')||pathname.startsWith('/ask/')){
 			// Use canonical asset paths: requesting .html triggers a clean-URL
 			// redirect and would loop on /booking or drop the public slug.
-			const asset=new URL(request.url);asset.pathname=pathname==='/booking'?'/booking':'/book';asset.search='';
+			const asset=new URL(request.url);asset.pathname=pathname==='/booking'?'/booking':pathname.startsWith('/ask/')?'/ask':'/book';asset.search='';
 			const response=await env.ASSETS.fetch(new Request(asset,request));
 			const headers=new Headers(response.headers);headers.set('referrer-policy','no-referrer');headers.set('cache-control','no-store');headers.set('x-content-type-options','nosniff');
 			return new Response(response.body,{status:response.status,headers});

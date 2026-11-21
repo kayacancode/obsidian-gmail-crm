@@ -9,6 +9,8 @@ export const randomBookingToken=()=>b64(crypto.getRandomValues(new Uint8Array(32
 export function bookingCookie(request:Request,name:string){return request.headers.get('cookie')?.split(';').map(v=>v.trim()).find(v=>v.startsWith(name+'='))?.slice(name.length+1)||'';}
 export function setBookingCookie(name:string,value:string,seconds:number){return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${seconds}`;}
 
+/** The sign-in `requestId` that sends a verified visitor back to the guest ask page instead of booking. */
+export const GUEST_ASK_MARKER='guest-ask';
 export async function beginBookingSignIn(env:BookingEnv,settings:BookingSettings,request:Request,input:Record<string,unknown>){
  if(!env.MAIL_TOKEN_KEY||!env.TOKEN_SECRET)throw Error('setup_required');
  const requestId=input.requestId??'';
@@ -39,7 +41,9 @@ export async function completeBookingSignIn(env:BookingEnv,request:Request):Prom
   const row=await env.DB.prepare('DELETE FROM booking_visitor_oauth WHERE id=? AND browser=? RETURNING owner,slug,verifier,request_id,expires')
    .bind(state.slice(STATE_PREFIX.length),await opaque('booking-browser',browser,env.TOKEN_SECRET)).first<{owner:string;slug:string;verifier:string;request_id:string;expires:number}>();
   if(!row)throw Error('invalid_oauth_state');
-  destination='/book/'+encodeURIComponent(row.slug);requestId=row.request_id;
+  // One fixed marker returns guest ask visitors to /ask/<slug>; any other value keeps the booking page.
+  const guestAsk=row.request_id===GUEST_ASK_MARKER;
+  destination=(guestAsk?'/ask/':'/book/')+encodeURIComponent(row.slug);requestId=guestAsk?'':row.request_id;
   if(row.expires<=Date.now())throw Error('invalid_oauth_state');
   const settings=await store.slug(row.slug);
   if(!settings||settings.owner!==row.owner||env.BOOKING_OWNER_EMAIL?.toLowerCase()!==row.owner)throw Error('invalid_oauth_state');
@@ -49,7 +53,7 @@ export async function completeBookingSignIn(env:BookingEnv,request:Request):Prom
   const token=randomBookingToken(),tokenHash=await opaque('booking-google-session',token,env.TOKEN_SECRET);
   await env.DB.prepare('INSERT INTO booking_google_sessions(token_hash,owner,slug,email,subject,email_authoritative,browser,expires) VALUES(?,?,?,?,?,?,?,?)')
    .bind(tokenHash,row.owner,row.slug,identity.email,subject,identity.emailAuthoritative?1:0,await opaque('booking-browser',browser,env.TOKEN_SECRET),Date.now()+3600000).run();
-  const params=new URLSearchParams({signed_in:'1'});if(row.request_id)params.set('request',row.request_id);
+  const params=new URLSearchParams({signed_in:'1'});if(requestId)params.set('request',requestId);
   return new Response(null,{status:303,headers:{location:destination+'?'+params,'set-cookie':setBookingCookie(VISITOR,token,3600),'cache-control':'no-store','referrer-policy':'no-referrer'}});
  }catch{
   if(destination){const params=new URLSearchParams();if(requestId)params.set('request',requestId);params.set('sign_in','failed');return new Response(null,{status:303,headers:{location:destination+'?'+params,'cache-control':'no-store','referrer-policy':'no-referrer'}});}

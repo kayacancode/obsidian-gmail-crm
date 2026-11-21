@@ -240,6 +240,15 @@ await test('Booking Worker integration with real D1 and SQLite coordinator',asyn
    const metadata=(await api(prefix,{cookie:visitorCookie})).value;assert.equal(metadata.visitor.email,'visitor@example.com');assert.ok(metadata.visitor.identityKey);assert.equal(JSON.stringify(metadata).includes('subject-visitor'),false);
    const sessions=await sql('SELECT * FROM booking_google_sessions');assert.equal(JSON.stringify(sessions).includes('fixture-access'),false);assert.equal(JSON.stringify(sessions).includes('subject-visitor'),false);
   });
+  await t.test('guest ask sign-in returns to the ask page, and only for its own marker',async()=>{
+   const ask=await startSignIn('guest@example.com',{},{requestId:'guest-ask'});
+   const done=await api(ask.callback,{cookie:ask.browser});assert.equal(done.res.status,303);
+   assert.equal(done.res.headers.get('location'),'/ask/test-host?signed_in=1');
+   const failed=await startSignIn('guest-late@example.com',{},{requestId:'guest-ask'});await sql('UPDATE booking_visitor_oauth SET expires=0 WHERE id=?',[failed.state.slice('booking-visitor.'.length)]);
+   assert.equal((await api(failed.callback,{cookie:failed.browser})).res.headers.get('location'),'/ask/test-host?sign_in=failed');
+   const other=await startSignIn('guest-other@example.com',{},{requestId:'guest-asks'});
+   assert.equal((await api(other.callback,{cookie:other.browser})).res.headers.get('location'),'/book/test-host?signed_in=1&request=guest-asks');
+  });
   await t.test('denied or invalid Google identity returns a safe retry without establishing a session',async()=>{
    for(const claims of [{email_verified:false},{aud:'other-client'},{nonce:'wrong'}]){
     const c=await startSignIn('invalid@example.com',claims),before=(await sql('SELECT count(*) AS count FROM booking_google_sessions'))[0].count;

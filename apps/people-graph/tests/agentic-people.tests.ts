@@ -20,3 +20,4 @@ import './introductions.test.ts';
 import './introductions-routes.test.ts';
 import './guest-ask.test.ts';
 import './guest-owner.test.ts';
+import './guest-public.test.ts';

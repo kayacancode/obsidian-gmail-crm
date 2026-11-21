@@ -1375,6 +1375,29 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!ask)throw Error('not_found');
   return {ask:this.guestStore().save(decideAsk(ask,'declined',null,now))};
  }
+ /** Status and name of each guest-started introduction; guestView decides whether the name shows. */
+ private async guestIntroductions(now:number){
+  const names=new Map(((await this.graph())?.nodes??[]).map(n=>[n.id,n.name]));
+  const views:Record<string,{status:string;name:string}>={};
+  for(const intro of this.introStore().list(now))if(intro.startedBy==='guest')views[intro.id]={status:intro.status,name:names.get(intro.parties[1]??'')??''};
+  return views;
+ }
+ /** One guest's own questions, as the guest may see them. */
+ async guestAsksFor(guestKey:string){
+  const now=Date.now(),intros=await this.guestIntroductions(now);
+  return {questions:this.guestStore().list(now).filter(a=>a.guest===guestKey).map(a=>guestView(a,intros))};
+ }
+ /** The guest asks to meet one person from an answer; the owner then introduces as usual (double opt-in). */
+ async requestGuestIntroduction(guestKey:string,askId:string,ref:string){
+  const now=Date.now(),ask=typeof askId==='string'?this.guestStore().get(askId,now):null;
+  if(!ask||ask.guest!==guestKey)throw Error('not_found');
+  if(ask.status!=='answered'||ask.introductions[ref])throw Error('guest_ask_state_invalid');
+  const person=ask.answer?.people.some(p=>p.ref===ref)?ask.draft.people.find(p=>p.ref===ref):undefined;
+  if(!person)throw Error('invalid_request');
+  const intro=this.introStore().save(proposeIntroduction({introducer:'owner',parties:[`guest:${guestKey}`,person.personId],reason:ask.question,evidence:[]},this.introStore().list(now),now,'guest'));
+  const updated=this.guestStore().save({...ask,introductions:{...ask.introductions,[ref]:intro.id},updatedAt:new Date(now).toISOString()});
+  return {question:guestView(updated,await this.guestIntroductions(now))};
+ }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};
