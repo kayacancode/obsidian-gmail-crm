@@ -46,7 +46,7 @@ The fringe rule from the essay applies throughout. A fringe candidate needs **re
 
 **Graph.**
 - Nodes are the owner's own graph contacts, not the owner and not shared-only people.
-- An edge's weight is the number of threads plus the number of meetings that two contacts share in the last 365 days.
+- An edge's weight is the number of threads plus the number of meetings that two contacts share. All recorded co-occurrence counts, because `mail_edges` and `granola_edges` carry no dates; the mail sync window already bounds them.
 - Pairs whose only shared evidence is threads of more than 20 people are already excluded.
 
 **Algorithm.** Weighted label propagation, chosen because it is deterministic, needs no dependency, and runs in O(edges × iterations):
