@@ -25,6 +25,10 @@ An existing key can be supplied by a secret manager or private file to `peoplegr
 
 Use `--local` for an Obsidian cache (`--cache`, then `PEOPLEGRAPH_CACHE`, then vault discovery). `--remote` / `PEOPLEGRAPH_HOST` with `PEOPLEGRAPH_TOKEN` belong to the older cache server. Hosted errors never silently select either backend. Do not search local secret files or reuse scheduling/device credentials for private People operations.
 
+## Ask first
+
+For an open question about the owner's network, run `peoplegraph ask "<question>"` (MCP: `ask`). It returns `interpretation` (intent, params, confidence) beside `answers`, `result` and `gaps`. Before answering, check that the interpretation matches what the owner meant; if it does not, say so and use the specific command instead. On `intent: clarify`, ask the owner which of `alternatives` they meant; never guess. `network_ask` means the question is about what peers know: use `peer ask` from the CLI. `ask` is read-only and has no write intents; requests to change, delete, send or share are always `clarify`. `--local` answers only who-knows, reconnect, catch-up (activity only) and lookup questions.
+
 ## Private People questions
 
 These require `people:read`. They use the website's saved context, ranking, explanations, and visible-network rules.

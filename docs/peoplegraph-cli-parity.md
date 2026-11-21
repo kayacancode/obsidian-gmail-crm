@@ -152,6 +152,10 @@ Every response carries `stats.backend` (`hosted`, `local` or `legacy_remote`), `
 
 Local vault discovery skips vaults under hidden directories such as `~/.codex`. If more than one real vault has a contact cache, the CLI fails with `ambiguous_cache` and lists them; pass `--cache <path>` or set `PEOPLEGRAPH_CACHE`.
 
+## Natural-language ask
+
+`peoplegraph ask "<question>"` (MCP tool `ask`, route `POST /api/people/ask`, `people:read`) classifies one question into `lookup`, `company`, `catch_up`, `reconnect`, `who_can_help`, `connection`, `network_ask` or `clarify` and returns `{interpretation, answers, result, gaps}`. Model output is re-validated by code; low confidence or incomplete params become `clarify` with alternatives, and nothing runs. `network_ask` is answered by peers from the CLI, never by the hosted service. `--local`/`--cache` use a small rule set over the cache. `apps/people-graph/scripts/eval-ask.mjs` measures live classification accuracy against `tests/fixtures/ask-eval.json` (`PEOPLE_URL`, `PEOPLE_TOKEN`; fails below 85%).
+
 ## Catch-up briefs and life signals
 
 `peoplegraph brief <email|exact-name|person-id>` returns the owner's private catch-up brief: `when`, `why` (first-hand evidence with source and date), `whether`, `gaps` and `sinceLastContact {theirs, yours}`. Sensitive life signals are `use: tone_only`. `signals on|off|list|forget` manages owner-private life signals (off by default; each category expires); `me add|list|forget` manages the owner's own timeline; `stints`, `job-moves` and `teammates` expose company history derived from email domains plus owner corrections; `who-knows --include-former` (hosted only) adds former employees. Routes: `/api/people/{signals,signals/settings,brief,timeline,stints,teammates,job-moves}`; MCP read tools: `get_catch_up_brief`, `list_life_signals`.
