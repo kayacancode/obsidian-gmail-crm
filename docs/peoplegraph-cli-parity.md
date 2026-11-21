@@ -152,6 +152,10 @@ Every response carries `stats.backend` (`hosted`, `local` or `legacy_remote`), `
 
 Local vault discovery skips vaults under hidden directories such as `~/.codex`. If more than one real vault has a contact cache, the CLI fails with `ambiguous_cache` and lists them; pass `--cache <path>` or set `PEOPLEGRAPH_CACHE`.
 
+## Catch-up briefs and life signals
+
+`peoplegraph brief <email|exact-name|person-id>` returns the owner's private catch-up brief: `when`, `why` (first-hand evidence with source and date), `whether`, `gaps` and `sinceLastContact {theirs, yours}`. Sensitive life signals are `use: tone_only`. `signals on|off|list|forget` manages owner-private life signals (off by default; each category expires); `me add|list|forget` manages the owner's own timeline; `stints`, `job-moves` and `teammates` expose company history derived from email domains plus owner corrections; `who-knows --include-former` (hosted only) adds former employees. Routes: `/api/people/{signals,signals/settings,brief,timeline,stints,teammates,job-moves}`; MCP read tools: `get_catch_up_brief`, `list_life_signals`.
+
 ## Version and rollout
 
 `peoplegraph --version`, `peoplegraph version` and `peoplegraph describe` now report the installed binary's version even if `PEOPLEGRAPH_HOST` points at an older daemon. Release CI checks both the tag/package versions and native release executable output.

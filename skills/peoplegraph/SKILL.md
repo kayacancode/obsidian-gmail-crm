@@ -68,6 +68,14 @@ Enabling Gmail context starts an independent backfill of recent incoming mail. M
 
 Matches and `lens inspect` expose `matchingSources.gmail` account counts (`connected`, `contextEnabled`, `contextDisabled`, `syncing`, `contextErrors`) plus `hints` with `code`, `message`, and optional `command`. Follow `gmail_context_syncing` / `gmail_context_errors` for ingestion progress; `gmail_context_disabled` is a consent reminder, not authorization. Read `guidance` on `no_evidence`. These counts expose no account emails and do not promise evidence or matches.
 
+## Catch-up briefs and life signals
+
+Before a call or reconnect ("anything I should know before I talk to Maya?"), run `peoplegraph brief <email|exact-name|person-id>`. The brief gives `when` (last contact), `why` (first-hand life, work and note evidence, each with `source` and `observedAt`), `whether` (the owner's feedback and relationship note), `gaps`, and `sinceLastContact` with `theirs` (their signals and job changes) and `yours` (the owner's own timeline). Answer from it; say what is missing from `gaps`.
+
+Life signals (travel, hobby, role change, move: open; milestone: personal; health, family, loss, money, legal: sensitive) are private to the owner and off until the owner asks for `peoplegraph signals on`. Items marked `use: tone_only` shape tone only: never quote them, rank with them, or repeat them to anyone else. `signals forget` removes them. Add to the owner's own timeline with `me add` only when the owner explicitly asks.
+
+`job-moves` lists the same full name on two work domains; these are proposals. Merge only after the owner confirms, with `peoplegraph api POST /api/people/person-merges`. `stints show <person-id>` shows company history, `teammates <person-id>` people who overlapped, and `who-knows --company X --include-former` adds former employees labelled `formerly`.
+
 ## Save only requested context
 
 With `people:write`, capture owner-authorized notes or supplied voice transcripts for an exact email:
