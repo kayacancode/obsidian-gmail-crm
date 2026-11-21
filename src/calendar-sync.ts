@@ -72,6 +72,31 @@ async function getHeaders(settings: GmailCrmSettings): Promise<Record<string, st
 	return { Authorization: `Bearer ${settings.accessToken}` };
 }
 
+/** Raw invites from now to `days` ahead, expanded from recurrences; the brief filters them. */
+export async function fetchUpcomingInvites(settings: GmailCrmSettings, days: number): Promise<CalendarEvent[]> {
+	const headers = await getHeaders(settings);
+	const now = new Date();
+	const invites: CalendarEvent[] = [];
+	let pageToken: string | undefined;
+	do {
+		const params = new URLSearchParams({
+			timeMin: now.toISOString(),
+			timeMax: new Date(now.getTime() + days * 86_400_000).toISOString(),
+			maxResults: "250",
+			singleEvents: "true",
+			orderBy: "startTime",
+			fields: "items(id,summary,start,attendees,status),nextPageToken",
+		});
+		if (pageToken) params.set("pageToken", pageToken);
+		const resp = await requestUrl({ url: `${CALENDAR_API_BASE}/calendars/primary/events?${params.toString()}`, headers, throw: false });
+		if (resp.status < 200 || resp.status >= 300) throw new Error(`Calendar API HTTP ${resp.status}`);
+		const data = resp.json as CalendarListResponse;
+		invites.push(...(data.items ?? []));
+		pageToken = data.nextPageToken;
+	} while (pageToken);
+	return invites;
+}
+
 async function fetchCalendarStats(
 	settings: GmailCrmSettings,
 	ownerEmail: string

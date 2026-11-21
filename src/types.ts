@@ -13,6 +13,8 @@ export interface GmailCrmSettings {
 	vaultOwnerName: string;
 	peopleFolder: string;
 	companiesFolder: string;
+	/** Vault path of the plugin-owned pre-meeting brief note. */
+	briefPath: string;
 	anthropicApiKey: string;
 	harperModel: string;
 	enrichOnSync: boolean;
@@ -52,6 +54,7 @@ export const DEFAULT_SETTINGS: GmailCrmSettings = {
 	vaultOwnerName: "",
 	peopleFolder: "People pages",
 	companiesFolder: "Companies",
+	briefPath: "Pre-meeting brief.md",
 	anthropicApiKey: "",
 	harperModel: "claude-sonnet-4-6",
 	enrichOnSync: false,
