@@ -218,3 +218,54 @@ fn structure_commands_need_hosted_people() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["error"]["kind"], "incompatible_backend");
 }
+
+#[test]
+fn mind_commands_use_the_curiosity_note_routes() {
+    let note = std::env::temp_dir().join(format!("peoplegraph-note-{}.md", std::process::id()));
+    std::fs::write(&note, "Agents\n\n## The fringes\n- nurse scheduling\n").unwrap();
+    let path = note.to_str().unwrap();
+    assert_eq!(
+        sent(&["mind", "set", "--file", path]),
+        json!({"method":"POST","path":"/api/people/mind","body":{"text":"Agents\n\n## The fringes\n- nurse scheduling\n"}})
+    );
+    assert_eq!(
+        sent(&["mind", "set", "--file", path, "--id", "note_1"]),
+        json!({"method":"POST","path":"/api/people/mind","body":{"text":"Agents\n\n## The fringes\n- nurse scheduling\n","id":"note_1"}})
+    );
+    assert_eq!(
+        sent(&["mind", "list", "--archived"]),
+        json!({"method":"GET","path":"/api/people/mind?includeArchived=1"})
+    );
+    assert_eq!(
+        sent(&["mind", "archive", "note_1"]),
+        json!({"method":"POST","path":"/api/people/mind/archive","body":{"id":"note_1"}})
+    );
+    let (_, shown) = run(&["mind", "show", "note_1"]);
+    assert_eq!(
+        shown,
+        json!({"method":"GET","path":"/api/people/mind?includeArchived=1"})
+    );
+    let _ = std::fs::remove_file(note);
+}
+
+#[test]
+fn moments_commands_use_the_moment_routes() {
+    assert_eq!(
+        sent(&["moments", "--today"]),
+        json!({"method":"GET","path":"/api/people/moments?today=1"})
+    );
+    assert_eq!(
+        sent(&["moments"]),
+        json!({"method":"GET","path":"/api/people/moments"})
+    );
+    for (action, word) in [("act", "act"), ("snooze", "snooze"), ("dismiss", "dismiss")] {
+        assert_eq!(
+            sent(&["moments", action, "2026-11-21:bridge:a+b"]),
+            json!({"method":"POST","path":"/api/people/moments/update","body":{"id":"2026-11-21:bridge:a+b","action":word}})
+        );
+    }
+    assert_eq!(
+        sent(&["moments", "budget", "2"]),
+        json!({"method":"POST","path":"/api/people/moments/settings","body":{"budget":2}})
+    );
+}

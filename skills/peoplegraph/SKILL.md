@@ -43,6 +43,12 @@ These answers need the shape of the owner's network (hosted only; `ask` routes t
 
 Every reason carries `source` and `observedAt`: cite them. `distance` (0, 0.5 or 1, with a `reason`) says how far someone sits from the owner's usual circles; a fringe suggestion is valuable because it is relevant **and** distant, so say both. With `--claim`, people whose evidence `challenges` the claim rank higher: present disagreement as useful, not as a mismatch. `widen` offers at most one person; do not pad it. `bridges` pairs are proposals: never contact anyone or draft an introduction unless the owner asks. Atlas `absent` entries are model suggestions marked `inferred`; describe them as possibilities. Clusters and distances are private to the owner; never repeat them to others.
 
+## Curiosity notes and moments
+
+A curiosity note is the owner's current thinking: `## What's new in my head`, `## Why it spikes my interest`, `## The fringes`, `## Who I want to talk to about it` (exactly these headings, in order). Save one only when the owner asks: `peoplegraph mind set --file note.md` (MCP `set_curiosity_note`); `mind list`, `mind show <id>`, `mind archive <id>`. At most three are active. Names in the note resolve to people; unresolved ones come back in `gaps` so you can ask the owner.
+
+`peoplegraph moments --today` (MCP `list_moments`) returns today's moments: a few evidenced reasons to reach out, generated once a day within a small budget (default 3; `moments budget <1-10>`). Present them as they are, with their `why`; never invent extra ones, never pad a quiet day, and never contact anyone yourself. Record the owner's decision with `moments act|snooze|dismiss <id>` (MCP `update_moment`). Success is `stats.acted`, connections made, not time spent. Without an active note only meetings appear. Moments never ask peers.
+
 ## Private People questions
 
 These require `people:read`. They use the website's saved context, ranking, explanations, and visible-network rules.

@@ -1,8 +1,11 @@
+// The `describe` payload is one large `json!` literal.
+#![recursion_limit = "256"]
 mod agent;
 mod ask;
 mod config;
 mod hosted;
 mod life;
+mod moments;
 mod peer;
 mod people_client;
 mod sources;
@@ -94,6 +97,10 @@ enum Commands {
     Bridges(structure::BridgesArgs),
     /// The landscape of your network around one topic, as a typed Atlas object.
     Atlas(structure::AtlasArgs),
+    /// Your curiosity notes: what is new in your head, why, the fringes, and who to talk to.
+    Mind(moments::MindArgs),
+    /// Today's moments: a few evidenced reasons to reach out; act, snooze or dismiss them.
+    Moments(moments::MomentsArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -680,6 +687,8 @@ fn run_with_profile(
             | Commands::Widen(_)
             | Commands::Bridges(_)
             | Commands::Atlas(_)
+            | Commands::Mind(_)
+            | Commands::Moments(_)
             | Commands::Lens(_)
             | Commands::Sources(_)
             | Commands::Matches(_)
@@ -717,6 +726,7 @@ fn run_with_profile(
             | Commands::Widen(_)
             | Commands::Bridges(_)
             | Commands::Atlas(_) => structure::run(&cli.command, start),
+            Commands::Mind(_) | Commands::Moments(_) => moments::run(&cli.command, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -868,6 +878,8 @@ fn run_with_profile(
         | Commands::Widen(_)
         | Commands::Bridges(_)
         | Commands::Atlas(_)
+        | Commands::Mind(_)
+        | Commands::Moments(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -1036,6 +1048,8 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::Widen(_)
         | Commands::Bridges(_)
         | Commands::Atlas(_)
+        | Commands::Mind(_)
+        | Commands::Moments(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -5363,6 +5377,8 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Widen(_) => "widen",
         Commands::Bridges(_) => "bridges",
         Commands::Atlas(_) => "atlas",
+        Commands::Mind(_) => "mind",
+        Commands::Moments(_) => "moments",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5507,6 +5523,18 @@ fn describe_payload() -> Value {
                 "usage": "peoplegraph atlas \"<topic>\"",
                 "status": "implemented_hosted",
                 "notes": "Typed Atlas object (schema /schemas/v1/atlas.json): known people, circles, fringe people with reach, and inferred absent communities (never people). Data to explore, not a ranking."
+            },
+            {
+                "name": "mind",
+                "usage": "peoplegraph mind set --file <note.md|-> [--id <id>] | show <id> | list [--archived] | archive <id>",
+                "status": "implemented_hosted",
+                "notes": "Curiosity notes with exactly four headings: ## What's new in my head, ## Why it spikes my interest, ## The fringes, ## Who I want to talk to about it. Unknown headings fail with note_invalid naming the heading. At most 3 active notes of 4,000 characters. Private; save only on the owner's request."
+            },
+            {
+                "name": "moments",
+                "usage": "peoplegraph moments [--today] | act|snooze|dismiss <id> | budget <1-10>",
+                "status": "implemented_hosted",
+                "notes": "A few evidenced reasons a day to reach out (pre_meeting, want_to_talk, fresh_signal, fringe_match, bridge, cold_and_relevant, widen), generated once a day within the budget (default 3). Without a note only meetings surface. Never asks peers. stats counts moments acted on."
             },
             {
                 "name": "peer",
