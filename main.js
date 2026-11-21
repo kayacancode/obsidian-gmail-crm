@@ -2064,15 +2064,30 @@ function findNextSteps(markdown, ownerName) {
   }
   return steps.filter((s) => !s.done && s.title && !forSomeoneElse(s.title, ownerName)).slice(0, MAX_STEPS).map(({ title, detail }) => ({ title, detail }));
 }
+var CADENCE = { weekly: true, biweekly: true, monthly: true, daily: true, recurring: true };
+function seriesTitle(title) {
+  const words = normalizeEventTitle(title).split(" ").filter(Boolean);
+  const kept = [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === "bi" && words[i + 1] === "weekly") {
+      i++;
+      continue;
+    }
+    if (words[i] !== "and" && !CADENCE[words[i]]) kept.push(words[i]);
+  }
+  return kept.join(" ");
+}
 async function relatedNextSteps(meeting, notes, read, ownerName) {
   const at = Date.parse(meeting.start);
   const earlier = notes.filter((n) => Date.parse(n.date) < at).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
   const title = normalizeEventTitle(meeting.title);
+  const series = seriesTitle(meeting.title);
   const people = [...new Set(meeting.attendees)].sort().join(",");
   const groups = [
     earlier.filter((n) => n.calendarTitle && normalizeEventTitle(n.calendarTitle) === title),
     // Needs someone: notes nobody is linked to must not match a meeting with no listed attendees.
-    people ? earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people) : []
+    people ? earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people) : [],
+    series ? earlier.filter((n) => n.calendarTitle && seriesTitle(n.calendarTitle) === series) : []
   ];
   for (const group of groups)
     for (const note of group) {
