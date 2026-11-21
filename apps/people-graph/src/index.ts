@@ -13,6 +13,7 @@ import {ownerLensRoute} from './owner-lens-routes';
 import {personContextRoute} from './person-context-routes';
 import {relationshipMemoryRoute} from './relationship-memory-routes';
 import {lifeRoute} from './life-routes';
+import {structureRoute} from './structure-routes';
 import {askRoute} from './ask';
 import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-agent';
 import {isPeopleOAuthRequest,peopleOAuthRoute} from './people-oauth';
@@ -124,6 +125,10 @@ export default {
             if(['/api/people/signals','/api/people/signals/settings','/api/people/brief','/api/people/timeline','/api/people/stints','/api/people/teammates','/api/people/job-moves','/api/people/peer-directory','/api/people/peer-answer'].includes(pathname)){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
                 return await lifeRoute(request,env,user.email);
+            }
+            if(['/api/people/why-now','/api/people/contrast','/api/people/widen','/api/people/bridges','/api/people/atlas'].includes(pathname)){
+                const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+                return await structureRoute(request,env,user.email);
             }
             if(pathname==='/api/people/ask'){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);

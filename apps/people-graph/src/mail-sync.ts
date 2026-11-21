@@ -13,6 +13,7 @@ import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from '
 import {OwnerTimelineStore} from './owner-timeline';
 import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
 import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
+import {whyNow,type StructureInput} from './network-structure';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -68,7 +69,9 @@ function bookingSourceCompletion(source:'gmail'|'granola',data:string|undefined,
  return value.lastSync;
 }
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
-interface GraphPersonNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;manual?:boolean;memoryEligible?:boolean;sources?:string[];directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;/** Activity-only score before the owner's feedback and relationship adjustments. */baseCombined?:number;quadrant:string;via?:string[]}
+interface GraphPersonNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;manual?:boolean;memoryEligible?:boolean;sources?:string[];directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;/** Activity-only score before the owner's feedback and relationship adjustments. */baseCombined?:number;/** The owner's "not before" date from relationship memory. */notBefore?:string|null;quadrant:string;via?:string[]}
+/** Calendar activity names who accepted; other activity has no such list. */
+const acceptedIds=(event:object):string[]|undefined=>'acceptedPersonIds' in event&&Array.isArray(event.acceptedPersonIds)?event.acceptedPersonIds.filter((id):id is string=>typeof id==='string'):undefined;
 export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
@@ -1102,6 +1105,50 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!node||!store.enabled())return {signals:[]};
   // Sensitive signals and quotes never leave through this route.
   return {signals:store.list(await this.mergedPersonIds(node.id)).filter(s=>s.tier!=='sensitive').map(s=>({category:s.category,tier:s.tier,summary:s.summary,observedMonth:s.observedAt.slice(0,7),expiresAt:s.expiresAt}))};
+ }
+ /** The owner's own graph in the shape structure answers need; `null` before the first sync. */
+ private async structureInput():Promise<StructureInput|null>{
+  const graph=await this.graph();if(!graph)return null;
+  return {
+   nodes:graph.nodes.map(n=>({id:n.id,name:n.name,company:n.company,strength:n.strength,combined:n.combined,baseCombined:n.baseCombined,lastContact:n.lastContact,directRelationship:n.directRelationship,via:n.via})),
+   edges:graph.edges.map(e=>({source:e.source,target:e.target,weight:e.weight,types:e.types})),
+   activity:graph.activity.map(e=>({kind:e.kind,at:e.at,personIds:e.personIds,acceptedPersonIds:acceptedIds(e),title:e.title})),
+   themeSignals:graph.themeSignals.map(s=>({personId:s.personId,themeId:s.themeId,summary:s.summary,observedAt:s.observedAt,sourceType:s.sourceType})),
+   themes:graph.themes.map(t=>({id:t.id,name:t.canonicalName})),
+  };
+ }
+ /** People the owner has judged out for now: suppressed, snoozed, or not before a date. */
+ private structureExclusions(nodes:GraphPersonNode[],now:number){
+  const excluded=new Set<string>();
+  for(const row of this.ctx.storage.sql.exec<{person_id:string;data:string}>('SELECT person_id,data FROM person_feedback').toArray()){
+   const feedback=JSON.parse(row.data) as PersonFeedback;
+   if(feedback.action==='suppress'||(feedback.action==='snooze'&&feedback.until>now))excluded.add(row.person_id);
+  }
+  for(const n of nodes)if(n.notBefore&&Date.parse(n.notBefore)>now)excluded.add(n.id);
+  return excluded;
+ }
+ /** Who to contact now and why: meetings soon, replies owed, fresh signals, moves, cooling, focus. */
+ async whyNow(limit=10){
+  if(!Number.isInteger(limit)||limit<1||limit>25)throw Error('invalid_request');
+  const input=await this.structureInput(),now=Date.now();
+  if(!input)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const owner=(await this.ctx.storage.get<string>('owner'))!,graph=(await this.graph())!,aliases=graph.personAliases??{};
+  const mail:Record<string,{lastIn:number|null;lastOut:number|null}>={};
+  for(const row of this.ctx.storage.sql.exec<{email:string;lastIn:number|null;lastOut:number|null}>('SELECT email,MAX(CASE WHEN received>0 THEN date END) AS lastIn,MAX(CASE WHEN sent>0 THEN date END) AS lastOut FROM contributions GROUP BY email').toArray()){
+   const raw=await opaque(owner,row.email,this.env.TOKEN_SECRET),id=aliases[raw]??raw,cur=mail[id];
+   mail[id]=cur?{lastIn:Math.max(cur.lastIn??0,row.lastIn??0)||null,lastOut:Math.max(cur.lastOut??0,row.lastOut??0)||null}:{lastIn:row.lastIn,lastOut:row.lastOut};
+  }
+  // Owner corrections plus history derived for people already merged across addresses.
+  const stints=[...this.stintStore().all()];
+  for(const target of new Set(Object.values(this.personMergeStore().get()))){
+   const emails=await this.emailsForMergedPerson(target);if(!emails.length)continue;
+   const spans=this.ctx.storage.sql.exec<{email:string;first:number;last:number}>(`SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions WHERE email IN (${emails.map(()=>'?').join(',')}) GROUP BY email`,...emails).toArray();
+   stints.push(...deriveStints(target,spans,now));
+  }
+  const lens=this.ownerLens().get(),store=this.lifeStore();store.purgeExpired();
+  const signals=store.enabled()?store.list().map(s=>({personId:aliases[s.personId]??s.personId,category:s.category,tier:s.tier,summary:s.summary,observedAt:s.observedAt,source:s.source})):[];
+  const result=whyNow(input,{now,lens:lens.enabled?lens.fields:{focus:'',needs:''},signals,stints,jobMoves:(await this.jobMoveCandidates()).candidates,mail,excluded:this.structureExclusions(graph.nodes,now)},limit);
+  return {interpretation:null,answers:result.answers,result:{generatedAt:new Date(now).toISOString()},gaps:result.gaps};
  }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){

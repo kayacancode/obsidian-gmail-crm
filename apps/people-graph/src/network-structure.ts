@@ -4,8 +4,8 @@
  */
 export interface StructureNode {id:string;name:string;company:string;strength:number;combined:number;baseCombined?:number;lastContact:string|null;directRelationship:boolean;via?:string[]}
 export interface StructureEdge {source:string|undefined;target:string|undefined;weight:number;types:string[]}
-export interface StructureEvent {kind:string;at:string;personIds:string[];acceptedPersonIds?:string[]}
-export interface StructureSignal {personId?:string;themeId:string;summary:string;observedAt:string}
+export interface StructureEvent {kind:string;at:string;personIds:string[];acceptedPersonIds?:string[];title?:string}
+export interface StructureSignal {personId?:string;themeId:string;summary:string;observedAt:string;sourceType?:string}
 export interface StructureInput {nodes:StructureNode[];edges:StructureEdge[];activity:StructureEvent[];themeSignals:StructureSignal[];themes:{id:string;name:string}[]}
 export interface ClusterLabel {companies:string[];themes:string[]}
 export interface Cluster {id:string;members:string[];label:ClusterLabel}
@@ -115,4 +115,75 @@ export function distanceOf(id:string,ctx:StructureContext):Distance{
  return intoUsual.length
   ?{value:0.5,cluster:null,reason:'Not part of a group, with ties into your usual circles'}
   :{value:1,cluster:null,reason:'Outside your usual circles: no shared threads or meetings with them'};
+}
+
+export type TriggerKind='meeting_soon'|'owes_reply'|'fresh_signal'|'job_move'|'going_cold'|'topic_overlap';
+export interface WhyNowSignal {personId:string;category:string;tier:string;summary:string;observedAt:string;source:string}
+export interface WhyNowStint {id:string;personId:string;company:string;domain:string;from:string;to:string|null;source:'email_domain'|'owner'}
+export interface WhyNowContext {
+ now:number;lens:{focus:string;needs:string};signals:WhyNowSignal[];stints:WhyNowStint[];
+ jobMoves:{name:string;people:{personId:string;domain:string;lastContact:string}[]}[];
+ /** Latest message from them (`lastIn`) and from the owner to them (`lastOut`), epoch ms. */
+ mail:Record<string,{lastIn:number|null;lastOut:number|null}>;
+ /** Suppressed, snoozed or not-yet people: judgment only removes. */
+ excluded:Set<string>;
+}
+export interface WhyEntry {kind:'trigger';trigger:TriggerKind;summary:string;source:string;observedAt:string;attribution:'first_hand'}
+export interface WhyNowAnswer {personId:string;name:string;score:number;when:{lastContact:string|null};why:WhyEntry[]}
+
+const WEIGHT:Record<TriggerKind,number>={meeting_soon:3,owes_reply:2,fresh_signal:2,job_move:2,going_cold:1.5,topic_overlap:1.5};
+const SHAREABLE_TIER:Record<string,true>={open:true,personal:true};
+const day=(ms:number)=>new Date(ms).toISOString().slice(0,10);
+
+/** Lowercase words of four or more letters: enough to match a focus without a model. */
+export function keywords(text:string):Set<string>{
+ return new Set(text.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu)??[]);
+}
+
+/** People with a reason to be contacted now, each reason dated and sourced. */
+export function whyNow(input:StructureInput,ctx:WhyNowContext,limit=10):{answers:WhyNowAnswer[];gaps:string[]}{
+ const {now}=ctx,why=new Map<string,WhyEntry[]>();
+ const add=(id:string,trigger:TriggerKind,summary:string,source:string,observedAt:string)=>why.set(id,[...(why.get(id)??[]),{kind:'trigger',trigger,summary,source,observedAt,attribution:'first_hand'}]);
+ const people=new Map(input.nodes.filter(n=>n.directRelationship&&!ctx.excluded.has(n.id)).map(n=>[n.id,n]));
+ for(const e of input.activity){
+  const t=Date.parse(e.at);
+  if(e.kind!=='calendar'||!(t>now&&t<=now+2*DAY))continue;
+  for(const id of e.personIds)if(people.has(id))add(id,'meeting_soon',`Meeting${e.title?` "${e.title}"`:''} on ${day(t)}`,'calendar',e.at);
+ }
+ for(const [id,mail] of Object.entries(ctx.mail)){
+  if(!people.has(id)||mail.lastIn===null||mail.lastIn<now-21*DAY||mail.lastIn<=(mail.lastOut??0))continue;
+  add(id,'owes_reply',`They wrote last, on ${day(mail.lastIn)}; no reply from you since`,'gmail',new Date(mail.lastIn).toISOString());
+ }
+ for(const s of ctx.signals){
+  // Sensitive signals never rank anyone.
+  if(!people.has(s.personId)||!SHAREABLE_TIER[s.tier]||Date.parse(s.observedAt)<now-14*DAY)continue;
+  add(s.personId,'fresh_signal',s.summary,s.source,s.observedAt);
+ }
+ const recentMonth=new Date(now-60*DAY).toISOString().slice(0,7),stintsBy=new Map<string,WhyNowStint[]>();
+ for(const s of ctx.stints)stintsBy.set(s.personId,[...(stintsBy.get(s.personId)??[]),s]);
+ for(const [id,stints] of stintsBy){
+  const latest=[...stints].sort((a,b)=>b.from.localeCompare(a.from))[0];
+  if(people.has(id)&&stints.length>1&&latest.from>=recentMonth)add(id,'job_move',`Now at ${latest.company} since ${latest.from}`,latest.source,latest.from+'-01T00:00:00.000Z');
+ }
+ for(const move of ctx.jobMoves){
+  const newest=move.people[0];
+  if(newest&&people.has(newest.personId)&&Date.parse(newest.lastContact)>=now-60*DAY&&!why.get(newest.personId)?.some(w=>w.trigger==='job_move'))
+   add(newest.personId,'job_move',`Same name now writing from ${newest.domain}`,'gmail',newest.lastContact);
+ }
+ for(const n of people.values()){
+  if(!n.lastContact||n.strength<50)continue;
+  const days=Math.floor((now-Date.parse(n.lastContact))/DAY);
+  if(days>=75&&days<=130)add(n.id,'going_cold',`${days} days since you last spoke; a strong relationship going quiet`,'gmail',n.lastContact);
+ }
+ const focus=keywords(`${ctx.lens.focus} ${ctx.lens.needs}`);
+ if(focus.size)for(const s of input.themeSignals){
+  if(!s.personId||!people.has(s.personId)||Date.parse(s.observedAt)<now-30*DAY||why.get(s.personId)?.some(w=>w.trigger==='topic_overlap'))continue;
+  if([...keywords(s.summary)].some(word=>focus.has(word)))add(s.personId,'topic_overlap',`Recently on something you are focused on: ${s.summary.slice(0,160)}`,s.sourceType??'gmail',s.observedAt);
+ }
+ const answers=[...why].map(([id,entries])=>{
+  const n=people.get(id)!;
+  const score=Math.round(entries.reduce((sum,w)=>sum+WEIGHT[w.trigger],0)*(0.5+n.strength/200)*100)/100;
+  return {personId:id,name:n.name,score,when:{lastContact:n.lastContact},why:entries};
+ }).sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name)).slice(0,limit);
+ return {answers,gaps:answers.length?[]:['Nothing time-sensitive right now; `reconnect` lists people going quiet']};
 }

@@ -9,3 +9,5 @@ import './ask.test.ts';
 import './ask-routes.test.ts';
 import './peer-routes.test.ts';
 import './network-structure.test.ts';
+import './why-now.test.ts';
+import './structure-routes.test.ts';
