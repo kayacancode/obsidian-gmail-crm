@@ -1,6 +1,7 @@
 import {THEME_MODEL} from './theme-extractor';
 import {queryPeople} from './cli-query';
 import {findPeople,savedPeopleMatches,explainPeopleConnection} from './people-intelligence';
+import {boundedJSON} from './bounded-json';
 import type {MailEnv} from './mail-sync';
 import type {PeopleEnv} from './people-service';
 
@@ -100,5 +101,26 @@ export async function answerQuestion(env:PeopleEnv&MailEnv,owner:string,stub:Sto
   const code=error instanceof Error?error.message:'';
   if(['not_found','unknown_person','ambiguous_person','invalid_request'].includes(code))return done(null,[`No answer: ${code}`],[]);
   throw error;
+ }
+}
+
+/** `POST /api/people/ask {question}`: same-origin JSON, read-only, owner-scoped. */
+export async function askRoute(request:Request,env:PeopleEnv&MailEnv,owner:string){
+ const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'cache-control':'no-store'}});
+ const url=new URL(request.url);
+ if(request.method!=='POST'||url.pathname!=='/api/people/ask')return json({error:'method_not_allowed'},405);
+ if(request.headers.get('origin')!==url.origin)return json({error:'invalid_origin'},403);
+ let body:unknown;try{body=await boundedJSON(new Response(request.body,{headers:request.headers}),4_000);}catch{return json({error:'invalid_request'},400);}
+ if(url.search||!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).join(',')!=='question')return json({error:'invalid_request'},400);
+ const question=(body as {question:unknown}).question;
+ if(typeof question!=='string'||!question.trim()||question.length>500)return json({error:'invalid_request'},400);
+ try{
+  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+  return json(await answerQuestion(env,owner,stub,question));
+ }catch(error){
+  const code=error instanceof Error?error.message:'';
+  if(code==='invalid_request')return json({error:code},400);
+  if(code==='ai_unavailable')return json({error:code},503);
+  console.error('ask_unavailable');return json({error:'people_unavailable'},503);
  }
 }

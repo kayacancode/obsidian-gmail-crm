@@ -13,6 +13,7 @@ import {ownerLensRoute} from './owner-lens-routes';
 import {personContextRoute} from './person-context-routes';
 import {relationshipMemoryRoute} from './relationship-memory-routes';
 import {lifeRoute} from './life-routes';
+import {askRoute} from './ask';
 import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-agent';
 import {isPeopleOAuthRequest,peopleOAuthRoute} from './people-oauth';
 import {matchingWorkspaces} from './workspace-identity';
@@ -123,6 +124,10 @@ export default {
             if(['/api/people/signals','/api/people/signals/settings','/api/people/brief','/api/people/timeline','/api/people/stints','/api/people/teammates','/api/people/job-moves'].includes(pathname)){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
                 return await lifeRoute(request,env,user.email);
+            }
+            if(pathname==='/api/people/ask'){
+                const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+                return await askRoute(request,env,user.email);
             }
             if (pathname === "/api/people/feedback") {
                 const user=await requireGoogleUser(request,env);

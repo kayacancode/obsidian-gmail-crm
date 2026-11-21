@@ -6,3 +6,4 @@ import './company-stints.test.ts';
 import './catch-up-brief.test.ts';
 import './life-routes.test.ts';
 import './ask.test.ts';
+import './ask-routes.test.ts';
