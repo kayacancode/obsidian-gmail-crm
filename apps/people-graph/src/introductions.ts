@@ -37,6 +37,8 @@ export function proposeIntroduction(input:ProposalInput,existing:Introduction[],
  const introducer=text(input.introducer,200),reason=text(input.reason,500);
  const parties=Array.isArray(input.parties)&&input.parties.length===2?input.parties.map(p=>text(p,200)):[];
  if(!introducer||!reason||parties.length!==2||parties.some(p=>!p)||parties[0]===parties[1]||parties.includes(introducer))throw invalid();
+ // The owner's store holds the owner's introductions: the owner introduces or is one of the parties.
+ if(introducer!=='owner'&&!parties.includes('owner'))throw invalid();
  if(!Array.isArray(input.evidence)||input.evidence.length>5)throw invalid();
  if(existing.filter(i=>i.source==='owner'&&i.startedBy==='owner'&&Date.parse(i.createdAt)>now-DAY).length>=5)throw Error('introduction_rate_limited');
  if(introducer!=='owner'&&existing.filter(i=>i.introducer===introducer&&isOpen(i)).length>=5)throw Error('introduction_budget');

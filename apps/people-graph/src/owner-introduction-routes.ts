@@ -8,9 +8,14 @@ import {fromWorkspaceRequest,type Introduction} from './introductions';
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'cache-control':'no-store'}});
 const ERROR_STATUS:Record<string,number>={invalid_request:400,not_found:404,introduction_state_invalid:409,introduction_budget:409,introduction_rate_limited:429};
 
-/** The owner's own introductions plus shared-workspace requests (read-only), newest first per source. */
+/**
+ * The owner's own introductions plus shared-workspace requests (read-only). The owner's records
+ * never depend on the shared database: if it is unavailable, they return with a flag.
+ */
 export async function listAllIntroductions(env:PeopleEnv,owner:string,stub:{listIntroductions():Promise<{introductions:Introduction[]}>}){
- return {introductions:[...(await stub.listIntroductions()).introductions,...await workspaceIntroductions(env,owner)]};
+ const own=(await stub.listIntroductions()).introductions;
+ try{return {introductions:[...own,...await workspaceIntroductions(env,owner)]};}
+ catch{console.error('introduction_workspace_unavailable');return {introductions:own,workspaceUnavailable:true};}
 }
 
 /** Workspace requests where the owner is the requester or the introducer, as read-only introductions. */

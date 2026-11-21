@@ -82,3 +82,21 @@ test('introductions: made introductions reach the owner\'s graph as connectors, 
  assert.ok(!JSON.stringify(graph).includes('Private vouch text'));
  assert.ok(!JSON.stringify(graph.introductions).includes(open.introduction.id));
 });
+
+test('introductions: the owner\'s own list survives a shared-workspace outage',async()=>{
+ const {f,ada,maya}=await owner();
+ const {introduction}=await (await f.request('/api/people/introductions',{introducer:'owner',parties:[ada,maya],reason:'Both on nurse scheduling'})).json() as {introduction:Intro};
+ f.env.DB={prepare(){throw Error('D1 unavailable');}};
+ const response=await f.request('/api/people/introductions');
+ assert.equal(response.status,200);
+ const listed=await response.json() as {introductions:Intro[];workspaceUnavailable?:boolean};
+ assert.deepEqual(listed.introductions.map(i=>i.id),[introduction.id]);
+ assert.equal(listed.workspaceUnavailable,true);
+});
+
+test('introductions: every introduction involves the owner',async()=>{
+ const {f,ada,maya}=await owner();
+ f.add('bo@example.test','Bo');
+ const bo=await opaque(OWNER,'bo@example.test',f.env.TOKEN_SECRET);
+ assert.equal((await f.request('/api/people/introductions',{introducer:ada,parties:[maya,bo],reason:'Not my introduction'})).status,400);
+});
