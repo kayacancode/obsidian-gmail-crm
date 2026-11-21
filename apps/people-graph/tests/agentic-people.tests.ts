@@ -2,3 +2,4 @@
 import './life-signals.test.ts';
 import './life-store.test.ts';
 import './life-hooks.test.ts';
+import './company-stints.test.ts';

@@ -1,6 +1,6 @@
 import {loadPeopleNetwork,type PeopleEnv} from './people-service';
 export type QueryCommand='find-person'|'contact-card'|'who-knows'|'score'|'get-neighbors'|'get-edges'|'reconnect';
-export type QueryInput={command:QueryCommand;query?:string;personId?:string;email?:string;company?:string;from?:string;to?:string;limit?:number;min_score?:number};
+export type QueryInput={command:QueryCommand;query?:string;personId?:string;email?:string;company?:string;from?:string;to?:string;limit?:number;min_score?:number;include_former?:boolean};
 export type QueryEnvelope={ok:boolean;command:string;data?:Record<string,unknown>;stats?:{contractVersion:1;owner:string;source:string;scoreModel:string|null;updatedAt:number|null};error?:{kind:string;message:string}};
 type Person={id:string;name?:string;company?:string;role?:string;combined?:number;strength?:number;momentum?:number;lastContact?:string|null;[key:string]:unknown};
 type Edge={source:string;target:string;[key:string]:unknown};
@@ -12,6 +12,7 @@ export async function queryPeople(env:PeopleEnv,owner:string,input:QueryInput):P
  if(!Number.isInteger(limit)||limit<1||limit>200||input.min_score!==undefined&&(!Number.isFinite(input.min_score)||input.min_score<0||input.min_score>100))return fail('invalid_request','Limit must be 1–200 and minimum score 0–100.');
  for(const value of [input.query,input.personId,input.email,input.company,input.from,input.to])if(value!==undefined&&(typeof value!=='string'||!value.trim()||value.length>200))return fail('invalid_request','Identifiers and queries must contain 1–200 characters.');
  if(input.command==='find-person'&&!input.query||input.command==='who-knows'&&!input.company)return fail('invalid_request','A search value is required.');
+ if(input.include_former!==undefined&&(typeof input.include_former!=='boolean'||input.command!=='who-knows'))return fail('invalid_request','include_former applies to who-knows only.');
  const loaded=await loadPeopleNetwork(env,owner);
  const graph=loaded.graph as unknown as {nodes:Person[];edges:Edge[];personAliases?:Record<string,string>;source?:string;scoreModel?:string;pushedAt?:string}|null;
  const nodes=graph?.nodes??[],ids=new Set(nodes.map(n=>n.id));
@@ -38,7 +39,16 @@ export async function queryPeople(env:PeopleEnv,owner:string,input:QueryInput):P
   }
   return ok({people:people.sort(rank).slice(0,limit)});
  }
- if(input.command==='who-knows')return ok({people:nodes.filter(n=>n.company?.toLowerCase().includes(input.company!.trim().toLowerCase())).sort(rank).slice(0,limit)});
+ if(input.command==='who-knows'){
+  const current=nodes.filter(n=>n.company?.toLowerCase().includes(input.company!.trim().toLowerCase())).sort(rank);
+  if(!input.include_former)return ok({people:current.slice(0,limit)});
+  // Former colleagues come from email-domain history; they never displace current people.
+  const stub=env.MAIL.getByName(owner);await stub.bindOwner(owner);
+  const former=await stub.formerAt(input.company!.trim()),shown=new Set(current.map(n=>n.id));
+  const canonical=(id:string)=>graph?.personAliases?.[id]??id;
+  const past=nodes.filter(n=>!shown.has(n.id)&&former.personIds.some(id=>canonical(id)===n.id)).sort(rank).map(n=>({...n,formerly:former.stints[former.personIds.find(id=>canonical(id)===n.id)!]}));
+  return ok({people:[...current,...past].slice(0,limit)});
+ }
  if(input.command==='reconnect')return ok({people:nodes.filter(n=>n.lastContact&&Number.isFinite(Date.parse(n.lastContact))&&(n.combined??-1)>=(input.min_score??0)).sort((a,b)=>Date.parse(a.lastContact!)-Date.parse(b.lastContact!)||rank(a,b)).slice(0,limit),ranking:'oldest-known-contact-then-combined-score'});
  const matches=await resolve(input.personId??input.email??input.query??input.from);
  if(!matches.length)return fail('not_found','No visible person matches this identifier.');

@@ -11,6 +11,7 @@ import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
 import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from './life-signals';
 import {OwnerTimelineStore} from './owner-timeline';
+import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -77,6 +78,8 @@ export class MailSync extends DurableObject<MailEnv>{
  private lifeStore(){return this.lifeSignalStore??=new LifeSignalStore(this.ctx.storage);}
  private ownerTimeline?:OwnerTimelineStore;
  private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
+ private companyStintStore?:CompanyStintStore;
+ private stintStore(){return this.companyStintStore??=new CompanyStintStore(this.ctx.storage);}
  private mergeStore?:PersonMergeStore;
  private personMergeStore(){return this.mergeStore??=new PersonMergeStore(this.ctx.storage);}
  async getPersonMerges(){return {merges:this.personMergeStore().get()};}
@@ -1036,6 +1039,69 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  async addTimelineEntry(input:{text?:unknown;category?:unknown;date?:unknown}){return this.timelineStore().add(input??{});}
  async listTimeline(){return {entries:this.timelineStore().list()};}
  async forgetTimelineEntry(id:string){if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');return {removed:this.timelineStore().forget(id)};}
+ async companyStints(personId:string){
+  if(!validContextPerson(personId))throw Error('invalid_request');
+  const canonical=await this.canonicalPersonId(personId),emails=await this.emailsForMergedPerson(personId);
+  const spans=emails.length?this.ctx.storage.sql.exec<{email:string;first:number;last:number}>(`SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions WHERE email IN (${emails.map(()=>'?').join(',')}) GROUP BY email`,...emails).toArray():[];
+  return {stints:mergeStints(deriveStints(canonical,spans,Date.now()),this.stintStore().forPerson(await this.mergedPersonIds(personId)))};
+ }
+ async setCompanyStint(input:{personId?:unknown;company?:unknown;from?:unknown;to?:unknown}){
+  if(!input||typeof input.personId!=='string'||!validContextPerson(input.personId))throw Error('invalid_request');
+  return this.stintStore().set({...input,personId:await this.canonicalPersonId(input.personId)});
+ }
+ async forgetCompanyStint(id:string){if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');return {removed:this.stintStore().forget(id)};}
+ /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
+ async jobMoveCandidates(){
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};
+  const groups=new Map<string,{name:string;email:string;last:number}[]>();
+  for(const contact of this.graphContacts()){
+   const key=contact.name.toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(Boolean).join(' ');
+   const domain=contact.email.split('@')[1]??'';
+   if(key.split(' ').length<2||Object.hasOwn(PERSONAL_DOMAINS,domain))continue;
+   groups.set(key,[...(groups.get(key)??[]),contact]);
+  }
+  const candidates:{name:string;people:{personId:string;domain:string;lastContact:string}[]}[]=[];
+  for(const members of groups.values()){
+   if(new Set(members.map(m=>m.email.split('@')[1])).size<2)continue;
+   const people=await Promise.all(members.map(async m=>({personId:await opaque(owner,m.email,this.env.TOKEN_SECRET),domain:m.email.split('@')[1],last:m.last})));
+   const canonical=new Set(await Promise.all(people.map(p=>this.canonicalPersonId(p.personId))));
+   if(canonical.size<2)continue;
+   candidates.push({name:members[0].name,people:people.sort((a,b)=>b.last-a.last).map(p=>({personId:p.personId,domain:p.domain,lastContact:new Date(p.last).toISOString()}))});
+  }
+  return {candidates:candidates.sort((a,b)=>b.people[0].lastContact.localeCompare(a.people[0].lastContact))};
+ }
+ async teammates(personId:string){
+  if(!validContextPerson(personId))throw Error('invalid_request');
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {teammates:[]};
+  const canonical=await this.canonicalPersonId(personId),mine=(await this.companyStints(personId)).stints.filter(s=>s.domain);
+  const domains=new Set(mine.map(s=>s.domain)),seen=new Set<string>([canonical]);
+  const teammates:{personId:string;name:string;domain:string;overlap:string}[]=[];
+  for(const contact of this.graphContacts()){
+   if(!domains.has(contact.email.split('@')[1]??''))continue;
+   const other=await this.canonicalPersonId(await opaque(owner,contact.email,this.env.TOKEN_SECRET));
+   if(seen.has(other))continue;seen.add(other);
+   for(const theirs of (await this.companyStints(other)).stints)for(const stint of mine){
+    const overlap=theirs.domain===stint.domain?overlaps(stint,theirs):null;
+    if(overlap)teammates.push({personId:other,name:contact.name,domain:stint.domain,overlap});
+   }
+  }
+  return {teammates:teammates.sort((a,b)=>a.name.localeCompare(b.name)||a.personId.localeCompare(b.personId))};
+ }
+ /** People whose stint at a company has ended, with that stint's dates. */
+ async formerAt(company:string){
+  if(typeof company!=='string'||!company.trim()||company.length>200)throw Error('invalid_request');
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {personIds:[],stints:{}};
+  const stints:Record<string,{from:string;to:string}>={};
+  for(const contact of this.graphContacts()){
+   const domain=contact.email.split('@')[1]??'';
+   if(!stintMatches({id:'',personId:'',company:domain.split('.')[0],domain,from:'',to:null,source:'email_domain'},company))continue;
+   const person=await this.canonicalPersonId(await opaque(owner,contact.email,this.env.TOKEN_SECRET));
+   if(stints[person])continue;
+   const ended=(await this.companyStints(person)).stints.find(s=>s.to!==null&&stintMatches(s,company));
+   if(ended?.to)stints[person]={from:ended.from,to:ended.to};
+  }
+  return {personIds:Object.keys(stints).sort(),stints};
+ }
  async recommendationMemory():Promise<RecommendationMemory>{
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
   const store=this.memoryStore(),wanted=new Set(store.ids()),people:RecommendationMemory['people']={};
