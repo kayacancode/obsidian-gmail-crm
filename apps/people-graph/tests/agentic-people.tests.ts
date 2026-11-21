@@ -14,3 +14,4 @@ import './structure-answers.test.ts';
 import './structure-routes.test.ts';
 import './curiosity.test.ts';
 import './mind-routes.test.ts';
+import './moments.test.ts';
