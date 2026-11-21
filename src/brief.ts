@@ -62,7 +62,8 @@ export function upcomingMeetings(events: CalendarInvite[], ownerEmails: Set<stri
  */
 export function openNextSteps(markdown: string): NextStep[] {
   const lines = markdown.split("\n");
-  const start = lines.findIndex((line) => /^#{1,6}\s+.*\bnext steps\b/i.test(line));
+  // Exactly "Next Steps": headings like "Fundraise and Next Steps" hold facts, not follow-ups.
+  const start = lines.findIndex((line) => /^#{1,6}\s+next steps\s*$/i.test(line));
   if (start < 0) return [];
   const level = (/^#+/.exec(lines[start])?.[0] ?? "#").length;
   const steps: (NextStep & { done: boolean })[] = [];
@@ -98,7 +99,12 @@ export async function latestWithSteps<M extends { date: string; path: string }>(
   return newest.length ? { meeting: newest[0], steps: [] } : null;
 }
 
-const when = (start: string) => (start.length > 10 ? `${start.slice(0, 10)} ${start.slice(11, 16)}` : `${start} (all day)`);
+/** The invite's own wall time, labelled with its zone so it never reads as the reader's time. */
+const when = (start: string) => {
+  if (start.length <= 10) return `${start} (all day)`;
+  const zone = /(Z|[+-]\d{2}:\d{2})$/.exec(start)?.[1];
+  return `${start.slice(0, 10)} ${start.slice(11, 16)}${zone ? ` (UTC${zone === "Z" ? "" : zone})` : ""}`;
+};
 const link = (path: string, label: string) => `[[${path}|${label.replace(/[|\]]/g, " ")}]]`;
 
 /** The brief note: one section per meeting, one entry per attendee. */

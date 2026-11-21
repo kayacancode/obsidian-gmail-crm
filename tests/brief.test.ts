@@ -45,6 +45,9 @@ test("brief: open next steps keep the bold title and its indented detail; the se
   ]);
   assert.deepEqual(openNextSteps("# Next steps\n- One\n## Under it\n- Two\n# Other\n- Three").map((s) => s.title), ["One", "Two"]);
   assert.deepEqual(openNextSteps("# Notes\n- nothing here"), []);
+  // Only a heading that is exactly "Next Steps": "Fundraise and Next Steps" is not it.
+  assert.deepEqual(openNextSteps("# Fundraise and Next Steps\n- Raised $2M\n# Next Steps\n- **Send the deck**").map((s) => s.title), ["Send the deck"]);
+  assert.deepEqual(openNextSteps("### Technical Issues & Next Steps\n- Not a step"), []);
 });
 
 test("brief: when the latest linked meeting has no next steps, the next most recent one with steps is used", async () => {
@@ -62,7 +65,8 @@ test("brief: one section per meeting; each attendee with their page, last contac
       lastGranola: { title: "Hybraen <> Betaworks", date: "2026-11-19", path: "Granola notes/2026-11-19, Hybraen __ Betaworks", steps: [{ title: "Share product deck", detail: "Hybraen to send the PDF deck." }] } }],
   ]);
   const markdown = renderBrief([{ id: "e1", title: "Hybraen <> Betaworks", start: "2026-11-23T14:00:00-05:00", attendees: ["ada@acme.test", "bo@acme.test"] }], people, NOW);
-  assert.match(markdown, /^## 2026-11-23 14:00 · Hybraen <> Betaworks$/m);
+  assert.match(markdown, /^## 2026-11-23 14:00 \(UTC-05:00\) · Hybraen <> Betaworks$/m);
+  assert.match(renderBrief([{ id: "z", title: "Standup", start: "2026-11-24T09:00:00Z", attendees: [] }, { id: "d", title: "Offsite", start: "2026-11-25", attendees: [] }], people, NOW), /^## 2026-11-24 09:00 \(UTC\) · Standup$[\s\S]*^## 2026-11-25 \(all day\) · Offsite$/m);
   assert.match(markdown, /^- \[\[People pages\/p- Ada Lane\|Ada Lane\]\] · last contact 2026-11-01 \(20 days ago\)$/m);
   assert.match(markdown, /^  - Nudge: Follow up on the deck$/m);
   assert.match(markdown, /^  - From your meeting \[\[Granola notes\/2026-11-19, Hybraen __ Betaworks\|Hybraen <> Betaworks\]\] on 2026-11-19:$/m);
