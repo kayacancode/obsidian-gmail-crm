@@ -1402,6 +1402,11 @@ fn find_person(
     }
 
     let total = matches.len();
+    let hints = if total == 0 {
+        name_hints(index, &query_norm, &owner, include_self)
+    } else {
+        vec![]
+    };
     let limit = limit.max(1);
 
     let data_matches: Vec<Value> = matches
@@ -1451,6 +1456,7 @@ fn find_person(
         json!({
             "matches": data_matches,
             "identity_groups": identity_groups,
+            "hints": hints,
         }),
         json!({
             "matched": total,
@@ -1551,6 +1557,11 @@ fn who_knows(
     });
 
     let total = people.len();
+    let hints = if total == 0 {
+        company_hints(index, &company_norm)
+    } else {
+        vec![]
+    };
     let limit = limit.max(1);
     let returned_people: Vec<Value> = people
         .into_iter()
@@ -1583,6 +1594,7 @@ fn who_knows(
             "company": company,
             "people": returned_people,
             "ranked_by": "effective_score_desc",
+            "hints": hints,
         }),
         json!({
             "matched": total,
@@ -4879,6 +4891,75 @@ fn company_matches(contact: &Contact, company_norm: &str) -> bool {
         })
 }
 
+/// Up to three candidate values scoring at least 0.80, best first, deduplicated by normalized form.
+fn nearest_values(
+    candidates: impl IntoIterator<Item = String>,
+    score: impl Fn(&str) -> f64,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut scored: Vec<(f64, String)> = candidates
+        .into_iter()
+        .filter_map(|display| {
+            let key = normalize(&display);
+            if key.is_empty() || !seen.insert(key) {
+                return None;
+            }
+            let value = score(&display);
+            (value >= 0.80).then_some((value, display))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, display)| display)
+        .collect()
+}
+
+fn name_hints(
+    index: &ContactIndex,
+    query_norm: &str,
+    owner: &OwnerIdentity,
+    include_self: bool,
+) -> Vec<String> {
+    if query_norm.is_empty() {
+        return vec![];
+    }
+    nearest_values(
+        rows(index)
+            .into_iter()
+            .filter(|row| include_self || !is_owner_row(owner, row))
+            .map(|row| row.contact.name),
+        |display| {
+            let name = normalize(display);
+            name.split_whitespace()
+                .map(|token| jaro_winkler(token, query_norm))
+                .fold(jaro_winkler(&name, query_norm), f64::max)
+        },
+    )
+}
+
+fn company_hints(index: &ContactIndex, company_norm: &str) -> Vec<String> {
+    if company_norm.is_empty() {
+        return vec![];
+    }
+    let mut candidates = Vec::new();
+    for row in rows(index) {
+        if let Some(company) = display_company(&row.contact) {
+            candidates.push(company);
+        }
+        let domain = row.contact.domain.trim().to_ascii_lowercase();
+        if !domain.is_empty() && !is_generic_email_domain(&domain) {
+            if let Some(label) = domain.split('.').next() {
+                candidates.push(label.to_string());
+            }
+        }
+    }
+    nearest_values(candidates, |display| {
+        jaro_winkler(&normalize_company(display), company_norm)
+    })
+}
+
 fn normalize_company(value: &str) -> String {
     normalize(value)
         .trim_end_matches(" inc")
@@ -5441,6 +5522,72 @@ mod tests {
             match_names(&response),
             vec![("Jon Chin".to_string(), "fuzzy".to_string())]
         );
+    }
+
+    fn company_index() -> ContactIndex {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "roelof@sequoiacap.com".to_string(),
+            Contact {
+                name: "Maya Rivera".to_string(),
+                email: "roelof@sequoiacap.com".to_string(),
+                company: Some("Sequoia Capital".to_string()),
+                domain: "sequoiacap.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        }
+    }
+
+    fn empty_feedback() -> FeedbackStore {
+        FeedbackStore {
+            schema_version: 1,
+            updated_at_unix: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn who_knows_miss_suggests_near_companies() {
+        let response = who_knows(
+            &company_index(),
+            &empty_feedback(),
+            "Sequoya",
+            10,
+            Instant::now(),
+        );
+        let data = response.data.unwrap();
+        assert!(data["people"].as_array().unwrap().is_empty());
+        let hints: Vec<String> = serde_json::from_value(data["hints"].clone()).unwrap();
+        assert!(hints.contains(&"Sequoia Capital".to_string()), "{hints:?}");
+    }
+
+    #[test]
+    fn who_knows_hit_has_empty_hints() {
+        let response = who_knows(
+            &company_index(),
+            &empty_feedback(),
+            "sequoia",
+            10,
+            Instant::now(),
+        );
+        let data = response.data.unwrap();
+        assert_eq!(data["people"].as_array().unwrap().len(), 1);
+        assert_eq!(data["hints"], json!([]));
+    }
+
+    #[test]
+    fn find_person_miss_suggests_near_names() {
+        let response = find_person(&company_index(), "Rivra", 10, false, false, Instant::now());
+        let data = response.data.unwrap();
+        assert!(data["matches"].as_array().unwrap().is_empty());
+        assert_eq!(data["hints"], json!(["Maya Rivera"]));
     }
 
     #[test]
