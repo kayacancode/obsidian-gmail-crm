@@ -4,13 +4,15 @@ import {
 	Notice,
 	TFile,
 	TFolder,
+	debounce,
 	normalizePath,
 } from "obsidian";
 import { shell } from "electron";
 import { GmailApi, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET } from "./gmail-api";
 import { IntelligenceStore } from "./intelligence-store";
 import { PeopleIntelligenceView, PEOPLE_INTELLIGENCE_VIEW } from "./intelligence-view";
-import type { SourcedNote } from "./intelligence-model";
+import { identityMap, type SourcedNote } from "./intelligence-model";
+import { granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails } from "./granola-links";
 import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
@@ -106,6 +108,13 @@ export default class GmailCrmPlugin extends Plugin {
 		}));
 		this.addCommand({ id: "people-intelligence", name: "Open people intelligence", callback: () => { void this.openIntelligence(); } });
 		this.addRibbonIcon("users", "People intelligence", () => { void this.openIntelligence(); });
+		this.addCommand({ id: "link-granola-meetings", name: "Link Granola meetings to people", callback: () => { void this.linkGranolaMeetings(true); } });
+		// Granola Sync writes a note's frontmatter; relink shortly after. People pages carry no
+		// granola_id, so this plugin's own page writes never retrigger it.
+		const relink = debounce(() => { void this.linkGranolaMeetings(false); }, 3000, true);
+		this.registerEvent(this.app.metadataCache.on("changed", (_file, _data, cache) => {
+			if (cache.frontmatter?.granola_id) relink();
+		}));
 
 		this.gmailApi = new GmailApi(this.settings, async (patch) => {
 			Object.assign(this.settings, patch);
@@ -465,6 +474,7 @@ export default class GmailCrmPlugin extends Plugin {
 			} else {
 				notice.setMessage(`Synced ${contactCount} contacts`);
 			}
+			await this.linkGranolaMeetings(false);
 			window.setTimeout(() => notice.hide(), 3000);
 
 			if (this.settings.enrichOnSync) {
@@ -503,6 +513,7 @@ export default class GmailCrmPlugin extends Plugin {
 				async events => { if (this.intelligenceReady) await this.intelligence.replaceCalendar(events); }
 			);
 			await this.saveContactIndex();
+			await this.linkGranolaMeetings(false);
 
 			const withCal = Object.values(this.contactIndex.contacts)
 				.filter((c) => (c.calendarMeetings ?? 0) > 0).length;
@@ -1396,6 +1407,49 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 			return `${a.sourceName}:${a.targetName}`.localeCompare(`${b.sourceName}:${b.targetName}`);
 		});
+	}
+
+	/**
+	 * Links Granola meeting notes to people pages: attendees from the matching Calendar meeting
+	 * (same start and title), else the note's attendee_emails. Rewrites only the plugin-managed
+	 * `## Granola meetings` section of people pages; never writes Granola notes or creates pages.
+	 */
+	async linkGranolaMeetings(announce: boolean) {
+		if (!this.contactIndex) {
+			if (announce) new Notice("No contact index found. Run a contact sync first.");
+			return;
+		}
+		try {
+			const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
+				const note = granolaNote(file.path, this.app.metadataCache.getFileCache(file)?.frontmatter);
+				return note ? [note] : [];
+			});
+			const contacts = this.contactIndex.contacts;
+			const identity = identityMap(Object.values(contacts).map((contact) => ({ contact, notes: [], events: [] })));
+			const owner = ownerEmails(contacts, [this.contactIndex.userEmail, this.settings.scorePushEmail], this.settings.vaultOwnerName);
+			const links = computeGranolaLinks(notes, this.intelligenceReady ? this.intelligence.state.events : [], identity, owner);
+			const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
+			let written = 0;
+			for (const page of Object.values(pages)) {
+				const email = this.getEmailForPage(page);
+				const lines = (email ? links.meetings.get(email) : undefined)?.map((m) => m.line) ?? [];
+				const file = this.app.vault.getAbstractFileByPath(page.path);
+				if (!(file instanceof TFile)) continue;
+				const current = await this.app.vault.read(file);
+				const next = granolaSection(current, lines);
+				if (next === current) continue;
+				await this.app.vault.modify(file, next);
+				written++;
+			}
+			if (this.intelligenceReady) await this.intelligence.replaceGranola(links.events);
+			const { calendar, email, unlinked } = links.stats;
+			console.log(`[Gmail CRM] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${written} people pages updated`);
+			if (announce) new Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${written} people pages updated`);
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : String(e);
+			console.warn(`[Gmail CRM] Granola linking skipped: ${msg}`);
+			if (announce) new Notice(`Granola linking failed: ${msg}`);
+		}
 	}
 
 	private getContactForPage(page: PersonPage): Contact | null {
