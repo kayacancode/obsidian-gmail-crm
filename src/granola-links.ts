@@ -175,12 +175,13 @@ export function granolaSection(content: string, lines: string[]): string {
 const yamlQuoted = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /**
- * The note with its `people:` frontmatter list set to wikilinks to these pages (sorted, placed
- * right after the `attendees` block, or at the end of the frontmatter), or removed when empty.
- * Text edit only: every other byte of the file is unchanged, and the same list returns the same
- * text, so callers can skip the write. Files without frontmatter are left alone.
+ * The note with its `people:` frontmatter list set to wikilinks to these pages, then the emails
+ * of attendees who have no page (each part sorted; placed right after the `attendees` block, or
+ * at the end of the frontmatter), or removed when both are empty. Text edit only: every other
+ * byte of the file is unchanged, and the same entries return the same text, so callers can skip
+ * the write. Files without frontmatter are left alone.
  */
-export function withPeopleFrontmatter(content: string, pageNames: string[]): string {
+export function withPeopleFrontmatter(content: string, pageNames: string[], emails: string[] = []): string {
   if (!content.startsWith("---\n")) return content;
   const end = content.indexOf("\n---", 3);
   if (end < 0) return content;
@@ -195,8 +196,9 @@ export function withPeopleFrontmatter(content: string, pageNames: string[]): str
     kept.push(lines[i]);
   }
   const names = [...new Set(pageNames)].sort();
-  if (names.length) {
-    const block = ["people:", ...names.map((name) => `  - ${yamlQuoted(`[[${name}]]`)}`)];
+  const addresses = [...new Set(emails.map(normalizeEmail))].sort();
+  if (names.length || addresses.length) {
+    const block = ["people:", ...names.map((name) => `  - ${yamlQuoted(`[[${name}]]`)}`), ...addresses.map((email) => `  - ${yamlQuoted(email)}`)];
     let at = kept.findIndex((line) => /^attendees:/.test(line));
     if (at >= 0) while (at + 1 < kept.length && /^(\s+|-\s)/.test(kept[at + 1])) at++;
     kept.splice(at >= 0 ? at + 1 : kept.length, 0, ...block);
@@ -242,12 +244,11 @@ export interface PagePlan {
 }
 
 /**
- * People pages to create for meeting attendees nobody has a page for. A person is matched by
- * email and alias first (`identity`), so an alias never gets a second page; a page whose file
- * name is already taken is never overwritten. Named from the Gmail contact, else the invite's
- * display name, else the email. With `waitForNames` (no calendar display names stored yet),
- * people with no name at all are left for a later run rather than given an email-named page,
- * because pages are never renamed.
+ * People pages to create for meeting attendees nobody has a page for, but only when a real name
+ * is known (the Gmail contact's, else the invite's display name): pages are never named after an
+ * email; those attendees are listed by email in the note instead. A person is matched by email
+ * and alias first (`identity`), so an alias never gets a second page; a page whose file name is
+ * already taken is never overwritten.
  */
 export function pagesToCreate(
   attendeesByNote: Map<string, Attendee[]>,
@@ -255,7 +256,6 @@ export function pagesToCreate(
   primariesWithPages: Set<string>,
   existingPaths: Set<string>,
   folder: string,
-  options: { waitForNames?: boolean } = {},
 ): PagePlan[] {
   const people = new Map<string, { email: string; name?: string; contact?: Contact }>();
   for (const attendees of attendeesByNote.values())
@@ -272,8 +272,8 @@ export function pagesToCreate(
   for (const [primary, person] of [...people].sort(([a], [b]) => a.localeCompare(b))) {
     const contactName = person.contact?.name?.trim();
     const known = contactName && !contactName.includes("@") ? contactName : person.name?.trim();
-    if (!known && options.waitForNames) continue;
-    const name = known || primary;
+    if (!known || known.includes("@")) continue;
+    const name = known;
     const path = `${dir ? `${dir}/` : ""}p- ${name.replace(/[\\/:*?"<>|]/g, "_")}.md`;
     if (taken.has(path.toLowerCase())) continue;
     taken.add(path.toLowerCase());

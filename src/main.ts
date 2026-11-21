@@ -1417,9 +1417,7 @@ export default class GmailCrmPlugin extends Plugin {
 			if (this.settings.createContactNotes) {
 				const folder = normalizePath(this.settings.contactNotesFolder);
 				const existing = new Set(this.app.vault.getFiles().map((f) => f.path));
-				// Until a calendar sync has stored invite display names, don't name pages after emails.
-				const waitForNames = !(this.intelligenceReady && this.intelligence.state.events.some((e) => e.kind === "meeting" && e.source !== "granola" && e.name));
-				const plans = pagesToCreate(links.attendees, identity, new Set(pageByEmail.keys()), existing, folder, { waitForNames });
+				const plans = pagesToCreate(links.attendees, identity, new Set(pageByEmail.keys()), existing, folder);
 				if (plans.length && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
 				for (const plan of plans) {
 					try { await this.app.vault.create(normalizePath(plan.path), plan.content); created++; }
@@ -1441,16 +1439,19 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 			let notesWritten = 0;
 			for (const note of notes) {
-				const names = new Set<string>();
+				// Attendees with a people page are linked; the rest are listed by email.
+				const names = new Set<string>(), emails = new Set<string>();
 				for (const a of links.attendees.get(note.path) ?? []) {
 					const primary = identity.get(a.email)?.contact.email.toLowerCase() ?? a.email;
-					const page = owner.has(primary) ? undefined : pageByEmail.get(primary);
+					if (owner.has(primary)) continue;
+					const page = pageByEmail.get(primary);
 					if (page) names.add(page.path.split("/").pop()!.replace(/\.md$/, ""));
+					else emails.add(a.email);
 				}
 				const file = this.app.vault.getAbstractFileByPath(note.path);
 				if (!(file instanceof TFile)) continue;
 				const current = await this.app.vault.read(file);
-				const next = withPeopleFrontmatter(current, [...names]);
+				const next = withPeopleFrontmatter(current, [...names], [...emails]);
 				if (next === current) continue;
 				await this.app.vault.modify(file, next);
 				notesWritten++;

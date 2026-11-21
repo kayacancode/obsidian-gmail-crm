@@ -52,6 +52,14 @@ test("people frontmatter: without attendees it goes at the end of the frontmatte
   assert.equal(withPeopleFrontmatter("No frontmatter\n", ["p- A"]), "No frontmatter\n", "never adds frontmatter to a file without it");
 });
 
+test("people frontmatter: attendees without a page are listed by email after the page links", () => {
+  const out = withPeopleFrontmatter(NOTE, ["p- Likhon Roy"], ["zed@x.test", "abe@x.test"]);
+  assert.equal(out, NOTE.replace("  - Likhon\n", '  - Likhon\npeople:\n  - "[[p- Likhon Roy]]"\n  - "abe@x.test"\n  - "zed@x.test"\n'));
+  assert.equal(withPeopleFrontmatter(out, ["p- Likhon Roy"], ["abe@x.test", "zed@x.test"]), out, "same entries in any order: no write");
+  assert.equal(withPeopleFrontmatter(out, [], []), NOTE);
+  assert.equal(withPeopleFrontmatter(NOTE, [], ["abe@x.test"]), NOTE.replace("  - Likhon\n", '  - Likhon\npeople:\n  - "abe@x.test"\n'), "emails alone still make the list");
+});
+
 const contact = (email: string, name: string, aliases: string[] = []): Contact => ({
   name, email, aliases, lastContact: "2026-11-01T10:00:00Z", firstContact: "2025-01-01T10:00:00Z",
   sentCount: 2, receivedCount: 3, totalExchanges: 5, subjects: ["Deck"], lastSubject: "Deck", domain: email.split("@")[1],
@@ -77,8 +85,7 @@ test("new pages: one per attendee nobody has a page for, deduplicated by email a
   assert.deepEqual(plans.map((p) => [p.primary, p.path]), [
     ["bo@acme.test", "People pages/p- Bo Chen.md"],
     ["likhon@hybraen.test", "People pages/p- Likhon Roy.md"],
-    ["x9@unknown.test", "People pages/p- x9@unknown.test.md"],
-  ]);
+  ], "x9 has no known name, so no page");
   const bo = plans.find((p) => p.primary === "bo@acme.test")!.content;
   assert.match(bo, /^---\nemail: "bo@acme.test"\nlast_contact: 2026-11-01\n/, "a Gmail contact gets the same page as contact notes");
   const likhon = plans.find((p) => p.primary === "likhon@hybraen.test")!.content;
@@ -87,12 +94,10 @@ test("new pages: one per attendee nobody has a page for, deduplicated by email a
   assert.deepEqual(taken, [], "never overwrites a page that already has that name");
 });
 
-test("new pages: before any display names are known, nameless attendees wait instead of getting email-named pages", () => {
-  const attendees = new Map([["a.md", [{ email: "likhon@hybraen.test", name: "Likhon Roy" }, { email: "x9@unknown.test" }]]]);
-  const people: Person[] = [{ contact: contact("bo@acme.test", "Bo Chen"), notes: [], events: [] }];
-  const withBo = new Map([...attendees, ["b.md", [{ email: "bo@acme.test" }]]]);
-  const waiting = pagesToCreate(withBo, identityMap(people), new Set(), new Set(), "People pages", { waitForNames: true });
-  assert.deepEqual(waiting.map((p) => p.primary), ["bo@acme.test", "likhon@hybraen.test"], "a Gmail contact's name and an invite name both count");
-  const ready = pagesToCreate(attendees, identityMap([]), new Set(), new Set(), "People pages", { waitForNames: false });
-  assert.deepEqual(ready.map((p) => p.path), ["People pages/p- Likhon Roy.md", "People pages/p- x9@unknown.test.md"]);
+test("new pages: only people with a real name get a page, never one named after an email", () => {
+  const attendees = new Map([["a.md", [{ email: "likhon@hybraen.test", name: "Likhon Roy" }, { email: "x9@unknown.test" }]], ["b.md", [{ email: "bo@acme.test" }]]]);
+  const people: Person[] = [{ contact: contact("bo@acme.test", "Bo Chen"), notes: [], events: [] }, { contact: contact("odd@acme.test", "odd@acme.test"), notes: [], events: [] }];
+  const plans = pagesToCreate(new Map([...attendees, ["c.md", [{ email: "odd@acme.test" }]]]), identityMap(people), new Set(), new Set(), "People pages");
+  assert.deepEqual(plans.map((p) => p.primary), ["bo@acme.test", "likhon@hybraen.test"], "a Gmail contact's name and an invite name count; a contact named by its email does not");
+  assert.ok(plans.every((p) => !p.path.includes("@")));
 });
