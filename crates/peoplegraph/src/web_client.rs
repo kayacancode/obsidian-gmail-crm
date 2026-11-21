@@ -305,6 +305,14 @@ fn query_credential(
                     start,
                 );
             }
+            if a.include_self {
+                return fail(
+                    command,
+                    "unsupported_operation",
+                    "--include-self is available only with --local.".into(),
+                    start,
+                );
+            }
             body["query"] = json!(a.query);
             body["limit"] = json!(a.limit);
         }

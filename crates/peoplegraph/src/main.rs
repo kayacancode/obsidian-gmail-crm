@@ -153,6 +153,10 @@ struct FindPersonArgs {
     /// Match only the exact stored token order; skip reversed-order rows.
     #[arg(long)]
     strict_name_order: bool,
+
+    /// Include the owner's own addresses in results.
+    #[arg(long)]
+    include_self: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -714,6 +718,7 @@ fn run_with_profile(
                 &args.query,
                 args.limit,
                 args.strict_name_order,
+                args.include_self,
                 start,
             )
         }),
@@ -853,6 +858,9 @@ fn remote_path(command: &Commands) -> Option<String> {
             );
             if args.strict_name_order {
                 path.push_str("&strict_name_order=1");
+            }
+            if args.include_self {
+                path.push_str("&include_self=1");
             }
             Some(path)
         }
@@ -1027,6 +1035,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
             query: query_param(&params, "query"),
             limit: query_usize(&params, "limit", 10),
             strict_name_order: query_bool(&params, "strict_name_order"),
+            include_self: query_bool(&params, "include_self"),
         }),
         "/score" => Commands::Score(EmailArg {
             email: query_param(&params, "email"),
@@ -1318,9 +1327,19 @@ fn find_person(
     query: &str,
     limit: usize,
     strict_name_order: bool,
+    include_self: bool,
     start: Instant,
 ) -> Response {
-    let rows = rows(index);
+    let owner = owner_identity(index);
+    let mut excluded_self = 0usize;
+    let rows: Vec<ContactRow> = rows(index)
+        .into_iter()
+        .filter(|row| {
+            let mine = !include_self && is_owner_row(&owner, row);
+            excluded_self += usize::from(mine);
+            !mine
+        })
+        .collect();
     let query_norm = normalize(query);
     let query_email = query.trim().to_ascii_lowercase();
     let query_token_key = sorted_token_key(query);
@@ -1441,6 +1460,8 @@ fn find_person(
             "last_sync": &index.last_sync,
             "user_email": &index.user_email,
             "strict_name_order": strict_name_order,
+            "include_self": include_self,
+            "excluded_self": excluded_self,
             "ms": elapsed_ms(start)
         }),
     )
@@ -4369,17 +4390,85 @@ fn compact_normalize(value: &str) -> String {
         .collect()
 }
 
+#[derive(Default)]
+struct OwnerIdentity {
+    emails: HashSet<String>,
+    canonical_ids: HashSet<String>,
+}
+
+fn owner_identity(index: &ContactIndex) -> OwnerIdentity {
+    let mut owner = OwnerIdentity::default();
+    let Some(user) = index
+        .user_email
+        .as_deref()
+        .map(|email| email.trim().to_ascii_lowercase())
+        .filter(|email| !email.is_empty())
+    else {
+        return owner;
+    };
+    if let Some(row) = find_by_email_or_alias(index, &user) {
+        owner.emails.insert(row.email.clone());
+        for alias in &row.contact.aliases {
+            owner.emails.insert(alias.trim().to_ascii_lowercase());
+        }
+        if let Some(id) = row
+            .contact
+            .canonical_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            owner.canonical_ids.insert(id.to_string());
+        }
+    }
+    owner.emails.insert(user);
+    owner
+}
+
+fn is_owner_row(owner: &OwnerIdentity, row: &ContactRow) -> bool {
+    owner.emails.contains(&row.email)
+        || row
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| owner.emails.contains(&alias.trim().to_ascii_lowercase()))
+        || row
+            .contact
+            .canonical_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|id| owner.canonical_ids.contains(id))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NameMatchKind {
     Exact,
     Reordered,
+    Partial,
+    Fuzzy,
 }
 
 fn name_match_label(kind: NameMatchKind) -> &'static str {
     match kind {
         NameMatchKind::Exact => "exact",
         NameMatchKind::Reordered => "reordered",
+        NameMatchKind::Partial => "partial",
+        NameMatchKind::Fuzzy => "fuzzy",
     }
+}
+
+/// True when every token of `needle` appears contiguously, as whole tokens, in `haystack`.
+fn contains_token_run(haystack: &str, needle: &str) -> bool {
+    let hay: Vec<&str> = haystack.split_whitespace().collect();
+    let need: Vec<&str> = needle.split_whitespace().collect();
+    !need.is_empty()
+        && need.len() <= hay.len()
+        && hay.windows(need.len()).any(|window| window == need.as_slice())
+}
+
+/// An email query must contain `@` and at least three other characters.
+fn is_email_query(query_email: &str) -> bool {
+    query_email.contains('@') && query_email.chars().filter(|ch| *ch != '@').count() >= 3
 }
 
 fn name_tokens(value: &str) -> Vec<String> {
@@ -4402,51 +4491,50 @@ fn match_confidence(
     query_token_key: &str,
     strict_name_order: bool,
 ) -> Option<(f64, NameMatchKind)> {
-    if !query_email.is_empty()
-        && (row.email == query_email
+    if query_email.contains('@') {
+        if !is_email_query(query_email) {
+            return None;
+        }
+        let exact = row.email == query_email
             || row.contact.email.trim().eq_ignore_ascii_case(query_email)
             || row
                 .contact
                 .aliases
                 .iter()
-                .any(|alias| alias.trim().eq_ignore_ascii_case(query_email)))
-    {
-        return Some((1.0, NameMatchKind::Exact));
-    }
-
-    if !query_email.is_empty()
-        && (row.email.contains(query_email)
+                .any(|alias| alias.trim().eq_ignore_ascii_case(query_email));
+        if exact {
+            return Some((1.0, NameMatchKind::Exact));
+        }
+        let partial = row.email.contains(query_email)
             || row
                 .contact
                 .aliases
                 .iter()
-                .any(|alias| alias.to_ascii_lowercase().contains(query_email)))
-    {
-        return Some((0.96, NameMatchKind::Exact));
+                .any(|alias| alias.to_ascii_lowercase().contains(query_email));
+        return partial.then_some((0.96, NameMatchKind::Partial));
     }
 
     let name_norm = normalize(&row.contact.name);
-    if !query_norm.is_empty() && name_norm.contains(query_norm) {
-        return Some((0.93, NameMatchKind::Exact));
+    if query_norm.is_empty() || name_norm.is_empty() {
+        return None;
     }
-
-    if !query_norm.is_empty() && query_norm.contains(&name_norm) && name_norm.len() >= 4 {
-        return Some((0.88, NameMatchKind::Exact));
+    if name_norm == query_norm {
+        return Some((0.99, NameMatchKind::Exact));
     }
-
-    if !strict_name_order && !query_token_key.is_empty() {
-        let row_token_key = sorted_token_key(&row.contact.name);
-        if !row_token_key.is_empty() && row_token_key == query_token_key {
-            return Some((0.91, NameMatchKind::Reordered));
-        }
+    if !strict_name_order
+        && !query_token_key.is_empty()
+        && sorted_token_key(&row.contact.name) == query_token_key
+    {
+        return Some((0.91, NameMatchKind::Reordered));
     }
-
+    if contains_token_run(&name_norm, query_norm) {
+        return Some((0.90, NameMatchKind::Partial));
+    }
+    if name_norm.len() >= 4 && contains_token_run(query_norm, &name_norm) {
+        return Some((0.86, NameMatchKind::Partial));
+    }
     let score = jaro_winkler(&name_norm, query_norm);
-    if score > 0.84 {
-        Some((score, NameMatchKind::Exact))
-    } else {
-        None
-    }
+    (score > 0.84).then_some((score, NameMatchKind::Fuzzy))
 }
 
 fn infer_score(contact: &Contact) -> ScoreOut {
@@ -4989,9 +5077,9 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "find-person",
-                "usage": "peoplegraph find-person <query> [--strict-name-order]",
+                "usage": "peoplegraph find-person <query> [--strict-name-order] [--include-self]",
                 "status": "implemented",
-                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered'), identity_group, is_primary, and name_variants. Pass --strict-name-order to disable reordered matching."
+                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered' | 'partial' | 'fuzzy'), identity_group, is_primary, and name_variants. Email substrings are searched only when the query contains '@'. The owner's own addresses are excluded unless --include-self is passed. Pass --strict-name-order to disable reordered matching."
             },
             {
                 "name": "score",
@@ -5231,6 +5319,128 @@ mod tests {
         .unwrap();
         assert_eq!(confidence, 1.0);
         assert_eq!(kind, NameMatchKind::Exact);
+    }
+
+    fn matching_index() -> ContactIndex {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "kaya@betaworks.com".to_string(),
+            Contact {
+                name: "Kaya Jones".to_string(),
+                email: "kaya@betaworks.com".to_string(),
+                aliases: vec!["kayajones901@gmail.com".to_string()],
+                canonical_id: Some("owner-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "kj@other.com".to_string(),
+            Contact {
+                name: "Kaya Jones".to_string(),
+                email: "kj@other.com".to_string(),
+                canonical_id: Some("owner-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "jon@chin.dev".to_string(),
+            Contact {
+                name: "Jon Chin".to_string(),
+                email: "jon@chin.dev".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "jose@example.com".to_string(),
+            Contact {
+                name: "José García".to_string(),
+                email: "jose@example.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: Some("kaya@betaworks.com".to_string()),
+            contacts,
+            edges: vec![],
+        }
+    }
+
+    fn match_names(response: &Response) -> Vec<(String, String)> {
+        response.data.as_ref().unwrap()["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (value_str(m, "name"), value_str(m, "name_match")))
+            .collect()
+    }
+
+    #[test]
+    fn name_query_never_matches_email_substrings_or_the_owner() {
+        let index = matching_index();
+        let response = find_person(&index, "Jon", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("Jon Chin".to_string(), "partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn include_self_restores_owner_rows() {
+        let index = matching_index();
+        let hidden = find_person(&index, "Kaya Jones", 10, false, false, Instant::now());
+        assert!(match_names(&hidden).is_empty());
+        let shown = find_person(&index, "Kaya Jones", 10, false, true, Instant::now());
+        let names = match_names(&shown);
+        assert_eq!(names.len(), 2);
+        assert!(
+            names
+                .iter()
+                .all(|(name, kind)| name == "Kaya Jones" && kind == "exact")
+        );
+    }
+
+    #[test]
+    fn owner_identity_without_user_email_hides_nothing() {
+        let mut index = matching_index();
+        index.user_email = None;
+        let response = find_person(&index, "Kaya Jones", 10, false, false, Instant::now());
+        assert_eq!(match_names(&response).len(), 2);
+    }
+
+    #[test]
+    fn email_queries_need_three_real_characters() {
+        let index = matching_index();
+        for query in ["@", "a@", "@x"] {
+            let response = find_person(&index, query, 10, false, true, Instant::now());
+            assert!(match_names(&response).is_empty(), "{query} matched rows");
+        }
+        let response = find_person(&index, "@chin.dev", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("Jon Chin".to_string(), "partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn non_ascii_names_match_by_whole_tokens() {
+        let index = matching_index();
+        let response = find_person(&index, "José", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("José García".to_string(), "partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn fuzzy_hits_are_labelled_fuzzy() {
+        let index = matching_index();
+        let response = find_person(&index, "Jon Chinn", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("Jon Chin".to_string(), "fuzzy".to_string())]
+        );
     }
 
     #[test]
@@ -5802,7 +6012,7 @@ mod tests {
         // Token sets differ ({hank,vigil} vs {hank,heyming}); fuzzy alone shouldn't
         // upgrade this to a high-confidence reordered match.
         assert!(
-            result.is_none() || matches!(result.unwrap().1, NameMatchKind::Exact),
+            result.is_none_or(|(_, kind)| kind != NameMatchKind::Reordered),
             "different-surname rows must not be flagged as reordered"
         );
     }
@@ -5845,7 +6055,7 @@ mod tests {
             edges: vec![],
         };
 
-        let response = find_person(&index, "Bruce Jaffe", 10, false, Instant::now());
+        let response = find_person(&index, "Bruce Jaffe", 10, false, false, Instant::now());
         assert!(response.ok);
         let data = response.data.expect("data");
         let matches = data
@@ -5926,7 +6136,7 @@ mod tests {
             edges: vec![],
         };
 
-        let response = find_person(&index, "Bruce Jaffe", 10, true, Instant::now());
+        let response = find_person(&index, "Bruce Jaffe", 10, true, false, Instant::now());
         let data = response.data.expect("data");
         let matches = data
             .get("matches")
@@ -5953,6 +6163,7 @@ mod tests {
             query: "Bruce Jaffe".to_string(),
             limit: 5,
             strict_name_order: true,
+            include_self: false,
         });
         assert_eq!(
             remote_path(&command),
