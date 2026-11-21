@@ -54,12 +54,6 @@ fn local_interpretation(question: &str) -> Option<Local> {
     ) {
         return Some(Local::Company(company));
     }
-    if ["reconnect", "losing touch", "reach out to", "gone quiet"]
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
-        return Some(Local::Reconnect);
-    }
     if let Some(person) = after(
         q,
         &[
@@ -77,6 +71,13 @@ fn local_interpretation(question: &str) -> Option<Local> {
     ) {
         return Some(Local::CatchUp(person));
     }
+    // Checked after catch-up: "before I talk to Maya … reach out" is about Maya, not the reconnect list.
+    if ["reconnect", "losing touch", "reach out to", "gone quiet"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return Some(Local::Reconnect);
+    }
     after(q, &["who is ", "find ", "tell me about ", "look up "], true).map(Local::Lookup)
 }
 
@@ -84,10 +85,34 @@ fn interpretation(intent: &str, params: Value) -> Value {
     json!({"intent":intent,"params":params,"confidence":1,"classifier":"local_rules"})
 }
 
-/// Keep the inner command's envelope, moving its data under `result` beside the interpretation.
-fn wrap(mut response: Response, interpretation: Value) -> Response {
+/// Person-shaped entries from a local result, in the hosted `answers` shape.
+fn local_answers(result: &Value) -> Vec<Value> {
+    let rows: Vec<&Value> = ["people", "matches"]
+        .iter()
+        .find_map(|key| result[*key].as_array())
+        .map(|list| list.iter().collect())
+        .unwrap_or_else(|| {
+            let card = &result["source_of_truth"]["contact"];
+            if card.is_object() { vec![card] } else { vec![] }
+        });
+    rows.into_iter()
+        .map(|row| {
+            json!({
+                "personId": row["email"],
+                "name": row["name"],
+                "when": {"lastContact": row["last_contact"]},
+            })
+        })
+        .collect()
+}
+
+/// Keep the inner command's envelope; its data becomes `result` beside the interpretation, answers and gaps.
+fn wrap(mut response: Response, interpretation: Value, gaps: &[&str]) -> Response {
     let result = response.data.take().unwrap_or(Value::Null);
-    response.data = Some(json!({"interpretation":interpretation,"result":result}));
+    let answers = local_answers(&result);
+    response.data = Some(
+        json!({"interpretation":interpretation,"answers":answers,"result":result,"gaps":gaps}),
+    );
     response.command = "ask".into();
     response
 }
@@ -124,7 +149,11 @@ pub(crate) fn run(cli: &Cli, args: &AskArgs, start: Instant) -> Response {
                 };
                 who_knows(index, &feedback, &company, 25, start)
             });
-            wrap(inner, interpretation("company", json!({"company":company})))
+            wrap(
+                inner,
+                interpretation("company", json!({"company":company})),
+                &[],
+            )
         }
         Some(Local::Reconnect) => wrap(
             reconnect(
@@ -137,6 +166,7 @@ pub(crate) fn run(cli: &Cli, args: &AskArgs, start: Instant) -> Response {
                 start,
             ),
             interpretation("reconnect", json!({})),
+            &[],
         ),
         Some(Local::CatchUp(person)) => wrap(
             contact_card(
@@ -148,12 +178,17 @@ pub(crate) fn run(cli: &Cli, args: &AskArgs, start: Instant) -> Response {
                 start,
             ),
             interpretation("catch_up", json!({"person":person,"scope":"activity_only"})),
+            &["Activity only; life signals and notes need hosted People"],
         ),
         Some(Local::Lookup(person)) => {
             let inner = with_index(cli, "ask", start, |index| {
                 find_person(index, &person, 10, false, false, start)
             });
-            wrap(inner, interpretation("lookup", json!({"person":person})))
+            wrap(
+                inner,
+                interpretation("lookup", json!({"person":person})),
+                &[],
+            )
         }
         None => {
             let mut response = fail(

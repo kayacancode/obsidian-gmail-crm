@@ -65,10 +65,10 @@ export async function classifyQuestion(ai:Ai|undefined,question:string):Promise<
 }
 
 /** People-shaped results become answers; everything else stays in `result`. */
-function toAnswers(result:unknown):AskAnswer[]{
+export function toAnswers(result:unknown):AskAnswer[]{
  if(!result||typeof result!=='object')return [];
  const record=result as Record<string,unknown>;
- const list=[record.people,record.recommendations,record.matches].find(Array.isArray) as unknown[]|undefined;
+ const list=[record.people,record.recommendations,record.matches,record.results].find(Array.isArray) as unknown[]|undefined;
  return (list??[]).flatMap(item=>{
   if(!item||typeof item!=='object')return [];
   const person=item as Record<string,unknown>,id=person.personId??person.id;
@@ -77,10 +77,36 @@ function toAnswers(result:unknown):AskAnswer[]{
  });
 }
 
+const OWNER_WORDS=new Set(['me','i','myself','owner','my network']);
+type Resolved={id:string}|{candidates:AskAnswer[]}|null;
+
+/** A name becomes one person ID: an exact name match wins, a single search hit is used, several are candidates. */
+async function resolveName(env:PeopleEnv,owner:string,stub:Store,name:string):Promise<Resolved>{
+ if(name.includes('@'))return {id:name};
+ const found=toAnswers(await findPeople(env,owner,stub,name,5));
+ const exact=found.filter(p=>p.name.toLowerCase()===name.toLowerCase());
+ const pool=exact.length?exact:found;
+ return pool.length===1?{id:pool[0].personId}:pool.length?{candidates:pool}:null;
+}
+
 /** Classify, then run exactly one read-only People query for the interpretation. */
 export async function answerQuestion(env:PeopleEnv&MailEnv,owner:string,stub:Store,question:string):Promise<AskResult>{
  const interpretation=await classifyQuestion(env.AI,question),{intent,params}=interpretation;
  const done=(result:unknown,gaps:string[]=[],answers=toAnswers(result)):AskResult=>({interpretation,answers,result,gaps});
+ const unresolved=(resolved:Resolved,label:string)=>resolved&&'candidates' in resolved
+  ?done({candidates:resolved.candidates},[`Several people match ${label}; ask which one`],resolved.candidates)
+  :done(null,[`No one in the network matches ${label}`],[]);
+ const brief=async(selector:{personId:string}|{email:string}|{query:string},label:string):Promise<AskResult>=>{
+  const result=await stub.catchUpBrief(selector);
+  if(result.ok)return done(result.brief,result.brief.gaps,result.brief.answers);
+  if(result.error==='ambiguous_person')return done({candidates:result.candidates},[`Several people match ${label}; ask which one`],result.candidates.map(c=>({personId:c.id,name:c.name})));
+  // An exact-name miss ("Maya") gets one more chance through the network search.
+  if('query' in selector){
+   const resolved=await resolveName(env,owner,stub,selector.query);
+   return resolved&&'id' in resolved?brief({personId:resolved.id},label):unresolved(resolved,label);
+  }
+  return done(null,[`No one in the network matches ${label}`],[]);
+ };
  try{
   switch(intent){
    case 'clarify':return done(null,['Question was unclear; pick one interpretation']);
@@ -89,12 +115,22 @@ export async function answerQuestion(env:PeopleEnv&MailEnv,owner:string,stub:Sto
    case 'company':{const result=await queryPeople(env,owner,{command:'who-knows',company:params.company!,limit:20});return result.ok?done(result.data):done(result,[result.error?.message??'No answer']);}
    case 'reconnect':{const result=await queryPeople(env,owner,{command:'reconnect',limit:10});return result.ok?done(result.data):done(result,[result.error?.message??'No answer']);}
    case 'who_can_help':return done(params.topic?await findPeople(env,owner,stub,params.topic,10):await savedPeopleMatches(env,stub));
-   case 'connection':return done(await explainPeopleConnection(env,owner,stub,params.from!,params.to!),[]);
+   case 'connection':{
+    const from=params.from!,to=params.to!;
+    // "How am I connected to Sam" is the owner's own relationship: answer with the brief.
+    if(OWNER_WORDS.has(from.toLowerCase())||OWNER_WORDS.has(to.toLowerCase())){
+     const other=OWNER_WORDS.has(from.toLowerCase())?to:from;
+     return brief(other.includes('@')?{email:other}:{query:other},other);
+    }
+    const [a,b]=[await resolveName(env,owner,stub,from),await resolveName(env,owner,stub,to)];
+    if(!a||!('id' in a))return unresolved(a,from);
+    if(!b||!('id' in b))return unresolved(b,to);
+    const result=await explainPeopleConnection(env,owner,stub,a.id,b.id);
+    return done(result,[],[{personId:result.from.personId,name:result.from.name},{personId:result.to.personId,name:result.to.name}]);
+   }
    case 'catch_up':{
     const person=params.person!;
-    const brief=await stub.catchUpBrief(person.includes('@')?{email:person}:{query:person});
-    if(!brief.ok)return done({error:brief.error,candidates:brief.candidates},[brief.error==='ambiguous_person'?'Several people match; ask which one':'No one in the network matches that person'],[]);
-    return done(brief.brief,brief.brief.gaps,brief.brief.answers);
+    return brief(person.includes('@')?{email:person}:{query:person},person);
    }
   }
  }catch(error){

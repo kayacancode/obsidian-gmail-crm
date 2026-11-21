@@ -123,3 +123,23 @@ fn local_mode_refuses_questions_it_cannot_answer() {
     assert_eq!(value["error"]["kind"], "unsupported_locally");
     assert_eq!(value["data"]["interpretation"]["intent"], "clarify");
 }
+
+#[test]
+fn local_answers_use_the_hosted_envelope() {
+    let company = local("who do I know at Disney?");
+    let answers = company["data"]["answers"].as_array().unwrap();
+    assert!(answers.iter().any(|a| a["name"] == "Maya Rivera"));
+    assert_eq!(company["data"]["gaps"], json!([]));
+    let catch_up = local("catch me up on Maya Rivera");
+    assert_eq!(catch_up["data"]["answers"][0]["name"], "Maya Rivera");
+    assert_eq!(
+        catch_up["data"]["gaps"],
+        json!(["Activity only; life signals and notes need hosted People"])
+    );
+}
+
+#[test]
+fn local_catch_up_wins_over_reconnect_wording() {
+    let value = local("anything before I talk to Maya Rivera so I can reach out to her?");
+    assert_eq!(value["data"]["interpretation"]["intent"], "catch_up");
+}

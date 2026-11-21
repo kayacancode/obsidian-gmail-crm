@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {fixture} from './person-context.test';
-import {classifyQuestion,answerQuestion,validateInterpretation,type AskIntent,type AskParams} from '../src/ask';
+import {classifyQuestion,answerQuestion,validateInterpretation,toAnswers,type AskIntent,type AskParams} from '../src/ask';
 import evalSet from './fixtures/ask-eval.json';
 
 type Case={question:string;intent:AskIntent;params:AskParams};
@@ -58,4 +58,47 @@ test('ask: company questions return the network people as answers',async()=>{
  f.env.AI=recorded({intent:'company',params:{company:'example.test'},confidence:0.9});
  const got=await answerQuestion(f.env,'owner@example.test',f.service,'who do I know at example.test');
  assert.ok(got.answers.some(a=>a.name==='Ada'));
+});
+
+/** A fixture with D1 stubbed (no shares), a second contact (Maya Rivera), and a one-call `ask`. */
+async function network(){
+ const f=await fixture();
+ f.env.DB={prepare:()=>({bind(){return this;},all:async()=>({results:[]}),first:async()=>null,run:async()=>({})})};
+ f.add('maya@acme.test','Maya Rivera');
+ const ask=async(intent:AskIntent,params:AskParams)=>{
+  f.env.AI=recorded({intent,params,confidence:0.9});
+  return answerQuestion(f.env,'owner@example.test',f.service,'question');
+ };
+ return {ask};
+}
+
+test('ask: lookup by name and by email returns people',async()=>{
+ const {ask}=await network();
+ assert.ok((await ask('lookup',{person:'Ada'})).answers.some(a=>a.name==='Ada'));
+ assert.ok((await ask('lookup',{person:'ada@example.test'})).answers.some(a=>a.name==='Ada'));
+});
+
+test('ask: reconnect and topical who-can-help return people',async()=>{
+ const {ask}=await network();
+ assert.ok((await ask('reconnect',{})).answers.length>0);
+ assert.ok((await ask('who_can_help',{topic:'acme.test'})).answers.some(a=>a.name==='Maya Rivera'));
+});
+
+test('ask: ranked recommendations under results become answers',()=>{
+ assert.deepEqual(toAnswers({results:[{personId:'p1',name:'Ada'}]}).map(a=>[a.personId,a.name]),[['p1','Ada']]);
+});
+
+test('ask: connections resolve names, and "me" means the owner relationship',async()=>{
+ const {ask}=await network();
+ const between=await ask('connection',{from:'Ada',to:'Maya Rivera'});
+ assert.ok(!between.gaps.some(g=>/unknown_person/.test(g)),between.gaps.join());
+ assert.deepEqual(between.answers.map(a=>a.name).sort(),['Ada','Maya Rivera']);
+ const mine=await ask('connection',{from:'me',to:'Ada'});
+ assert.equal(mine.answers[0].name,'Ada');
+ assert.ok(mine.result&&typeof mine.result==='object'&&'sinceLastContact' in mine.result);
+});
+
+test('ask: catching up on a first name finds the one matching person',async()=>{
+ const {ask}=await network();
+ assert.equal((await ask('catch_up',{person:'Maya'})).answers[0]?.name,'Maya Rivera');
 });
