@@ -2019,7 +2019,7 @@ ${sorted.join("\n")}
   return (content.endsWith("\n") ? content : content + "\n") + section;
 }
 var yamlQuoted = (value) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-function withPeopleFrontmatter(content, pageNames) {
+function withPeopleFrontmatter(content, pageNames, emails = []) {
   if (!content.startsWith("---\n")) return content;
   const end = content.indexOf("\n---", 3);
   if (end < 0) return content;
@@ -2033,8 +2033,9 @@ function withPeopleFrontmatter(content, pageNames) {
     kept.push(lines[i]);
   }
   const names = [...new Set(pageNames)].sort();
-  if (names.length) {
-    const block = ["people:", ...names.map((name) => `  - ${yamlQuoted(`[[${name}]]`)}`)];
+  const addresses = [...new Set(emails.map(normalizeEmail))].sort();
+  if (names.length || addresses.length) {
+    const block = ["people:", ...names.map((name) => `  - ${yamlQuoted(`[[${name}]]`)}`), ...addresses.map((email) => `  - ${yamlQuoted(email)}`)];
     let at = kept.findIndex((line) => /^attendees:/.test(line));
     if (at >= 0) while (at + 1 < kept.length && /^(\s+|-\s)/.test(kept[at + 1])) at++;
     kept.splice(at >= 0 ? at + 1 : kept.length, 0, ...block);
@@ -2072,7 +2073,7 @@ function contactNoteContent(contact) {
 
 ${body}`;
 }
-function pagesToCreate(attendeesByNote, identity, primariesWithPages, existingPaths, folder, options = {}) {
+function pagesToCreate(attendeesByNote, identity, primariesWithPages, existingPaths, folder) {
   var _a, _b, _c, _d, _e;
   const people = /* @__PURE__ */ new Map();
   for (const attendees of attendeesByNote.values())
@@ -2089,8 +2090,8 @@ function pagesToCreate(attendeesByNote, identity, primariesWithPages, existingPa
   for (const [primary, person] of [...people].sort(([a], [b]) => a.localeCompare(b))) {
     const contactName = (_d = (_c = person.contact) == null ? void 0 : _c.name) == null ? void 0 : _d.trim();
     const known = contactName && !contactName.includes("@") ? contactName : (_e = person.name) == null ? void 0 : _e.trim();
-    if (!known && options.waitForNames) continue;
-    const name = known || primary;
+    if (!known || known.includes("@")) continue;
+    const name = known;
     const path = `${dir ? `${dir}/` : ""}p- ${name.replace(/[\\/:*?"<>|]/g, "_")}.md`;
     if (taken.has(path.toLowerCase())) continue;
     taken.add(path.toLowerCase());
@@ -6220,8 +6221,7 @@ ${relSection}
       if (this.settings.createContactNotes) {
         const folder = (0, import_obsidian14.normalizePath)(this.settings.contactNotesFolder);
         const existing = new Set(this.app.vault.getFiles().map((f) => f.path));
-        const waitForNames = !(this.intelligenceReady && this.intelligence.state.events.some((e) => e.kind === "meeting" && e.source !== "granola" && e.name));
-        const plans = pagesToCreate(links.attendees, identity, new Set(pageByEmail.keys()), existing, folder, { waitForNames });
+        const plans = pagesToCreate(links.attendees, identity, new Set(pageByEmail.keys()), existing, folder);
         if (plans.length && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
         for (const plan of plans) {
           try {
@@ -6249,16 +6249,18 @@ ${relSection}
       }
       let notesWritten = 0;
       for (const note of notes) {
-        const names = /* @__PURE__ */ new Set();
+        const names = /* @__PURE__ */ new Set(), emails = /* @__PURE__ */ new Set();
         for (const a of (_c = links.attendees.get(note.path)) != null ? _c : []) {
           const primary = (_e = (_d = identity.get(a.email)) == null ? void 0 : _d.contact.email.toLowerCase()) != null ? _e : a.email;
-          const page = owner.has(primary) ? void 0 : pageByEmail.get(primary);
+          if (owner.has(primary)) continue;
+          const page = pageByEmail.get(primary);
           if (page) names.add(page.path.split("/").pop().replace(/\.md$/, ""));
+          else emails.add(a.email);
         }
         const file = this.app.vault.getAbstractFileByPath(note.path);
         if (!(file instanceof import_obsidian14.TFile)) continue;
         const current = await this.app.vault.read(file);
-        const next = withPeopleFrontmatter(current, [...names]);
+        const next = withPeopleFrontmatter(current, [...names], [...emails]);
         if (next === current) continue;
         await this.app.vault.modify(file, next);
         notesWritten++;
