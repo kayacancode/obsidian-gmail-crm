@@ -15,7 +15,7 @@ export interface GranolaIdentitySuggestion {attendeeEmail:string;attendeeName:st
 export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus|null;range:GranolaRange|null;lastSync:number;nextSync:number;error:string;counts:{folders:number;notes:number;pending:number;extracted:number;failed:number;skipped:number};folders:{id:string;name:string;parentId:string|null;excluded:boolean;noteCount:number}[];identities:GranolaIdentitySuggestion[]}
 /** One Gmail contact, with the name and the canonical subject themes Jev may see. Never raw subjects. */
 export interface GranolaGmailContact {email:string;name:string;subjects:string[]}
-export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
+export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[];/** Owner-private life signals from a freshly extracted note; failures never affect the note. */lifeNote?:(input:{noteId:string;meetingAt:string;text:string;attendees:{email:string;name:string}[]})=>Promise<void>}
 export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerEmails:string[];ownerNames:string[];attended:boolean;summary:string;privateNotes:string;ownerTranscript:string}
 /** One attendee/contact pair queued for a single Jev judgment, carried in the job across ticks. */
 interface IdentityPair {attendeeEmail:string;attendeeName:string;contactEmail:string;contactName:string;meetings:string[];recentSubjects:string[]}
@@ -370,6 +370,7 @@ export class GranolaSync {
    }
    this.checkRun(started);
    await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
+   await this.hooks.lifeNote?.({noteId:row.id,meetingAt:row.meeting_at,text:[row.summary,row.private_notes].filter(Boolean).join('\n'),attendees});
    this.checkRun(started);
    this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,extractorVersion(this.env),row.id,row.content_hash);
    extracted++;
