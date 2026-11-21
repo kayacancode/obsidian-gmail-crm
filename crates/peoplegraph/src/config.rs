@@ -140,7 +140,8 @@ fn check_file(metadata: &fs::Metadata) -> Result<(), Error> {
     Ok(())
 }
 
-fn load(path: &Path) -> Result<Option<Config>, Error> {
+/// Read an owner-only regular file (at most 64 KB); `None` when it does not exist.
+pub(crate) fn read_private(path: &Path) -> Result<Option<Vec<u8>>, Error> {
     let before = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -172,6 +173,13 @@ fn load(path: &Path) -> Result<Option<Config>, Error> {
     if bytes.len() > MAX_CONFIG_BYTES as usize {
         return Err(INVALID);
     }
+    Ok(Some(bytes))
+}
+
+fn load(path: &Path) -> Result<Option<Config>, Error> {
+    let Some(bytes) = read_private(path)? else {
+        return Ok(None);
+    };
     let mut config: Config = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
     if config.version != 1 || config.profiles.is_empty() || config.profiles.len() > 64 {
         return Err(INVALID);
@@ -283,6 +291,12 @@ fn metadata_for(path: &Path) -> Result<Value, Error> {
 }
 
 fn write(path: &Path, config: &Config) -> Result<(), Error> {
+    let encoded = serde_json::to_vec_pretty(config).map_err(|_| INVALID)?;
+    write_private(path, &encoded)
+}
+
+/// Atomically replace `path` with owner-only bytes (at most 64 KB) inside an owner-only directory.
+pub(crate) fn write_private(path: &Path, encoded: &[u8]) -> Result<(), Error> {
     let parent = path.parent().ok_or(INVALID)?;
     fs::create_dir_all(parent).map_err(|_| {
         (
@@ -307,7 +321,6 @@ fn write(path: &Path, config: &Config) -> Result<(), Error> {
         "config_permissions",
         "Private credential files require a supported secure store on this platform.",
     ));
-    let encoded = serde_json::to_vec_pretty(config).map_err(|_| INVALID)?;
     if encoded.len() > MAX_CONFIG_BYTES as usize {
         return Err(INVALID);
     }
@@ -335,7 +348,7 @@ fn write(path: &Path, config: &Config) -> Result<(), Error> {
                 "Cannot create a private People configuration file.",
             )
         })?;
-        file.write_all(&encoded)
+        file.write_all(encoded)
             .and_then(|_| file.sync_all())
             .map_err(|_| ("config_write_failed", "Cannot write People configuration."))?;
         fs::rename(&temp, path).map_err(|_| {

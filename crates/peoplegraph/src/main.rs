@@ -3,6 +3,7 @@ mod ask;
 mod config;
 mod hosted;
 mod life;
+mod peer;
 mod people_client;
 mod sources;
 mod web_client;
