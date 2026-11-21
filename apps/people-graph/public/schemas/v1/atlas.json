@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "/schemas/v1/atlas.json",
+  "title": "Atlas",
+  "description": "The landscape around one topic in the owner's network: who they know, their circles, people at the fringe, and kinds of community that are missing. Owner-only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "topic", "generatedAt", "communities", "known", "fringe", "absent", "gaps"],
+  "properties": {
+    "version": {"const": 1},
+    "topic": {"type": "string", "minLength": 1, "maxLength": 200},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "communities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["clusterId", "label", "size", "usual", "topicPeople"],
+        "properties": {
+          "clusterId": {"type": "string", "pattern": "^[0-9a-f]{12}$"},
+          "label": {"$ref": "#/$defs/label"},
+          "size": {"type": "integer", "minimum": 3},
+          "usual": {"type": "boolean", "description": "Part of the owner's usual circles (60% of the last 90 days' interactions)."},
+          "topicPeople": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "known": {"type": "array", "maxItems": 20, "items": {"$ref": "#/$defs/person"}},
+    "fringe": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "allOf": [{"$ref": "#/$defs/person"}],
+        "properties": {"stance": {"enum": ["supports", "differs", "challenges", null]}},
+        "required": ["stance"]
+      }
+    },
+    "absent": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "Model suggestions; never a person.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "inferred"],
+        "properties": {"label": {"type": "string", "maxLength": 60}, "inferred": {"const": true}}
+      }
+    },
+    "gaps": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["companies", "themes"],
+      "properties": {
+        "companies": {"type": "array", "maxItems": 2, "items": {"type": "string"}},
+        "themes": {"type": "array", "maxItems": 2, "items": {"type": "string"}}
+      }
+    },
+    "person": {
+      "type": "object",
+      "required": ["personId", "name", "clusterId", "relevance", "distance", "evidence", "reach"],
+      "properties": {
+        "personId": {"type": "string"},
+        "name": {"type": "string"},
+        "clusterId": {"type": ["string", "null"]},
+        "relevance": {"type": "number", "minimum": 0, "maximum": 1},
+        "distance": {
+          "type": "object",
+          "required": ["value", "cluster", "reason"],
+          "properties": {
+            "value": {"enum": [0, 0.5, 1]},
+            "cluster": {"oneOf": [{"$ref": "#/$defs/label"}, {"type": "null"}]},
+            "reason": {"type": "string"}
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "summary", "source", "observedAt", "attribution"],
+            "properties": {
+              "kind": {"const": "evidence"},
+              "summary": {"type": "string", "maxLength": 200},
+              "source": {"type": "string"},
+              "observedAt": {"type": "string"},
+              "attribution": {"const": "first_hand"}
+            }
+          }
+        },
+        "reach": {
+          "oneOf": [
+            {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "direct"}}},
+            {"type": "object", "required": ["kind", "via"], "properties": {"kind": {"const": "via"}, "via": {"type": "array", "items": {"type": "string"}}}}
+          ]
+        }
+      }
+    }
+  }
+}

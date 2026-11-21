@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) type Error = (&'static str, &'static str);
-const MAX_CONFIG_BYTES: u64 = 65_536;
+pub(crate) const MAX_CONFIG_BYTES: u64 = 65_536;
 const MAX_TOKEN_BYTES: u64 = 4_096;
 const INVALID: Error = (
     "config_invalid",
@@ -118,7 +118,7 @@ fn owner_matches(metadata: &fs::Metadata) -> bool {
     metadata.uid() == unsafe { geteuid() }
 }
 
-fn check_file(metadata: &fs::Metadata) -> Result<(), Error> {
+fn check_file(metadata: &fs::Metadata, limit: u64) -> Result<(), Error> {
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err(INVALID);
     }
@@ -134,19 +134,20 @@ fn check_file(metadata: &fs::Metadata) -> Result<(), Error> {
         "config_permissions",
         "Private credential files require a supported secure store on this platform.",
     ));
-    if metadata.len() > MAX_CONFIG_BYTES {
+    if metadata.len() > limit {
         return Err(INVALID);
     }
     Ok(())
 }
 
-fn load(path: &Path) -> Result<Option<Config>, Error> {
+/// Read an owner-only regular file of at most `limit` bytes; `None` when it does not exist.
+pub(crate) fn read_private(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, Error> {
     let before = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(("config_unreadable", "Cannot inspect People configuration.")),
     };
-    check_file(&before)?;
+    check_file(&before, limit)?;
     if path
         .parent()
         .and_then(|parent| fs::symlink_metadata(parent).ok())
@@ -157,7 +158,7 @@ fn load(path: &Path) -> Result<Option<Config>, Error> {
     let file =
         File::open(path).map_err(|_| ("config_unreadable", "Cannot read People configuration."))?;
     let after = file.metadata().map_err(|_| INVALID)?;
-    check_file(&after)?;
+    check_file(&after, limit)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -166,12 +167,19 @@ fn load(path: &Path) -> Result<Option<Config>, Error> {
         }
     }
     let mut bytes = Vec::new();
-    file.take(MAX_CONFIG_BYTES + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| INVALID)?;
-    if bytes.len() > MAX_CONFIG_BYTES as usize {
+    if bytes.len() as u64 > limit {
         return Err(INVALID);
     }
+    Ok(Some(bytes))
+}
+
+fn load(path: &Path) -> Result<Option<Config>, Error> {
+    let Some(bytes) = read_private(path, MAX_CONFIG_BYTES)? else {
+        return Ok(None);
+    };
     let mut config: Config = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
     if config.version != 1 || config.profiles.is_empty() || config.profiles.len() > 64 {
         return Err(INVALID);
@@ -283,6 +291,12 @@ fn metadata_for(path: &Path) -> Result<Value, Error> {
 }
 
 fn write(path: &Path, config: &Config) -> Result<(), Error> {
+    let encoded = serde_json::to_vec_pretty(config).map_err(|_| INVALID)?;
+    write_private(path, &encoded, MAX_CONFIG_BYTES)
+}
+
+/// Atomically replace `path` with owner-only bytes (at most `limit`) inside an owner-only directory.
+pub(crate) fn write_private(path: &Path, encoded: &[u8], limit: u64) -> Result<(), Error> {
     let parent = path.parent().ok_or(INVALID)?;
     fs::create_dir_all(parent).map_err(|_| {
         (
@@ -307,8 +321,7 @@ fn write(path: &Path, config: &Config) -> Result<(), Error> {
         "config_permissions",
         "Private credential files require a supported secure store on this platform.",
     ));
-    let encoded = serde_json::to_vec_pretty(config).map_err(|_| INVALID)?;
-    if encoded.len() > MAX_CONFIG_BYTES as usize {
+    if encoded.len() as u64 > limit {
         return Err(INVALID);
     }
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -335,7 +348,7 @@ fn write(path: &Path, config: &Config) -> Result<(), Error> {
                 "Cannot create a private People configuration file.",
             )
         })?;
-        file.write_all(&encoded)
+        file.write_all(encoded)
             .and_then(|_| file.sync_all())
             .map_err(|_| ("config_write_failed", "Cannot write People configuration."))?;
         fs::rename(&temp, path).map_err(|_| {

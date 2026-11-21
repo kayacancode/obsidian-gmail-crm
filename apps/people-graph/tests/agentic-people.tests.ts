@@ -1,0 +1,23 @@
+// Agentic People suites; run-mail.mjs bundles this one entry point.
+import './life-signals.test.ts';
+import './life-store.test.ts';
+import './life-hooks.test.ts';
+import './company-stints.test.ts';
+import './catch-up-brief.test.ts';
+import './life-routes.test.ts';
+import './ask.test.ts';
+import './ask-routes.test.ts';
+import './peer-routes.test.ts';
+import './network-structure.test.ts';
+import './why-now.test.ts';
+import './structure-answers.test.ts';
+import './structure-routes.test.ts';
+import './curiosity.test.ts';
+import './mind-routes.test.ts';
+import './moments.test.ts';
+import './moments-routes.test.ts';
+import './introductions.test.ts';
+import './introductions-routes.test.ts';
+import './guest-ask.test.ts';
+import './guest-owner.test.ts';
+import './guest-public.test.ts';

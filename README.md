@@ -57,9 +57,9 @@ Obsidian and Granola are optional. Connecting Google does not require installing
 
 **For terminal-enabled agents:**
 
-Give your agent the public [setup guide](https://people-graph.kayarjones901.workers.dev/agent-setup.md), or use **Accounts → Integrations → Copy instructions for your agent**. The copied message includes the People server and a [published GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md) for readers that cannot access the site's documentation. The site's [llms.txt](https://people-graph.kayarjones901.workers.dev/llms.txt) points agents to setup, the skill, and API documentation. These public files contain instructions, never account data or credentials. Setup requires terminal execution and private credential storage; a browsing-only agent can explain the steps but cannot complete the CLI setup itself.
+Give your agent the public [setup guide](https://people-graph.kayarjones901.workers.dev/agent-setup.md), or use **Accounts → Integrations → Copy instructions for your agent**. The copied message includes the People server and a [published GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/people-agent-onboarding.md) for readers that cannot access the site's documentation. The site's [llms.txt](https://people-graph.kayarjones901.workers.dev/llms.txt) points agents to setup, the skill, and API documentation. These public files contain instructions, never account data or credentials. Setup requires terminal execution and private credential storage; a browsing-only agent can explain the steps but cannot complete the CLI setup itself.
 
-Install **PeopleGraph 0.3.17** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
+Install **PeopleGraph 0.3.18** and the skill for your chosen agent using the [onboarding guide](docs/people-agent-onboarding.md). Release binaries support macOS Apple Silicon, macOS Intel, and Linux x86_64. The versioned installer verifies checksums and accepts explicit Codex, Claude, or common agent skill destinations.
 
 Run `peoplegraph login` for graph and private People reads, or `peoplegraph login --write` to approve requested Lens and context edits. The CLI stores one origin-bound key in `~/.config/peoplegraph/config.json` (or `$XDG_CONFIG_HOME/peoplegraph/config.json`) and loads it automatically. `peoplegraph status` verifies the account, permissions, and API capabilities; `peoplegraph lens set --needs "…"` preserves the other Lens fields with revision checking. `peoplegraph api METHOD /api/path --file payload.json` covers registered website operations under their required scopes. Existing keys can be saved with `configure --url <origin> --token-stdin`. MCP is optional for terminal agents; clients supporting custom Bearer headers can still use the same People key. ChatGPT uses browser OAuth instead.
 
@@ -69,7 +69,16 @@ Try “Who could help with my saved needs, and why?”, “What connects Maya an
 
 For source setup, approve `peoplegraph login --write --scope sources:manage`, then run `peoplegraph sources status`. Dedicated commands connect Granola using a key supplied through stdin, sync connected Gmail/Granola sources, and control automatic Gmail context. Gmail connection still requires Google's browser consent. [Source setup and empty-match troubleshooting](docs/people-agent-onboarding.md#connect-and-sync-sources-from-the-cli) explains the distinction between imports, Lens learning, and evidence for recommendations.
 
-PeopleGraph 0.3.17 makes onboarding state explicit: login/status warn when an environment token overrides a saved login; Lens inspection and matches report Gmail context counts and consent-aware ingestion hints; recommendations can include the authorized graph name. Follow the [six-step setup](docs/people-agent-onboarding.md#six-steps-from-installation-to-matches). Lens refresh remains a separate durable job: inspect queued/running work, and check Honcho readiness separately from job completion. Gmail context backfill and matches do not require Lens refresh. A 30-second refresh timeout is a failure to investigate, not expected progress. See the [0.3.17 release notes](docs/releases/peoplegraph-0.3.17.md).
+PeopleGraph 0.3.18 adds:
+- `peoplegraph ask "<question>"` for natural-language questions;
+- catch-up briefs with owner-private life signals (off by default);
+- why-now, contrast, widen, bridges and an atlas that surface people outside your usual circles;
+- curiosity notes and a few daily moments;
+- three-party introductions with a double opt-in;
+- peer questions between owners' agents over a tailnet;
+- guest ask, where outsiders ask your network and you approve every answer.
+
+Follow the [six-step setup](docs/people-agent-onboarding.md#six-steps-from-installation-to-matches). See the [0.3.18 release notes](docs/releases/peoplegraph-0.3.18.md); earlier changes are in the [0.3.17 notes](docs/releases/peoplegraph-0.3.17.md).
 
 ## What each source contributes
 

@@ -3,6 +3,12 @@ import {createPeopleMemoryCredential,listPeopleMemoryCredentials,revokePeopleMem
 import {ownerLensRoute} from './owner-lens-routes';
 import {personContextRoute} from './person-context-routes';
 import {relationshipMemoryRoute} from './relationship-memory-routes';
+import {lifeRoute} from './life-routes';
+import {askRoute} from './ask';
+import {structureRoute} from './structure-routes';
+import {momentsRoute} from './moments-routes';
+import {ownerIntroductionRoute} from './owner-introduction-routes';
+import {guestOwnerRoute} from './guest-owner-routes';
 import {personMergeRoute} from './person-merge-routes';
 import {mailRoute,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from './mail-routes';
 import {granolaRoute} from './granola-routes';
@@ -16,7 +22,7 @@ import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
 import {peopleFailureDiagnostic} from './people-diagnostics';
 
 type Method='GET'|'POST'|'PUT'|'PATCH'|'DELETE';
-type Handler='lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph';
+type Handler='lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph'|'life'|'ask'|'structure'|'moments'|'introductions'|'guests';
 interface Capability {method:Method;path:string;requiredScopes:PeopleMemoryScope[];handler:Handler;pattern:RegExp;query:string[];browserPath?:string}
 const read:PeopleMemoryScope[]=['people:read'],edit:PeopleMemoryScope[]=['people:read','people:write'],sources:PeopleMemoryScope[]=['sources:manage'],sourceData:PeopleMemoryScope[]=['people:read','sources:manage'],sharing:PeopleMemoryScope[]=['sharing:manage'],sharedData:PeopleMemoryScope[]=['people:read','sharing:manage'],booking:PeopleMemoryScope[]=['booking:manage'],integrations:PeopleMemoryScope[]=['integrations:manage'];
 function capability(method:Method,path:string,requiredScopes:PeopleMemoryScope[],handler:Handler,query:string[]=[],browserPath?:string):Capability{
@@ -30,6 +36,19 @@ const capabilities:Capability[]=[
  capability('GET','/api/graph',read,'graph',['source']),
  capability('GET','/api/lens',read,'lens'),capability('POST','/api/lens',edit,'lens'),capability('POST','/api/lens/matches',read,'lens'),
  capability('GET','/api/people/context',read,'context',['personId']),capability('POST','/api/people/context',edit,'context'),
+ capability('GET','/api/people/signals',read,'life',['personId']),capability('POST','/api/people/signals/settings',edit,'life'),capability('DELETE','/api/people/signals',edit,'life'),
+ capability('GET','/api/people/brief',read,'life',['personId','email','query']),
+ capability('GET','/api/people/timeline',read,'life'),capability('POST','/api/people/timeline',edit,'life'),capability('DELETE','/api/people/timeline',edit,'life'),
+ capability('GET','/api/people/stints',read,'life',['personId']),capability('POST','/api/people/stints',edit,'life'),capability('DELETE','/api/people/stints',edit,'life'),
+ capability('GET','/api/people/teammates',read,'life',['personId']),capability('GET','/api/people/job-moves',read,'life'),
+ capability('GET','/api/people/peer-directory',read,'life'),capability('GET','/api/people/peer-answer',read,'life',['personId','type']),
+ capability('GET','/api/people/why-now',read,'structure',['limit']),capability('GET','/api/people/contrast',read,'structure',['topic','claim']),
+ capability('GET','/api/people/widen',read,'structure'),capability('GET','/api/people/bridges',read,'structure',['topic']),capability('GET','/api/people/atlas',read,'structure',['topic']),
+ capability('GET','/api/people/mind',read,'moments',['includeArchived']),capability('POST','/api/people/mind',edit,'moments'),capability('POST','/api/people/mind/archive',edit,'moments'),
+ capability('GET','/api/people/moments',read,'moments',['today']),capability('POST','/api/people/moments/update',edit,'moments'),capability('POST','/api/people/moments/settings',edit,'moments'),
+ capability('GET','/api/people/introductions',read,'introductions'),capability('POST','/api/people/introductions',edit,'introductions'),capability('POST','/api/people/introductions/advance',edit,'introductions'),capability('POST','/api/people/introductions/outcome',edit,'introductions'),
+ capability('GET','/api/people/guest-asks',read,'guests'),capability('POST','/api/people/guest-asks/answer',edit,'guests'),capability('POST','/api/people/guest-asks/decline',edit,'guests'),capability('POST','/api/people/guest-asks/settings',edit,'guests'),
+ capability('POST','/api/people/ask',read,'ask'),
  capability('GET','/api/people/memory',read,'memory',['personId']),capability('POST','/api/people/memory',edit,'memory'),capability('POST','/api/people/memory/structure',read,'memory'),capability('DELETE','/api/people/memory/entry',edit,'memory'),
  capability('GET','/api/people/person-merges',read,'merges'),capability('POST','/api/people/person-merges',edit,'merges'),capability('DELETE','/api/people/person-merges',edit,'merges'),
  capability('POST','/api/people/feedback',edit,'feedback'),capability('POST','/api/people/draft',read,'draft'),capability('POST','/api/people/connection-origin',read,'connection'),capability('POST','/api/people/helpers',read,'helpers'),capability('POST','/api/people/search',read,'search'),
@@ -94,6 +113,12 @@ export async function peopleMachineRequest(request:Request,env:SchedulingEmailEn
    case 'lens':return await ownerLensRoute(adapted,env,owner);
    case 'context':return await personContextRoute(adapted,env,owner);
    case 'memory':return await relationshipMemoryRoute(adapted,env,owner);
+   case 'life':return await lifeRoute(adapted,env,owner);
+   case 'ask':return await askRoute(adapted,env,owner);
+   case 'structure':return await structureRoute(adapted,env,owner);
+   case 'moments':return await momentsRoute(adapted,env,owner);
+   case 'introductions':return await ownerIntroductionRoute(adapted,env,owner);
+   case 'guests':return await guestOwnerRoute(adapted,env,owner);
    case 'merges':return await personMergeRoute(adapted,env,owner);
    case 'accounts':return await mailRoute(adapted,env,owner);
    case 'draft':return await draftRoute(adapted,env,owner);

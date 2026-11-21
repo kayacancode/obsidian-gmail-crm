@@ -2,7 +2,7 @@ import {THEME_MODEL} from './theme-extractor';
 export const GMAIL_CONTEXT_VERSION=2;
 export type MailFact={kind:'building'|'need'|'experience';quote:string};
 const firstPerson=/^(?:I\b|I['’]m\b|I['’]ve\b|We\b|We['’]re\b|We['’]ve\b|My\b|Our\b)/i;
-const sentenceParts=(text:string)=>text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
+export const sentenceParts=(text:string)=>text.split(/(?<=[.!?])\s+|\n+/).map(s=>s.trim()).filter(Boolean);
 // These match complete generic statements, not work-topic keywords. Any substantive
 // product/problem/audience detail in another sentence keeps a coherent passage eligible.
 const genericStatements=[

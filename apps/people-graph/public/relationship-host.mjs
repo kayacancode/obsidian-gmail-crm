@@ -1,3 +1,4 @@
+import {installDesktopSignIn} from './desktop-auth.mjs';
 import {mountTraversal} from './relationship-graph/traversal.mjs';
 import {mountOwnerLens} from './owner-lens.mjs';
 const PRIVATE_STATE = { lens: 'my', relevance: null, relevanceEnvelope: null, evidence: null, retrievalPreview: null, publicPreview: null, retrievalJob: null, publicJob: null, workflowMessage: '' };
@@ -772,6 +773,7 @@ async function startBrowserApp() {
   }
 
   async function installSignIn(message) {
+    if (window.parent !== window) { installDesktopSignIn(signin); return; }
     if (message) status.textContent = message;
     if (signInSetup) return signInSetup;
     signInSetup = (async () => {

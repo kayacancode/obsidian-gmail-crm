@@ -15,7 +15,7 @@ export interface GranolaIdentitySuggestion {attendeeEmail:string;attendeeName:st
 export interface GranolaStatus {connected:boolean;status:GranolaConnectionStatus|null;range:GranolaRange|null;lastSync:number;nextSync:number;error:string;counts:{folders:number;notes:number;pending:number;extracted:number;failed:number;skipped:number};folders:{id:string;name:string;parentId:string|null;excluded:boolean;noteCount:number}[];identities:GranolaIdentitySuggestion[]}
 /** One Gmail contact, with the name and the canonical subject themes Jev may see. Never raw subjects. */
 export interface GranolaGmailContact {email:string;name:string;subjects:string[]}
-export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[]}
+export interface GranolaHooks {owner:()=>Promise<string|undefined>;store:()=>RelevanceStore;invalidateGraph:()=>Promise<void>;ownerContextChanged?:(force?:boolean)=>Promise<void>;contacts:()=>GranolaGmailContact[];/** The owner's own connected mail addresses; never a confirmable identity target. */accounts:()=>string[];/** Owner-private life signals from a freshly extracted note; failures never affect the note. */lifeNote?:(input:{noteId:string;meetingAt:string;text:string;attendees:{email:string;name:string}[];contentHash:string})=>Promise<void>;/** Delete life signals whose source ref starts with this prefix (a changed, hidden or removed note, or a disconnect). */lifeForget?:(prefix:string)=>void}
 export interface GranolaOwnerNote {id:string;version:string;observedAt:string;title:string;url:string|null;ownerEmails:string[];ownerNames:string[];attended:boolean;summary:string;privateNotes:string;ownerTranscript:string}
 /** One attendee/contact pair queued for a single Jev judgment, carried in the job across ticks. */
 interface IdentityPair {attendeeEmail:string;attendeeName:string;contactEmail:string;contactName:string;meetings:string[];recentSubjects:string[]}
@@ -123,6 +123,7 @@ export class GranolaSync {
 
  async disconnect():Promise<void>{
   this.ctx.storage.transactionSync(()=>{for(const t of ['granola_owner_context','granola_identity','granola_edges','granola_attendees','granola_notes','granola_folders','granola_connection'])this.ctx.storage.sql.exec(`DELETE FROM ${t}`);});
+  this.hooks.lifeForget?.('granola:');
   await this.hooks.ownerContextChanged?.(true);
   await this.hooks.store().removeAccountData(GRANOLA_ACCOUNT);
   await this.hooks.invalidateGraph();
@@ -319,7 +320,7 @@ export class GranolaSync {
    });
    this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id=? AND version<>?',item.id,'lens-v3:'+(c.lensGeneration??'legacy')+':'+contentHash+':'+detail.updatedAt);
    await this.hooks.ownerContextChanged?.();
-   if(status!=='done')await this.removeNoteSignals(item.id);
+   if(status!=='done'){await this.removeNoteSignals(item.id);this.hooks.lifeForget?.(`granola:${item.id}:`);}
    if(detail.ownerEmail&&!c.ownerEmail)c.ownerEmail=detail.ownerEmail;
    job.pending.shift();job.processed++;this.commit(c,started);
   }
@@ -370,6 +371,7 @@ export class GranolaSync {
    }
    this.checkRun(started);
    await this.ingestExtraction(owner,row.id,row.meeting_at,row.content_hash,extraction,attendees);
+   await this.hooks.lifeNote?.({noteId:row.id,meetingAt:row.meeting_at,text:[row.summary,row.private_notes].filter(Boolean).join('\n'),attendees,contentHash:row.content_hash});
    this.checkRun(started);
    this.ctx.storage.sql.exec("UPDATE granola_notes SET extraction_status='done',extraction=?,extraction_attempts=?,extractor_version=? WHERE id=? AND content_hash=?",JSON.stringify(extraction),row.extraction_attempts+1,extractorVersion(this.env),row.id,row.content_hash);
    extracted++;
@@ -451,7 +453,7 @@ export class GranolaSync {
 
  protected async applyHiddenSignals():Promise<void>{
   const owner=await this.hooks.owner();if(!owner)return;
-  for(const row of this.ctx.storage.sql.exec<{id:string}>("SELECT id FROM granola_notes WHERE hidden=1").toArray())await this.removeNoteSignals(row.id);
+  for(const row of this.ctx.storage.sql.exec<{id:string}>("SELECT id FROM granola_notes WHERE hidden=1").toArray()){await this.removeNoteSignals(row.id);this.hooks.lifeForget?.(`granola:${row.id}:`);}
   // One query for every note that still has signals, not one LIKE scan per visible note:
   // a folder toggle is a UI action and must not cost O(notes x signals).
   const present=this.hooks.store().granolaNoteIdsWithSignals(GRANOLA_ACCOUNT,owner);
@@ -654,7 +656,7 @@ export class GranolaSync {
   this.checkRun(started);
   const seen=new Set(job.seenIds);
   const gone=this.ctx.storage.sql.exec<{id:string}>('SELECT id FROM granola_notes').toArray().map(r=>r.id).filter(id=>!seen.has(id));
-  for(const id of gone){this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM granola_edges WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_attendees WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_notes WHERE id=?',id);});await this.removeNoteSignals(id);}
+  for(const id of gone){this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM granola_edges WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_attendees WHERE note_id=?',id);this.ctx.storage.sql.exec('DELETE FROM granola_notes WHERE id=?',id);});await this.removeNoteSignals(id);this.hooks.lifeForget?.(`granola:${id}:`);}
   const fresh=this.checkRun(started);fresh.lastReconcile=now;fresh.job!.seenIds=[];fresh.job!.phase='folders';fresh.job!.cursor=undefined;this.write(fresh);
   if(gone.length){this.ctx.storage.sql.exec('DELETE FROM granola_owner_context WHERE note_id NOT IN (SELECT id FROM granola_notes)');await this.hooks.ownerContextChanged?.();await this.hooks.invalidateGraph();}
  }

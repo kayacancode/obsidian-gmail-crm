@@ -138,7 +138,7 @@ fn client(
 ) -> Result<people_client::Client, Response> {
     people_client::configure(url).map_err(|(kind, message)| fail(name, kind, message.into(), start))
 }
-fn machine(
+pub(crate) fn machine(
     client: &people_client::Client,
     name: &'static str,
     method: &str,
@@ -292,7 +292,7 @@ pub(crate) fn status(args: &StatusArgs, start: Instant) -> Response {
             ok(
                 "status",
                 data,
-                json!({"ms":elapsed_ms(start),"backend":"people_web"}),
+                json!({"ms":elapsed_ms(start),"backend":"hosted","source":credential.origin}),
             )
         }
         Err(e) => e.response("status", start),

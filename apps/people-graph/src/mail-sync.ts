@@ -9,6 +9,15 @@ import {PersonMergeStore,projectPersonMerges,projectRelevancePeople} from './per
 import {RelationshipMemoryStore,validSaveRelationshipMemory,validCaptureRelationshipMemory,validMemoryEmail,relationshipDelta,type SaveRelationshipMemory,type CaptureRelationshipMemory,type RecommendationMemory,type RelationshipMemory} from './relationship-memory';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
+import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from './life-signals';
+import {OwnerTimelineStore} from './owner-timeline';
+import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
+import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
+import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,assembleAtlas,absentCommunities,type StructureInput,type Candidate,type Atlas,type BridgePair,type WidenResult} from './network-structure';
+import {CuriosityNoteStore,noteKeywords,type CuriosityNote} from './curiosity';
+import {MomentStore,generateMoments,isMomentAction,type MomentInput,type MomentNote} from './moments';
+import {IntroductionStore,proposeIntroduction,advance,recordOutcome,isIntroductionStatus} from './introductions';
+import {GuestAskStore,MAX_QUESTION,anonymous,checkAnswer,checkDailyLimit,decideAsk,describePeople,fallbackDescription,forbiddenTokens,guestView,type GuestAsk,type GuestPerson} from './guest-ask';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -29,6 +38,7 @@ import {composeDraft,checkDraft} from './draft-note';
 import {jevConfigured,JevError} from './jev';
 import {keywordRank,keywordScores,jevScores,topResults,MAX_QUERY_LENGTH,type SearchEvidence,type SearchResult} from './network-search';
 import {SHARE_CAPS,carriesQuote,levelOfSlice,normalizeShareLevel,normalizeShareScope,normalizeSlice,shareableSourceType,sharedDisplayName,type SharedSlice,type ShareLevel,type ShareScope} from './network-share';
+const GUEST_ASKS_PER_DAY_TOTAL=30,GUEST_ASK_RETENTION=90*86_400_000;
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string;HONCHO_API_KEY?:string}
@@ -64,13 +74,29 @@ function bookingSourceCompletion(source:'gmail'|'granola',data:string|undefined,
  return value.lastSync;
 }
 /** One person in `graph()`: `via` names the owners who shared them, and is the only address there. */
-interface GraphPersonNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;manual?:boolean;memoryEligible?:boolean;sources?:string[];directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;quadrant:string;via?:string[]}
+interface GraphPersonNode {mergedProfiles?:Array<{id:string;name:string;company:string}>;manual?:boolean;memoryEligible?:boolean;sources?:string[];directRelationship:boolean;directLastContact:string|null;id:string;photoUrl:string|null;name:string;company:string;companySource:string;lastContact:string|null;meetings:number;lastMeeting:string|null;contactActivity?:{sent:number;received:number;meetings:number};strength:number;momentum:number;combined:number;/** Activity-only score before the owner's feedback and relationship adjustments. */baseCombined?:number;/** The owner's "not before" date from relationship memory. */notBefore?:string|null;quadrant:string;via?:string[]}
+/** Calendar activity names who accepted; other activity has no such list. */
+const acceptedIds=(event:object):string[]|undefined=>'acceptedPersonIds' in event&&Array.isArray(event.acceptedPersonIds)?event.acceptedPersonIds.filter((id):id is string=>typeof id==='string'):undefined;
 export class MailSync extends DurableObject<MailEnv>{
  constructor(ctx:DurableObjectState,env:MailEnv){super(ctx,env);ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS contact_photos (account TEXT NOT NULL,email TEXT NOT NULL,url TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,email)); CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (account TEXT NOT NULL,id TEXT NOT NULL,canonical TEXT NOT NULL,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS contributions (account TEXT NOT NULL,canonical TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,date INTEGER NOT NULL,subject TEXT NOT NULL,sent INTEGER NOT NULL,received INTEGER NOT NULL,PRIMARY KEY(account,canonical,email)); CREATE INDEX IF NOT EXISTS contributions_email ON contributions(email); CREATE INDEX IF NOT EXISTS contributions_account_date ON contributions(account,date DESC); CREATE TABLE IF NOT EXISTS mail_edge_messages (account TEXT,id TEXT,PRIMARY KEY(account,id)); CREATE TABLE IF NOT EXISTS mail_thread_people (account TEXT,thread TEXT,email TEXT,subject TEXT,PRIMARY KEY(account,thread,email)); CREATE TABLE IF NOT EXISTS mail_edges (account TEXT,canonical TEXT,a TEXT,b TEXT,subject TEXT,PRIMARY KEY(account,canonical,a,b)); CREATE TABLE IF NOT EXISTS shared_people (owner TEXT NOT NULL,email TEXT NOT NULL,name TEXT NOT NULL,last_contact TEXT,meetings INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,email)); CREATE INDEX IF NOT EXISTS shared_people_email ON shared_people(email); CREATE TABLE IF NOT EXISTS shared_edges (owner TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,weight INTEGER NOT NULL,types TEXT NOT NULL,contexts TEXT NOT NULL,PRIMARY KEY(owner,a,b)); CREATE TABLE IF NOT EXISTS shared_signals (owner TEXT NOT NULL,signal_id TEXT NOT NULL,title TEXT NOT NULL,PRIMARY KEY(owner,signal_id)); CREATE TABLE IF NOT EXISTS shared_meta (owner TEXT PRIMARY KEY,refreshed_at INTEGER NOT NULL,level TEXT NOT NULL);`);if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('contact_photos') WHERE name='source'").toArray().length)this.ctx.storage.sql.exec("ALTER TABLE contact_photos ADD COLUMN source TEXT NOT NULL DEFAULT 'saved'");this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS person_feedback (person_id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS calendar_events (account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(account,id))');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS gmail_context (account TEXT NOT NULL,message TEXT NOT NULL,person TEXT NOT NULL,observed INTEGER NOT NULL,facts TEXT NOT NULL,PRIMARY KEY(account,message)); CREATE INDEX IF NOT EXISTS gmail_context_person ON gmail_context(person,observed)');if(!this.ctx.storage.sql.exec("SELECT name FROM pragma_table_info('gmail_context') WHERE name='version'").toArray().length)this.ctx.storage.sql.exec('ALTER TABLE gmail_context ADD COLUMN version INTEGER NOT NULL DEFAULT 1');this.store();this.granola();}
  private ownerLensStore?:OwnerLensStore;
  private personContextStore?:PersonContextStore;
  private relationshipStore?:RelationshipMemoryStore;
  private memoryStore(){return this.relationshipStore??=new RelationshipMemoryStore(this.ctx.storage);}
+ private lifeSignalStore?:LifeSignalStore;
+ private lifeStore(){return this.lifeSignalStore??=new LifeSignalStore(this.ctx.storage);}
+ private curiosityNoteStore?:CuriosityNoteStore;
+ private curiosityStore(){return this.curiosityNoteStore??=new CuriosityNoteStore(this.ctx.storage);}
+ private momentStoreValue?:MomentStore;
+ private momentStore(){return this.momentStoreValue??=new MomentStore(this.ctx.storage);}
+ private introStoreValue?:IntroductionStore;
+ private introStore(){return this.introStoreValue??=new IntroductionStore(this.ctx.storage);}
+ private guestStoreValue?:GuestAskStore;
+ private guestStore(){return this.guestStoreValue??=new GuestAskStore(this.ctx.storage);}
+ private ownerTimeline?:OwnerTimelineStore;
+ private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
+ private companyStintStore?:CompanyStintStore;
+ private stintStore(){return this.companyStintStore??=new CompanyStintStore(this.ctx.storage);}
  private mergeStore?:PersonMergeStore;
  private personMergeStore(){return this.mergeStore??=new PersonMergeStore(this.ctx.storage);}
  async getPersonMerges(){return {merges:this.personMergeStore().get()};}
@@ -262,7 +288,7 @@ export class MailSync extends DurableObject<MailEnv>{
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
- private granola():GranolaSync{return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),ownerContextChanged:(force=false)=>this.ownerLens().reconcileGranola(this.granola().ownerLensVersions(),force),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email)});}
+ private granola():GranolaSync{return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),ownerContextChanged:(force=false)=>this.ownerLens().reconcileGranola(this.granola().ownerLensVersions(),force),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email),lifeNote:input=>this.lifeFromGranola(input),lifeForget:prefix=>this.lifeStore().forgetSources({prefix})});}
  /**
   * Gmail contacts for identity matching: one row per address with its most common display name
   * and up to five canonical subject theme names. Raw subject lines never leave this object.
@@ -301,7 +327,7 @@ export class MailSync extends DurableObject<MailEnv>{
   a.job={contextVersion:a.contextEnabled?GMAIL_CONTEXT_VERSION:undefined,calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending,hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};
   a.range=selected;a.status='syncing';a.error='';a.contextError='';this.put(a);if(schedule)await this.scheduleNextAlarm();
  }
- async remove(email:string){const revoking=this.get(email);if(revoking){revoking.contextEnabled=false;revoking.revision=crypto.randomUUID();this.put(revoking);}this.clearConnectionOrigins();this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.ownerLens().reconcileGranola(new Map(),true);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
+ async remove(email:string){const revoking=this.get(email);if(revoking){revoking.contextEnabled=false;revoking.revision=crypto.randomUUID();this.put(revoking);}this.clearConnectionOrigins();this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);this.lifeStore().forgetSources({prefix:`gmail:${email}:`});await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.ownerLens().reconcileGranola(new Map(),true);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
  async granolaConnect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{const status=await this.granola().connect(apiKey,range);await this.scheduleNextAlarm();return status;}
  granolaStatus():GranolaStatus{return this.granola().status();}
  async granolaExcluded(ids:string[]):Promise<GranolaStatus>{const status=await this.granola().setExcluded(ids);await this.scheduleNextAlarm();return status;}
@@ -311,6 +337,20 @@ export class MailSync extends DurableObject<MailEnv>{
  async granolaIdentity(attendeeEmail:string,decision:'confirm'|'dismiss'):Promise<{suggestions:GranolaIdentitySuggestion[]}>{return {suggestions:await this.granola().resolveIdentity(attendeeEmail,decision)};}
  private active(a:Account){return this.get(a.email)?.job?.generation===a.job?.generation;}
  async resolveOwnEmail(email:string):Promise<string|null>{const owner=await this.ctx.storage.get<string>('owner');if(!owner||!this.graphContacts().some(r=>r.email===email))return null;return opaque(owner,email,this.env.TOKEN_SECRET);}
+ /**
+  * Who the owner is in their own graph: person IDs of their own addresses, and the names they
+  * appear under on those addresses (Granola attendee lists, mail between their own accounts).
+  * Other addresses that show up under one of those names are the owner too, unless asked for.
+  */
+ async ownerIdentity():Promise<{personIds:string[];names:string[]}>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {personIds:[],names:[]};
+  const own=[...new Set([owner,...this.rows().map(a=>a.email),...this.granola().ownEmails()].map(e=>e.toLowerCase()))];
+  const marks=own.map(()=>'?').join(',');
+  const names=new Set<string>();
+  for(const sql of [`SELECT DISTINCT name FROM granola_attendees WHERE lower(email) IN (${marks})`,`SELECT DISTINCT name FROM contributions WHERE lower(email) IN (${marks})`])
+   for(const row of this.ctx.storage.sql.exec<{name:string}>(sql,...own).toArray())if(row.name&&!row.name.includes('@')&&row.name.trim().length>=2)names.add(row.name.trim());
+  return {personIds:await Promise.all(own.map(e=>opaque(owner,e,this.env.TOKEN_SECRET))),names:[...names]};
+ }
  private async google(url:string,access:string){const r=await fetch(url,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});if(!r.ok){await r.body?.cancel();const e=new Error(r.status===401?'reconnect_required':r.status===403?'gmail_access_denied':`gmail_${r.status}`);throw e;}return readBoundedJSON(r,2_000_000);}
  async alarm(){
   if(await this.ownerLens().runRefreshJob(valid=>this.collectOwnerLens(valid),()=>this.scheduleNextAlarm())){await this.scheduleNextAlarm();return;}
@@ -466,6 +506,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   // Stop the previous generation; a late body/AI response cannot restore disabled context.
   a.job=null;a.status='connected';this.put(a);
   this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);
+  if(!enabled)this.lifeStore().forgetSources({prefix:`gmail:${email}:`});
   await this.ctx.storage.delete('graph');
   if(enabled)await this.start(email);else await this.scheduleNextAlarm();
   return {ok:true};
@@ -474,7 +515,9 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
   const cutoff=Date.now()-90*86400000;
   this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE observed<?',cutoff);
-  if(this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length)return;
+  const needWork=!this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length;
+  const lifeRef=`gmail:${a.email}:${id}`,needLife=this.lifeStore().enabled()&&!this.lifeStore().processed(lifeRef);
+  if(!needWork&&!needLife)return;
   // Existing metadata restricts body retrieval to recent inbound messages from a contact.
   const row=this.ctx.storage.sql.exec<{email:string;date:number}>('SELECT c.email,c.date FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.received>0 AND c.date>=? LIMIT 1',a.email,id,cutoff).toArray()[0];
   if(!row)return;
@@ -483,21 +526,23 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    const person=await opaque(owner,row.email,this.env.TOKEN_SECRET);
    const storeFacts=(facts:MailFact[],observed=row.date)=>{
     if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
-    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)',a.email,id,person,observed,JSON.stringify(facts),GMAIL_CONTEXT_VERSION);
+    if(needWork)this.ctx.storage.sql.exec('INSERT OR REPLACE INTO gmail_context (account,message,person,observed,facts,version) VALUES (?,?,?,?,?,?)',a.email,id,person,observed,JSON.stringify(facts),GMAIL_CONTEXT_VERSION);
    };
+   // An ineligible message (missing, list mail, several senders) is never a life source either.
+   const ineligible=()=>{storeFacts([]);if(needLife)this.lifeStore().markProcessed(lifeRef);};
    const url=new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages/'+encodeURIComponent(id));url.searchParams.set('format','full');url.searchParams.set('fields','id,internalDate,payload');
    const response=await fetch(url.href,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});
-   if(response.status===404){await response.body?.cancel();storeFacts([]);return;}
+   if(response.status===404){await response.body?.cancel();ineligible();return;}
    if(!response.ok){await response.body?.cancel();throw Error('gmail_context_unavailable');}
    const raw=await readBoundedJSON(response,2_000_000) as GmailMessage;
    if(!this.active(a)||!this.get(a.email)?.contextEnabled||this.get(a.email)?.revision!==a.revision)return;
    const parsed=parseMessage(raw,a.email),senders=parsed?.participants.filter(p=>p.received&&p.email!==a.email)||[];
-   if(raw.id!==id||!parsed||parsed.date<cutoff||parsed.date>Date.now()||senders.length!==1||senders[0].email!==row.email){storeFacts([]);return;}
+   if(raw.id!==id||!parsed||parsed.date<cutoff||parsed.date>Date.now()||senders.length!==1||senders[0].email!==row.email){ineligible();return;}
    const headers=raw.payload?.headers||[];
-   if(headers.some(h=>['list-id','list-unsubscribe'].includes(h.name.toLowerCase()))||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(row.email)){storeFacts([]);return;}
-   const body=decodeGmailMessage(raw,24000);
-   const facts=await extractMailContext(this.env.AI,body.text);body.text='';
-   storeFacts(facts,parsed.date);
+   if(headers.some(h=>['list-id','list-unsubscribe'].includes(h.name.toLowerCase()))||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(row.email)){ineligible();return;}
+   const body=decodeGmailMessage(raw,24000),text=body.text;body.text='';
+   if(needLife)await this.lifeFromText(person,'gmail',lifeRef,'sender',text,parsed.date,()=>this.active(a)&&!!this.get(a.email)?.contextEnabled&&this.get(a.email)?.revision===a.revision);
+   if(needWork)storeFacts(await extractMailContext(this.env.AI,text),parsed.date);
   }catch{if(this.active(a)){a.contextVersion=0;a.contextError='Some email context could not be analysed. It will retry on the next sync.';}}
  }
  /** Full private passages for recommendations; never part of workspace exports or graph summaries. */
@@ -959,18 +1004,491 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const existing=this.ctx.storage.sql.exec<{person_id:string}>('SELECT person_id FROM person_memory_entries WHERE source_id=?',input.sourceId.trim()).toArray()[0];
   const captureId=existing&&await this.canonicalPersonId(existing.person_id)===personId?existing.person_id:personId;
   const result=await store.capture(captureId,{...input,email},captureId===rawId&&!this.graphContacts().some(p=>p.email===email));
+  await this.lifeFromText(personId,'memory','memory:'+input.sourceId.trim(),'note',input.text,Date.now());
   return {...result,personId,memory:await this.memoryForPerson(personId)};
+ }
+ /** Store life signals from one source text. Never throws: life extraction must not break the caller. `stillAllowed` re-checks consent after the model call. */
+ private async lifeFromText(personId:string,source:LifeSource,sourceRef:string,mode:LifeMode,text:string,observed:number,stillAllowed:()=>boolean=()=>true){
+  const store=this.lifeStore();
+  if(!store.enabled()||store.processed(sourceRef))return;
+  try{
+   store.purgeExpired();
+   const candidates=await extractLifeSignals(this.env.AI,text,mode);
+   // The model call can take seconds: consent may have been withdrawn meanwhile.
+   if(!store.enabled()||!stillAllowed())return;
+   candidates.forEach((candidate,index)=>store.add(personId,candidate,source,sourceRef,observed,index));
+   store.markProcessed(sourceRef);
+  }catch{/* left unprocessed; extracted again only if this source is processed again */}
+ }
+ /** Granola hook: attribute each signal to the single attendee its anchor sentence names. */
+ private async lifeFromGranola(input:{noteId:string;meetingAt:string;text:string;attendees:{email:string;name:string}[];contentHash?:string}){
+  const store=this.lifeStore(),sourceRef=`granola:${input.noteId}:${input.contentHash??''}`,observed=Date.parse(input.meetingAt);
+  if(!store.enabled()||store.processed(sourceRef)||!input.text.trim()||!Number.isFinite(observed))return;
+  try{
+   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return;
+   const own=new Set([owner,...this.rows().map(a=>a.email),...this.granola().ownEmails()]);
+   const attendees=input.attendees.filter(a=>!own.has(a.email.toLowerCase()));
+   store.purgeExpired();
+   const candidates=await extractLifeSignals(this.env.AI,input.text,'attendee',attendees);
+   if(!store.enabled())return;
+   const alias=this.granola().aliases();
+   for(const [index,candidate] of candidates.entries()){
+    if(!candidate.personHint)continue;
+    const email=alias.get(candidate.personHint)??candidate.personHint;
+    store.add(await this.canonicalPersonId(await opaque(owner,email,this.env.TOKEN_SECRET)),candidate,'granola',sourceRef,observed,index);
+   }
+   store.markProcessed(sourceRef);
+  }catch{/* left unprocessed; extracted again when the note changes */}
  }
  async deleteRelationshipEntry(input:{personId:string;entryId:string;revision:string|null}){
   if(!input||Object.keys(input).sort().join(',')!=='entryId,personId,revision'||!validContextPerson(input.personId))throw Error('invalid_request');
   const canonical=await this.canonicalPersonId(input.personId);
   this.personContextFor(await this.emailForPerson(canonical));
   const current=this.memoryStore().get(canonical);if(current.revision!==input.revision)throw Error('person_context_conflict');
-  const entry=this.ctx.storage.sql.exec<{person_id:string}>('SELECT person_id FROM person_memory_entries WHERE id=?',input.entryId).toArray()[0];
+  const entry=this.ctx.storage.sql.exec<{person_id:string;source_id:string}>('SELECT person_id,source_id FROM person_memory_entries WHERE id=?',input.entryId).toArray()[0];
   if(!entry||await this.canonicalPersonId(entry.person_id)!==canonical)throw Error('not_found');
   this.memoryStore().remove({...input,personId:entry.person_id,revision:this.memoryStore().get(entry.person_id).revision});
+  // A deleted note takes its life signals with it; the processed marker stays, so nothing returns.
+  this.lifeStore().forgetSources({exact:'memory:'+entry.source_id});
   if(entry.person_id!==canonical)this.personContextFor(await this.emailForPerson(canonical)).save({personId:canonical,text:current.text,revision:current.revision});
   return this.memoryForPerson(canonical);
+ }
+ async getLifeSettings(){return {enabled:this.lifeStore().enabled()};}
+ async setLifeSignals(enabled:boolean){if(typeof enabled!=='boolean')throw Error('invalid_request');this.lifeStore().setEnabled(enabled);return {enabled};}
+ /** Every person id that resolves to this person, including merged aliases. */
+ private async mergedPersonIds(personId:string):Promise<string[]>{
+  const canonical=await this.canonicalPersonId(personId),merges=this.personMergeStore().get();
+  return [...new Set([canonical,...Object.entries(merges).filter(([,target])=>target===canonical).map(([source])=>source)])];
+ }
+ async listLifeSignals(personId?:string){
+  if(personId!==undefined&&!validContextPerson(personId))throw Error('invalid_request');
+  const store=this.lifeStore();store.purgeExpired();
+  return {enabled:store.enabled(),signals:store.list(personId===undefined?undefined:await this.mergedPersonIds(personId))};
+ }
+ async forgetLifeSignals(input:{id?:unknown;personId?:unknown;all?:unknown}){
+  const store=this.lifeStore(),keys=Object.keys(input??{});
+  if(keys.length!==1)throw Error('invalid_request');
+  if(input.all===true)return {removed:store.forget({all:true})};
+  if(typeof input.id==='string'&&input.id.length<=400)return {removed:store.forget({id:input.id})};
+  if(typeof input.personId==='string'&&validContextPerson(input.personId))return {removed:store.forget({personIds:await this.mergedPersonIds(input.personId)})};
+  throw Error('invalid_request');
+ }
+ async addTimelineEntry(input:{text?:unknown;category?:unknown;date?:unknown}){return this.timelineStore().add(input??{});}
+ async listTimeline(){return {entries:this.timelineStore().list()};}
+ async forgetTimelineEntry(id:string){if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');return {removed:this.timelineStore().forget(id)};}
+ async companyStints(personId:string){
+  if(!validContextPerson(personId))throw Error('invalid_request');
+  const canonical=await this.canonicalPersonId(personId),emails=await this.emailsForMergedPerson(personId);
+  const spans=emails.length?this.ctx.storage.sql.exec<{email:string;first:number;last:number}>(`SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions WHERE email IN (${emails.map(()=>'?').join(',')}) GROUP BY email`,...emails).toArray():[];
+  return {stints:mergeStints(deriveStints(canonical,spans,Date.now()),this.stintStore().forPerson(await this.mergedPersonIds(personId)))};
+ }
+ async setCompanyStint(input:{personId?:unknown;company?:unknown;from?:unknown;to?:unknown}){
+  if(!input||typeof input.personId!=='string'||!validContextPerson(input.personId))throw Error('invalid_request');
+  return this.stintStore().set({...input,personId:await this.canonicalPersonId(input.personId)});
+ }
+ async forgetCompanyStint(id:string){if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');return {removed:this.stintStore().forget(id)};}
+ /** The owner's private catch-up brief for one person, resolved by id, recorded email or exact name. */
+ async catchUpBrief(input:{personId?:unknown;email?:unknown;query?:unknown}):Promise<{ok:true;brief:CatchUpBrief}|{ok:false;error:'not_found'|'ambiguous_person';candidates:{id:string;name:string;company:string}[]}>{
+  const keys=Object.keys(input??{}).filter(k=>input[k as keyof typeof input]!==undefined);
+  const value=keys.length===1?input[keys[0] as keyof typeof input]:undefined;
+  if(typeof value!=='string'||!value.trim()||value.length>200)throw Error('invalid_request');
+  const graph=await this.graph(),nodes=graph?.nodes??[],aliases=graph?.personAliases??{};
+  let matches:GraphPersonNode[]=[];
+  if(keys[0]==='personId')matches=nodes.filter(n=>n.id===(aliases[value]??value));
+  else if(keys[0]==='email'){const id=await this.resolveOwnEmail(value.toLowerCase());matches=id?nodes.filter(n=>n.id===(aliases[id]??id)):[];}
+  else matches=nodes.filter(n=>n.name.toLowerCase()===value.trim().toLowerCase());
+  if(matches.length!==1)return {ok:false,error:matches.length?'ambiguous_person':'not_found',candidates:matches.slice(0,5).map(n=>({id:n.id,name:n.name,company:n.company}))};
+  const person=matches[0],store=this.lifeStore();store.purgeExpired();
+  const ids=new Set(await this.mergedPersonIds(person.id));
+  const memory=await this.memoryForPerson(person.id);
+  const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',person.id).toArray()[0];
+  const work=(await this.helperContext()).filter(s=>s.personId&&ids.has(s.personId)).slice(0,3).map(s=>({summary:String(s.summary??'').slice(0,240),observedAt:s.observedAt,source:'gmail'}));
+  return {ok:true,brief:assembleBrief({
+   person:{id:person.id,name:person.name,company:person.company,lastContact:person.lastContact,combined:Number.isFinite(person.combined)?person.combined:null},
+   signalsEnabled:store.enabled(),signals:store.list([...ids]),work,
+   memory:memory.entries.slice(0,3).map(e=>({text:e.text,createdAt:e.createdAt})),
+   feedback:feedback?JSON.parse(feedback.data) as {action:string}:null,relationship:memory.relationship,
+   stints:(await this.companyStints(person.id)).stints,timeline:this.timelineStore().list(),now:Date.now(),
+   introductions:this.introductionCounts(ids),
+  })};
+ }
+ /** Introductions involving these person ids that were made, and how many of those met. */
+ private introductionCounts(ids:Set<string>){
+  const made=this.introStore().list(Date.now()).filter(i=>['made','met','not_met'].includes(i.status)&&[i.introducer,...i.parties].some(p=>ids.has(p)));
+  return {made:made.length,met:made.filter(i=>i.status==='met').length};
+ }
+ /** Owner-only: this owner's own contacts and their addresses, for the local peer server to match HMAC references. */
+ async peerDirectory(){
+  const ids=await this.mergeIdentities(),merges=this.personMergeStore().get(),people=new Map<string,string[]>();
+  for(const [id,email] of ids){const canonical=merges[id]??id;people.set(canonical,[...(people.get(canonical)??[]),email]);}
+  return {people:[...people].map(([personId,emails])=>({personId,emails:emails.sort()}))};
+ }
+ /** Owner-only coarse answers for peer questions: a relationship band, a month, and open/personal signals without quotes. */
+ async peerAnswer(personId:string,type:'knows'|'catch_up'){
+  if(!validContextPerson(personId)||!['knows','catch_up'].includes(type))throw Error('invalid_request');
+  const graph=await this.graph(),aliases=graph?.personAliases??{},node=(graph?.nodes??[]).find(n=>n.id===(aliases[personId]??personId));
+  if(type==='knows'){
+   if(!node)return {known:false};
+   // Activity only: the owner's swipes and relationship notes (baseCombined excludes them) and shared-network dates never cross.
+   const activity=node.baseCombined??node.combined;
+   const band=activity>=60?'strong':activity>=30?'some':'light';
+   return {known:true,band,lastContactMonth:node.directLastContact?node.directLastContact.slice(0,7):null};
+  }
+  const store=this.lifeStore();store.purgeExpired();
+  if(!node||!store.enabled())return {signals:[]};
+  // Sensitive signals and quotes never leave through this route.
+  return {signals:store.list(await this.mergedPersonIds(node.id)).filter(s=>s.tier!=='sensitive').map(s=>({category:s.category,tier:s.tier,summary:s.summary,observedMonth:s.observedAt.slice(0,7),expiresAt:s.expiresAt}))};
+ }
+ /**
+  * The owner's own graph in the shape structure answers need, read once per request; `null`
+  * before the first sync. Dates are the owner's own (never a shared network's), other owners'
+  * shared evidence is marked, and exclusions come from the canonical, merge-aware feedback.
+  */
+ private async structureInput(now:number){
+  const graph=await this.graph();if(!graph)return null;
+  const input:StructureInput={
+   nodes:graph.nodes.map(n=>({id:n.id,name:n.name,company:n.company,strength:n.strength,combined:n.combined,baseCombined:n.baseCombined,lastContact:n.directRelationship?n.directLastContact:n.lastContact,directRelationship:n.directRelationship,via:n.via})),
+   edges:graph.edges.map(e=>({source:e.source,target:e.target,weight:e.weight,types:e.types})),
+   activity:graph.activity.map(e=>({kind:e.kind,at:e.at,personIds:e.personIds,acceptedPersonIds:acceptedIds(e),title:e.title})),
+   themeSignals:graph.themeSignals.map(s=>({personId:s.personId,themeId:s.themeId,summary:s.summary,observedAt:s.observedAt,sourceType:s.sourceType,...(s.evidenceRef.startsWith(SHARE_ACCOUNT)?{shared:true}:{})})),
+   themes:graph.themes.map(t=>({id:t.id,name:t.canonicalName})),
+  };
+  // Judgment only removes people: suppressed, snoozed, or not yet.
+  const excluded=new Set<string>();
+  for(const [id,feedback] of Object.entries(graph.personFeedback))if(feedback.action==='suppress'||(feedback.action==='snooze'&&feedback.until>now))excluded.add(id);
+  for(const n of graph.nodes)if(n.notBefore&&Date.parse(n.notBefore)>now)excluded.add(n.id);
+  return {input,excluded,aliases:graph.personAliases??{}};
+ }
+ /** Who to contact now and why: meetings soon, replies owed, fresh signals, moves, cooling, focus. */
+ async whyNow(limit=10){
+  if(!Number.isInteger(limit)||limit<1||limit>25)throw Error('invalid_request');
+  const now=Date.now(),structure=await this.structureInput(now);
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const {input,excluded,aliases}=structure,ids=await this.mergeIdentities(),merges=this.personMergeStore().get();
+  // Reply state for the owner's own contacts only, keyed like the graph.
+  const rows=new Map(this.ctx.storage.sql.exec<{email:string;lastIn:number|null;lastOut:number|null}>('SELECT email,MAX(CASE WHEN received>0 THEN date END) AS lastIn,MAX(CASE WHEN sent>0 THEN date END) AS lastOut FROM contributions GROUP BY email').toArray().map(r=>[r.email,r]));
+  const mail:Record<string,{lastIn:number|null;lastOut:number|null}>={};
+  for(const [raw,email] of ids){
+   const row=rows.get(email);if(!row)continue;
+   const id=aliases[raw]??raw,cur=mail[id];
+   mail[id]=cur?{lastIn:Math.max(cur.lastIn??0,row.lastIn??0)||null,lastOut:Math.max(cur.lastOut??0,row.lastOut??0)||null}:{lastIn:row.lastIn,lastOut:row.lastOut};
+  }
+  // Owner corrections plus history derived for people already merged across addresses.
+  const stints=[...this.stintStore().all()];
+  for(const target of new Set(Object.values(merges))){
+   if(!ids.has(target))continue;
+   const emails=[...ids].filter(([id])=>id===target||merges[id]===target).map(([,email])=>email);
+   const spans=this.ctx.storage.sql.exec<{email:string;first:number;last:number}>(`SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions WHERE email IN (${emails.map(()=>'?').join(',')}) GROUP BY email`,...emails).toArray();
+   stints.push(...deriveStints(target,spans,now));
+  }
+  const lens=this.ownerLens().get(),store=this.lifeStore();store.purgeExpired();
+  const signals=store.enabled()?store.list().map(s=>({personId:aliases[s.personId]??s.personId,category:s.category,tier:s.tier,summary:s.summary,observedAt:s.observedAt,source:s.source})):[];
+  const result=whyNow(input,{now,lens:lens.enabled?lens.fields:{focus:'',needs:''},signals,stints,jobMoves:(await this.jobMoveCandidates()).candidates,mail,excluded},limit);
+  return {interpretation:null,answers:result.answers,result:{generatedAt:new Date(now).toISOString()},gaps:result.gaps};
+ }
+ /** Clusters and distances for this request; nothing is cached or exported. */
+ private async structureNow(){
+  const now=Date.now(),structure=await this.structureInput(now);if(!structure)return null;
+  return {input:structure.input,now,ctx:structureContext(structure.input,await clusterNetwork(structure.input,now),now),excluded:structure.excluded};
+ }
+ /** Search candidates for a topic; evidence another owner shared is marked so it is never presented as first-hand. */
+ private async topicCandidates(topic:string,excluded:Set<string>,input:StructureInput):Promise<Candidate[]>{
+  const own=new Set(input.themeSignals.filter(s=>!s.shared).map(s=>s.summary));
+  const shared=new Set(input.themeSignals.filter(s=>s.shared&&!own.has(s.summary)).map(s=>s.summary));
+  const search=await this.searchPeople(topic);
+  return search.results.filter(r=>!excluded.has(r.personId)).map(r=>({personId:r.personId,name:r.name,relevance:r.score,evidence:r.reasons.map(e=>({summary:e.summary,observedAt:e.observedAt,source:e.title??'People evidence',...(shared.has(e.summary)?{shared:true}:{})}))}));
+ }
+ /** Relevant people outside the owner's usual circles; with a claim, disagreement ranks higher. */
+ async contrast(topic:string,claim?:string){
+  if(typeof topic!=='string'||!topic.trim()||topic.length>200||(claim!==undefined&&(typeof claim!=='string'||!claim.trim()||claim.length>200)))throw Error('invalid_request');
+  const structure=await this.structureNow();
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const candidates=await this.topicCandidates(topic.trim(),structure.excluded,structure.input);
+  const distant=candidates.filter(c=>c.relevance>=0.3&&distanceOf(c.personId,structure.ctx).value>=0.5);
+  const stances=claim?await stanceLabels(this.env.AI,claim.trim(),distant.slice(0,8)):{};
+  const result=contrast(candidates,structure.ctx,stances);
+  return {interpretation:null,answers:result.answers,result:{topic:topic.trim(),claim:claim?.trim()??null},gaps:result.gaps};
+ }
+ /** A narrowing pattern in the last 30 days, and one person from outside it. */
+ async widen(){
+  const structure=await this.structureNow();
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const lens=this.ownerLens().get();
+  const result=widen(structure.input,structure.ctx,structure.now,{focus:lens.enabled?`${lens.fields.focus} ${lens.fields.needs}`:'',excluded:structure.excluded});
+  return {interpretation:null,answers:result.answers,result:result.result,gaps:result.gaps};
+ }
+ /** People in different circles who should know each other, plus the connectors already linking them. */
+ async bridges(topic?:string){
+  if(topic!==undefined&&(typeof topic!=='string'||!topic.trim()||topic.length>200))throw Error('invalid_request');
+  const structure=await this.structureNow();
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const result=bridges(structure.input,structure.ctx,{topic:topic?.trim(),excluded:structure.excluded});
+  return {interpretation:null,answers:result.answers,result:result.result,gaps:result.gaps};
+ }
+ /** The landscape around one topic as a typed `Atlas` object, for an interface to draw. */
+ async atlas(topic:string):Promise<Atlas>{
+  if(typeof topic!=='string'||!topic.trim()||topic.length>200)throw Error('invalid_request');
+  const text=topic.trim(),structure=await this.structureNow();
+  if(!structure)return {version:1,topic:text,generatedAt:new Date().toISOString(),communities:[],known:[],fringe:[],absent:[],gaps:['No People data yet']};
+  const candidates=await this.topicCandidates(text,structure.excluded,structure.input);
+  const present=structure.ctx.clusters.clusters.filter(c=>structure.ctx.usual.has(c.id)||c.members.some(m=>candidates.some(x=>x.personId===m))).map(c=>c.label);
+  return assembleAtlas(text,structure.input,structure.ctx,candidates,await absentCommunities(this.env.AI,text,present),structure.now);
+ }
+ /** A note's names: an exact recorded email or one exact name match; anything else is a gap. */
+ private async resolveNotePeople(note:CuriosityNote){
+  const graph=await this.graph(),aliases=graph?.personAliases??{},nodes=(graph?.nodes??[]).filter(n=>n.directRelationship||n.manual);
+  const people:{name:string;personId:string|null}[]=[],gaps:string[]=[];
+  for(const name of [...new Set([...note.wantToTalkTo,...note.newInMyHead.flatMap(i=>i.names)])]){
+   let personId:string|null=null;
+   if(name.includes('@')){const id=await this.resolveOwnEmail(name.toLowerCase());personId=id?aliases[id]??id:null;}
+   else{
+    const matches=nodes.filter(n=>n.name.toLowerCase()===name.toLowerCase());
+    if(matches.length===1)personId=matches[0].id;
+    else if(matches.length>1){gaps.push(`Several people are named ${name}`);people.push({name,personId});continue;}
+   }
+   if(!personId)gaps.push(`No one in your network matches ${name}`);
+   people.push({name,personId});
+  }
+  return {people,gaps};
+ }
+ /** Save a curiosity note (create, or replace an active one); names resolve against the owner's own graph. */
+ async setCuriosityNote(input:{text?:unknown;id?:unknown}){
+  if(typeof input?.text!=='string'||(input.id!==undefined&&(typeof input.id!=='string'||input.id.length>100)))throw Error('invalid_request');
+  const stored=this.curiosityStore().set(input.text,input.id,Date.now());
+  const {people,gaps}=await this.resolveNotePeople(stored);
+  return {note:{...stored,people},gaps};
+ }
+ async listCuriosityNotes(includeArchived=false){
+  const notes=[];
+  for(const note of this.curiosityStore().list(includeArchived))notes.push({...note,people:(await this.resolveNotePeople(note)).people});
+  return {notes};
+ }
+ async archiveCuriosityNote(id:string){
+  if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');
+  if(!this.curiosityStore().archive(id,Date.now()))throw Error('not_found');
+  return {archived:id};
+ }
+ private momentGeneration?:Promise<void>;
+ /**
+  * Today's moments, generated on the first read of each UTC day from the owner's own data only:
+  * notes, why-now, fringe contrasts, bridges and widen. Peers are never asked, here or anywhere.
+  */
+ async moments(input:{today?:boolean}={}){
+  const now=Date.now(),day=new Date(now).toISOString().slice(0,10),store=this.momentStore();
+  if(!store.generated(day)){
+   this.momentGeneration??=this.generateMoments(now,day).finally(()=>{this.momentGeneration=undefined;});
+   await this.momentGeneration;
+  }
+  return {moments:store.list(now,input.today?day:null),stats:store.stats(now),budget:store.budget()};
+ }
+ private async generateMoments(now:number,day:string){
+  // Before the first sync there is nothing to say; leave the day open for a later read.
+  if(!(await this.graph()))return;
+  const store=this.momentStore(),notes:MomentNote[]=[];
+  for(const note of this.curiosityStore().list()){
+   const people=(await this.resolveNotePeople(note)).people.map(p=>({...p,wantToTalk:note.wantToTalkTo.includes(p.name)}));
+   notes.push({id:note.id,title:note.title,keywords:noteKeywords(note),people,fringes:note.fringes});
+  }
+  const whyNowAnswers=(await this.whyNow(25)).answers,structure=notes.length?await this.structureNow():null;
+  const evidence:Record<string,string[]>={},lastContact:Record<string,string|null>={},names:Record<string,string>={};
+  const fringe:MomentInput['fringe']=[];let found:BridgePair[]=[],pattern:WidenResult|null=null;
+  // Each source stands alone: one failing search or structure answer never blanks the day.
+  const attempt=async<T>(source:string,run:()=>Promise<T>|T):Promise<T|null>=>{try{return await run();}catch{console.error('moments_source_failed',source);return null;}};
+  if(structure){
+   for(const s of structure.input.themeSignals)if(s.personId&&!s.shared&&Date.parse(s.observedAt)>=now-30*86_400_000)(evidence[s.personId]??=[]).push(s.summary);
+   for(const n of structure.input.nodes){lastContact[n.id]=n.lastContact;names[n.id]=n.name;}
+   // At most three fringe questions a day, each one search of at most 200 characters.
+   for(const question of notes.flatMap(n=>n.fringes).slice(0,3)){
+    const answers=await attempt('fringe',async()=>contrast(await this.topicCandidates(question.slice(0,200),structure.excluded,structure.input),structure.ctx).answers);
+    if(answers)fringe.push({fringe:question,answers});
+   }
+   found=await attempt('bridges',()=>bridges(structure.input,structure.ctx,{excluded:structure.excluded}).answers)??[];
+   const lens=this.ownerLens().get();
+   pattern=await attempt('widen',()=>widen(structure.input,structure.ctx,now,{focus:lens.enabled?`${lens.fields.focus} ${lens.fields.needs}`:'',excluded:structure.excluded}));
+  }
+  store.save(day,generateMoments({now,day,budget:store.budget(),notes,whyNow:whyNowAnswers,evidence,lastContact,names,fringe,bridges:found,widen:pattern,existing:store.recent(now),suppressed:store.suppressions(now),excluded:structure?.excluded??new Set()}));
+ }
+ async updateMoment(id:string,action:string){
+  if(typeof id!=='string'||!id||id.length>300||!isMomentAction(action))throw Error('invalid_request');
+  return {moment:this.momentStore().update(id,action,Date.now())};
+ }
+ async setMomentBudget(budget:number){return this.momentStore().setBudget(budget);}
+ /** The owner's own three-party introductions; shared-workspace requests are added by the route. */
+ async listIntroductions(){return {introductions:this.introStore().list(Date.now())};}
+ /** Propose exactly one introduction among the owner and people in the owner's graph. */
+ async proposeIntroduction(input:{introducer?:unknown;parties?:unknown;reason?:unknown;evidence?:unknown}){
+  const now=Date.now(),known=new Set(((await this.graph())?.nodes??[]).map(n=>n.id));
+  const isPerson=(id:unknown):id is string=>typeof id==='string'&&(id==='owner'||known.has(id));
+  const {introducer,parties,reason,evidence}=input??{};
+  if(!isPerson(introducer)||!Array.isArray(parties)||parties.length!==2||!isPerson(parties[0])||!isPerson(parties[1])||typeof reason!=='string')throw Error('invalid_request');
+  const items=Array.isArray(evidence)?evidence.flatMap(e=>e&&typeof e==='object'&&typeof e.summary==='string'&&isPerson(e.personId)?[{personId:e.personId,source:String(e.source??'note'),date:String(e.date??''),summary:e.summary}]:[]):[];
+  const intro=proposeIntroduction({introducer,parties:[parties[0],parties[1]],reason,evidence:items},this.introStore().list(now),now);
+  return {introduction:this.introStore().save(intro)};
+ }
+ async advanceIntroduction(id:string,to:string,vouch?:string){
+  const now=Date.now(),intro=this.introStore().get(id,now);
+  if(!intro)throw Error('not_found');
+  if(!isIntroductionStatus(to))throw Error('invalid_request');
+  return {introduction:this.introStore().save(advance(intro,{to,...(vouch===undefined?{}:{vouch})},now))};
+ }
+ async recordIntroductionOutcome(id:string,result:string,note:string|null){
+  const now=Date.now(),intro=this.introStore().get(id,now);
+  if(!intro)throw Error('not_found');
+  if(result!=='met'&&result!=='not_met')throw Error('invalid_request');
+  return {introduction:this.introStore().save(recordOutcome(intro,{result,note},now))};
+ }
+ /** Guest ask stays off until the owner turns it on. */
+ async setGuestAsk(enabled:boolean){if(typeof enabled!=='boolean')throw Error('invalid_request');await this.ctx.storage.put('guestAskEnabled',enabled);return {enabled};}
+ async guestAskEnabled(){return (await this.ctx.storage.get<boolean>('guestAskEnabled'))===true;}
+ /** A verified guest's question: stored pending with an owner-only draft. Nothing reaches the guest until the owner answers. */
+ async submitGuestAsk(guest:{key:string;email:string},question:string){
+  if(!await this.guestAskEnabled())throw Error('guest_ask_disabled');
+  if(typeof guest?.key!=='string'||!guest.key||typeof guest.email!=='string'||!guest.email)throw Error('invalid_request');
+  const text=typeof question==='string'?question.trim():'';
+  if(!text||text.length>MAX_QUESTION)throw Error('invalid_request');
+  const store=this.guestStore(),reserved=Date.now();
+  // Reserve before the first await: parallel requests count against the limits before any
+  // search or model call is paid for. Old questions are pruned here, so storage stays bounded.
+  store.prune(reserved-GUEST_ASK_RETENTION);
+  checkDailyLimit(store.listFor(guest.key,reserved),guest.key,reserved);
+  if(store.countSince(reserved-86_400_000)>=GUEST_ASKS_PER_DAY_TOTAL)throw Error('guest_rate_limited');
+  const at=new Date(reserved).toISOString();
+  const ask:GuestAsk={id:'ga_'+crypto.randomUUID(),guest:guest.key,guestEmail:guest.email,question:text,status:'pending',draft:{text:'',people:[]},answer:null,introductions:{},createdAt:at,updatedAt:at};
+  store.save(ask);
+  const draft=await this.draftGuestAnswer(text);
+  const current=store.get(ask.id,Date.now());
+  if(current)store.save({...current,draft});
+  return {ask:guestView(ask,{})};
+ }
+ /** Every token that could identify someone in the owner's network. */
+ private async guestForbidden(){
+  const graph=await this.graph();
+  return forbiddenTokens((graph?.nodes??[]).map(n=>({name:n.name,company:n.company??''})),this.graphContacts().map(c=>c.email));
+ }
+ /** Draft from work evidence only: search over the graph (never life signals, notes or peers), described anonymously. */
+ private async draftGuestAnswer(question:string):Promise<GuestAsk['draft']>{
+  const graph=await this.graph(),now=Date.now();
+  // Only people the owner knows first-hand and has not set aside: never someone reachable only
+  // through another owner's share, and never someone suppressed, snoozed or deferred.
+  const offered=new Set((graph?.nodes??[]).filter(n=>(n.directRelationship||n.manual)&&!(n.notBefore&&Date.parse(n.notBefore)>now)).map(n=>n.id));
+  for(const [id,feedback] of Object.entries(graph?.personFeedback??{}))if(feedback.action==='suppress'||(feedback.action==='snooze'&&feedback.until>now))offered.delete(id);
+  const found=graph?(await this.searchPeople(question.slice(0,MAX_QUERY_LENGTH))).results.filter(r=>offered.has(r.personId)).slice(0,5):[];
+  const forbidden=await this.guestForbidden(),own=new Map<string,string[]>(),themes=new Map<string,string[]>();
+  // Only the owner's own evidence may shape the words, themes included; shared evidence counts toward relevance only.
+  const themeNames=new Map((graph?.relevance?.themes??[]).map(t=>[t.themeId,t.name]));
+  for(const s of graph?.themeSignals??[]){
+   if(!s.personId||s.evidenceRef.startsWith(SHARE_ACCOUNT))continue;
+   own.set(s.personId,[...(own.get(s.personId)??[]),s.summary]);
+   const name=themeNames.get(s.themeId);
+   if(name&&!(themes.get(s.personId)??[]).includes(name))themes.set(s.personId,[...(themes.get(s.personId)??[]),name]);
+  }
+  const described=await describePeople(this.env.AI,this.env.THEME_MODEL,question,found.map(r=>({company:r.company,evidence:(own.get(r.personId)??[]).slice(0,5),themes:themes.get(r.personId)??[]})));
+  const people:GuestPerson[]=found.map((r,i)=>({ref:`p${i+1}`,personId:r.personId,description:anonymous(described.get(i)??'',forbidden)??fallbackDescription(themes.get(r.personId)??[],forbidden)}));
+  const text=people.length?`${people.length===1?'One person':`${people.length} people`} in my network may be able to help.`:'I could not find anyone in my network for this yet.';
+  return {text,people};
+ }
+ /** Owner view: every ask with its draft and the names behind it. */
+ async listGuestAsks(){
+  const names=new Map(((await this.graph())?.nodes??[]).map(n=>[n.id,n.name]));
+  return {enabled:await this.guestAskEnabled(),asks:this.guestStore().list(Date.now()).map(a=>({...a,draft:{...a.draft,people:a.draft.people.map(p=>({...p,name:names.get(p.personId)??null}))}}))};
+ }
+ /** Approve the draft as it is, or an anonymous edit of it. */
+ async answerGuestAsk(id:string,answer?:unknown){
+  const now=Date.now(),ask=typeof id==='string'?this.guestStore().get(id,now):null;
+  if(!ask)throw Error('not_found');
+  const final=answer===undefined||answer===null?{text:ask.draft.text,people:ask.draft.people.map(p=>({ref:p.ref,description:p.description}))}:checkAnswer(answer,new Set(ask.draft.people.map(p=>p.ref)),await this.guestForbidden());
+  return {ask:this.guestStore().save(decideAsk(ask,'answered',final,now))};
+ }
+ async declineGuestAsk(id:string){
+  const now=Date.now(),ask=typeof id==='string'?this.guestStore().get(id,now):null;
+  if(!ask)throw Error('not_found');
+  return {ask:this.guestStore().save(decideAsk(ask,'declined',null,now))};
+ }
+ /** Status and name of each guest-started introduction; guestView decides whether the name shows. */
+ private async guestIntroductions(now:number){
+  const names=new Map(((await this.graph())?.nodes??[]).map(n=>[n.id,n.name]));
+  const views:Record<string,{status:string;name:string}>={};
+  for(const intro of this.introStore().list(now))if(intro.startedBy==='guest')views[intro.id]={status:intro.status,name:names.get(intro.parties[1]??'')??''};
+  return views;
+ }
+ /** One guest's own questions, as the guest may see them. */
+ async guestAsksFor(guestKey:string){
+  const now=Date.now(),intros=await this.guestIntroductions(now);
+  return {questions:this.guestStore().listFor(guestKey,now).map(a=>guestView(a,intros))};
+ }
+ /** The guest asks to meet one person from an answer; the owner then introduces as usual (double opt-in). */
+ async requestGuestIntroduction(guestKey:string,askId:string,ref:string){
+  const now=Date.now(),ask=typeof askId==='string'?this.guestStore().get(askId,now):null;
+  if(!ask||ask.guest!==guestKey)throw Error('not_found');
+  if(ask.status!=='answered'||ask.introductions[ref])throw Error('guest_ask_state_invalid');
+  const person=ask.answer?.people.some(p=>p.ref===ref)?ask.draft.people.find(p=>p.ref===ref):undefined;
+  if(!person)throw Error('invalid_request');
+  const intro=this.introStore().save(proposeIntroduction({introducer:'owner',parties:[`guest:${guestKey}`,person.personId],reason:ask.question,evidence:[]},this.introStore().list(now),now,'guest'));
+  const updated=this.guestStore().save({...ask,introductions:{...ask.introductions,[ref]:intro.id},updatedAt:new Date(now).toISOString()});
+  return {question:guestView(updated,await this.guestIntroductions(now))};
+ }
+ /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
+ async jobMoveCandidates(){
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};
+  const groups=new Map<string,{name:string;email:string;last:number}[]>();
+  for(const contact of this.graphContacts()){
+   const key=contact.name.toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(Boolean).join(' ');
+   const domain=contact.email.split('@')[1]??'';
+   if(key.split(' ').length<2||Object.hasOwn(PERSONAL_DOMAINS,domain))continue;
+   groups.set(key,[...(groups.get(key)??[]),contact]);
+  }
+  const candidates:{name:string;people:{personId:string;domain:string;lastContact:string}[]}[]=[];
+  for(const members of groups.values()){
+   if(new Set(members.map(m=>m.email.split('@')[1])).size<2)continue;
+   const people=await Promise.all(members.map(async m=>({personId:await opaque(owner,m.email,this.env.TOKEN_SECRET),domain:m.email.split('@')[1],last:m.last})));
+   const canonical=new Set(await Promise.all(people.map(p=>this.canonicalPersonId(p.personId))));
+   if(canonical.size<2)continue;
+   candidates.push({name:members[0].name,people:people.sort((a,b)=>b.last-a.last).map(p=>({personId:p.personId,domain:p.domain,lastContact:new Date(p.last).toISOString()}))});
+  }
+  return {candidates:candidates.sort((a,b)=>b.people[0].lastContact.localeCompare(a.people[0].lastContact))};
+ }
+ /**
+  * Company history for every visible person, built from one identity map, one span query and one
+  * owner-stint read. Bulk queries use this instead of calling companyStints once per contact.
+  */
+ private async stintIndex(){
+  const ids=await this.mergeIdentities(),merges=this.personMergeStore().get();
+  const canonicalOf=(id:string)=>merges[id]&&ids.has(id)&&ids.has(merges[id])?merges[id]:id;
+  const spans=new Map(this.ctx.storage.sql.exec<{email:string;first:number;last:number}>('SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions GROUP BY email').toArray().map(row=>[row.email,row]));
+  const names=new Map(this.graphContacts().map(contact=>[contact.email,contact.name]));
+  const people=new Map<string,{ids:string[];emails:string[]}>();
+  for(const [id,email] of ids){const key=canonicalOf(id),entry=people.get(key)??{ids:[],emails:[]};entry.ids.push(id);entry.emails.push(email);people.set(key,entry);}
+  const owned=this.stintStore().all(),now=Date.now();
+  const stintsOf=(canonical:string)=>{
+   const entry=people.get(canonical);if(!entry)return [];
+   const members=new Set(entry.ids);
+   return mergeStints(deriveStints(canonical,entry.emails.flatMap(email=>spans.get(email)??[]),now),owned.filter(s=>members.has(s.personId)));
+  };
+  return {canonicalOf,people,stintsOf,nameOf:(canonical:string)=>people.get(canonical)?.emails.map(email=>names.get(email)).find(Boolean)??''};
+ }
+ async teammates(personId:string){
+  if(!validContextPerson(personId))throw Error('invalid_request');
+  const index=await this.stintIndex(),canonical=index.canonicalOf(personId);
+  const mine=index.stintsOf(canonical).filter(s=>s.domain),domains=new Set(mine.map(s=>s.domain));
+  const teammates:{personId:string;name:string;domain:string;overlap:string}[]=[];
+  for(const [other,entry] of index.people){
+   if(other===canonical||!entry.emails.some(email=>domains.has(email.split('@')[1]??'')))continue;
+   for(const theirs of index.stintsOf(other))for(const stint of mine){
+    const overlap=theirs.domain===stint.domain?overlaps(stint,theirs):null;
+    if(overlap)teammates.push({personId:other,name:index.nameOf(other),domain:stint.domain,overlap});
+   }
+  }
+  return {teammates:teammates.sort((a,b)=>a.name.localeCompare(b.name)||a.personId.localeCompare(b.personId))};
+ }
+ /** People whose stint at a company has ended, with that stint's dates. */
+ async formerAt(company:string){
+  if(typeof company!=='string'||!company.trim()||company.length>200)throw Error('invalid_request');
+  const index=await this.stintIndex(),stints:Record<string,{from:string;to:string}>={};
+  for(const canonical of index.people.keys()){
+   const ended=index.stintsOf(canonical).find(s=>s.to!==null&&stintMatches(s,company));
+   if(ended?.to)stints[canonical]={from:ended.from,to:ended.to};
+  }
+  return {personIds:Object.keys(stints).sort(),stints};
  }
  async recommendationMemory():Promise<RecommendationMemory>{
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
@@ -1403,7 +1921,10 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    const introducerId=idMap.get(intro.introducer.email);
    (edge.evidence??=[]).push({id:'intro:'+introIndex+':'+intro.messageId,type:'introduced',title:'Introduced by '+introducer,date:intro.observedAt,url:url.href,owner:own.has(intro.introducer.email)?'You':introducer,provenance:{source:'gmail',...(introducerId?{introducerPersonId:introducerId}:{})}});
   }
-  return projectPersonMerges({...assembled,connectionsRevision},this.personMergeStore().get());
+  // Made introductions draw as three-way connectors; the owner is not a node and vouches stay private.
+  const merges=this.personMergeStore().get(),nodeIds=new Set(nodes.map(n=>n.id));
+  const introductions=this.introStore().list(Date.now()).filter(i=>['made','met','not_met'].includes(i.status)).map(i=>({id:i.id,personIds:[...new Set([i.introducer,...i.parties].filter(p=>p!=='owner').map(p=>merges[p]??p))].filter(p=>nodeIds.has(p)),status:i.status})).filter(i=>i.personIds.length>=2);
+  return projectPersonMerges({...assembled,connectionsRevision,introductions},merges);
  }
  /**
   * The meeting title that rode along with a shared signal, turned back into provenance. The

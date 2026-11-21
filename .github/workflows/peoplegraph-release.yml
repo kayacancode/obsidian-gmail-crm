@@ -115,7 +115,6 @@ jobs:
             chmod +x "release/$name"
           done
           cp skills/peoplegraph/SKILL.md release/peoplegraph-SKILL.md
-          cp skills/gmail-crm/SKILL.md release/gmail-crm-SKILL.md
           cp docs/people-agent-onboarding.md docs/people-memory-integration.md docs/peoplegraph-web-login.md docs/peoplegraph-cli-parity.md release/
           cp scripts/install-peoplegraph.sh release/
           cd release
