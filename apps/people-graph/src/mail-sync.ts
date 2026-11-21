@@ -337,6 +337,20 @@ export class MailSync extends DurableObject<MailEnv>{
  async granolaIdentity(attendeeEmail:string,decision:'confirm'|'dismiss'):Promise<{suggestions:GranolaIdentitySuggestion[]}>{return {suggestions:await this.granola().resolveIdentity(attendeeEmail,decision)};}
  private active(a:Account){return this.get(a.email)?.job?.generation===a.job?.generation;}
  async resolveOwnEmail(email:string):Promise<string|null>{const owner=await this.ctx.storage.get<string>('owner');if(!owner||!this.graphContacts().some(r=>r.email===email))return null;return opaque(owner,email,this.env.TOKEN_SECRET);}
+ /**
+  * Who the owner is in their own graph: person IDs of their own addresses, and the names they
+  * appear under on those addresses (Granola attendee lists, mail between their own accounts).
+  * Other addresses that show up under one of those names are the owner too, unless asked for.
+  */
+ async ownerIdentity():Promise<{personIds:string[];names:string[]}>{
+  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {personIds:[],names:[]};
+  const own=[...new Set([owner,...this.rows().map(a=>a.email),...this.granola().ownEmails()].map(e=>e.toLowerCase()))];
+  const marks=own.map(()=>'?').join(',');
+  const names=new Set<string>();
+  for(const sql of [`SELECT DISTINCT name FROM granola_attendees WHERE lower(email) IN (${marks})`,`SELECT DISTINCT name FROM contributions WHERE lower(email) IN (${marks})`])
+   for(const row of this.ctx.storage.sql.exec<{name:string}>(sql,...own).toArray())if(row.name&&!row.name.includes('@')&&row.name.trim().length>=2)names.add(row.name.trim());
+  return {personIds:await Promise.all(own.map(e=>opaque(owner,e,this.env.TOKEN_SECRET))),names:[...names]};
+ }
  private async google(url:string,access:string){const r=await fetch(url,{headers:{authorization:'Bearer '+access},signal:AbortSignal.timeout(20000)});if(!r.ok){await r.body?.cancel();const e=new Error(r.status===401?'reconnect_required':r.status===403?'gmail_access_denied':`gmail_${r.status}`);throw e;}return readBoundedJSON(r,2_000_000);}
  async alarm(){
   if(await this.ownerLens().runRefreshJob(valid=>this.collectOwnerLens(valid),()=>this.scheduleNextAlarm())){await this.scheduleNextAlarm();return;}

@@ -361,3 +361,22 @@ fn guest_commands_use_the_guest_ask_routes() {
         json!({"method":"GET","path":"/api/people/guest-asks"})
     );
 }
+
+#[test]
+fn hosted_find_person_sends_include_self_and_strict_name_order() {
+    let (_, plain) = run(&["find-person", "Kaya"]);
+    assert_eq!(
+        plain,
+        json!({"command":"find-person","query":"Kaya","limit":10})
+    );
+    let (_, flagged) = run(&[
+        "find-person",
+        "Jon Chin",
+        "--include-self",
+        "--strict-name-order",
+    ]);
+    assert_eq!(
+        flagged,
+        json!({"command":"find-person","query":"Jon Chin","limit":10,"include_self":true,"strict_name_order":true})
+    );
+}

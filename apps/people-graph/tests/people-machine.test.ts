@@ -134,7 +134,7 @@ test('machine matches preserve stage diagnostics without leaking custom errors t
 });
 test('machine People read credentials query the web graph while write-only credentials cannot',async t=>{
  const {DB,sql}=database(t);sql.exec('CREATE TABLE cli_rate_limits(key TEXT PRIMARY KEY,window INTEGER NOT NULL,count INTEGER NOT NULL)');
- const env:any={DB,MAIL:{getByName(selected:string){assert.equal(selected,owner);return {graph:async()=>({nodes:[{id:'ada',name:'Ada'}],edges:[]})};}}};
+ const env:any={DB,MAIL:{getByName(selected:string){assert.equal(selected,owner);return {graph:async()=>({nodes:[{id:'ada',name:'Ada'}],edges:[]}),bindOwner:async()=>{},ownerIdentity:async()=>({personIds:[],names:[]})};}}};
  const readKey=await createPeopleMemoryCredential(DB,owner,{name:'Reader',scopes:['people:read']}),writeKey=await createPeopleMemoryCredential(DB,owner,{name:'Writer',scopes:['people:write']});
  const query=(token:string)=>cliRoute(new Request(origin+'/api/cli/v1/query',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({command:'find-person',query:'Ada'})}),env,null);
  const response=await query(readKey.token);assert.equal(response.status,200);assert.equal((await response.json() as any).data.people[0].id,'ada');

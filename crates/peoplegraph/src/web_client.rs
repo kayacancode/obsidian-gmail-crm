@@ -297,24 +297,15 @@ fn query_credential(
     let mut body = json!({"command":command});
     match &cli.command {
         Commands::FindPerson(a) => {
-            if a.strict_name_order {
-                return fail(
-                    command,
-                    "unsupported_operation",
-                    "Strict name ordering is available only with --local.".into(),
-                    start,
-                );
-            }
-            if a.include_self {
-                return fail(
-                    command,
-                    "unsupported_operation",
-                    "--include-self is available only with --local.".into(),
-                    start,
-                );
-            }
             body["query"] = json!(a.query);
             body["limit"] = json!(a.limit);
+            // The server applies the same owner exclusion and name ordering as --local.
+            if a.include_self {
+                body["include_self"] = json!(true);
+            }
+            if a.strict_name_order {
+                body["strict_name_order"] = json!(true);
+            }
         }
         Commands::ContactCard(a) => body["query"] = json!(a.query),
         Commands::Score(a) | Commands::GetNeighbors(a) => body["email"] = json!(a.email),

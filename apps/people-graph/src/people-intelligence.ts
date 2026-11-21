@@ -67,8 +67,10 @@ export async function findPeople(env:PeopleEnv,owner:string,stub:Store,query:str
  const current=await loadPeopleNetwork(env,owner),people=result.data?.people;
  if(!Array.isArray(people))throw Error('invalid_request');
  for(const person of people){
-  const matches=current.graph?.nodes.filter(node=>node.id===person.id)??[];
-  if(matches.length!==1||JSON.stringify(matches[0])!==JSON.stringify(person))throw Error('person_context_conflict');
+  // The match labels describe this answer, not the node; compare everything else.
+  const {name_match:_label,matched_by:_how,...node}=person;
+  const matches=current.graph?.nodes.filter(n=>n.id===node.id)??[];
+  if(matches.length!==1||JSON.stringify(matches[0])!==JSON.stringify(node))throw Error('person_context_conflict');
  }
  // graph() itself yields while assembling nodes; fence both private and shared
  // source withdrawal after that final read, including names-only incoming shares.

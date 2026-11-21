@@ -5473,7 +5473,7 @@ fn describe_payload() -> Value {
                 "name": "find-person",
                 "usage": "peoplegraph find-person <query> [--strict-name-order] [--include-self]",
                 "status": "implemented",
-                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered' | 'partial' | 'fuzzy'), identity_group, is_primary, and name_variants. Email substrings are searched only when the query contains '@'. The owner's own addresses are excluded unless --include-self is passed. Pass --strict-name-order to disable reordered matching."
+                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered' | 'partial' | 'fuzzy'); locally also identity_group, is_primary and name_variants. Email substrings are searched only when the query contains '@'. The owner's own addresses are excluded unless --include-self is passed. Pass --strict-name-order to disable reordered matching. Both flags work hosted too. Hosted results stay in data.people with matched_by ('name' | 'email' | 'company' | 'role' | 'evidence') and data.excludedSelf; 'evidence' means no name matched."
             },
             {
                 "name": "score",
