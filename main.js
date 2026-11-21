@@ -753,10 +753,10 @@ function weeklyActivity(events, now = Date.now(), weeks = 12) {
   }
   return buckets;
 }
-function containsTerm(text, term) {
+function containsTerm(text2, term) {
   const escaped = term.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return !!escaped && new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "iu").test(
-    text
+    text2
   );
 }
 function matchGoal(person, goal) {
@@ -774,10 +774,10 @@ function matchGoal(person, goal) {
     evidence.push({ source: "profile", text: profile });
   for (const note of person.notes) {
     const lines = note.text.split("\n").filter((line) => terms.some((t) => containsTerm(line, t)));
-    for (const text of lines.slice(0, 3))
+    for (const text2 of lines.slice(0, 3))
       evidence.push({
         source: "note",
-        text: text.trim().slice(0, 500),
+        text: text2.trim().slice(0, 500),
         path: note.path
       });
   }
@@ -919,8 +919,16 @@ var IntelligenceStore = class {
     const cutoff = Date.now() - 365 * 864e5;
     this.state.events = mergeEvents(
       this.state.events.filter(
-        (e) => e.kind !== "meeting" || Date.parse(e.date) < cutoff
+        (e) => e.kind !== "meeting" || e.source === "granola" || Date.parse(e.date) < cutoff
       ),
+      events
+    );
+    await this.save();
+  }
+  /** Granola linking is rebuilt from the vault each run: its events replace the previous set. */
+  async replaceGranola(events) {
+    this.state.events = mergeEvents(
+      this.state.events.filter((e) => e.source !== "granola"),
       events
     );
     await this.save();
@@ -931,14 +939,14 @@ var IntelligenceStore = class {
 var import_obsidian2 = require("obsidian");
 
 // src/intelligence-workspace.ts
-function el(tag, parent, text, cls) {
+function el(tag, parent, text2, cls) {
   const node = parent.createEl(tag);
-  if (text !== void 0) node.textContent = text;
+  if (text2 !== void 0) node.textContent = text2;
   if (cls) node.className = cls;
   return node;
 }
-function button(parent, text, action, cls = "pi-button") {
-  const b = el("button", parent, text, cls);
+function button(parent, text2, action, cls = "pi-button") {
+  const b = el("button", parent, text2, cls);
   b.type = "button";
   b.addEventListener("click", action);
   return b;
@@ -1587,10 +1595,10 @@ var PeopleWorkspace = class {
       "aria-label",
       `Connections around ${focus.contact.name}. Use the connection buttons below for details.`
     );
-    const draw = (tag, attrs, text) => {
+    const draw = (tag, attrs, text2) => {
       const n = svg.createSvg(tag);
       for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
-      if (text) n.textContent = text;
+      if (text2) n.textContent = text2;
       return n;
     };
     const coords = neighbors.map((_, i) => ({
@@ -1900,6 +1908,107 @@ var PeopleIntelligenceView = class extends import_obsidian2.ItemView {
   }
 };
 
+// src/granola-links.ts
+var text = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
+var normalizeEventTitle = (value) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+var normalizeName = (value) => value.trim().toLowerCase().replace(/\s+/g, " ");
+function ownerEmails(contacts, emails, ownerName) {
+  var _a, _b, _c;
+  const owner = /* @__PURE__ */ new Set();
+  for (const raw of emails) {
+    if (!(raw == null ? void 0 : raw.trim())) continue;
+    const email = normalizeEmail(raw);
+    owner.add(email);
+    for (const alias of (_b = (_a = contacts[email]) == null ? void 0 : _a.aliases) != null ? _b : []) owner.add(normalizeEmail(alias));
+  }
+  const name = ownerName ? normalizeName(ownerName) : "";
+  if (name) {
+    for (const contact of Object.values(contacts))
+      if (normalizeName(contact.name) === name) {
+        owner.add(normalizeEmail(contact.email));
+        for (const alias of (_c = contact.aliases) != null ? _c : []) owner.add(normalizeEmail(alias));
+      }
+  }
+  return owner;
+}
+function granolaNote(path, frontmatter) {
+  var _a, _b, _c;
+  const granolaId = text(frontmatter == null ? void 0 : frontmatter.granola_id);
+  const type = text(frontmatter == null ? void 0 : frontmatter.type);
+  if (!frontmatter || !granolaId || type !== "note" && type !== "combined") return null;
+  const emails = Array.isArray(frontmatter.attendee_emails) ? frontmatter.attendee_emails : [];
+  const basename = (_b = (_a = path.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "")) != null ? _b : path;
+  return {
+    path,
+    granolaId,
+    title: (_c = text(frontmatter.title)) != null ? _c : basename,
+    created: text(frontmatter.created),
+    calendarStart: text(frontmatter.calendar_start),
+    calendarTitle: text(frontmatter.calendar_event_title),
+    attendeeEmails: [...new Set(emails.flatMap((e) => typeof e === "string" && e.includes("@") ? [normalizeEmail(e)] : []))]
+  };
+}
+function linkGranolaMeetings(notes, calendarEvents, identity, ownerEmails2) {
+  var _a, _b, _c, _d, _e, _f;
+  const byStart = /* @__PURE__ */ new Map();
+  for (const event of calendarEvents) {
+    if (event.kind !== "meeting" || event.source === "granola") continue;
+    const at = Date.parse(event.date);
+    if (Number.isFinite(at)) byStart.set(at, [...(_a = byStart.get(at)) != null ? _a : [], event]);
+  }
+  const owner = new Set([...ownerEmails2].map(normalizeEmail));
+  const result = { meetings: /* @__PURE__ */ new Map(), events: [], stats: { notes: notes.length, calendar: 0, email: 0, unlinked: 0 } };
+  for (const note of notes) {
+    const start = note.calendarStart ? Date.parse(note.calendarStart) : NaN;
+    const title = note.calendarTitle ? normalizeEventTitle(note.calendarTitle) : "";
+    const joined = Number.isFinite(start) && title ? ((_b = byStart.get(start)) != null ? _b : []).filter((e) => normalizeEventTitle(e.title) === title) : [];
+    const method = joined.length ? "calendar" : "email";
+    const candidates = joined.length ? joined.map((e) => normalizeEmail(e.email)) : note.attendeeEmails;
+    const people = /* @__PURE__ */ new Set();
+    for (const email of candidates) {
+      if (owner.has(email)) continue;
+      const person = identity.get(email);
+      const primary = person ? normalizeEmail(person.contact.email) : null;
+      if (primary && !owner.has(primary)) people.add(primary);
+    }
+    if (!people.size) {
+      result.stats.unlinked++;
+      continue;
+    }
+    result.stats[method]++;
+    const date = ((_d = (_c = note.calendarStart) != null ? _c : note.created) != null ? _d : "").slice(0, 10);
+    const target = note.path.replace(/\.md$/, "");
+    const line = `- ${date} \xB7 [[${target}|${note.title.replace(/[|\]]/g, " ")}]]`;
+    for (const primary of people) {
+      result.meetings.set(primary, [...(_e = result.meetings.get(primary)) != null ? _e : [], { date, line }]);
+      const at = (_f = note.calendarStart) != null ? _f : note.created;
+      if (method === "email" && at)
+        result.events.push({
+          id: `granola:${note.granolaId}`,
+          email: primary,
+          date: at,
+          kind: "meeting",
+          title: note.title,
+          sourceId: note.granolaId,
+          source: "granola"
+        });
+    }
+  }
+  return result;
+}
+var SECTION = /\n## Granola meetings\n[\s\S]*?(?=\n## (?!Granola meetings)|\n---\n|$)/;
+function granolaSection(content, lines) {
+  const sorted = [...new Set(lines)].sort((a, b) => b.localeCompare(a));
+  const section = sorted.length ? `
+## Granola meetings
+
+${sorted.join("\n")}
+` : "";
+  if (SECTION.test(content)) return content.replace(SECTION, section);
+  if (!section) return content;
+  return (content.endsWith("\n") ? content : content + "\n") + section;
+}
+
 // src/settings-tab.ts
 var import_obsidian3 = require("obsidian");
 var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
@@ -1945,37 +2054,37 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
     } });
     if (this.plugin.settings.useCustomOAuth) {
       group.items.push({ name: "Client ID", desc: "From your Google Cloud Console API credentials", render: (setting) => {
-        setting.setName("Client ID").setDesc("From your Google Cloud Console API credentials").addText((text) => text.setPlaceholder("Your client ID").setValue(this.plugin.settings.clientId).onChange(async (value) => {
+        setting.setName("Client ID").setDesc("From your Google Cloud Console API credentials").addText((text2) => text2.setPlaceholder("Your client ID").setValue(this.plugin.settings.clientId).onChange(async (value) => {
           this.plugin.settings.clientId = value;
           await this.plugin.saveSettings();
         }));
       } });
       group.items.push({ name: "Client secret", desc: "From your Google Cloud Console API credentials", render: (setting) => {
-        setting.setName("Client secret").setDesc("From your Google Cloud Console API credentials").addText((text) => {
-          text.setPlaceholder("Your client secret").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
+        setting.setName("Client secret").setDesc("From your Google Cloud Console API credentials").addText((text2) => {
+          text2.setPlaceholder("Your client secret").setValue(this.plugin.settings.clientSecret).onChange(async (value) => {
             this.plugin.settings.clientSecret = value;
             await this.plugin.saveSettings();
           });
-          text.inputEl.type = "password";
+          text2.inputEl.type = "password";
         });
       } });
     }
     group = { type: "group", heading: "Filtering", items: [] };
     definitions.push(group);
     group.items.push({ name: "Blocked domains", desc: "Domains to skip during sync, separated by commas. Automated senders are also filtered.", render: (setting) => {
-      setting.setName("Blocked domains").setDesc("Domains to skip during sync, separated by commas. Automated senders are also filtered.").addTextArea((text) => text.setPlaceholder("Enter newsletter domains").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
+      setting.setName("Blocked domains").setDesc("Domains to skip during sync, separated by commas. Automated senders are also filtered.").addTextArea((text2) => text2.setPlaceholder("Enter newsletter domains").setValue(this.plugin.settings.blockedDomains).onChange(async (value) => {
         this.plugin.settings.blockedDomains = value;
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "Exclude Gmail categories", desc: "Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.", render: (setting) => {
-      setting.setName("Exclude Gmail categories").setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.").addText((text) => text.setPlaceholder("Example: promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
+      setting.setName("Exclude Gmail categories").setDesc("Comma-separated Gmail categories to skip during sync. Options: promotions, social, updates, forums. Leave empty to sync all.").addText((text2) => text2.setPlaceholder("Example: promotions, social").setValue(this.plugin.settings.excludeCategories).onChange(async (value) => {
         this.plugin.settings.excludeCategories = value;
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "Exclude Gmail labels", desc: "Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.", render: (setting) => {
-      setting.setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.").addText((text) => text.setPlaceholder("Example: shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
+      setting.setName("Exclude Gmail labels").setDesc("Comma-separated Gmail labels to skip during sync (for example: shop@, service@). These are custom labels in your Gmail.").addText((text2) => text2.setPlaceholder("Example: shop@, service@").setValue(this.plugin.settings.excludeLabels).onChange(async (value) => {
         this.plugin.settings.excludeLabels = value;
         await this.plugin.saveSettings();
       }));
@@ -2040,21 +2149,21 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
     group = { type: "group", heading: "Score push", items: [] };
     definitions.push(group);
     group.items.push({ name: "Endpoint URL", desc: "Server that receives relationship scores. Leave empty to disable uploads.", render: (setting) => {
-      setting.setName("Endpoint URL").setDesc("Server that receives relationship scores. Leave empty to disable uploads.").addText((text) => text.setValue(this.plugin.settings.scorePushUrl).onChange(async (value) => {
+      setting.setName("Endpoint URL").setDesc("Server that receives relationship scores. Leave empty to disable uploads.").addText((text2) => text2.setValue(this.plugin.settings.scorePushUrl).onChange(async (value) => {
         this.plugin.settings.scorePushUrl = value.trim();
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "Your email", desc: "Identity sent with each push, for example: you@example.com.", render: (setting) => {
-      setting.setName("Your email").setDesc("Identity sent with each push, for example: you@example.com.").addText((text) => text.setValue(this.plugin.settings.scorePushEmail).onChange(async (value) => {
+      setting.setName("Your email").setDesc("Identity sent with each push, for example: you@example.com.").addText((text2) => text2.setValue(this.plugin.settings.scorePushEmail).onChange(async (value) => {
         this.plugin.settings.scorePushEmail = value.trim();
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "API key", desc: "Sent as the X-Api-Key header to authenticate the push.", render: (setting) => {
-      setting.setName("API key").setDesc("Sent as the X-Api-Key header to authenticate the push.").addText((text) => {
-        text.inputEl.type = "password";
-        text.setValue(this.plugin.settings.scorePushApiKey).onChange(async (value) => {
+      setting.setName("API key").setDesc("Sent as the X-Api-Key header to authenticate the push.").addText((text2) => {
+        text2.inputEl.type = "password";
+        text2.setValue(this.plugin.settings.scorePushApiKey).onChange(async (value) => {
           this.plugin.settings.scorePushApiKey = value.trim();
           await this.plugin.saveSettings();
         });
@@ -2069,15 +2178,15 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
     group = { type: "group", heading: "People graph web view", items: [] };
     definitions.push(group);
     group.items.push({ name: "Graph URL", desc: "Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.", render: (setting) => {
-      setting.setName("Graph URL").setDesc("Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.").addText((text) => text.setValue(this.plugin.settings.graphPushUrl).onChange(async (value) => {
+      setting.setName("Graph URL").setDesc("Deployment to push your people graph to and open with the graph command. Empty opens the hosted graph and disables pushing.").addText((text2) => text2.setValue(this.plugin.settings.graphPushUrl).onChange(async (value) => {
         this.plugin.settings.graphPushUrl = value.trim();
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "Graph push token", desc: "Mint it on the graph page after signing in \u2014 pushes are tied to your account.", render: (setting) => {
-      setting.setName("Graph push token").setDesc("Mint it on the graph page after signing in \u2014 pushes are tied to your account.").addText((text) => {
-        text.inputEl.type = "password";
-        text.setValue(this.plugin.settings.graphPushToken).onChange(async (value) => {
+      setting.setName("Graph push token").setDesc("Mint it on the graph page after signing in \u2014 pushes are tied to your account.").addText((text2) => {
+        text2.inputEl.type = "password";
+        text2.setValue(this.plugin.settings.graphPushToken).onChange(async (value) => {
           this.plugin.settings.graphPushToken = value.trim();
           await this.plugin.saveSettings();
         });
@@ -2102,7 +2211,7 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
       }));
     } });
     group.items.push({ name: "Contact notes folder", desc: "Vault folder for contact notes", render: (setting) => {
-      setting.setName("Contact notes folder").setDesc("Vault folder for contact notes").addText((text) => text.setValue(this.plugin.settings.contactNotesFolder).onChange(async (value) => {
+      setting.setName("Contact notes folder").setDesc("Vault folder for contact notes").addText((text2) => text2.setValue(this.plugin.settings.contactNotesFolder).onChange(async (value) => {
         this.plugin.settings.contactNotesFolder = value;
         await this.plugin.saveSettings();
       }));
@@ -2111,30 +2220,30 @@ var GmailCrmSettingTab = class extends import_obsidian3.PluginSettingTab {
     definitions.push(group);
     group.items.push({ name: "Relationship mapping and AI-powered people enrichment. Scans your people pages and builds a relationship graph." });
     group.items.push({ name: "Your name", desc: "Your name on enriched people pages. Leave blank to refer to you as the vault owner.", render: (setting) => {
-      setting.setName("Your name").setDesc("Your name on enriched people pages. Leave blank to refer to you as the vault owner.").addText((text) => text.setPlaceholder("Your full name").setValue(this.plugin.settings.vaultOwnerName).onChange(async (value) => {
+      setting.setName("Your name").setDesc("Your name on enriched people pages. Leave blank to refer to you as the vault owner.").addText((text2) => text2.setPlaceholder("Your full name").setValue(this.plugin.settings.vaultOwnerName).onChange(async (value) => {
         this.plugin.settings.vaultOwnerName = value;
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "People pages folder", desc: "Vault folder containing your people notes (for example, 'people pages')", render: (setting) => {
-      setting.setName("People pages folder").setDesc("Vault folder containing your people notes (for example, 'people pages')").addText((text) => text.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
+      setting.setName("People pages folder").setDesc("Vault folder containing your people notes (for example, 'people pages')").addText((text2) => text2.setValue(this.plugin.settings.peopleFolder).onChange(async (value) => {
         this.plugin.settings.peopleFolder = value;
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "Companies folder", desc: "Vault folder for company pages. New companies are auto-created here.", render: (setting) => {
-      setting.setName("Companies folder").setDesc("Vault folder for company pages. New companies are auto-created here.").addText((text) => text.setValue(this.plugin.settings.companiesFolder).onChange(async (value) => {
+      setting.setName("Companies folder").setDesc("Vault folder for company pages. New companies are auto-created here.").addText((text2) => text2.setValue(this.plugin.settings.companiesFolder).onChange(async (value) => {
         this.plugin.settings.companiesFolder = value;
         await this.plugin.saveSettings();
       }));
     } });
     group.items.push({ name: "API key", desc: "Required for AI analysis. Relationship mapping works without it.", render: (setting) => {
-      setting.setName("API key").setDesc("Required for AI analysis. Relationship mapping works without it.").addText((text) => {
-        text.setPlaceholder("Your API key").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
+      setting.setName("API key").setDesc("Required for AI analysis. Relationship mapping works without it.").addText((text2) => {
+        text2.setPlaceholder("Your API key").setValue(this.plugin.settings.anthropicApiKey).onChange(async (value) => {
           this.plugin.settings.anthropicApiKey = value;
           await this.plugin.saveSettings();
         });
-        text.inputEl.type = "password";
+        text2.inputEl.type = "password";
       });
     } });
     group.items.push({ name: "Model", desc: "Model for analysis", render: (setting) => {
@@ -4709,6 +4818,16 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
     this.addRibbonIcon("users", "People intelligence", () => {
       void this.openIntelligence();
     });
+    this.addCommand({ id: "link-granola-meetings", name: "Link Granola meetings to people", callback: () => {
+      void this.linkGranolaMeetings(true);
+    } });
+    const relink = (0, import_obsidian14.debounce)(() => {
+      void this.linkGranolaMeetings(false);
+    }, 3e3, true);
+    this.registerEvent(this.app.metadataCache.on("changed", (_file, _data, cache) => {
+      var _a;
+      if ((_a = cache.frontmatter) == null ? void 0 : _a.granola_id) relink();
+    }));
     this.gmailApi = new GmailApi(this.settings, async (patch) => {
       Object.assign(this.settings, patch);
       await this.saveSettings();
@@ -5035,6 +5154,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
       } else {
         notice.setMessage(`Synced ${contactCount} contacts`);
       }
+      await this.linkGranolaMeetings(false);
       window.setTimeout(() => notice.hide(), 3e3);
       if (this.settings.enrichOnSync) {
         await this.enrichAllPeople();
@@ -5071,6 +5191,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
         }
       );
       await this.saveContactIndex();
+      await this.linkGranolaMeetings(false);
       const withCal = Object.values(this.contactIndex.contacts).filter((c) => {
         var _a;
         return ((_a = c.calendarMeetings) != null ? _a : 0) > 0;
@@ -5832,6 +5953,50 @@ ${relSection}
       }
       return `${a.sourceName}:${a.targetName}`.localeCompare(`${b.sourceName}:${b.targetName}`);
     });
+  }
+  /**
+   * Links Granola meeting notes to people pages: attendees from the matching Calendar meeting
+   * (same start and title), else the note's attendee_emails. Rewrites only the plugin-managed
+   * `## Granola meetings` section of people pages; never writes Granola notes or creates pages.
+   */
+  async linkGranolaMeetings(announce) {
+    var _a, _b;
+    if (!this.contactIndex) {
+      if (announce) new import_obsidian14.Notice("No contact index found. Run a contact sync first.");
+      return;
+    }
+    try {
+      const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
+        var _a2;
+        const note = granolaNote(file.path, (_a2 = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a2.frontmatter);
+        return note ? [note] : [];
+      });
+      const contacts = this.contactIndex.contacts;
+      const identity = identityMap(Object.values(contacts).map((contact) => ({ contact, notes: [], events: [] })));
+      const owner = ownerEmails(contacts, [this.contactIndex.userEmail, this.settings.scorePushEmail], this.settings.vaultOwnerName);
+      const links = linkGranolaMeetings(notes, this.intelligenceReady ? this.intelligence.state.events : [], identity, owner);
+      const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
+      let written = 0;
+      for (const page of Object.values(pages)) {
+        const email2 = this.getEmailForPage(page);
+        const lines = (_b = (_a = email2 ? links.meetings.get(email2) : void 0) == null ? void 0 : _a.map((m) => m.line)) != null ? _b : [];
+        const file = this.app.vault.getAbstractFileByPath(page.path);
+        if (!(file instanceof import_obsidian14.TFile)) continue;
+        const current = await this.app.vault.read(file);
+        const next = granolaSection(current, lines);
+        if (next === current) continue;
+        await this.app.vault.modify(file, next);
+        written++;
+      }
+      if (this.intelligenceReady) await this.intelligence.replaceGranola(links.events);
+      const { calendar, email, unlinked } = links.stats;
+      console.debug(`[People Data Sync] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${written} people pages updated`);
+      if (announce) new import_obsidian14.Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${written} people pages updated`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[People Data Sync] Granola linking skipped: ${msg}`);
+      if (announce) new import_obsidian14.Notice(`Granola linking failed: ${msg}`);
+    }
   }
   getContactForPage(page) {
     const email = this.getEmailForPage(page);

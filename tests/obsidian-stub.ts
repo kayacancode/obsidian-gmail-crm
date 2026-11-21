@@ -14,3 +14,4 @@ export class Notice {
 export class TFile {}
 export class TFolder {}
 export const normalizePath = (path:string)=>path;
+export const debounce = <T extends unknown[]>(fn:(...args:T)=>unknown)=>(...args:T)=>{ fn(...args); };

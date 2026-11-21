@@ -1443,11 +1443,11 @@ export default class GmailCrmPlugin extends Plugin {
 			}
 			if (this.intelligenceReady) await this.intelligence.replaceGranola(links.events);
 			const { calendar, email, unlinked } = links.stats;
-			console.log(`[Gmail CRM] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${written} people pages updated`);
+			console.debug(`[People Data Sync] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${written} people pages updated`);
 			if (announce) new Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${written} people pages updated`);
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
-			console.warn(`[Gmail CRM] Granola linking skipped: ${msg}`);
+			console.warn(`[People Data Sync] Granola linking skipped: ${msg}`);
 			if (announce) new Notice(`Granola linking failed: ${msg}`);
 		}
 	}
