@@ -71,3 +71,60 @@ export function generateMoments(input:MomentInput):Moment[]{
  }
  return chosen;
 }
+
+type MomentRow={id:string;day:string;data:string;status:MomentStatus;created:number;snoozed_until:number|null};
+export type MomentAction='act'|'snooze'|'dismiss';
+export const MOMENT_ACTIONS:Record<MomentAction,MomentStatus>={act:'acted',snooze:'snoozed',dismiss:'dismissed'};
+export const isMomentAction=(value:unknown):value is MomentAction=>typeof value==='string'&&Object.hasOwn(MOMENT_ACTIONS,value);
+
+/** Owner-private moments, one generation per day, with dismissals remembered for 30 days. */
+export class MomentStore {
+ constructor(private storage:DurableObjectStorage){
+  storage.sql.exec('CREATE TABLE IF NOT EXISTS moments (id TEXT PRIMARY KEY,day TEXT NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL,created INTEGER NOT NULL,snoozed_until INTEGER); CREATE TABLE IF NOT EXISTS moment_days (day TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS moment_suppressions (person_id TEXT NOT NULL,kind TEXT NOT NULL,until INTEGER NOT NULL,PRIMARY KEY(person_id,kind)); CREATE TABLE IF NOT EXISTS moment_settings (key TEXT PRIMARY KEY,value INTEGER NOT NULL)');
+ }
+ private read(row:MomentRow):Moment{
+  const moment=JSON.parse(row.data) as Moment;
+  return {...moment,status:row.status,...(row.snoozed_until?{snoozedUntil:new Date(row.snoozed_until).toISOString()}:{})};
+ }
+ generated(day:string){return this.storage.sql.exec('SELECT day FROM moment_days WHERE day=?',day).toArray().length>0;}
+ /** Save a day's moments once; a second save for the same day is ignored. */
+ save(day:string,moments:Moment[]){
+  this.storage.transactionSync(()=>{
+   if(this.generated(day))return;
+   this.storage.sql.exec('INSERT INTO moment_days VALUES (?)',day);
+   for(const m of moments)this.storage.sql.exec('INSERT OR IGNORE INTO moments VALUES (?,?,?,?,?,NULL)',m.id,day,JSON.stringify(m),m.status,Date.parse(m.createdAt));
+  });
+ }
+ /** Moments of the last 30 days, for pacing and for the success measure. */
+ recent(now:number):Moment[]{
+  return this.storage.sql.exec<MomentRow>('SELECT * FROM moments WHERE created>? ORDER BY created,id',now-30*DAY).toArray().map(row=>this.read(row));
+ }
+ /** What to show: today's (or every unexpired) moment, never dismissed, snoozed ones once due. */
+ list(now:number,day:string|null):Moment[]{
+  return this.recent(now).filter(m=>(day?m.day===day:Date.parse(m.expiresAt)>now)&&m.status!=='dismissed'&&!(m.status==='snoozed'&&m.snoozedUntil&&Date.parse(m.snoozedUntil)>now))
+   .sort((a,b)=>PRIORITY[a.kind]-PRIORITY[b.kind]||a.id.localeCompare(b.id));
+ }
+ update(id:string,action:MomentAction,now:number):Moment{
+  const row=this.storage.sql.exec<MomentRow>('SELECT * FROM moments WHERE id=?',id).toArray()[0];
+  if(!row)throw Error('not_found');
+  const status=MOMENT_ACTIONS[action],until=action==='snooze'?now+3*DAY:null;
+  this.storage.sql.exec('UPDATE moments SET status=?,snoozed_until=? WHERE id=?',status,until,id);
+  // Dismissing is a judgment about this kind of moment for these people, not about the people.
+  if(action==='dismiss')for(const personId of this.read(row).personIds)this.storage.sql.exec('INSERT OR REPLACE INTO moment_suppressions VALUES (?,?,?)',personId,this.read(row).kind,now+30*DAY);
+  return this.read({...row,status,snoozed_until:until});
+ }
+ suppressions(now:number):{personId:string;kind:MomentKind;until:number}[]{
+  return this.storage.sql.exec<{person_id:string;kind:MomentKind;until:number}>('SELECT * FROM moment_suppressions WHERE until>?',now).toArray().map(r=>({personId:r.person_id,kind:r.kind,until:r.until}));
+ }
+ /** Success is connection: moments acted on, against those dismissed and shown. No engagement counter. */
+ stats(now:number){
+  const recent=this.recent(now);
+  return {acted:recent.filter(m=>m.status==='acted').length,dismissed:recent.filter(m=>m.status==='dismissed').length,shownLast30:recent.length};
+ }
+ budget():number{return this.storage.sql.exec<{value:number}>("SELECT value FROM moment_settings WHERE key='budget'").toArray()[0]?.value??3;}
+ setBudget(budget:number){
+  if(!Number.isInteger(budget)||budget<1||budget>10)throw Error('invalid_request');
+  this.storage.sql.exec("INSERT OR REPLACE INTO moment_settings VALUES ('budget',?)",budget);
+  return {budget};
+ }
+}

@@ -15,6 +15,11 @@ export async function momentsRoute(request:Request,env:MailEnv,owner:string){
     if(keys.some(k=>k!=='includeArchived')||keys.length>1)return json({error:'invalid_request'},400);
     return json(await stub.listCuriosityNotes(url.searchParams.get('includeArchived')==='1'));
    }
+   if(path==='/api/people/moments'){
+    const keys=[...url.searchParams.keys()],today=url.searchParams.get('today');
+    if(keys.some(k=>k!=='today')||keys.length>1||(today!==null&&today!=='1'))return json({error:'invalid_request'},400);
+    return json(await stub.moments({today:today==='1'}));
+   }
    return json({error:'method_not_allowed'},405);
   }
   if(method!=='POST')return json({error:'method_not_allowed'},405);
@@ -30,6 +35,14 @@ export async function momentsRoute(request:Request,env:MailEnv,owner:string){
   if(path==='/api/people/mind/archive'){
    if(keys.join(',')!=='id'||typeof input.id!=='string')return json({error:'invalid_request'},400);
    return json(await stub.archiveCuriosityNote(input.id));
+  }
+  if(path==='/api/people/moments/update'){
+   if(keys.sort().join(',')!=='action,id'||typeof input.id!=='string'||typeof input.action!=='string')return json({error:'invalid_request'},400);
+   return json(await stub.updateMoment(input.id,input.action));
+  }
+  if(path==='/api/people/moments/settings'){
+   if(keys.join(',')!=='budget'||typeof input.budget!=='number')return json({error:'invalid_request'},400);
+   return json(await stub.setMomentBudget(input.budget));
   }
   return json({error:'method_not_allowed'},405);
  }catch(error){

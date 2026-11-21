@@ -15,3 +15,4 @@ import './structure-routes.test.ts';
 import './curiosity.test.ts';
 import './mind-routes.test.ts';
 import './moments.test.ts';
+import './moments-routes.test.ts';

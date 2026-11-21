@@ -13,8 +13,9 @@ import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from '
 import {OwnerTimelineStore} from './owner-timeline';
 import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
 import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
-import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,assembleAtlas,absentCommunities,type StructureInput,type Candidate,type Atlas} from './network-structure';
-import {CuriosityNoteStore,type CuriosityNote} from './curiosity';
+import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,assembleAtlas,absentCommunities,type StructureInput,type Candidate,type Atlas,type BridgePair,type WidenResult} from './network-structure';
+import {CuriosityNoteStore,noteKeywords,type CuriosityNote} from './curiosity';
+import {MomentStore,generateMoments,isMomentAction,type MomentInput,type MomentNote} from './moments';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -83,6 +84,8 @@ export class MailSync extends DurableObject<MailEnv>{
  private lifeStore(){return this.lifeSignalStore??=new LifeSignalStore(this.ctx.storage);}
  private curiosityNoteStore?:CuriosityNoteStore;
  private curiosityStore(){return this.curiosityNoteStore??=new CuriosityNoteStore(this.ctx.storage);}
+ private momentStoreValue?:MomentStore;
+ private momentStore(){return this.momentStoreValue??=new MomentStore(this.ctx.storage);}
  private ownerTimeline?:OwnerTimelineStore;
  private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
  private companyStintStore?:CompanyStintStore;
@@ -1238,6 +1241,41 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!this.curiosityStore().archive(id,Date.now()))throw Error('not_found');
   return {archived:id};
  }
+ private momentGeneration?:Promise<void>;
+ /**
+  * Today's moments, generated on the first read of each UTC day from the owner's own data only:
+  * notes, why-now, fringe contrasts, bridges and widen. Peers are never asked, here or anywhere.
+  */
+ async moments(input:{today?:boolean}={}){
+  const now=Date.now(),day=new Date(now).toISOString().slice(0,10),store=this.momentStore();
+  if(!store.generated(day)){
+   this.momentGeneration??=this.generateMoments(now,day).finally(()=>{this.momentGeneration=undefined;});
+   await this.momentGeneration;
+  }
+  return {moments:store.list(now,input.today?day:null),stats:store.stats(now),budget:store.budget()};
+ }
+ private async generateMoments(now:number,day:string){
+  const store=this.momentStore(),notes:MomentNote[]=[];
+  for(const note of this.curiosityStore().list())notes.push({id:note.id,title:note.title,keywords:noteKeywords(note),people:(await this.resolveNotePeople(note)).people,fringes:note.fringes});
+  const whyNowAnswers=(await this.whyNow(25)).answers,structure=notes.length?await this.structureNow():null;
+  const evidence:Record<string,string[]>={},lastContact:Record<string,string|null>={},names:Record<string,string>={};
+  const fringe:MomentInput['fringe']=[];let found:BridgePair[]=[],pattern:WidenResult|null=null;
+  if(structure){
+   for(const s of structure.input.themeSignals)if(s.personId&&!s.shared&&Date.parse(s.observedAt)>=now-30*86_400_000)(evidence[s.personId]??=[]).push(s.summary);
+   for(const n of structure.input.nodes){lastContact[n.id]=n.lastContact;names[n.id]=n.name;}
+   // At most three fringe questions a day, each one search.
+   for(const question of notes.flatMap(n=>n.fringes).slice(0,3))fringe.push({fringe:question,answers:contrast(await this.topicCandidates(question,structure.excluded,structure.input),structure.ctx).answers});
+   found=bridges(structure.input,structure.ctx,{excluded:structure.excluded}).answers;
+   const lens=this.ownerLens().get();
+   pattern=widen(structure.input,structure.ctx,now,{focus:lens.enabled?`${lens.fields.focus} ${lens.fields.needs}`:'',excluded:structure.excluded});
+  }
+  store.save(day,generateMoments({now,day,budget:store.budget(),notes,whyNow:whyNowAnswers,evidence,lastContact,names,fringe,bridges:found,widen:pattern,existing:store.recent(now),suppressed:store.suppressions(now)}));
+ }
+ async updateMoment(id:string,action:string){
+  if(typeof id!=='string'||!id||id.length>300||!isMomentAction(action))throw Error('invalid_request');
+  return {moment:this.momentStore().update(id,action,Date.now())};
+ }
+ async setMomentBudget(budget:number){return this.momentStore().setBudget(budget);}
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};

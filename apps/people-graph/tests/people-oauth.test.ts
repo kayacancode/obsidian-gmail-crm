@@ -37,7 +37,7 @@ test('People OAuth denial returns only to the registered client and creates no c
 
 test('People OAuth code exchange opens the existing owner-scoped MCP and rejects code replay',async t=>{
  const f=await fixture(t),auth=await f.authorize();assert.ok(auth.tokens.access_token);assert.ok(auth.tokens.refresh_token);assert.equal(auth.tokens.token_type.toLowerCase(),'bearer');assert.ok(auth.tokens.expires_in<=3600);
- const response=await f.mcp(auth.tokens.access_token);assert.equal(response.status,200);const data=await f.result(response);assert.equal(data.result.tools.length,16);assert.ok(data.result.tools.some((tool:any)=>tool.name==='update_people_lens'));
+ const response=await f.mcp(auth.tokens.access_token);assert.equal(response.status,200);const data=await f.result(response);assert.equal(data.result.tools.length,18);assert.ok(data.result.tools.some((tool:any)=>tool.name==='update_people_lens'));
  const lookup=await f.mcp(auth.tokens.access_token,'tools/call',{name:'lookup_relationship_memory',arguments:{email:'person@example.test'}});assert.equal(lookup.status,200);assert.equal((await f.result(lookup)).result.isError,undefined);assert.ok(f.calls.length);assert.ok(f.calls.every(actor=>actor===owner));
  assert.equal((await f.exchange(auth.input)).status,400);
  const rows=await listPeopleMemoryCredentials(f.env.DB,owner);assert.equal(rows.length,1);assert.match(rows[0].name,/OAuth/);assert.ok(!JSON.stringify(rows).includes(auth.tokens.access_token));assert.deepEqual(await listPeopleMemoryCredentials(f.env.DB,'other@example.test'),[]);
@@ -53,9 +53,9 @@ test('People OAuth PKCE and resource are enforced during token exchange',async t
 test('People OAuth refresh downscoping removes write tools and cannot expand permissions',async t=>{
  const f=await fixture(t),auth=await f.authorize();
  const refreshed=await f.exchange({grant_type:'refresh_token',client_id:auth.client.client_id,refresh_token:auth.tokens.refresh_token,scope:'people:read',resource});assert.equal(refreshed.status,200,await refreshed.clone().text());const tokens=await refreshed.json() as any;
- const data=await f.result(await f.mcp(tokens.access_token));assert.equal(data.result.tools.length,11);assert.ok(!data.result.tools.some((tool:any)=>tool.name==='update_people_lens'));
+ const data=await f.result(await f.mcp(tokens.access_token));assert.equal(data.result.tools.length,12);assert.ok(!data.result.tools.some((tool:any)=>tool.name==='update_people_lens'));
  const expanded=await f.exchange({grant_type:'refresh_token',client_id:auth.client.client_id,refresh_token:tokens.refresh_token,scope:'people:read sources:manage',resource});assert.equal(expanded.status,400);
- const read=await f.authorize('people:read');assert.ok(!read.tokens.refresh_token);assert.equal((await f.result(await f.mcp(read.tokens.access_token))).result.tools.length,11);
+ const read=await f.authorize('people:read');assert.ok(!read.tokens.refresh_token);assert.equal((await f.result(await f.mcp(read.tokens.access_token))).result.tools.length,12);
 });
 
 test('People OAuth owner revocation blocks both existing access and refresh immediately',async t=>{

@@ -43,6 +43,7 @@ const capabilities:Capability[]=[
  capability('GET','/api/people/why-now',read,'structure',['limit']),capability('GET','/api/people/contrast',read,'structure',['topic','claim']),
  capability('GET','/api/people/widen',read,'structure'),capability('GET','/api/people/bridges',read,'structure',['topic']),capability('GET','/api/people/atlas',read,'structure',['topic']),
  capability('GET','/api/people/mind',read,'moments',['includeArchived']),capability('POST','/api/people/mind',edit,'moments'),capability('POST','/api/people/mind/archive',edit,'moments'),
+ capability('GET','/api/people/moments',read,'moments',['today']),capability('POST','/api/people/moments/update',edit,'moments'),capability('POST','/api/people/moments/settings',edit,'moments'),
  capability('POST','/api/people/ask',read,'ask'),
  capability('GET','/api/people/memory',read,'memory',['personId']),capability('POST','/api/people/memory',edit,'memory'),capability('POST','/api/people/memory/structure',read,'memory'),capability('DELETE','/api/people/memory/entry',edit,'memory'),
  capability('GET','/api/people/person-merges',read,'merges'),capability('POST','/api/people/person-merges',edit,'merges'),capability('DELETE','/api/people/person-merges',edit,'merges'),
