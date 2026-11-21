@@ -70,3 +70,15 @@ test('introductions: machines read with people:read and record steps only with p
  assert.equal((await machine(f.env,['people:read'],'POST','/api/people/introductions',{introducer:'owner',parties:[ada,maya],reason:'x'})).status,403);
  assert.equal((await machine(f.env,['people:read','people:write'],'POST','/api/people/introductions',{introducer:'owner',parties:[ada,maya],reason:'x'})).status,200);
 });
+
+test('introductions: made introductions reach the owner\'s graph as connectors, without vouches or the owner',async()=>{
+ const {f,ada,maya}=await owner();
+ const {introduction}=await (await f.request('/api/people/introductions',{introducer:'owner',parties:[ada,maya],reason:'Both building nurse scheduling'})).json() as {introduction:Intro};
+ for(const [to,vouch] of [['introducer_accepted','Private vouch text'],['target_opted_in',undefined],['made',undefined]] as [string,string|undefined][])
+  await f.request('/api/people/introductions/advance',{id:introduction.id,to,...(vouch?{vouch}:{})});
+ const open=await (await f.request('/api/people/introductions',{introducer:ada,parties:['owner',maya],reason:'Still open'})).json() as {introduction:Intro};
+ const {graph}=await (await f.request('/api/graph')).json() as {graph:{introductions?:{id:string;personIds:string[];status:string}[]}};
+ assert.deepEqual(graph.introductions,[{id:introduction.id,personIds:[ada,maya],status:'made'}]);
+ assert.ok(!JSON.stringify(graph).includes('Private vouch text'));
+ assert.ok(!JSON.stringify(graph.introductions).includes(open.introduction.id));
+});

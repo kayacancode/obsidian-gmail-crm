@@ -179,6 +179,16 @@
   stroke-dasharray: 5 4;
 }
 
+/* Introductions connect three people: a dotted connector beside the pairwise lines. */
+.rg-canvas line.rg-introduction {
+  stroke: var(--rg-foreground);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-dasharray: 0.5 6;
+  opacity: .7;
+}
+.rg-canvas line.rg-introduction[data-status='not_met'] { opacity: .35; }
+
 .rg-node {
   position: absolute;
   z-index: 2;

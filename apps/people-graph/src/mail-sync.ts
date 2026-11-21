@@ -1813,7 +1813,10 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    const introducerId=idMap.get(intro.introducer.email);
    (edge.evidence??=[]).push({id:'intro:'+introIndex+':'+intro.messageId,type:'introduced',title:'Introduced by '+introducer,date:intro.observedAt,url:url.href,owner:own.has(intro.introducer.email)?'You':introducer,provenance:{source:'gmail',...(introducerId?{introducerPersonId:introducerId}:{})}});
   }
-  return projectPersonMerges({...assembled,connectionsRevision},this.personMergeStore().get());
+  // Made introductions draw as three-way connectors; the owner is not a node and vouches stay private.
+  const merges=this.personMergeStore().get(),nodeIds=new Set(nodes.map(n=>n.id));
+  const introductions=this.introStore().list(Date.now()).filter(i=>['made','met','not_met'].includes(i.status)).map(i=>({id:i.id,personIds:[...new Set([i.introducer,...i.parties].filter(p=>p!=='owner').map(p=>merges[p]??p))].filter(p=>nodeIds.has(p)),status:i.status})).filter(i=>i.personIds.length>=2);
+  return projectPersonMerges({...assembled,connectionsRevision,introductions},merges);
  }
  /**
   * The meeting title that rode along with a shared signal, turned back into provenance. The

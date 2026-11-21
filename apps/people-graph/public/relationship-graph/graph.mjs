@@ -715,6 +715,18 @@ export function mountGraph(element, options = {}) {
       edgeButton.setAttribute('aria-pressed', String(edge.id === selectedEdgeId));
       edgeLayer.append(edgeButton);
     });
+    // An introduction joins three people, so it draws as its own connector among those on the map,
+    // beside (never replacing) their pairwise relationship lines.
+    for(const intro of graph.introductions||[]){
+      const points=intro.personIds.map(id=>positions.get(id)).filter(Boolean);
+      for(let i=0;i<points.length;i++)for(let j=i+1;j<points.length;j++){
+        const line=document.createElementNS(SVG_NS,'line');
+        line.setAttribute('x1',String(points[i].x));line.setAttribute('y1',String(points[i].y));
+        line.setAttribute('x2',String(points[j].x));line.setAttribute('y2',String(points[j].y));
+        line.classList.add('rg-introduction');line.dataset.introductionId=intro.id;line.dataset.status=intro.status;
+        lines.append(line);
+      }
+    }
     if (lens !== 'off' && !data.isPath) {
       const fields = make('div', 'rg-theme-fields');
       const scoredIds = new Set(activeThemeId ? [activeThemeId] : promotedThemes().slice(0, 3).map(theme => theme.themeId));

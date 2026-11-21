@@ -362,3 +362,12 @@ test('connection lists never infer direction or expose excluded neighbor identit
  const graph={nodes:[{id:'a',name:'A'},{id:'b',name:'B'},{id:'hidden',name:'Hidden',permission:'denied'}],edges:[{id:'email',source:'a',target:'b',types:['shared_email']},{id:'private',source:'a',target:'hidden'}]};
  const connections=incidentConnections(graph,'a');assert.equal(connections.length,1);assert.equal(connections[0].person.id,'b');assert.equal(connections[0].direction,null);
 });
+
+test('made introductions survive normalization as connectors among known people only',()=>{
+ const graph=normalizeGraph({nodes:[{id:'a',name:'Ada'},{id:'b',name:'Bo'},{id:'c',name:'Cy'}],edges:[],introductions:[
+  {id:'i1',personIds:['a','b'],status:'made'},{id:'i2',personIds:['a','b','c'],status:'met'},
+  {id:'open',personIds:['a','c'],status:'asked_introducer'},{id:'ghost',personIds:['a','zed'],status:'made'},{id:'solo',personIds:['a'],status:'made'},
+  {id:'leak',personIds:['b','c'],status:'not_met',vouch:'private'}]});
+ assert.deepEqual(graph.introductions,[{id:'i1',personIds:['a','b'],status:'made'},{id:'i2',personIds:['a','b','c'],status:'met'},{id:'leak',personIds:['b','c'],status:'not_met'}]);
+ assert.deepEqual(graph.edges,[]);
+});
