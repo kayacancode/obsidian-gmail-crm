@@ -12,8 +12,8 @@ import { GmailApi, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET } from "./gmail-api";
 import { IntelligenceStore } from "./intelligence-store";
 import { PeopleIntelligenceView, PEOPLE_INTELLIGENCE_VIEW } from "./intelligence-view";
 import { identityMap, type SourcedNote } from "./intelligence-model";
-import { granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails, type GranolaLinks, type GranolaMeeting } from "./granola-links";
-import { BRIEF_DAYS, latestWithSteps, renderBrief, upcomingMeetings, type BriefPerson } from "./brief";
+import { granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails, type GranolaLinks, type GranolaNote } from "./granola-links";
+import { BRIEF_DAYS, relatedNextSteps, renderBrief, upcomingMeetings, type BriefPerson, type GranolaCandidate, type MeetingSteps } from "./brief";
 import type { Person } from "./intelligence-model";
 import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
@@ -1451,7 +1451,7 @@ export default class GmailCrmPlugin extends Plugin {
 	}
 
 	/** Granola notes joined to people, with the identity map and owner addresses used for it. */
-	private granolaContext(contacts: Record<string, Contact>, userEmail: string): { notes: unknown[]; links: GranolaLinks; identity: Map<string, Person>; owner: Set<string> } {
+	private granolaContext(contacts: Record<string, Contact>, userEmail: string): { notes: GranolaNote[]; links: GranolaLinks; identity: Map<string, Person>; owner: Set<string> } {
 		const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
 			const note = granolaNote(file.path, this.app.metadataCache.getFileCache(file)?.frontmatter);
 			return note ? [note] : [];
@@ -1464,8 +1464,9 @@ export default class GmailCrmPlugin extends Plugin {
 
 	/**
 	 * Rebuilds the pre-meeting brief note: the next days' meetings from the calendar invite, each
-	 * attendee's people page, last contact, nudge and open next steps from their most recent
-	 * Granola meeting that has some. The brief note is the only file written.
+	 * with the open next steps from the last related Granola meeting (same calendar title, else the
+	 * same attendees), then each attendee's people page, last contact and nudge. The brief note is
+	 * the only file written.
 	 */
 	async buildPreMeetingBrief(open: boolean) {
 		if (!this.contactIndex || !this.settings.refreshToken) {
@@ -1474,7 +1475,7 @@ export default class GmailCrmPlugin extends Plugin {
 		}
 		try {
 			await this.gmailApi?.ensureFreshToken();
-			const { links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
+			const { notes, links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
 			const meetings = upcomingMeetings(await fetchUpcomingInvites(this.settings, BRIEF_DAYS), owner);
 			const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
 			const pageByEmail = new Map<string, PersonPage>();
@@ -1486,13 +1487,12 @@ export default class GmailCrmPlugin extends Plugin {
 				const file = this.app.vault.getAbstractFileByPath(path);
 				return file instanceof TFile ? this.app.vault.cachedRead(file) : null;
 			};
+			const primaryOf = (email: string) => identity.get(email)?.contact.email.toLowerCase() ?? email;
 			const people = new Map<string, BriefPerson>();
 			for (const email of new Set(meetings.flatMap((m) => m.attendees))) {
 				const person = identity.get(email);
-				const primary = person ? person.contact.email.toLowerCase() : email;
-				const page = pageByEmail.get(primary);
+				const page = pageByEmail.get(primaryOf(email));
 				if (!page) continue;
-				const latest = await latestWithSteps<GranolaMeeting>(links.meetings.get(primary) ?? [], read);
 				const pageFile = this.app.vault.getAbstractFileByPath(page.path);
 				const nudge: unknown = pageFile instanceof TFile ? this.app.metadataCache.getFileCache(pageFile)?.frontmatter?.nudge : undefined;
 				people.set(email, {
@@ -1500,11 +1500,22 @@ export default class GmailCrmPlugin extends Plugin {
 					page: page.path.replace(/\.md$/, ""),
 					lastContact: person?.contact.lastContact ?? null,
 					nudge: typeof nudge === "string" && nudge.trim() ? nudge.trim() : null,
-					lastGranola: latest ? { title: latest.meeting.title, date: latest.meeting.date, path: latest.meeting.path.replace(/\.md$/, ""), steps: latest.steps } : null,
 				});
 			}
+			// Who each Granola note is linked to, from the same join as the people-page sections.
+			const linked = new Map<string, string[]>();
+			for (const [primary, list] of links.meetings) for (const m of list) linked.set(m.path, [...(linked.get(m.path) ?? []), primary]);
+			const candidates: GranolaCandidate[] = notes.flatMap((n) => {
+				const date = n.calendarStart ?? n.created;
+				return date ? [{ path: n.path, title: n.title, date, calendarTitle: n.calendarTitle, attendees: linked.get(n.path) ?? [] }] : [];
+			});
+			const entries: { meeting: (typeof meetings)[number]; steps: MeetingSteps | null }[] = [];
+			for (const meeting of meetings) {
+				const found = await relatedNextSteps({ ...meeting, attendees: meeting.attendees.map(primaryOf) }, candidates, read, this.settings.vaultOwnerName);
+				entries.push({ meeting, steps: found ? { title: found.note.title, date: found.note.date.slice(0, 10), path: found.note.path.replace(/\.md$/, ""), steps: found.steps } : null });
+			}
 			const path = normalizePath(this.settings.briefPath || "Pre-meeting brief.md");
-			const content = renderBrief(meetings, people, new Date());
+			const content = renderBrief(entries, people, new Date());
 			const existing = this.app.vault.getAbstractFileByPath(path);
 			if (existing instanceof TFile) {
 				await this.app.vault.modify(existing, content);
