@@ -365,6 +365,17 @@ export class GmailCrmSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
             } });
+        group.items.push({ name: "Pre-meeting brief note", desc: "Vault path of the brief note. It is rebuilt after each sync; edits there are overwritten.", render: (setting) => {
+                setting
+                    .setName("Pre-meeting brief note")
+                    .setDesc("Vault path of the brief note. It is rebuilt after each sync; edits there are overwritten.")
+                    .addText((text) => text
+                    .setValue(this.plugin.settings.briefPath)
+                    .onChange(async (value) => {
+                    this.plugin.settings.briefPath = value;
+                    await this.plugin.saveSettings();
+                }));
+            } });
         group.items.push({ name: "API key", desc: "Required for AI analysis. Relationship mapping works without it.", render: (setting) => {
                 setting
                     .setName("API key")

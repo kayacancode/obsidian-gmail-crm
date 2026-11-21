@@ -12,7 +12,9 @@ import { GmailApi, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET } from "./gmail-api";
 import { IntelligenceStore } from "./intelligence-store";
 import { PeopleIntelligenceView, PEOPLE_INTELLIGENCE_VIEW } from "./intelligence-view";
 import { identityMap, type SourcedNote } from "./intelligence-model";
-import { granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails } from "./granola-links";
+import { granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails, type GranolaLinks, type GranolaMeeting } from "./granola-links";
+import { BRIEF_DAYS, latestWithSteps, renderBrief, upcomingMeetings, type BriefPerson } from "./brief";
+import type { Person } from "./intelligence-model";
 import { GmailCrmSettingTab } from "./settings-tab";
 import { startOAuthCallbackServer } from "./oauth-server";
 import { RelationshipEngine } from "./relationships";
@@ -27,7 +29,7 @@ import {
 	type GraphContactInput,
 } from "./graph-push";
 import { buildLocalThemeCandidates, type LocalThemeCandidate } from "./theme-candidates";
-import { syncCalendarData } from "./calendar-sync";
+import { fetchUpcomingInvites, syncCalendarData } from "./calendar-sync";
 import { syncContactPhotos } from "./people-photos";
 import type { StalenessScore } from "./staleness";
 import { FrontmatterManager } from "./frontmatter";
@@ -109,6 +111,7 @@ export default class GmailCrmPlugin extends Plugin {
 		this.addCommand({ id: "people-intelligence", name: "Open people intelligence", callback: () => { void this.openIntelligence(); } });
 		this.addRibbonIcon("users", "People intelligence", () => { void this.openIntelligence(); });
 		this.addCommand({ id: "link-granola-meetings", name: "Link Granola meetings to people", callback: () => { void this.linkGranolaMeetings(true); } });
+		this.addCommand({ id: "open-pre-meeting-brief", name: "Open pre-meeting brief", callback: () => { void this.buildPreMeetingBrief(true); } });
 		// Granola Sync writes a note's frontmatter; relink shortly after. People pages carry no
 		// granola_id, so this plugin's own page writes never retrigger it.
 		const relink = debounce(() => { void this.linkGranolaMeetings(false); }, 3000, true);
@@ -475,6 +478,7 @@ export default class GmailCrmPlugin extends Plugin {
 				notice.setMessage(`Synced ${contactCount} contacts`);
 			}
 			await this.linkGranolaMeetings(false);
+			await this.buildPreMeetingBrief(false);
 			window.setTimeout(() => notice.hide(), 3000);
 
 			if (this.settings.enrichOnSync) {
@@ -514,6 +518,7 @@ export default class GmailCrmPlugin extends Plugin {
 			);
 			await this.saveContactIndex();
 			await this.linkGranolaMeetings(false);
+			await this.buildPreMeetingBrief(false);
 
 			const withCal = Object.values(this.contactIndex.contacts)
 				.filter((c) => (c.calendarMeetings ?? 0) > 0).length;
@@ -1420,14 +1425,7 @@ export default class GmailCrmPlugin extends Plugin {
 			return;
 		}
 		try {
-			const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
-				const note = granolaNote(file.path, this.app.metadataCache.getFileCache(file)?.frontmatter);
-				return note ? [note] : [];
-			});
-			const contacts = this.contactIndex.contacts;
-			const identity = identityMap(Object.values(contacts).map((contact) => ({ contact, notes: [], events: [] })));
-			const owner = ownerEmails(contacts, [this.contactIndex.userEmail, this.settings.scorePushEmail], this.settings.vaultOwnerName);
-			const links = computeGranolaLinks(notes, this.intelligenceReady ? this.intelligence.state.events : [], identity, owner);
+			const { notes, links } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
 			const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
 			let written = 0;
 			for (const page of Object.values(pages)) {
@@ -1449,6 +1447,78 @@ export default class GmailCrmPlugin extends Plugin {
 			const msg = e instanceof Error ? e.message : String(e);
 			console.warn(`[People Data Sync] Granola linking skipped: ${msg}`);
 			if (announce) new Notice(`Granola linking failed: ${msg}`);
+		}
+	}
+
+	/** Granola notes joined to people, with the identity map and owner addresses used for it. */
+	private granolaContext(contacts: Record<string, Contact>, userEmail: string): { notes: unknown[]; links: GranolaLinks; identity: Map<string, Person>; owner: Set<string> } {
+		const notes = this.app.vault.getMarkdownFiles().flatMap((file) => {
+			const note = granolaNote(file.path, this.app.metadataCache.getFileCache(file)?.frontmatter);
+			return note ? [note] : [];
+		});
+		const identity = identityMap(Object.values(contacts).map((contact) => ({ contact, notes: [], events: [] })));
+		const owner = ownerEmails(contacts, [userEmail, this.settings.scorePushEmail], this.settings.vaultOwnerName);
+		const links = computeGranolaLinks(notes, this.intelligenceReady ? this.intelligence.state.events : [], identity, owner);
+		return { notes, links, identity, owner };
+	}
+
+	/**
+	 * Rebuilds the pre-meeting brief note: the next days' meetings from the calendar invite, each
+	 * attendee's people page, last contact, nudge and open next steps from their most recent
+	 * Granola meeting that has some. The brief note is the only file written.
+	 */
+	async buildPreMeetingBrief(open: boolean) {
+		if (!this.contactIndex || !this.settings.refreshToken) {
+			if (open) new Notice("Connect your account and run a contact sync first.");
+			return;
+		}
+		try {
+			await this.gmailApi?.ensureFreshToken();
+			const { links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
+			const meetings = upcomingMeetings(await fetchUpcomingInvites(this.settings, BRIEF_DAYS), owner);
+			const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
+			const pageByEmail = new Map<string, PersonPage>();
+			for (const page of Object.values(pages)) {
+				const email = this.getEmailForPage(page);
+				if (email && !pageByEmail.has(email)) pageByEmail.set(email, page);
+			}
+			const read = async (path: string) => {
+				const file = this.app.vault.getAbstractFileByPath(path);
+				return file instanceof TFile ? this.app.vault.cachedRead(file) : null;
+			};
+			const people = new Map<string, BriefPerson>();
+			for (const email of new Set(meetings.flatMap((m) => m.attendees))) {
+				const person = identity.get(email);
+				const primary = person ? person.contact.email.toLowerCase() : email;
+				const page = pageByEmail.get(primary);
+				if (!page) continue;
+				const latest = await latestWithSteps<GranolaMeeting>(links.meetings.get(primary) ?? [], read);
+				const pageFile = this.app.vault.getAbstractFileByPath(page.path);
+				const nudge: unknown = pageFile instanceof TFile ? this.app.metadataCache.getFileCache(pageFile)?.frontmatter?.nudge : undefined;
+				people.set(email, {
+					name: page.name,
+					page: page.path.replace(/\.md$/, ""),
+					lastContact: person?.contact.lastContact ?? null,
+					nudge: typeof nudge === "string" && nudge.trim() ? nudge.trim() : null,
+					lastGranola: latest ? { title: latest.meeting.title, date: latest.meeting.date, path: latest.meeting.path.replace(/\.md$/, ""), steps: latest.steps } : null,
+				});
+			}
+			const path = normalizePath(this.settings.briefPath || "Pre-meeting brief.md");
+			const content = renderBrief(meetings, people, new Date());
+			const existing = this.app.vault.getAbstractFileByPath(path);
+			if (existing instanceof TFile) {
+				await this.app.vault.modify(existing, content);
+			} else {
+				const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+				if (folder && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+				await this.app.vault.create(path, content);
+			}
+			console.debug(`[People Data Sync] Brief: ${meetings.length} meetings, ${people.size} attendees with people pages`);
+			if (open) await this.app.workspace.openLinkText(path, "", true);
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : String(e);
+			console.warn(`[People Data Sync] Pre-meeting brief skipped: ${msg}`);
+			if (open) new Notice(`Pre-meeting brief failed: ${msg}`);
 		}
 	}
 

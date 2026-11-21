@@ -21,6 +21,9 @@ export interface GranolaNote {
 export interface GranolaMeeting {
   date: string;
   line: string;
+  /** The note's vault path (with `.md`) and title, for the pre-meeting brief. */
+  path: string;
+  title: string;
 }
 export interface GranolaLinks {
   /** Meetings per person, keyed by the person's primary email. */
@@ -117,7 +120,7 @@ export function linkGranolaMeetings(
     const target = note.path.replace(/\.md$/, "");
     const line = `- ${date} · [[${target}|${note.title.replace(/[|\]]/g, " ")}]]`;
     for (const primary of people) {
-      result.meetings.set(primary, [...(result.meetings.get(primary) ?? []), { date, line }]);
+      result.meetings.set(primary, [...(result.meetings.get(primary) ?? []), { date, line, path: note.path, title: note.title }]);
       const at = note.calendarStart ?? note.created;
       if (method === "email" && at)
         result.events.push({
