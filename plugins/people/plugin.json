@@ -1,0 +1,32 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "people",
+  "version": "0.1.0",
+  "description": "Use your People network, saved priorities, and private relationship context in ChatGPT and Codex.",
+  "author": {"name": "Kaya Jones"},
+  "homepage": "https://people-graph.kayarjones901.workers.dev",
+  "repository": "https://github.com/kayacancode/obsidian-gmail-crm",
+  "license": "MIT",
+  "keywords": ["people", "network", "relationships", "meeting-prep"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "People",
+        "shortDescription": "Your relationship context",
+        "longDescription": "Find people in your connected network, use your saved People Lens, inspect connection evidence, prepare for meetings, and save private relationship context when you ask. Sign in to your People account and review read/write access. This plugin does not send messages or introductions, schedule meetings, or manage connected sources and sharing.",
+        "developerName": "Kaya Jones",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://people-graph.kayarjones901.workers.dev",
+        "defaultPrompt": [
+          "Who in my network could help with my saved priorities?",
+          "Help me prepare for a meeting using my saved relationship context.",
+          "Show me my saved People Lens."
+        ],
+        "brandColor": "#245D4A",
+        "composerIcon": "./assets/people.svg",
+        "logo": "./assets/people.svg"
+      }
+    }
+  }
+}

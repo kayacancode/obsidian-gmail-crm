@@ -1,0 +1,17 @@
+{
+  "interface": {
+    "display_name": "People",
+    "short_description": "Use your network and saved relationship context",
+    "default_prompt": "Use $people to find people who could help with my saved priorities."
+  },
+  "dependencies": {
+    "tools": [{
+      "type": "mcp",
+      "value": "people",
+      "description": "Authenticated People network and private relationship context",
+      "transport": "streamable_http",
+      "url": "https://people-graph.kayarjones901.workers.dev/api/people-mcp"
+    }]
+  },
+  "policy": {"allow_implicit_invocation": true}
+}
