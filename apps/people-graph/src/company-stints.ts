@@ -54,8 +54,12 @@ export class CompanyStintStore {
   return stint;
  }
  forPerson(personIds:string[]):CompanyStint[]{
-  if(!personIds.length)return [];
-  return this.storage.sql.exec<{id:string;person:string;company:string;from_month:string;to_month:string|null}>(`SELECT id,person,company,from_month,to_month FROM company_stints WHERE person IN (${personIds.map(()=>'?').join(',')})`,...personIds).toArray().map(r=>({id:r.id,personId:r.person,company:r.company,domain:'',from:r.from_month,to:r.to_month,source:'owner' as const}));
+  const wanted=new Set(personIds);
+  return wanted.size?this.all().filter(s=>wanted.has(s.personId)):[];
+ }
+ /** Every owner correction; one query, so callers never bind more than the SQLite parameter limit. */
+ all():CompanyStint[]{
+  return this.storage.sql.exec<{id:string;person:string;company:string;from_month:string;to_month:string|null}>('SELECT id,person,company,from_month,to_month FROM company_stints').toArray().map(r=>({id:r.id,personId:r.person,company:r.company,domain:'',from:r.from_month,to:r.to_month,source:'owner' as const}));
  }
  forget(id:string):boolean{
   const found=this.storage.sql.exec('SELECT id FROM company_stints WHERE id=?',id).toArray().length>0;

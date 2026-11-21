@@ -58,6 +58,22 @@ test('stints: teammates overlap at the same domain',async()=>{
  assert.deepEqual(teammates.map(t=>[t.personId,t.domain]),[[lee,'acme.com']]);
 });
 
+test('stints: teammates and former colleagues on a big shared domain resolve identities once per call',async()=>{
+ const f=await fixture();
+ for(let i=0;i<300;i++)contribution(f,`person${i}@acme.com`,`Person ${i}`,at(2024,5));
+ contribution(f,'person0@zeta.io','Person 0',at(2026,10));
+ // Element access is the test seam: count the expensive identity map rebuilds.
+ const service=f.service as unknown as {mergeIdentities():Promise<Map<string,string>>};
+ const original=service.mergeIdentities.bind(f.service);let rebuilds=0;
+ service.mergeIdentities=async()=>{rebuilds++;return original();};
+ const maya=await opaque(OWNER,'person1@acme.com',f.env.TOKEN_SECRET);
+ assert.equal((await f.service.teammates(maya)).teammates.length,299);
+ assert.ok(rebuilds<=3,`teammates rebuilt identities ${rebuilds} times`);
+ rebuilds=0;
+ await f.service.formerAt('acme');
+ assert.ok(rebuilds<=3,`formerAt rebuilt identities ${rebuilds} times`);
+});
+
 test('stints: an owner stint can be set and forgotten',async()=>{
  const f=await fixture();
  const stint=await f.service.setCompanyStint({personId:f.personId,company:'Analytical Engines',from:'2025-01',to:null});

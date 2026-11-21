@@ -28,6 +28,11 @@ test('brief: since-you-last-spoke tells both sides, after the last contact only'
  assert.equal(brief.answers[0].when.daysSince,100);
 });
 
+test('brief: sensitive items in since-you-last-spoke stay tone-only',()=>{
+ const brief=assembleBrief(base({signals:[signal('health','sensitive',now-5*DAY,'Recovering from surgery'),signal('travel','open',now-10*DAY,'Back from Japan')]}));
+ assert.deepEqual(brief.sinceLastContact.theirs.map(t=>[t.summary,t.use]),[['Back from Japan','rank'],['Recovering from surgery','tone_only']]);
+});
+
 test('brief: honest gaps when signals are off and no contact date exists',()=>{
  const brief=assembleBrief(base({signalsEnabled:false,person:{id:'p',name:'Maya',company:'',lastContact:null,combined:null}}));
  assert.ok(brief.gaps.includes('No life signals: signals are off'));

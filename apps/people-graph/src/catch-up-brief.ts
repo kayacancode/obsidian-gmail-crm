@@ -28,7 +28,7 @@ export interface CatchUpBrief {
  interpretation:null;
  answers:BriefAnswer[];
  gaps:string[];
- sinceLastContact:{theirs:Array<{kind:'signal'|'stint';summary:string;date:string}>;yours:TimelineEntry[]};
+ sinceLastContact:{theirs:Array<{kind:'signal'|'stint';category?:LifeCategory;summary:string;date:string;use:BriefUse}>;yours:TimelineEntry[]};
 }
 
 const DAY=86_400_000;
@@ -46,8 +46,8 @@ export function assembleBrief(input:BriefInput):CatchUpBrief{
  ];
  const after=(date:string)=>!known||Date.parse(date)>last;
  const theirs=[
-  ...input.signals.filter(s=>after(s.observedAt)).map(s=>({kind:'signal' as const,summary:s.summary,date:s.observedAt})),
-  ...input.stints.filter(s=>after(s.from+'-28')).map(s=>({kind:'stint' as const,summary:`Started at ${s.company}`,date:s.from+'-01'})),
+  ...input.signals.filter(s=>after(s.observedAt)).map(s=>({kind:'signal' as const,category:s.category,summary:s.summary,date:s.observedAt,use:s.tier==='sensitive'?'tone_only' as const:'rank' as const})),
+  ...input.stints.filter(s=>after(s.from+'-28')).map(s=>({kind:'stint' as const,summary:`Started at ${s.company}`,date:s.from+'-01',use:'rank' as const})),
  ].sort((a,b)=>a.date.localeCompare(b.date));
  const yours=input.timeline.filter(t=>after(t.date+'T23:59:59Z')).sort((a,b)=>a.date.localeCompare(b.date));
  const gaps:string[]=[];

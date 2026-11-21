@@ -13,8 +13,14 @@ export interface LifeCandidate {category:LifeCategory;tier:LifeTier;summary:stri
 
 const isCategory=(value:unknown):value is LifeCategory=>typeof value==='string'&&(LIFE_CATEGORIES as readonly string[]).includes(value);
 const firstPerson=/^(?:I\b|I['’]m\b|I['’]ve\b|I['’]ll\b|I['’]d\b|We\b|We['’]re\b|We['’]ve\b|My\b|Our\b)/i;
-// "My friend broke her leg" is about someone else: never a signal about the sender.
-const thirdParty=/\b(?:my|our) (?:friend|wife|husband|partner|son|daughter|kids?|children|mom|mother|dad|father|parents?|brother|sister|colleague|boss|cofounder|co-founder|team|neighbou?r)s?\b/i;
+// "My best friend broke her leg" or "Maya said her cousin is ill" is about someone else:
+// never a signal about the speaker. Up to two words may sit between the possessive and the relation.
+const RELATIONS='friends?|bff|wife|husband|partner|spouse|son|daughter|kids?|child|children|baby|mom|mum|mother|dad|father|parents?|brother|sister|siblings?|cousin|aunt|uncle|grand\\w*|niece|nephew|girlfriend|boyfriend|fianc[eé]e?|\\w+-in-law|in-laws?|roommate|flatmate|client|colleague|coworker|co-worker|boss|cofounder|co-founder|team|neighbou?r|dog|cat';
+const relationOf=(possessive:string)=>new RegExp(`\\b(?:${possessive})(?:\\s+[\\w'’-]+){0,2}\\s+(?:${RELATIONS})s?\\b`,'i');
+const senderThirdParty=relationOf('my|our');
+const attendeeThirdParty=relationOf('my|our|his|her|their');
+// "I am visiting Sam after his surgery": the first-person sentence is about another person.
+const aboutSomeoneElse=/\b(?:his|her|their|him|them)\b/i;
 const escape=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 const word=(value:string)=>new RegExp(`(?:^|[^\\p{L}])${escape(value)}(?:$|[^\\p{L}])`,'iu');
 
@@ -49,8 +55,8 @@ export async function extractLifeSignals(ai:Ai|undefined,text:string,mode:LifeMo
   const quote=sentences.slice(s,e+1).join(' '),anchorText=sentences[a];
   if(quote.length<20||quote.length>600)continue;
   let personHint:string|undefined;
-  if(mode==='sender'&&(!firstPerson.test(anchorText)||thirdParty.test(anchorText)))continue;
-  if(mode==='attendee'){personHint=namedAttendee(anchorText,attendees);if(!personHint)continue;}
+  if(mode==='sender'&&(!firstPerson.test(anchorText)||senderThirdParty.test(anchorText)||aboutSomeoneElse.test(anchorText)))continue;
+  if(mode==='attendee'){if(attendeeThirdParty.test(anchorText))continue;personHint=namedAttendee(anchorText,attendees);if(!personHint)continue;}
   seen.add(a);
   result.push({category,tier:LIFE_TIER[category],summary:summary.trim(),quote,...(personHint?{personHint}:{})});
  }
@@ -89,6 +95,11 @@ export class LifeSignalStore {
   const count=this.storage.sql.exec<{n:number}>(`SELECT COUNT(*) AS n FROM life_signals WHERE ${where}`,...args).toArray()[0]?.n??0;
   this.storage.sql.exec(`DELETE FROM life_signals WHERE ${where}`,...args);
   return count;
+ }
+ /** Delete every signal from one source (`exact`) or one family of sources (`prefix`), e.g. a revoked inbox. */
+ forgetSources(target:{exact:string}|{prefix:string}):void{
+  if('exact' in target)this.storage.sql.exec('DELETE FROM life_signals WHERE source_ref=?',target.exact);
+  else this.storage.sql.exec('DELETE FROM life_signals WHERE substr(source_ref,1,?)=?',target.prefix.length,target.prefix);
  }
  purgeExpired():void{this.storage.sql.exec('DELETE FROM life_signals WHERE expires<=?',this.now());}
 }

@@ -54,3 +54,15 @@ test('life: owner notes about the person need no first-person anchor',async()=>{
 test('life: no AI binding is reported, not silently empty',async()=>{
  await assert.rejects(extractLifeSignals(undefined,'I moved to Lisbon.','sender'),/ai_unavailable/);
 });
+
+test('life: relatives, friends and other people in a first-person sentence are never the sender',async()=>{
+ for(const sentence of ['My best friend broke her leg last week.','My cousin was just diagnosed with cancer.','My little sister is getting divorced this spring.','I am visiting Sam in hospital after his surgery.']){
+  const got=await extractLifeSignals(model([{start:0,end:0,anchor:0,category:'health',summary:'Someone is unwell'}]),sentence,'sender');
+  assert.deepEqual(got,[],sentence);
+ }
+});
+
+test('life: a meeting note about an attendee talking about someone else is dropped',async()=>{
+ const got=await extractLifeSignals(model([{start:0,end:0,anchor:0,category:'health',summary:'Friend broke a leg'}]),'Maya said her friend broke her leg skiing.','attendee',attendees);
+ assert.deepEqual(got,[]);
+});

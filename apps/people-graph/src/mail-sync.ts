@@ -272,7 +272,7 @@ export class MailSync extends DurableObject<MailEnv>{
  private relevanceStore?:RelevanceStore;
  private store(){return this.relevanceStore??=new RelevanceStore(this.ctx,()=>this.ctx.storage.get<string>('owner'));}
  private granolaSync?:GranolaSync;
- private granola():GranolaSync{return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),ownerContextChanged:(force=false)=>this.ownerLens().reconcileGranola(this.granola().ownerLensVersions(),force),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email),lifeNote:input=>this.lifeFromGranola(input)});}
+ private granola():GranolaSync{return this.granolaSync??=new GranolaSync(this.ctx,this.env,{owner:()=>this.ctx.storage.get<string>('owner'),store:()=>this.store(),invalidateGraph:()=>this.ctx.storage.delete('graph').then(()=>{}),ownerContextChanged:(force=false)=>this.ownerLens().reconcileGranola(this.granola().ownerLensVersions(),force),contacts:()=>this.gmailContacts(),accounts:()=>this.rows().map(a=>a.email),lifeNote:input=>this.lifeFromGranola(input),lifeForget:prefix=>this.lifeStore().forgetSources({prefix})});}
  /**
   * Gmail contacts for identity matching: one row per address with its most common display name
   * and up to five canonical subject theme names. Raw subject lines never leave this object.
@@ -311,7 +311,7 @@ export class MailSync extends DurableObject<MailEnv>{
   a.job={contextVersion:a.contextEnabled?GMAIL_CONTEXT_VERSION:undefined,calendarDone:!a.calendarEnabled,generation:crypto.randomUUID(),photoSource:a.photosEnabled?'saved':'other',photosDone:!a.photosEnabled&&!a.otherPhotosEnabled,range:selected,query,pageToken:undefined,pending,hasMore:true,processed:0,started:Date.now(),retries:0,lastRun:0,nextAttempt:0};
   a.range=selected;a.status='syncing';a.error='';a.contextError='';this.put(a);if(schedule)await this.scheduleNextAlarm();
  }
- async remove(email:string){const revoking=this.get(email);if(revoking){revoking.contextEnabled=false;revoking.revision=crypto.randomUUID();this.put(revoking);}this.clearConnectionOrigins();this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.ownerLens().reconcileGranola(new Map(),true);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
+ async remove(email:string){const revoking=this.get(email);if(revoking){revoking.contextEnabled=false;revoking.revision=crypto.randomUUID();this.put(revoking);}this.clearConnectionOrigins();this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);this.lifeStore().forgetSources({prefix:`gmail:${email}:`});await this.invalidateRetrieval(email);this.ctx.storage.transactionSync(()=>{this.ctx.storage.sql.exec('DELETE FROM calendar_events WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contact_photos WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM accounts WHERE email=?',email);this.ctx.storage.sql.exec('DELETE FROM messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM contributions WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edges WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_edge_messages WHERE account=?',email);this.ctx.storage.sql.exec('DELETE FROM mail_thread_people WHERE account=?',email);});await this.ownerLens().removeAccount(email);await this.ownerLens().reconcileGranola(new Map(),true);await this.store().removeAccountData(email);await this.ctx.storage.delete('graph');const owner=await this.ctx.storage.get<string>('owner');if(owner){const graph=await this.graph();this.store().cancelPublicPersonWork(owner,new Set(graph?.nodes.map(node=>node.id)??[]));}await this.scheduleNextAlarm();}
  async granolaConnect(apiKey:string,range:GranolaRange):Promise<GranolaStatus>{const status=await this.granola().connect(apiKey,range);await this.scheduleNextAlarm();return status;}
  granolaStatus():GranolaStatus{return this.granola().status();}
  async granolaExcluded(ids:string[]):Promise<GranolaStatus>{const status=await this.granola().setExcluded(ids);await this.scheduleNextAlarm();return status;}
@@ -476,6 +476,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   // Stop the previous generation; a late body/AI response cannot restore disabled context.
   a.job=null;a.status='connected';this.put(a);
   this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE account=?',email);
+  if(!enabled)this.lifeStore().forgetSources({prefix:`gmail:${email}:`});
   await this.ctx.storage.delete('graph');
   if(enabled)await this.start(email);else await this.scheduleNextAlarm();
   return {ok:true};
@@ -485,7 +486,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const cutoff=Date.now()-90*86400000;
   this.ctx.storage.sql.exec('DELETE FROM gmail_context WHERE observed<?',cutoff);
   const needWork=!this.ctx.storage.sql.exec('SELECT message FROM gmail_context WHERE account=? AND message=? AND version>=?',a.email,id,GMAIL_CONTEXT_VERSION).toArray().length;
-  const lifeRef='gmail:'+id,needLife=this.lifeStore().enabled()&&!this.lifeStore().processed(lifeRef);
+  const lifeRef=`gmail:${a.email}:${id}`,needLife=this.lifeStore().enabled()&&!this.lifeStore().processed(lifeRef);
   if(!needWork&&!needLife)return;
   // Existing metadata restricts body retrieval to recent inbound messages from a contact.
   const row=this.ctx.storage.sql.exec<{email:string;date:number}>('SELECT c.email,c.date FROM contributions c JOIN messages m ON m.account=c.account AND m.canonical=c.canonical WHERE m.account=? AND m.id=? AND c.received>0 AND c.date>=? LIMIT 1',a.email,id,cutoff).toArray()[0];
@@ -510,7 +511,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    const headers=raw.payload?.headers||[];
    if(headers.some(h=>['list-id','list-unsubscribe'].includes(h.name.toLowerCase()))||/^(no-?reply|notifications?|newsletters?|mailer-daemon)@/i.test(row.email)){ineligible();return;}
    const body=decodeGmailMessage(raw,24000),text=body.text;body.text='';
-   if(needLife)await this.lifeFromText(person,'gmail',lifeRef,'sender',text,parsed.date);
+   if(needLife)await this.lifeFromText(person,'gmail',lifeRef,'sender',text,parsed.date,()=>this.active(a)&&!!this.get(a.email)?.contextEnabled&&this.get(a.email)?.revision===a.revision);
    if(needWork)storeFacts(await extractMailContext(this.env.AI,text),parsed.date);
   }catch{if(this.active(a)){a.contextVersion=0;a.contextError='Some email context could not be analysed. It will retry on the next sync.';}}
  }
@@ -976,20 +977,22 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   await this.lifeFromText(personId,'memory','memory:'+input.sourceId.trim(),'note',input.text,Date.now());
   return {...result,personId,memory:await this.memoryForPerson(personId)};
  }
- /** Store life signals from one source text. Never throws: life extraction must not break the caller; an unprocessed source retries later. */
- private async lifeFromText(personId:string,source:LifeSource,sourceRef:string,mode:LifeMode,text:string,observed:number){
+ /** Store life signals from one source text. Never throws: life extraction must not break the caller. `stillAllowed` re-checks consent after the model call. */
+ private async lifeFromText(personId:string,source:LifeSource,sourceRef:string,mode:LifeMode,text:string,observed:number,stillAllowed:()=>boolean=()=>true){
   const store=this.lifeStore();
   if(!store.enabled()||store.processed(sourceRef))return;
   try{
    store.purgeExpired();
    const candidates=await extractLifeSignals(this.env.AI,text,mode);
+   // The model call can take seconds: consent may have been withdrawn meanwhile.
+   if(!store.enabled()||!stillAllowed())return;
    candidates.forEach((candidate,index)=>store.add(personId,candidate,source,sourceRef,observed,index));
    store.markProcessed(sourceRef);
-  }catch{/* retried on the next pass */}
+  }catch{/* left unprocessed; extracted again only if this source is processed again */}
  }
  /** Granola hook: attribute each signal to the single attendee its anchor sentence names. */
- private async lifeFromGranola(input:{noteId:string;meetingAt:string;text:string;attendees:{email:string;name:string}[]}){
-  const store=this.lifeStore(),sourceRef='granola:'+input.noteId,observed=Date.parse(input.meetingAt);
+ private async lifeFromGranola(input:{noteId:string;meetingAt:string;text:string;attendees:{email:string;name:string}[];contentHash?:string}){
+  const store=this.lifeStore(),sourceRef=`granola:${input.noteId}:${input.contentHash??''}`,observed=Date.parse(input.meetingAt);
   if(!store.enabled()||store.processed(sourceRef)||!input.text.trim()||!Number.isFinite(observed))return;
   try{
    const owner=await this.ctx.storage.get<string>('owner');if(!owner)return;
@@ -997,6 +1000,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    const attendees=input.attendees.filter(a=>!own.has(a.email.toLowerCase()));
    store.purgeExpired();
    const candidates=await extractLifeSignals(this.env.AI,input.text,'attendee',attendees);
+   if(!store.enabled())return;
    const alias=this.granola().aliases();
    for(const [index,candidate] of candidates.entries()){
     if(!candidate.personHint)continue;
@@ -1004,16 +1008,18 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
     store.add(await this.canonicalPersonId(await opaque(owner,email,this.env.TOKEN_SECRET)),candidate,'granola',sourceRef,observed,index);
    }
    store.markProcessed(sourceRef);
-  }catch{/* retried when the note is next extracted */}
+  }catch{/* left unprocessed; extracted again when the note changes */}
  }
  async deleteRelationshipEntry(input:{personId:string;entryId:string;revision:string|null}){
   if(!input||Object.keys(input).sort().join(',')!=='entryId,personId,revision'||!validContextPerson(input.personId))throw Error('invalid_request');
   const canonical=await this.canonicalPersonId(input.personId);
   this.personContextFor(await this.emailForPerson(canonical));
   const current=this.memoryStore().get(canonical);if(current.revision!==input.revision)throw Error('person_context_conflict');
-  const entry=this.ctx.storage.sql.exec<{person_id:string}>('SELECT person_id FROM person_memory_entries WHERE id=?',input.entryId).toArray()[0];
+  const entry=this.ctx.storage.sql.exec<{person_id:string;source_id:string}>('SELECT person_id,source_id FROM person_memory_entries WHERE id=?',input.entryId).toArray()[0];
   if(!entry||await this.canonicalPersonId(entry.person_id)!==canonical)throw Error('not_found');
   this.memoryStore().remove({...input,personId:entry.person_id,revision:this.memoryStore().get(entry.person_id).revision});
+  // A deleted note takes its life signals with it; the processed marker stays, so nothing returns.
+  this.lifeStore().forgetSources({exact:'memory:'+entry.source_id});
   if(entry.person_id!==canonical)this.personContextFor(await this.emailForPerson(canonical)).save({personId:canonical,text:current.text,revision:current.revision});
   return this.memoryForPerson(canonical);
  }
@@ -1095,19 +1101,35 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   }
   return {candidates:candidates.sort((a,b)=>b.people[0].lastContact.localeCompare(a.people[0].lastContact))};
  }
+ /**
+  * Company history for every visible person, built from one identity map, one span query and one
+  * owner-stint read. Bulk queries use this instead of calling companyStints once per contact.
+  */
+ private async stintIndex(){
+  const ids=await this.mergeIdentities(),merges=this.personMergeStore().get();
+  const canonicalOf=(id:string)=>merges[id]&&ids.has(id)&&ids.has(merges[id])?merges[id]:id;
+  const spans=new Map(this.ctx.storage.sql.exec<{email:string;first:number;last:number}>('SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions GROUP BY email').toArray().map(row=>[row.email,row]));
+  const names=new Map(this.graphContacts().map(contact=>[contact.email,contact.name]));
+  const people=new Map<string,{ids:string[];emails:string[]}>();
+  for(const [id,email] of ids){const key=canonicalOf(id),entry=people.get(key)??{ids:[],emails:[]};entry.ids.push(id);entry.emails.push(email);people.set(key,entry);}
+  const owned=this.stintStore().all(),now=Date.now();
+  const stintsOf=(canonical:string)=>{
+   const entry=people.get(canonical);if(!entry)return [];
+   const members=new Set(entry.ids);
+   return mergeStints(deriveStints(canonical,entry.emails.flatMap(email=>spans.get(email)??[]),now),owned.filter(s=>members.has(s.personId)));
+  };
+  return {canonicalOf,people,stintsOf,nameOf:(canonical:string)=>people.get(canonical)?.emails.map(email=>names.get(email)).find(Boolean)??''};
+ }
  async teammates(personId:string){
   if(!validContextPerson(personId))throw Error('invalid_request');
-  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {teammates:[]};
-  const canonical=await this.canonicalPersonId(personId),mine=(await this.companyStints(personId)).stints.filter(s=>s.domain);
-  const domains=new Set(mine.map(s=>s.domain)),seen=new Set<string>([canonical]);
+  const index=await this.stintIndex(),canonical=index.canonicalOf(personId);
+  const mine=index.stintsOf(canonical).filter(s=>s.domain),domains=new Set(mine.map(s=>s.domain));
   const teammates:{personId:string;name:string;domain:string;overlap:string}[]=[];
-  for(const contact of this.graphContacts()){
-   if(!domains.has(contact.email.split('@')[1]??''))continue;
-   const other=await this.canonicalPersonId(await opaque(owner,contact.email,this.env.TOKEN_SECRET));
-   if(seen.has(other))continue;seen.add(other);
-   for(const theirs of (await this.companyStints(other)).stints)for(const stint of mine){
+  for(const [other,entry] of index.people){
+   if(other===canonical||!entry.emails.some(email=>domains.has(email.split('@')[1]??'')))continue;
+   for(const theirs of index.stintsOf(other))for(const stint of mine){
     const overlap=theirs.domain===stint.domain?overlaps(stint,theirs):null;
-    if(overlap)teammates.push({personId:other,name:contact.name,domain:stint.domain,overlap});
+    if(overlap)teammates.push({personId:other,name:index.nameOf(other),domain:stint.domain,overlap});
    }
   }
   return {teammates:teammates.sort((a,b)=>a.name.localeCompare(b.name)||a.personId.localeCompare(b.personId))};
@@ -1115,15 +1137,10 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  /** People whose stint at a company has ended, with that stint's dates. */
  async formerAt(company:string){
   if(typeof company!=='string'||!company.trim()||company.length>200)throw Error('invalid_request');
-  const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {personIds:[],stints:{}};
-  const stints:Record<string,{from:string;to:string}>={};
-  for(const contact of this.graphContacts()){
-   const domain=contact.email.split('@')[1]??'';
-   if(!stintMatches({id:'',personId:'',company:domain.split('.')[0],domain,from:'',to:null,source:'email_domain'},company))continue;
-   const person=await this.canonicalPersonId(await opaque(owner,contact.email,this.env.TOKEN_SECRET));
-   if(stints[person])continue;
-   const ended=(await this.companyStints(person)).stints.find(s=>s.to!==null&&stintMatches(s,company));
-   if(ended?.to)stints[person]={from:ended.from,to:ended.to};
+  const index=await this.stintIndex(),stints:Record<string,{from:string;to:string}>={};
+  for(const canonical of index.people.keys()){
+   const ended=index.stintsOf(canonical).find(s=>s.to!==null&&stintMatches(s,company));
+   if(ended?.to)stints[canonical]={from:ended.from,to:ended.to};
   }
   return {personIds:Object.keys(stints).sort(),stints};
  }
