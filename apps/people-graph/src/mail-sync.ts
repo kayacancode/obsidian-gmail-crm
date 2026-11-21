@@ -14,6 +14,7 @@ import {OwnerTimelineStore} from './owner-timeline';
 import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
 import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
 import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,assembleAtlas,absentCommunities,type StructureInput,type Candidate,type Atlas} from './network-structure';
+import {CuriosityNoteStore,type CuriosityNote} from './curiosity';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -80,6 +81,8 @@ export class MailSync extends DurableObject<MailEnv>{
  private memoryStore(){return this.relationshipStore??=new RelationshipMemoryStore(this.ctx.storage);}
  private lifeSignalStore?:LifeSignalStore;
  private lifeStore(){return this.lifeSignalStore??=new LifeSignalStore(this.ctx.storage);}
+ private curiosityNoteStore?:CuriosityNoteStore;
+ private curiosityStore(){return this.curiosityNoteStore??=new CuriosityNoteStore(this.ctx.storage);}
  private ownerTimeline?:OwnerTimelineStore;
  private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
  private companyStintStore?:CompanyStintStore;
@@ -1195,6 +1198,40 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const candidates=await this.topicCandidates(text,structure.excluded);
   const present=structure.ctx.clusters.clusters.filter(c=>structure.ctx.usual.has(c.id)||c.members.some(m=>candidates.some(x=>x.personId===m))).map(c=>c.label);
   return assembleAtlas(text,structure.input,structure.ctx,candidates,await absentCommunities(this.env.AI,text,present),structure.now);
+ }
+ /** A note's names: an exact recorded email or one exact name match; anything else is a gap. */
+ private async resolveNotePeople(note:CuriosityNote){
+  const graph=await this.graph(),aliases=graph?.personAliases??{},nodes=(graph?.nodes??[]).filter(n=>n.directRelationship||n.manual);
+  const people:{name:string;personId:string|null}[]=[],gaps:string[]=[];
+  for(const name of [...new Set([...note.wantToTalkTo,...note.newInMyHead.flatMap(i=>i.names)])]){
+   let personId:string|null=null;
+   if(name.includes('@')){const id=await this.resolveOwnEmail(name.toLowerCase());personId=id?aliases[id]??id:null;}
+   else{
+    const matches=nodes.filter(n=>n.name.toLowerCase()===name.toLowerCase());
+    if(matches.length===1)personId=matches[0].id;
+    else if(matches.length>1){gaps.push(`Several people are named ${name}`);people.push({name,personId});continue;}
+   }
+   if(!personId)gaps.push(`No one in your network matches ${name}`);
+   people.push({name,personId});
+  }
+  return {people,gaps};
+ }
+ /** Save a curiosity note (create, or replace an active one); names resolve against the owner's own graph. */
+ async setCuriosityNote(input:{text?:unknown;id?:unknown}){
+  if(typeof input?.text!=='string'||(input.id!==undefined&&(typeof input.id!=='string'||input.id.length>100)))throw Error('invalid_request');
+  const stored=this.curiosityStore().set(input.text,input.id,Date.now());
+  const {people,gaps}=await this.resolveNotePeople(stored);
+  return {note:{...stored,people},gaps};
+ }
+ async listCuriosityNotes(includeArchived=false){
+  const notes=[];
+  for(const note of this.curiosityStore().list(includeArchived))notes.push({...note,people:(await this.resolveNotePeople(note)).people});
+  return {notes};
+ }
+ async archiveCuriosityNote(id:string){
+  if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');
+  if(!this.curiosityStore().archive(id,Date.now()))throw Error('not_found');
+  return {archived:id};
  }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
