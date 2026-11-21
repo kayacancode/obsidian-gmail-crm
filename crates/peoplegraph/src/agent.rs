@@ -6,8 +6,8 @@ use std::time::Instant;
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct WebArgs {
-    /// Hosted People origin; alternatively set PEOPLEGRAPH_WEB_URL. Requires PEOPLEGRAPH_WEB_TOKEN.
-    #[arg(long)]
+    /// Hosted People origin; otherwise use saved configuration or PEOPLEGRAPH_WEB_URL.
+    #[arg(long, global = true)]
     pub url: Option<String>,
 }
 
@@ -46,7 +46,6 @@ pub(crate) struct HelpersArgs {
 pub(crate) fn run(command: &Commands, start: Instant) -> Response {
     let name = command_name(command);
     let (web, path, payload) = match command {
-        Commands::Lens(web) => (web, "/api/people-agent/lens", None),
         Commands::Matches(web) => (web, "/api/people-agent/matches", Some(json!({}))),
         Commands::Search(args) => {
             if args.query.trim().is_empty() || args.query.trim().encode_utf16().count() > 200 {

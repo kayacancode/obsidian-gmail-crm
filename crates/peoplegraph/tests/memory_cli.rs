@@ -10,6 +10,13 @@ fn cli() -> Command {
     command
         .env_remove("PEOPLEGRAPH_WEB_URL")
         .env_remove("PEOPLEGRAPH_WEB_TOKEN");
+    let home = std::env::temp_dir().join(format!(
+        "peoplegraph-memory-empty-home-{}",
+        std::process::id()
+    ));
+    command
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"));
     command
 }
 fn fixture(body: &'static str, status: &'static str) -> (String, mpsc::Receiver<String>) {

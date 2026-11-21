@@ -1,5 +1,17 @@
+// The `describe` payload is one large `json!` literal.
+#![recursion_limit = "256"]
 mod agent;
+mod ask;
+mod config;
+mod guest;
+mod hosted;
+mod intros;
+mod life;
+mod moments;
+mod peer;
 mod people_client;
+mod sources;
+mod structure;
 mod web_client;
 mod web_profile;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -61,8 +73,50 @@ enum OutputFormat {
 enum Commands {
     /// Read, append context or explicitly edit private relationship memory in the hosted People account.
     Memory(memory::MemoryArgs),
-    /// Read your confirmed saved Lens (requires PEOPLEGRAPH_WEB_TOKEN).
-    Lens(agent::WebArgs),
+    /// Private life signals: list, turn on/off, or forget.
+    Signals(life::SignalsArgs),
+    /// Catch-up brief for one person: when, why, whether, and what changed on both sides.
+    Brief(life::BriefArgs),
+    /// Your own timeline entries, used in two-sided briefs.
+    Me(life::MeArgs),
+    /// A person's company history, derived from email and your corrections.
+    Stints(life::StintsArgs),
+    /// Proposed job moves: the same person on a new work domain, not yet merged.
+    JobMoves(life::JobMovesArgs),
+    /// People whose time at a company overlapped with this person's.
+    Teammates(life::TeammatesArgs),
+    /// Ask one natural-language question; returns the interpretation beside the answer.
+    Ask(ask::AskArgs),
+    /// Ask trusted tailnet peers about a person, or answer their questions under your policy.
+    Peer(peer::PeerArgs),
+    /// Who to contact now and why, from meetings, replies owed, fresh signals, moves and cooling ties.
+    WhyNow(structure::WhyNowArgs),
+    /// Relevant people outside your usual circles on a topic; --claim ranks disagreement higher.
+    Contrast(structure::ContrastArgs),
+    /// Notice when the last 30 days narrowed to one circle, and meet one person from outside it.
+    Widen(structure::WidenArgs),
+    /// Contacts in different circles who should know each other, and who already connects them.
+    Bridges(structure::BridgesArgs),
+    /// The landscape of your network around one topic, as a typed Atlas object.
+    Atlas(structure::AtlasArgs),
+    /// Your curiosity notes: what is new in your head, why, the fringes, and who to talk to.
+    Mind(moments::MindArgs),
+    /// Today's moments: a few evidenced reasons to reach out; act, snooze or dismiss them.
+    Moments(moments::MomentsArgs),
+    /// Three-party introductions: propose one, record each step, then whether they met.
+    Intros(intros::IntrosArgs),
+    /// Guest ask: review outsiders' questions to the owner's network (hosted only).
+    Guest(guest::GuestArgs),
+    /// Read or update your saved Lens with the same owner controls as the website.
+    Lens(hosted::LensArgs),
+    /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
+    Sources(sources::SourcesArgs),
+    /// Call a registered web operation with your scoped People credential.
+    Api(hosted::ApiArgs),
+    /// Save an integration key securely from stdin, without shell environment setup.
+    Configure(hosted::ConfigureArgs),
+    /// Show redacted configuration and verify live permissions and capabilities.
+    Status(hosted::StatusArgs),
     /// Match people against your saved Lens (requires PEOPLEGRAPH_WEB_TOKEN).
     Matches(agent::WebArgs),
     /// Search your People account (requires PEOPLEGRAPH_WEB_TOKEN).
@@ -76,6 +130,15 @@ enum Commands {
         /// Print the approval URL without opening a browser.
         #[arg(long)]
         no_browser: bool,
+        /// Hosted People origin (defaults to the public People app).
+        #[arg(long)]
+        url: Option<String>,
+        /// Request permission to save Lens and private relationship context.
+        #[arg(long)]
+        write: bool,
+        /// Additional explicit permission; repeat to request more than one scope.
+        #[arg(long,value_parser=["people:read","people:write","sources:manage","sharing:manage","booking:manage","integrations:manage"])]
+        scope: Vec<String>,
     },
     /// Revoke this CLI device and remove the local web profile.
     Logout,
@@ -133,10 +196,15 @@ struct FindPersonArgs {
     /// Match only the exact stored token order; skip reversed-order rows.
     #[arg(long)]
     strict_name_order: bool,
+
+    /// Include the owner's own addresses in results.
+    #[arg(long)]
+    include_self: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 struct EmailArg {
+    /// Email address or name.
     email: String,
 }
 
@@ -147,6 +215,10 @@ struct WhoKnowsArgs {
 
     #[arg(long, default_value_t = 25)]
     limit: usize,
+
+    /// Also list people who used to work there (hosted People only).
+    #[arg(long)]
+    include_former: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -575,14 +647,65 @@ fn run_with_profile(
     start: Instant,
     profile_path: impl Fn() -> Result<PathBuf, String>,
 ) -> Response {
+    // These describe the installed executable, regardless of stale daemon environment settings.
+    match cli.command {
+        Commands::Version => {
+            return ok(
+                command,
+                json!({"name":"peoplegraph","version":COMMAND_VERSION}),
+                json!({"ms":elapsed_ms(start)}),
+            );
+        }
+        Commands::Describe => {
+            return ok(command, describe_payload(), json!({"ms":elapsed_ms(start)}));
+        }
+        _ => {}
+    }
+    // Ask is hosted by default; --local or --cache use the local rule set instead.
+    if let Commands::Ask(args) = &cli.command {
+        if cli.remote || cli.host.is_some() || cli.token.is_some() {
+            return fail(
+                command,
+                "unsupported_operation",
+                "ask runs against hosted People, or locally with --local/--cache; the legacy remote server does not support it.".to_string(),
+                start,
+            );
+        }
+        let response = ask::run(cli, args, start);
+        return if cli.local || cli.cache.is_some() {
+            set_provenance(response, "local", local_source(cli), None)
+        } else {
+            response
+        };
+    }
     if matches!(
         cli.command,
         Commands::Memory(_)
+            | Commands::Signals(_)
+            | Commands::Brief(_)
+            | Commands::Me(_)
+            | Commands::Stints(_)
+            | Commands::JobMoves(_)
+            | Commands::Teammates(_)
+            | Commands::Peer(_)
+            | Commands::WhyNow(_)
+            | Commands::Contrast(_)
+            | Commands::Widen(_)
+            | Commands::Bridges(_)
+            | Commands::Atlas(_)
+            | Commands::Mind(_)
+            | Commands::Moments(_)
+            | Commands::Intros(_)
+            | Commands::Guest(_)
             | Commands::Lens(_)
+            | Commands::Sources(_)
             | Commands::Matches(_)
             | Commands::Search(_)
             | Commands::Connection(_)
             | Commands::Helpers(_)
+            | Commands::Api(_)
+            | Commands::Configure(_)
+            | Commands::Status(_)
     ) {
         if cli.local
             || cli.remote
@@ -594,6 +717,26 @@ fn run_with_profile(
         }
         return match &cli.command {
             Commands::Memory(args) => memory::run(args, start),
+            Commands::Lens(args) => hosted::lens(args, start),
+            Commands::Sources(args) => sources::run(args, start),
+            Commands::Api(args) => hosted::api(args, start),
+            Commands::Configure(args) => hosted::configure(args, start),
+            Commands::Status(args) => hosted::status(args, start),
+            Commands::Signals(_)
+            | Commands::Brief(_)
+            | Commands::Me(_)
+            | Commands::Stints(_)
+            | Commands::JobMoves(_)
+            | Commands::Teammates(_) => life::run(&cli.command, start),
+            Commands::Peer(args) => peer::run(args, start),
+            Commands::WhyNow(_)
+            | Commands::Contrast(_)
+            | Commands::Widen(_)
+            | Commands::Bridges(_)
+            | Commands::Atlas(_) => structure::run(&cli.command, start),
+            Commands::Mind(_) | Commands::Moments(_) => moments::run(&cli.command, start),
+            Commands::Intros(_) => intros::run(&cli.command, start),
+            Commands::Guest(_) => guest::run(&cli.command, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -602,8 +745,26 @@ fn run_with_profile(
             Ok(p) => p,
             Err(e) => return fail(command, "profile_error", e, start),
         };
-        if matches!(cli.command, Commands::Login { .. }) {
-            return web_client::login(cli, &path, start);
+        if let Commands::Login {
+            no_browser,
+            url,
+            write,
+            scope,
+        } = &cli.command
+        {
+            let mut scopes = vec!["people:read".to_string()];
+            if *write {
+                scopes.push("people:write".into());
+            }
+            scopes.extend(scope.iter().cloned());
+            scopes.sort();
+            scopes.dedup();
+            return web_client::login(cli, &path, *no_browser, url.as_deref(), &scopes, start);
+        }
+        match config::configured() {
+            Ok(true) => return web_client::logout_configured(cli, start),
+            Ok(false) => {}
+            Err((kind, message)) => return fail(command, kind, message.into(), start),
         }
         return match web_profile::load_profile(&path) {
             Ok(Some(p)) => web_client::logout(&p, &path, start),
@@ -615,8 +776,35 @@ fn run_with_profile(
         return serve_http(cli, args, start);
     }
 
+    if !cli.local && !cli.remote && cli.host.is_none() && cli.token.is_none() && cli.cache.is_none()
+    {
+        match config::configured() {
+            Ok(true) => return web_client::query_configured(cli, start),
+            Ok(false) => {}
+            Err((kind, message)) => return fail(command, kind, message.into(), start),
+        }
+    }
+    // Company history lives only in the hosted People network.
+    let include_former = matches!(&cli.command, Commands::WhoKnows(args) if args.include_former);
+    let hosted_only = || {
+        fail(
+            command,
+            "unsupported_locally",
+            "--include-former needs the hosted People network; run without --local or --remote."
+                .to_string(),
+            start,
+        )
+    };
     if !cli.local && (cli.remote || effective_host(cli).is_some()) {
-        return remote_run(cli, command, start);
+        if include_former {
+            return hosted_only();
+        }
+        return set_provenance(
+            remote_run(cli, command, start),
+            "legacy_remote",
+            effective_host(cli),
+            None,
+        );
     }
 
     if !cli.local && !matches!(cli.command, Commands::Describe | Commands::Version) {
@@ -627,7 +815,10 @@ fn run_with_profile(
             Err(e) => return fail(command, "profile_error", e, start),
         }
     }
-    match &cli.command {
+    if include_former {
+        return hosted_only();
+    }
+    let response = match &cli.command {
         Commands::Login { .. } | Commands::Logout => unreachable!("login handled earlier"),
         Commands::Describe => ok(
             command,
@@ -645,6 +836,7 @@ fn run_with_profile(
                 &args.query,
                 args.limit,
                 args.strict_name_order,
+                args.include_self,
                 start,
             )
         }),
@@ -683,12 +875,34 @@ fn run_with_profile(
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
         Commands::Serve(_) => unreachable!("serve handled before command dispatch"),
         Commands::Memory(_)
+        | Commands::Signals(_)
+        | Commands::Brief(_)
+        | Commands::Me(_)
+        | Commands::Stints(_)
+        | Commands::JobMoves(_)
+        | Commands::Teammates(_)
+        | Commands::Ask(_)
+        | Commands::Peer(_)
+        | Commands::WhyNow(_)
+        | Commands::Contrast(_)
+        | Commands::Widen(_)
+        | Commands::Bridges(_)
+        | Commands::Atlas(_)
+        | Commands::Mind(_)
+        | Commands::Moments(_)
+        | Commands::Intros(_)
+        | Commands::Guest(_)
         | Commands::Lens(_)
+        | Commands::Sources(_)
         | Commands::Matches(_)
         | Commands::Search(_)
         | Commands::Connection(_)
         | Commands::Helpers(_) => unreachable!("private People command handled before dispatch"),
-    }
+        Commands::Api(_) | Commands::Configure(_) | Commands::Status(_) => {
+            unreachable!("hosted command handled before dispatch")
+        }
+    };
+    set_provenance(response, "local", local_source(cli), None)
 }
 
 fn remote_run(cli: &Cli, command: &'static str, start: Instant) -> Response {
@@ -781,6 +995,9 @@ fn remote_path(command: &Commands) -> Option<String> {
             if args.strict_name_order {
                 path.push_str("&strict_name_order=1");
             }
+            if args.include_self {
+                path.push_str("&include_self=1");
+            }
             Some(path)
         }
         Commands::Score(args) => Some(format!("/score?email={}", url_encode(&args.email))),
@@ -830,12 +1047,33 @@ fn remote_path(command: &Commands) -> Option<String> {
         Commands::Describe => Some("/describe".to_string()),
         Commands::Version => Some("/version".to_string()),
         Commands::Memory(_)
+        | Commands::Signals(_)
+        | Commands::Brief(_)
+        | Commands::Me(_)
+        | Commands::Stints(_)
+        | Commands::JobMoves(_)
+        | Commands::Teammates(_)
+        | Commands::Ask(_)
+        | Commands::Peer(_)
+        | Commands::WhyNow(_)
+        | Commands::Contrast(_)
+        | Commands::Widen(_)
+        | Commands::Bridges(_)
+        | Commands::Atlas(_)
+        | Commands::Mind(_)
+        | Commands::Moments(_)
+        | Commands::Intros(_)
+        | Commands::Guest(_)
         | Commands::Lens(_)
+        | Commands::Sources(_)
         | Commands::Matches(_)
         | Commands::Search(_)
         | Commands::Connection(_)
         | Commands::Helpers(_)
         | Commands::Login { .. }
+        | Commands::Api(_)
+        | Commands::Configure(_)
+        | Commands::Status(_)
         | Commands::Logout
         | Commands::ImportCache(_)
         | Commands::ApplyExternalMerge(_)
@@ -860,7 +1098,7 @@ fn serve_http(cli: &Cli, args: &ServeArgs, start: Instant) -> Response {
     };
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
         Ok(path) => path,
-        Err(message) => return fail("serve", "cache_not_found", message, start),
+        Err((kind, message)) => return fail("serve", kind, message, start),
     };
     let listener = match TcpListener::bind(&args.bind) {
         Ok(listener) => listener,
@@ -950,6 +1188,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
             query: query_param(&params, "query"),
             limit: query_usize(&params, "limit", 10),
             strict_name_order: query_bool(&params, "strict_name_order"),
+            include_self: query_bool(&params, "include_self"),
         }),
         "/score" => Commands::Score(EmailArg {
             email: query_param(&params, "email"),
@@ -957,6 +1196,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
         "/who-knows" => Commands::WhoKnows(WhoKnowsArgs {
             company: query_param(&params, "company"),
             limit: query_usize(&params, "limit", 25),
+            include_former: false,
         }),
         "/reconnect" => Commands::Reconnect(ReconnectArgs {
             limit: query_usize(&params, "limit", 5),
@@ -1206,7 +1446,7 @@ fn load_index(
 ) -> Result<(PathBuf, ContactIndex), Box<Response>> {
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
         Ok(path) => path,
-        Err(message) => return Err(Box::new(fail(command, "cache_not_found", message, start))),
+        Err((kind, message)) => return Err(Box::new(fail(command, kind, message, start))),
     };
 
     let content = match fs::read_to_string(&cache_path) {
@@ -1241,9 +1481,19 @@ fn find_person(
     query: &str,
     limit: usize,
     strict_name_order: bool,
+    include_self: bool,
     start: Instant,
 ) -> Response {
-    let rows = rows(index);
+    let owner = owner_identity(index);
+    let mut excluded_self = 0usize;
+    let rows: Vec<ContactRow> = rows(index)
+        .into_iter()
+        .filter(|row| {
+            let mine = !include_self && is_owner_row(&owner, row);
+            excluded_self += usize::from(mine);
+            !mine
+        })
+        .collect();
     let query_norm = normalize(query);
     let query_email = query.trim().to_ascii_lowercase();
     let query_token_key = sorted_token_key(query);
@@ -1306,6 +1556,11 @@ fn find_person(
     }
 
     let total = matches.len();
+    let hints = if total == 0 {
+        name_hints(index, &query_norm, &owner, include_self)
+    } else {
+        vec![]
+    };
     let limit = limit.max(1);
 
     let data_matches: Vec<Value> = matches
@@ -1355,6 +1610,7 @@ fn find_person(
         json!({
             "matches": data_matches,
             "identity_groups": identity_groups,
+            "hints": hints,
         }),
         json!({
             "matched": total,
@@ -1364,6 +1620,8 @@ fn find_person(
             "last_sync": &index.last_sync,
             "user_email": &index.user_email,
             "strict_name_order": strict_name_order,
+            "include_self": include_self,
+            "excluded_self": excluded_self,
             "ms": elapsed_ms(start)
         }),
     )
@@ -1375,23 +1633,9 @@ fn score_person(
     email: &str,
     start: Instant,
 ) -> Response {
-    let email_norm = email.trim().to_ascii_lowercase();
-    let Some(row) = find_by_email_or_alias(index, &email_norm) else {
-        let mut response = fail(
-            "score",
-            "not_found",
-            format!("no contact found for {email}"),
-            start,
-        );
-        // A genuine miss still comes from a known cache. Consumers need its
-        // provenance to distinguish a new contact from an unavailable source.
-        response.stats = Some(json!({
-            "matched": 0,
-            "last_sync": &index.last_sync,
-            "user_email": &index.user_email,
-            "ms": elapsed_ms(start)
-        }));
-        return response;
+    let row = match resolve_person(index, email) {
+        PersonResolution::Found(row) => *row,
+        other => return person_failure("score", other, index, start),
     };
 
     let score = infer_score(&row.contact);
@@ -1453,6 +1697,11 @@ fn who_knows(
     });
 
     let total = people.len();
+    let hints = if total == 0 {
+        company_hints(index, &company_norm)
+    } else {
+        vec![]
+    };
     let limit = limit.max(1);
     let returned_people: Vec<Value> = people
         .into_iter()
@@ -1485,6 +1734,7 @@ fn who_knows(
             "company": company,
             "people": returned_people,
             "ranked_by": "effective_score_desc",
+            "hints": hints,
         }),
         json!({
             "matched": total,
@@ -1675,7 +1925,7 @@ fn apply_feedback_delta(combined: u8, entry: Option<&FeedbackEntry>) -> u8 {
 
 // Resolve and read the feedback overlay for read-only score surfaces.
 fn load_feedback(cli: &Cli) -> Result<FeedbackStore, String> {
-    let cache_path = resolve_cache_path(cli.cache.as_deref())?;
+    let cache_path = resolve_cache_path(cli.cache.as_deref()).map_err(|(_, message)| message)?;
     read_feedback(&feedback_path(&cache_path))
 }
 
@@ -1719,7 +1969,7 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
 
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
         Ok(path) => path,
-        Err(message) => return fail(command, "cache_not_found", message, start),
+        Err((kind, message)) => return fail(command, kind, message, start),
     };
 
     // clear: undo a swipe — drop the overlay entry (and the blocklist entry if
@@ -1870,7 +2120,10 @@ fn reconnect_nudge(contact: &Contact, _days: Option<i64>) -> String {
 }
 
 fn get_neighbors(index: &ContactIndex, email: &str, start: Instant) -> Response {
-    let email_norm = resolve_email(index, email);
+    let email_norm = match edge_endpoint(index, email) {
+        Ok(email) => email,
+        Err(resolution) => return person_failure("get-neighbors", resolution, index, start),
+    };
     let mut neighbors: Vec<Value> = index
         .edges
         .iter()
@@ -1925,8 +2178,14 @@ fn get_neighbors(index: &ContactIndex, email: &str, start: Instant) -> Response 
 }
 
 fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Response {
-    let from_email = resolve_email(index, from);
-    let to_email = resolve_email(index, to);
+    let from_email = match edge_endpoint(index, from) {
+        Ok(email) => email,
+        Err(resolution) => return person_failure("get-edges", resolution, index, start),
+    };
+    let to_email = match edge_endpoint(index, to) {
+        Ok(email) => email,
+        Err(resolution) => return person_failure("get-edges", resolution, index, start),
+    };
     let mut edges: Vec<&ContactEdge> = index
         .edges
         .iter()
@@ -1972,13 +2231,9 @@ fn contact_card(
         Ok(loaded) => loaded,
         Err(response) => return *response,
     };
-    let Some(primary) = find_contact_for_query(&index, &args.query) else {
-        return fail(
-            command,
-            "not_found",
-            format!("no contact found for {}", args.query),
-            start,
-        );
+    let primary = match resolve_person(&index, &args.query) {
+        PersonResolution::Found(row) => *row,
+        other => return person_failure(command, other, &index, start),
     };
 
     let sources_path = external_sources_path(&cache_path);
@@ -3395,29 +3650,136 @@ fn resolve_email_in_contacts(contacts: &HashMap<String, Contact>, query: &str) -
         .unwrap_or(email)
 }
 
-fn find_contact_for_query(index: &ContactIndex, query: &str) -> Option<ContactRow> {
-    let query_email = query.trim().to_ascii_lowercase();
-    if let Some(row) = find_by_email_or_alias(index, &query_email) {
-        return Some(row);
-    }
+enum PersonResolution {
+    Found(Box<ContactRow>),
+    Ambiguous(Vec<ContactRow>),
+    NotFound(Vec<String>),
+}
 
+fn identity_key(row: &ContactRow) -> String {
+    row.contact
+        .canonical_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("id:{id}"))
+        .unwrap_or_else(|| format!("name:{}", sorted_token_key(&row.contact.name)))
+}
+
+/// Resolve an email or a name to one identity group. Names never resolve to the owner.
+fn resolve_person(index: &ContactIndex, query: &str) -> PersonResolution {
+    let query = query.trim();
+    let query_lower = query.to_ascii_lowercase();
+    if query.contains('@') {
+        return match find_by_email_or_alias(index, &query_lower) {
+            Some(row) => PersonResolution::Found(Box::new(row)),
+            None => PersonResolution::NotFound(vec![]),
+        };
+    }
+    let owner = owner_identity(index);
     let query_norm = normalize(query);
     let query_token_key = sorted_token_key(query);
-    rows(index)
+    let mut groups: Vec<(String, f64, ContactRow)> = Vec::new();
+    // A fuzzy-only similarity is a "did you mean", never an identity: it becomes a hint.
+    let mut fuzzy: Vec<(f64, String)> = Vec::new();
+    for row in rows(index)
         .into_iter()
-        .filter_map(|row| {
-            match_confidence(&row, &query_norm, &query_email, &query_token_key, false)
+        .filter(|row| !is_owner_row(&owner, row))
+    {
+        let Some((confidence, kind)) =
+            match_confidence(&row, &query_norm, &query_lower, &query_token_key, false)
                 .filter(|(confidence, _)| *confidence >= 0.72)
-                .map(|(confidence, _)| (confidence, row))
-        })
-        .max_by(|(left_confidence, left), (right_confidence, right)| {
-            left_confidence.total_cmp(right_confidence).then_with(|| {
-                infer_score(&left.contact)
-                    .combined
-                    .cmp(&infer_score(&right.contact).combined)
-            })
-        })
-        .map(|(_, row)| row)
+        else {
+            continue;
+        };
+        if kind == NameMatchKind::Fuzzy {
+            fuzzy.push((confidence, row.contact.name.clone()));
+            continue;
+        }
+        let key = identity_key(&row);
+        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, best, primary)) => {
+                *best = best.max(confidence);
+                if infer_score(&row.contact).combined > infer_score(&primary.contact).combined {
+                    *primary = row;
+                }
+            }
+            None => groups.push((key, confidence, row)),
+        }
+    }
+    groups.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then_with(|| a.2.contact.name.cmp(&b.2.contact.name))
+    });
+    match groups.len() {
+        0 => {
+            fuzzy.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            let mut hints: Vec<String> = Vec::new();
+            for name in fuzzy.into_iter().map(|(_, name)| name).chain(name_hints(
+                index,
+                &query_norm,
+                &owner,
+                false,
+            )) {
+                if hints.len() < 3 && !hints.iter().any(|seen| normalize(seen) == normalize(&name))
+                {
+                    hints.push(name);
+                }
+            }
+            PersonResolution::NotFound(hints)
+        }
+        1 => PersonResolution::Found(Box::new(groups.remove(0).2)),
+        _ if groups[0].1 >= 0.99 && groups[1].1 < 0.99 => {
+            PersonResolution::Found(Box::new(groups.remove(0).2))
+        }
+        _ => {
+            PersonResolution::Ambiguous(groups.into_iter().take(5).map(|(_, _, row)| row).collect())
+        }
+    }
+}
+
+/// The failure response for an unresolved person; `Found` is never passed here.
+fn person_failure(
+    command: &'static str,
+    resolution: PersonResolution,
+    index: &ContactIndex,
+    start: Instant,
+) -> Response {
+    let (kind, message, data) = match resolution {
+        PersonResolution::Ambiguous(rows) => (
+            "ambiguous_person",
+            "Several people match; ask which one and retry with their email.".to_string(),
+            json!({"candidates": rows.iter().map(contact_brief).collect::<Vec<_>>()}),
+        ),
+        PersonResolution::NotFound(hints) => (
+            "not_found",
+            "No contact matches that name or email.".to_string(),
+            json!({"hints": hints}),
+        ),
+        PersonResolution::Found(_) => unreachable!("person_failure takes failures only"),
+    };
+    let mut response = fail(command, kind, message, start);
+    response.data = Some(data);
+    // A genuine miss still comes from a known cache. Consumers need its
+    // provenance to distinguish a new contact from an unavailable source.
+    response.stats = Some(json!({
+        "matched": 0,
+        "last_sync": &index.last_sync,
+        "user_email": &index.user_email,
+        "ms": elapsed_ms(start)
+    }));
+    response
+}
+
+/// Edge endpoints keep email passthrough (edges may name non-contacts); names must resolve.
+fn edge_endpoint(index: &ContactIndex, query: &str) -> Result<String, PersonResolution> {
+    if query.contains('@') {
+        return Ok(resolve_email(index, query));
+    }
+    match resolve_person(index, query) {
+        PersonResolution::Found(row) => Ok(row.email),
+        other => Err(other),
+    }
 }
 
 fn matching_external_contacts<'a>(
@@ -4292,17 +4654,87 @@ fn compact_normalize(value: &str) -> String {
         .collect()
 }
 
+#[derive(Default)]
+struct OwnerIdentity {
+    emails: HashSet<String>,
+    canonical_ids: HashSet<String>,
+}
+
+fn owner_identity(index: &ContactIndex) -> OwnerIdentity {
+    let mut owner = OwnerIdentity::default();
+    let Some(user) = index
+        .user_email
+        .as_deref()
+        .map(|email| email.trim().to_ascii_lowercase())
+        .filter(|email| !email.is_empty())
+    else {
+        return owner;
+    };
+    if let Some(row) = find_by_email_or_alias(index, &user) {
+        owner.emails.insert(row.email.clone());
+        for alias in &row.contact.aliases {
+            owner.emails.insert(alias.trim().to_ascii_lowercase());
+        }
+        if let Some(id) = row
+            .contact
+            .canonical_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            owner.canonical_ids.insert(id.to_string());
+        }
+    }
+    owner.emails.insert(user);
+    owner
+}
+
+fn is_owner_row(owner: &OwnerIdentity, row: &ContactRow) -> bool {
+    owner.emails.contains(&row.email)
+        || row
+            .contact
+            .aliases
+            .iter()
+            .any(|alias| owner.emails.contains(&alias.trim().to_ascii_lowercase()))
+        || row
+            .contact
+            .canonical_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|id| owner.canonical_ids.contains(id))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NameMatchKind {
     Exact,
     Reordered,
+    Partial,
+    Fuzzy,
 }
 
 fn name_match_label(kind: NameMatchKind) -> &'static str {
     match kind {
         NameMatchKind::Exact => "exact",
         NameMatchKind::Reordered => "reordered",
+        NameMatchKind::Partial => "partial",
+        NameMatchKind::Fuzzy => "fuzzy",
     }
+}
+
+/// True when every token of `needle` appears contiguously, as whole tokens, in `haystack`.
+fn contains_token_run(haystack: &str, needle: &str) -> bool {
+    let hay: Vec<&str> = haystack.split_whitespace().collect();
+    let need: Vec<&str> = needle.split_whitespace().collect();
+    !need.is_empty()
+        && need.len() <= hay.len()
+        && hay
+            .windows(need.len())
+            .any(|window| window == need.as_slice())
+}
+
+/// An email query must contain `@` and at least three other characters.
+fn is_email_query(query_email: &str) -> bool {
+    query_email.contains('@') && query_email.chars().filter(|ch| *ch != '@').count() >= 3
 }
 
 fn name_tokens(value: &str) -> Vec<String> {
@@ -4325,51 +4757,50 @@ fn match_confidence(
     query_token_key: &str,
     strict_name_order: bool,
 ) -> Option<(f64, NameMatchKind)> {
-    if !query_email.is_empty()
-        && (row.email == query_email
+    if query_email.contains('@') {
+        if !is_email_query(query_email) {
+            return None;
+        }
+        let exact = row.email == query_email
             || row.contact.email.trim().eq_ignore_ascii_case(query_email)
             || row
                 .contact
                 .aliases
                 .iter()
-                .any(|alias| alias.trim().eq_ignore_ascii_case(query_email)))
-    {
-        return Some((1.0, NameMatchKind::Exact));
-    }
-
-    if !query_email.is_empty()
-        && (row.email.contains(query_email)
+                .any(|alias| alias.trim().eq_ignore_ascii_case(query_email));
+        if exact {
+            return Some((1.0, NameMatchKind::Exact));
+        }
+        let partial = row.email.contains(query_email)
             || row
                 .contact
                 .aliases
                 .iter()
-                .any(|alias| alias.to_ascii_lowercase().contains(query_email)))
-    {
-        return Some((0.96, NameMatchKind::Exact));
+                .any(|alias| alias.to_ascii_lowercase().contains(query_email));
+        return partial.then_some((0.96, NameMatchKind::Partial));
     }
 
     let name_norm = normalize(&row.contact.name);
-    if !query_norm.is_empty() && name_norm.contains(query_norm) {
-        return Some((0.93, NameMatchKind::Exact));
+    if query_norm.is_empty() || name_norm.is_empty() {
+        return None;
     }
-
-    if !query_norm.is_empty() && query_norm.contains(&name_norm) && name_norm.len() >= 4 {
-        return Some((0.88, NameMatchKind::Exact));
+    if name_norm == query_norm {
+        return Some((0.99, NameMatchKind::Exact));
     }
-
-    if !strict_name_order && !query_token_key.is_empty() {
-        let row_token_key = sorted_token_key(&row.contact.name);
-        if !row_token_key.is_empty() && row_token_key == query_token_key {
-            return Some((0.91, NameMatchKind::Reordered));
-        }
+    if !strict_name_order
+        && !query_token_key.is_empty()
+        && sorted_token_key(&row.contact.name) == query_token_key
+    {
+        return Some((0.91, NameMatchKind::Reordered));
     }
-
+    if contains_token_run(&name_norm, query_norm) {
+        return Some((0.90, NameMatchKind::Partial));
+    }
+    if name_norm.len() >= 4 && contains_token_run(query_norm, &name_norm) {
+        return Some((0.86, NameMatchKind::Partial));
+    }
     let score = jaro_winkler(&name_norm, query_norm);
-    if score > 0.84 {
-        Some((score, NameMatchKind::Exact))
-    } else {
-        None
-    }
+    (score > 0.84).then_some((score, NameMatchKind::Fuzzy))
 }
 
 fn infer_score(contact: &Contact) -> ScoreOut {
@@ -4714,6 +5145,76 @@ fn company_matches(contact: &Contact, company_norm: &str) -> bool {
         })
 }
 
+/// Up to three candidate values scoring at least 0.80, best first, deduplicated by normalized form.
+fn nearest_values(
+    candidates: impl IntoIterator<Item = String>,
+    score: impl Fn(&str) -> f64,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut scored: Vec<(f64, String)> = candidates
+        .into_iter()
+        .filter_map(|display| {
+            let key = normalize(&display);
+            if key.is_empty() || !seen.insert(key) {
+                return None;
+            }
+            let value = score(&display);
+            (value >= 0.80).then_some((value, display))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, display)| display)
+        .collect()
+}
+
+fn name_hints(
+    index: &ContactIndex,
+    query_norm: &str,
+    owner: &OwnerIdentity,
+    include_self: bool,
+) -> Vec<String> {
+    if query_norm.is_empty() {
+        return vec![];
+    }
+    nearest_values(
+        rows(index)
+            .into_iter()
+            .filter(|row| include_self || !is_owner_row(owner, row))
+            .map(|row| row.contact.name),
+        |display| {
+            let name = normalize(display);
+            name.split_whitespace()
+                .map(|token| jaro_winkler(token, query_norm))
+                .fold(jaro_winkler(&name, query_norm), f64::max)
+        },
+    )
+}
+
+fn company_hints(index: &ContactIndex, company_norm: &str) -> Vec<String> {
+    if company_norm.is_empty() {
+        return vec![];
+    }
+    let mut candidates = Vec::new();
+    for row in rows(index) {
+        if let Some(company) = display_company(&row.contact) {
+            candidates.push(company);
+        }
+        let domain = row.contact.domain.trim().to_ascii_lowercase();
+        if !domain.is_empty()
+            && !is_generic_email_domain(&domain)
+            && let Some(label) = domain.split('.').next()
+        {
+            candidates.push(label.to_string());
+        }
+    }
+    nearest_values(candidates, |display| {
+        jaro_winkler(&normalize_company(display), company_norm)
+    })
+}
+
 fn normalize_company(value: &str) -> String {
     normalize(value)
         .trim_end_matches(" inc")
@@ -4741,12 +5242,14 @@ fn round_confidence(confidence: f64) -> f64 {
     (confidence * 100.0).round() / 100.0
 }
 
-fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
+fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, (&'static str, String)> {
     if let Some(path) = explicit {
-        return path
-            .exists()
-            .then(|| path.to_path_buf())
-            .ok_or_else(|| format!("cache path does not exist: {}", path.display()));
+        return path.exists().then(|| path.to_path_buf()).ok_or_else(|| {
+            (
+                "cache_not_found",
+                format!("cache path does not exist: {}", path.display()),
+            )
+        });
     }
 
     if let Ok(path) = env::var("PEOPLEGRAPH_CACHE") {
@@ -4756,8 +5259,12 @@ fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
         }
     }
 
-    let mut dir =
-        env::current_dir().map_err(|err| format!("cannot read current directory: {err}"))?;
+    let mut dir = env::current_dir().map_err(|err| {
+        (
+            "cache_not_found",
+            format!("cannot read current directory: {err}"),
+        )
+    })?;
     loop {
         let candidate = dir.join(".obsidian/plugins/gmail-crm/contact-index.json");
         if candidate.exists() {
@@ -4772,34 +5279,69 @@ fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
         }
     }
 
-    if let Some(path) = resolve_obsidian_cache_path() {
-        return Ok(path);
-    }
-
-    Err("no contact-index.json found; pass --cache <path> or set PEOPLEGRAPH_CACHE".to_string())
-}
-
-fn resolve_obsidian_cache_path() -> Option<PathBuf> {
-    let config_path = obsidian_config_path()?;
-    let content = fs::read_to_string(config_path).ok()?;
-    let config: Value = serde_json::from_str(&content).ok()?;
-    let vaults = config.get("vaults")?.as_object()?;
-    let mut candidates = Vec::new();
-
-    for vault in vaults.values() {
-        if let Some(vault_path) = vault.get("path").and_then(Value::as_str) {
-            let cache_path =
-                Path::new(vault_path).join(".obsidian/plugins/gmail-crm/contact-index.json");
-            if cache_path.exists() {
-                let is_open = vault.get("open").and_then(Value::as_bool).unwrap_or(false);
-                let ts = vault.get("ts").and_then(Value::as_i64).unwrap_or(0);
-                candidates.push((is_open, ts, cache_path));
-            }
+    match resolve_obsidian_cache_path() {
+        Ok(Some(path)) => return Ok(path),
+        Ok(None) => {}
+        Err(paths) => {
+            return Err((
+                "ambiguous_cache",
+                format!(
+                    "found contact caches in {} Obsidian vaults: {}. Pass --cache <path> or set PEOPLEGRAPH_CACHE.",
+                    paths.len(),
+                    paths.join(", ")
+                ),
+            ));
         }
     }
 
-    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    candidates.into_iter().map(|(_, _, path)| path).next()
+    Err((
+        "cache_not_found",
+        "no contact-index.json found; pass --cache <path> or set PEOPLEGRAPH_CACHE".to_string(),
+    ))
+}
+
+fn has_hidden_segment(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, std::path::Component::Normal(segment) if segment.to_string_lossy().starts_with('.'))
+    })
+}
+
+/// One cache from Obsidian's vault list, skipping vaults under hidden directories;
+/// `Err` lists the caches when more than one real vault has one.
+fn discover_vault_cache(config: &Value) -> Result<Option<PathBuf>, Vec<String>> {
+    let Some(vaults) = config.get("vaults").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let mut found: Vec<PathBuf> = vaults
+        .values()
+        .filter_map(|vault| vault.get("path").and_then(Value::as_str).map(PathBuf::from))
+        .filter(|path| !has_hidden_segment(path))
+        .map(|path| path.join(".obsidian/plugins/gmail-crm/contact-index.json"))
+        .filter(|cache| cache.exists())
+        .collect();
+    found.sort();
+    found.dedup();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(found
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect()),
+    }
+}
+
+fn resolve_obsidian_cache_path() -> Result<Option<PathBuf>, Vec<String>> {
+    let Some(config_path) = obsidian_config_path() else {
+        return Ok(None);
+    };
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return Ok(None);
+    };
+    let Ok(config) = serde_json::from_str::<Value>(&content) else {
+        return Ok(None);
+    };
+    discover_vault_cache(&config)
 }
 
 fn obsidian_config_path() -> Option<PathBuf> {
@@ -4837,7 +5379,28 @@ fn obsidian_config_path() -> Option<PathBuf> {
 fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Memory(_) => "memory",
+        Commands::Signals(_) => "signals",
+        Commands::Brief(_) => "brief",
+        Commands::Me(_) => "me",
+        Commands::Stints(_) => "stints",
+        Commands::JobMoves(_) => "job-moves",
+        Commands::Teammates(_) => "teammates",
+        Commands::Ask(_) => "ask",
+        Commands::Peer(_) => "peer",
+        Commands::WhyNow(_) => "why-now",
+        Commands::Contrast(_) => "contrast",
+        Commands::Widen(_) => "widen",
+        Commands::Bridges(_) => "bridges",
+        Commands::Atlas(_) => "atlas",
+        Commands::Mind(_) => "mind",
+        Commands::Moments(_) => "moments",
+        Commands::Intros(_) => "intros",
+        Commands::Guest(_) => "guest",
         Commands::Lens(_) => "lens",
+        Commands::Sources(_) => "sources",
+        Commands::Api(_) => "api",
+        Commands::Configure(_) => "configure",
+        Commands::Status(_) => "status",
         Commands::Matches(_) => "matches",
         Commands::Search(_) => "search",
         Commands::Connection(_) => "connection",
@@ -4883,18 +5446,22 @@ fn describe_payload() -> Value {
             "--quiet"
         ],
         "private_people_auth": {
-            "origin": "--url <https-origin> or PEOPLEGRAPH_WEB_URL",
-            "token": "PEOPLEGRAPH_WEB_TOKEN (People integration credential)",
-            "scope": "Lens and memory require this explicit credential; read-only login device credentials are never used.",
+            "origin": "--url, PEOPLEGRAPH_WEB_URL, or active_origin in $XDG_CONFIG_HOME/peoplegraph/config.json (default ~/.config/peoplegraph/config.json)",
+            "token": "One origin-bound People integration credential from login, configure --token-stdin, or PEOPLEGRAPH_WEB_TOKEN",
+            "scope": "login grants people:read by default; --write adds people:write; --scope requests explicit management permissions. status verifies live grants. Legacy pgd1 device credentials remain graph-only.",
             "fallback": "No local cache or legacy remote fallback. --local, --remote, --host, --token and --cache are incompatible."
         },
         "commands": [
-            {"name":"lens","usage":"peoplegraph lens [--url <https-origin>]","description":"Read confirmed saved focus, needs, offers and revision from your People Lens","auth":"private_people_auth"},
+            {"name":"lens","usage":"peoplegraph lens [--url <https-origin>] [set --focus <text> --needs <text> --offers <text> [--revision <revision>] | set --file <lens.json|-> | inspect | learning on|off | granola on|off | refresh | accept <id> | dismiss <id>]","description":"Read or update focus, needs, offers and source settings. Partial edits preserve other fields; revisions prevent stale overwrites. Inferred suggestions require explicit acceptance.","auth":"private_people_auth"},
+            {"name":"sources","usage":"peoplegraph sources [--url <https-origin>] status | connect gmail | connect granola --key-stdin [--range recent|all] | sync gmail --email <email> [--range recent|all] | sync granola | context gmail --email <email> on|off","description":"Inspect and manage connected sources with sources:manage permission. Gmail connect returns a browser consent URL; Granola reads a bounded API key from piped stdin. Sync requests start background imports; status reports progress. Context on explicitly enables automatic Gmail body context for the selected inbox.","auth":"private_people_auth"},
+            {"name":"configure","usage":"peoplegraph configure --url <https-origin> --token-stdin","description":"Save an existing integration credential from stdin in an atomic owner-only config file. Never prints the credential."},
+            {"name":"status","usage":"peoplegraph status [--offline] [--url <https-origin>]","description":"Verify live owner, grants and web capabilities; --offline reports configuration only without claiming authentication."},
+            {"name":"api","usage":"peoplegraph api GET|POST|PUT|PATCH|DELETE /api/path [--file <request.json|->] [--idempotency-key <key>]","description":"Call registered owner web operations with the same validation and safeguards. status lists exact routes, scopes and browser handoffs. Sending, booking and sharing still require user authorization."},
             {"name":"matches","usage":"peoplegraph matches [--url <https-origin>]","description":"Get the same matches and evidence ranked against your saved Lens in People","auth":"private_people_auth"},
             {"name":"search","usage":"peoplegraph search <query> [--limit <1..50>] [--url <https-origin>]","description":"Search your People account and return people with provenance","auth":"private_people_auth"},
             {"name":"connection","usage":"peoplegraph connection --from <person-id|email> --to <person-id|email> [--url <https-origin>]","description":"Read source-backed connection evidence for exact identities; search first to resolve names, never guess an identity","auth":"private_people_auth"},
             {"name":"helpers","usage":"peoplegraph helpers --person-id <person-id> [--url <https-origin>]","description":"Find helpers from the person's saved context using the same evidence as People","auth":"private_people_auth"},
-            {"name":"login","usage":"peoplegraph login [--no-browser]","description":"Approve read-only web access in your browser"},
+            {"name":"login","usage":"peoplegraph login [--url <https-origin>] [--no-browser] [--write] [--scope <scope>]","description":"Approve one scoped credential for graph queries, Lens and permitted edits; saves configuration automatically"},
             {"name":"logout","usage":"peoplegraph logout","description":"Revoke the current web device credential"},
             {
                 "name": "memory",
@@ -4904,19 +5471,121 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "find-person",
-                "usage": "peoplegraph find-person <query> [--strict-name-order]",
+                "usage": "peoplegraph find-person <query> [--strict-name-order] [--include-self]",
                 "status": "implemented",
-                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered'), identity_group, is_primary, and name_variants. Pass --strict-name-order to disable reordered matching."
+                "notes": "Matches name token permutations by default (e.g. 'Bruce Jaffe' surfaces 'Jaffe Bruce' rows). Each match carries name_match ('exact' | 'reordered' | 'partial' | 'fuzzy'); locally also identity_group, is_primary and name_variants. Email substrings are searched only when the query contains '@'. The owner's own addresses are excluded unless --include-self is passed. Pass --strict-name-order to disable reordered matching. Both flags work hosted too. Hosted results stay in data.people with matched_by ('name' | 'email' | 'company' | 'role' | 'evidence') and data.excludedSelf; 'evidence' means no name matched."
             },
             {
                 "name": "score",
-                "usage": "peoplegraph score <email>",
-                "status": "implemented"
+                "usage": "peoplegraph score <email-or-name>",
+                "status": "implemented",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "who-knows",
-                "usage": "peoplegraph who-knows --company <name>",
-                "status": "implemented"
+                "usage": "peoplegraph who-knows --company <name> [--include-former]",
+                "status": "implemented",
+                "notes": "Empty results include data.hints: up to three near company or domain names. --include-former (hosted only) appends people whose stint there ended, labelled formerly:{from,to}."
+            },
+            {
+                "name": "brief",
+                "usage": "peoplegraph brief <email|exact-name|person-id> [--peers]",
+                "status": "implemented_hosted",
+                "notes": "Private catch-up brief: when (last contact), why (first-hand life, work and note evidence with source and date), whether (your feedback and relationship note), gaps, and sinceLastContact {theirs, yours}. Sensitive items carry use:tone_only: use them for tone, never repeat them. A shared name returns ambiguous_person with candidates."
+            },
+            {
+                "name": "signals",
+                "usage": "peoplegraph signals list [--person <person-id>] | on | off | forget (<id> | --person <person-id> | --all)",
+                "status": "implemented_hosted",
+                "notes": "Owner-private life signals (travel, hobby, role_change, moved: open; milestone: personal; health, family, loss, money, legal: sensitive). Off until 'signals on'. Each signal expires by category."
+            },
+            {
+                "name": "me",
+                "usage": "peoplegraph me add <text> [--category <category>] [--date YYYY-MM-DD] | list | forget <id>",
+                "status": "implemented_hosted",
+                "notes": "Your own timeline for two-sided briefs. Add entries only on the owner's explicit request; never shared."
+            },
+            {
+                "name": "ask",
+                "usage": "peoplegraph ask \"<question>\" [--local|--cache <path>]",
+                "status": "implemented",
+                "notes": "Hosted: classifies into lookup, company, catch_up, reconnect, who_can_help, connection, network_ask, why_now, contrast, widen, bridges, atlas or clarify and returns {interpretation, answers, result, gaps}. Check interpretation before answering; on clarify ask the owner which alternative they meant. Local rules answer company, reconnect, catch_up (activity only) and lookup; anything else is unsupported_locally."
+            },
+            {
+                "name": "why-now",
+                "usage": "peoplegraph why-now [--limit 10]",
+                "status": "implemented_hosted",
+                "notes": "Who to contact now and why: meeting soon, reply owed, fresh open/personal signal, job move, strong relationship going quiet, recent work on your Lens focus. Each reason is dated and sourced. Suppressed, snoozed and not-before people never appear."
+            },
+            {
+                "name": "contrast",
+                "usage": "peoplegraph contrast \"<topic>\" [--claim \"<assumption>\"]",
+                "status": "implemented_hosted",
+                "notes": "Relevant people outside your usual circles (distance 0.5 or 1 with a reason). With --claim, people whose evidence challenges or differs from it rank higher. Fewer than 3 distant people is a gap, followed by the nearest relevant people."
+            },
+            {
+                "name": "widen",
+                "usage": "peoplegraph widen",
+                "status": "implemented_hosted",
+                "notes": "If 70% or more of your last 30 days (12+ interactions) were in one circle, names the pattern and offers one person from outside it. Otherwise an honest gap."
+            },
+            {
+                "name": "bridges",
+                "usage": "peoplegraph bridges [--topic \"<text>\"]",
+                "status": "implemented_hosted",
+                "notes": "Pairs of your contacts in different circles, never connected, with shared evidence; plus connectors who already link your circles. Proposals only: introductions need everyone's agreement."
+            },
+            {
+                "name": "atlas",
+                "usage": "peoplegraph atlas \"<topic>\"",
+                "status": "implemented_hosted",
+                "notes": "Typed Atlas object (schema /schemas/v1/atlas.json): known people, circles, fringe people with reach, and inferred absent communities (never people). Data to explore, not a ranking."
+            },
+            {
+                "name": "mind",
+                "usage": "peoplegraph mind set --file <note.md|-> [--id <id>] | show <id> | list [--archived] | archive <id>",
+                "status": "implemented_hosted",
+                "notes": "Curiosity notes with exactly four headings: ## What's new in my head, ## Why it spikes my interest, ## The fringes, ## Who I want to talk to about it. Unknown headings fail with note_invalid naming the heading. At most 3 active notes of 4,000 characters. Private; save only on the owner's request."
+            },
+            {
+                "name": "moments",
+                "usage": "peoplegraph moments [--today] | act|snooze|dismiss <id> | budget <1-10>",
+                "status": "implemented_hosted",
+                "notes": "A few evidenced reasons a day to reach out (pre_meeting, want_to_talk, fresh_signal, fringe_match, bridge, cold_and_relevant, widen), generated once a day within the budget (default 3). Without a note only meetings surface. Never asks peers. stats counts moments acted on."
+            },
+            {
+                "name": "intros",
+                "usage": "peoplegraph intros list | show <id> | propose --parties <a>,<b> [--introducer owner|<id>] --reason <text> | advance <id> asked_introducer|introducer_accepted|target_opted_in|made|declined [--vouch <text>] | outcome <id> met|not_met [--note <text>]",
+                "status": "implemented_hosted",
+                "notes": "Three-party introductions with a double opt-in: proposed, asked_introducer, introducer_accepted, target_opted_in, made, then met or not_met. One proposal per call, five a day, five open asks per introducer; 30 days without progress expires. People never sends anything: draft the messages for the owner. Vouches stay with the owner."
+            },
+            {
+                "name": "guest",
+                "usage": "peoplegraph guest pending | show <id> | answer <id> [--file <answer.json|->] | decline <id> | on | off",
+                "status": "implemented_hosted",
+                "notes": "Outsiders ask the owner's network on the owner's /ask/<handle> page or through ask_network. Off until the owner turns it on; 3 questions per guest per day; pending asks expire after 7 days. The draft uses work evidence only (never life signals, curiosity notes or peers). Nothing reaches a guest until the owner answers; answers describe people and never name them (answer_not_anonymous). A name reaches a guest only through an introduction the person opted into."
+            },
+            {
+                "name": "peer",
+                "usage": "peoplegraph peer init --group <name> | join --group <name> --pepper-stdin | allow|disallow <login> | add <login> --address <url> | remove <login> | opt-out on --email <addr>... | opt-out off | policy [--open auto|approve|never] [--personal approve|never] [--reason-to-meet approve|never] | status | serve [--port 8790] | pending | approve <ticket> [--reason <text>] | deny <ticket> | log [--since YYYY-MM-DD] | ask knows|catch-up <email> | ask reason-to-meet --topic <text> | ask status --peer <login> <ticket>",
+                "status": "implemented",
+                "notes": "Agent-to-agent questions over a trusted tailnet. Callers are identified by Tailscale, never by headers. Answers are attributed per peer; unreachable peers are gaps. Personal signals and reasons to meet wait for the answering owner's approval (202 + ticket); sensitive signals are never shared. Only ask peers on the owner's request, never in the background."
+            },
+            {
+                "name": "stints",
+                "usage": "peoplegraph stints show <person-id> | set <person-id> --company <name> --from YYYY-MM [--to YYYY-MM] | forget <id>",
+                "status": "implemented_hosted"
+            },
+            {
+                "name": "job-moves",
+                "usage": "peoplegraph job-moves",
+                "status": "implemented_hosted",
+                "notes": "Proposals only: the same full name on two work domains, not yet merged. Confirm with: peoplegraph api POST /api/people/person-merges."
+            },
+            {
+                "name": "teammates",
+                "usage": "peoplegraph teammates <person-id>",
+                "status": "implemented_hosted"
             },
             {
                 "name": "reconnect",
@@ -4932,18 +5601,21 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "get-neighbors",
-                "usage": "peoplegraph get-neighbors <email>",
-                "status": "implemented"
+                "usage": "peoplegraph get-neighbors <email-or-name>",
+                "status": "implemented",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "get-edges",
-                "usage": "peoplegraph get-edges --from <email> --to <email>",
-                "status": "implemented"
+                "usage": "peoplegraph get-edges --from <email-or-name> --to <email-or-name>",
+                "status": "implemented",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "contact-card",
                 "usage": "peoplegraph contact-card <email-or-name>",
-                "status": "implemented_read_only_source_aware"
+                "status": "implemented_read_only_source_aware",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "suggest-duplicates",
@@ -5062,6 +5734,42 @@ fn ok(command: impl Into<String>, data: Value, stats: Value) -> Response {
     }
 }
 
+/// Stamp which backend answered, from which source, for which owner.
+/// `owner` falls back to the cache's `user_email` stat.
+pub(crate) fn set_provenance(
+    mut response: Response,
+    backend: &str,
+    source: Option<String>,
+    owner: Option<String>,
+) -> Response {
+    let stats = response.stats.get_or_insert_with(|| json!({}));
+    if let Some(map) = stats.as_object_mut() {
+        map.insert("backend".into(), json!(backend));
+        if let Some(source) = source {
+            map.insert("source".into(), json!(source));
+        }
+        let owner = owner.or_else(|| {
+            map.get("user_email")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        if let Some(owner) = owner {
+            map.insert("owner".into(), json!(owner));
+        }
+    }
+    response
+}
+
+fn local_source(cli: &Cli) -> Option<String> {
+    let path = resolve_cache_path(cli.cache.as_deref()).ok()?;
+    Some(
+        fs::canonicalize(&path)
+            .unwrap_or(path)
+            .display()
+            .to_string(),
+    )
+}
+
 fn fail(
     command: impl Into<String>,
     kind: impl Into<String>,
@@ -5148,6 +5856,305 @@ mod tests {
         assert_eq!(kind, NameMatchKind::Exact);
     }
 
+    fn matching_index() -> ContactIndex {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "kaya@betaworks.com".to_string(),
+            Contact {
+                name: "Kaya Jones".to_string(),
+                email: "kaya@betaworks.com".to_string(),
+                aliases: vec!["kayajones901@gmail.com".to_string()],
+                canonical_id: Some("owner-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "kj@other.com".to_string(),
+            Contact {
+                name: "Kaya Jones".to_string(),
+                email: "kj@other.com".to_string(),
+                canonical_id: Some("owner-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "jon@chin.dev".to_string(),
+            Contact {
+                name: "Jon Chin".to_string(),
+                email: "jon@chin.dev".to_string(),
+                ..empty_contact()
+            },
+        );
+        contacts.insert(
+            "jose@example.com".to_string(),
+            Contact {
+                name: "José García".to_string(),
+                email: "jose@example.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: Some("kaya@betaworks.com".to_string()),
+            contacts,
+            edges: vec![],
+        }
+    }
+
+    fn match_names(response: &Response) -> Vec<(String, String)> {
+        response.data.as_ref().unwrap()["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (value_str(m, "name"), value_str(m, "name_match")))
+            .collect()
+    }
+
+    #[test]
+    fn name_query_never_matches_email_substrings_or_the_owner() {
+        let index = matching_index();
+        let response = find_person(&index, "Jon", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("Jon Chin".to_string(), "partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn include_self_restores_owner_rows() {
+        let index = matching_index();
+        let hidden = find_person(&index, "Kaya Jones", 10, false, false, Instant::now());
+        assert!(match_names(&hidden).is_empty());
+        let shown = find_person(&index, "Kaya Jones", 10, false, true, Instant::now());
+        let names = match_names(&shown);
+        assert_eq!(names.len(), 2);
+        assert!(
+            names
+                .iter()
+                .all(|(name, kind)| name == "Kaya Jones" && kind == "exact")
+        );
+    }
+
+    #[test]
+    fn owner_identity_without_user_email_hides_nothing() {
+        let mut index = matching_index();
+        index.user_email = None;
+        let response = find_person(&index, "Kaya Jones", 10, false, false, Instant::now());
+        assert_eq!(match_names(&response).len(), 2);
+    }
+
+    #[test]
+    fn email_queries_need_three_real_characters() {
+        let index = matching_index();
+        for query in ["@", "a@", "@x"] {
+            let response = find_person(&index, query, 10, false, true, Instant::now());
+            assert!(match_names(&response).is_empty(), "{query} matched rows");
+        }
+        let response = find_person(&index, "@chin.dev", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("Jon Chin".to_string(), "partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn non_ascii_names_match_by_whole_tokens() {
+        let index = matching_index();
+        let response = find_person(&index, "José", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("José García".to_string(), "partial".to_string())]
+        );
+    }
+
+    #[test]
+    fn fuzzy_hits_are_labelled_fuzzy() {
+        let index = matching_index();
+        let response = find_person(&index, "Jon Chinn", 10, false, false, Instant::now());
+        assert_eq!(
+            match_names(&response),
+            vec![("Jon Chin".to_string(), "fuzzy".to_string())]
+        );
+    }
+
+    fn company_index() -> ContactIndex {
+        let mut contacts = HashMap::new();
+        contacts.insert(
+            "roelof@sequoiacap.com".to_string(),
+            Contact {
+                name: "Maya Rivera".to_string(),
+                email: "roelof@sequoiacap.com".to_string(),
+                company: Some("Sequoia Capital".to_string()),
+                domain: "sequoiacap.com".to_string(),
+                ..empty_contact()
+            },
+        );
+        ContactIndex {
+            schema_version: Some(1),
+            last_sync: None,
+            user_email: None,
+            contacts,
+            edges: vec![],
+        }
+    }
+
+    fn empty_feedback() -> FeedbackStore {
+        FeedbackStore {
+            schema_version: 1,
+            updated_at_unix: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn who_knows_miss_suggests_near_companies() {
+        let response = who_knows(
+            &company_index(),
+            &empty_feedback(),
+            "Sequoya",
+            10,
+            Instant::now(),
+        );
+        let data = response.data.unwrap();
+        assert!(data["people"].as_array().unwrap().is_empty());
+        let hints: Vec<String> = serde_json::from_value(data["hints"].clone()).unwrap();
+        assert!(hints.contains(&"Sequoia Capital".to_string()), "{hints:?}");
+    }
+
+    #[test]
+    fn who_knows_hit_has_empty_hints() {
+        let response = who_knows(
+            &company_index(),
+            &empty_feedback(),
+            "sequoia",
+            10,
+            Instant::now(),
+        );
+        let data = response.data.unwrap();
+        assert_eq!(data["people"].as_array().unwrap().len(), 1);
+        assert_eq!(data["hints"], json!([]));
+    }
+
+    #[test]
+    fn find_person_miss_suggests_near_names() {
+        let response = find_person(&company_index(), "Rivra", 10, false, false, Instant::now());
+        let data = response.data.unwrap();
+        assert!(data["matches"].as_array().unwrap().is_empty());
+        assert_eq!(data["hints"], json!(["Maya Rivera"]));
+    }
+
+    fn resolution_index() -> ContactIndex {
+        let mut index = matching_index();
+        index.contacts.insert(
+            "maya@acme.com".to_string(),
+            Contact {
+                name: "Maya Rivera".to_string(),
+                email: "maya@acme.com".to_string(),
+                canonical_id: Some("maya-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        index.contacts.insert(
+            "maya.r@gmail.com".to_string(),
+            Contact {
+                name: "Maya Rivera".to_string(),
+                email: "maya.r@gmail.com".to_string(),
+                canonical_id: Some("maya-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        index.contacts.insert(
+            "maya@zeta.io".to_string(),
+            Contact {
+                name: "Maya Chen".to_string(),
+                email: "maya@zeta.io".to_string(),
+                ..empty_contact()
+            },
+        );
+        index
+    }
+
+    #[test]
+    fn shared_canonical_id_resolves_as_one_person() {
+        match resolve_person(&resolution_index(), "Maya Rivera") {
+            PersonResolution::Found(row) => assert_eq!(row.contact.name, "Maya Rivera"),
+            _ => panic!("expected one person"),
+        }
+    }
+
+    #[test]
+    fn first_name_shared_by_two_people_is_ambiguous() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Maya",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "ambiguous_person");
+        assert_eq!(
+            response.data.unwrap()["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn name_resolution_never_returns_the_owner() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Kaya Jones",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+    }
+
+    #[test]
+    fn score_accepts_a_name() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Jon Chin",
+            Instant::now(),
+        );
+        assert!(response.ok);
+        assert_eq!(response.data.unwrap()["email"], "jon@chin.dev");
+    }
+
+    #[test]
+    fn unknown_name_returns_hints() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Rivra",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+        assert_eq!(response.data.unwrap()["hints"], json!(["Maya Rivera"]));
+    }
+
+    #[test]
+    fn neighbors_keep_unknown_email_passthrough() {
+        let response = get_neighbors(&resolution_index(), "stranger@else.com", Instant::now());
+        assert!(response.ok);
+        assert_eq!(response.data.unwrap()["email"], "stranger@else.com");
+    }
+
+    #[test]
+    fn fuzzy_only_name_is_a_hint_not_an_answer() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Jon Chen",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+        assert_eq!(response.data.unwrap()["hints"][0], "Jon Chin");
+    }
+
     #[test]
     fn exact_email_lookup_beats_alias_lookup() {
         let mut contacts = HashMap::new();
@@ -5203,12 +6210,43 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(response.command, "score");
         assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
-        assert!(response.data.is_none());
+        assert_eq!(response.data.as_ref().unwrap()["hints"], json!([]));
         let stats = response.stats.unwrap();
         assert_eq!(stats["matched"], 0);
         assert_eq!(stats["user_email"], "owner@example.com");
         assert_eq!(stats["last_sync"], "2026-10-21T10:00:00Z");
         assert!(stats["ms"].is_number());
+    }
+
+    #[test]
+    fn provenance_fills_owner_from_user_email_and_keeps_existing_stats() {
+        let response = ok(
+            "find-person",
+            json!({}),
+            json!({"matched": 0, "user_email": "owner@example.com"}),
+        );
+        let response = set_provenance(
+            response,
+            "local",
+            Some("/v/contact-index.json".into()),
+            None,
+        );
+        let stats = response.stats.unwrap();
+        assert_eq!(stats["backend"], "local");
+        assert_eq!(stats["source"], "/v/contact-index.json");
+        assert_eq!(stats["owner"], "owner@example.com");
+        assert_eq!(stats["matched"], 0);
+    }
+
+    #[test]
+    fn provenance_on_failures_without_stats() {
+        let mut response = fail("score", "cache_not_found", "x".into(), Instant::now());
+        response.stats = None;
+        let stats = set_provenance(response, "legacy_remote", Some("http://h".into()), None)
+            .stats
+            .unwrap();
+        assert_eq!(stats["backend"], "legacy_remote");
+        assert!(stats.get("owner").is_none());
     }
 
     #[test]
@@ -5633,6 +6671,7 @@ mod tests {
         let command = Commands::WhoKnows(WhoKnowsArgs {
             company: "Disney Parks & Resorts".to_string(),
             limit: 5,
+            include_former: false,
         });
 
         assert_eq!(
@@ -5717,7 +6756,7 @@ mod tests {
         // Token sets differ ({hank,vigil} vs {hank,heyming}); fuzzy alone shouldn't
         // upgrade this to a high-confidence reordered match.
         assert!(
-            result.is_none() || matches!(result.unwrap().1, NameMatchKind::Exact),
+            result.is_none_or(|(_, kind)| kind != NameMatchKind::Reordered),
             "different-surname rows must not be flagged as reordered"
         );
     }
@@ -5760,7 +6799,7 @@ mod tests {
             edges: vec![],
         };
 
-        let response = find_person(&index, "Bruce Jaffe", 10, false, Instant::now());
+        let response = find_person(&index, "Bruce Jaffe", 10, false, false, Instant::now());
         assert!(response.ok);
         let data = response.data.expect("data");
         let matches = data
@@ -5841,7 +6880,7 @@ mod tests {
             edges: vec![],
         };
 
-        let response = find_person(&index, "Bruce Jaffe", 10, true, Instant::now());
+        let response = find_person(&index, "Bruce Jaffe", 10, true, false, Instant::now());
         let data = response.data.expect("data");
         let matches = data
             .get("matches")
@@ -5868,6 +6907,7 @@ mod tests {
             query: "Bruce Jaffe".to_string(),
             limit: 5,
             strict_name_order: true,
+            include_self: false,
         });
         assert_eq!(
             remote_path(&command),
