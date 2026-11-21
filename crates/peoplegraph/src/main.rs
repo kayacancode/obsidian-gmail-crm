@@ -1,4 +1,5 @@
 mod agent;
+mod ask;
 mod config;
 mod hosted;
 mod life;
@@ -77,6 +78,8 @@ enum Commands {
     JobMoves(life::JobMovesArgs),
     /// People whose time at a company overlapped with this person's.
     Teammates(life::TeammatesArgs),
+    /// Ask one natural-language question; returns the interpretation beside the answer.
+    Ask(ask::AskArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -631,6 +634,23 @@ fn run_with_profile(
         }
         _ => {}
     }
+    // Ask is hosted by default; --local or --cache use the local rule set instead.
+    if let Commands::Ask(args) = &cli.command {
+        if cli.remote || cli.host.is_some() || cli.token.is_some() {
+            return fail(
+                command,
+                "unsupported_operation",
+                "ask runs against hosted People, or locally with --local/--cache; the legacy remote server does not support it.".to_string(),
+                start,
+            );
+        }
+        let response = ask::run(cli, args, start);
+        return if cli.local || cli.cache.is_some() {
+            set_provenance(response, "local", local_source(cli), None)
+        } else {
+            response
+        };
+    }
     if matches!(
         cli.command,
         Commands::Memory(_)
@@ -815,6 +835,7 @@ fn run_with_profile(
         | Commands::Stints(_)
         | Commands::JobMoves(_)
         | Commands::Teammates(_)
+        | Commands::Ask(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -976,6 +997,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::Stints(_)
         | Commands::JobMoves(_)
         | Commands::Teammates(_)
+        | Commands::Ask(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -5296,6 +5318,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Stints(_) => "stints",
         Commands::JobMoves(_) => "job-moves",
         Commands::Teammates(_) => "teammates",
+        Commands::Ask(_) => "ask",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5404,6 +5427,12 @@ fn describe_payload() -> Value {
                 "usage": "peoplegraph me add <text> [--category <category>] [--date YYYY-MM-DD] | list | forget <id>",
                 "status": "implemented_hosted",
                 "notes": "Your own timeline for two-sided briefs. Add entries only on the owner's explicit request; never shared."
+            },
+            {
+                "name": "ask",
+                "usage": "peoplegraph ask \"<question>\" [--local|--cache <path>]",
+                "status": "implemented",
+                "notes": "Hosted: classifies into lookup, company, catch_up, reconnect, who_can_help, connection, network_ask or clarify and returns {interpretation, answers, result, gaps}. Check interpretation before answering; on clarify ask the owner which alternative they meant. Local rules answer company, reconnect, catch_up (activity only) and lookup; anything else is unsupported_locally."
             },
             {
                 "name": "stints",
