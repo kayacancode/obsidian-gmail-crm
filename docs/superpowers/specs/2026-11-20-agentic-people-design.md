@@ -53,7 +53,7 @@ The note's own shape (what's new in my head, why it interests me, the fringes, w
 | 1 | Life signals, job moves and the two-sided catch-up brief | 0 |
 | 2 | `ask`: natural-language entry point (CLI and MCP) | 0, 1 |
 | 3 | Peer layer over the tailnet | 1, 2 |
-| 4 | `ask` intents for why-now, contrast/fringe and structure/bridges | 2 (separate spec) |
+| 4 | `ask` intents for why-now, contrast, widen and structure/bridges, plus the fringe atlas | 2 (separate spec) |
 | 5 | Curiosity notes and moments (proposed) | 1, 2, 4 |
 | 6 | Three-party introductions (proposed) | 0 |
 | 7 | Guest ask: "search my network" (proposed) | 2, 6 |
@@ -105,10 +105,11 @@ Rules that apply in every zone:
 - **Answers are never combined and stored.** Answers from several holders are merged only in the asker's response and are not persisted. Each asker may ask about the same subject at most 3 times per day per holder.
 - **The subject can opt out.** A tailnet member may add themselves to their own `peers.json` `doNotAnswerAbout` list. It is published to group peers (as the HMAC of each of their addresses), and every peer refuses `catch_up` and `knows` questions about them. Non-members cannot opt out, which is one more reason only `open`-tier signals cross.
 - **Only statements about oneself count.** Something Maya says about Sam is not a signal about Sam.
+- **Relationships are seen from two sides.** Two people can remember the same interaction differently and disagree about how close they are. Each holder's view of a relationship is stored and shown as that holder's perspective. People never merges two members' views into one "objective" score.
 
 ## Typed objects (proposed)
 
-Every object an agent sees has a versioned JSON Schema, published at `<origin>/schemas/v1/<name>.json` and bundled with the CLI (`peoplegraph schema <name>`). That way any harness can build its own interface without reverse-engineering responses. The objects are `Person`, `Relationship` (with band), `Signal`, `CompanyStint`, `Introduction`, `CuriosityNote`, `Moment`, `GuestAsk` and `Answer` (the envelope above). Schemas are additive within `v1`. A breaking change means a new `v2` path, with both served for one release.
+Every object an agent sees has a versioned JSON Schema, published at `<origin>/schemas/v1/<name>.json` and bundled with the CLI (`peoplegraph schema <name>`). That way any harness can build its own interface without reverse-engineering responses. The objects are `Person`, `Relationship` (with band), `Signal`, `CompanyStint`, `Introduction`, `CuriosityNote`, `Moment`, `Atlas`, `GuestAsk` and `Answer` (the envelope above). Schemas are additive within `v1`. A breaking change means a new `v2` path, with both served for one release.
 
 ## Sub-project 0: Foundation
 
@@ -268,7 +269,7 @@ A curiosity note is the owner's current thinking, in the shape of Kaya's working
 |---|---|---|
 | `newInMyHead[]` | `## What's new in my head` | Each item `{text, fromPersonIds[], unresolved[]}`. Names in parentheses, such as "(Sam + betaworks)", are resolved with `find-person` |
 | `why` | `## Why it spikes my interest` | Free text |
-| `fringes[]` | `## The fringes` | Open questions; they drive contrast searches |
+| `fringes[]` | `## The fringes` | Edge questions: where the owner wants perspectives from outside their usual circles. They drive contrast searches for orthogonal or disconfirming evidence, not more of the same |
 | `wantToTalkTo[]` | `## Who I want to talk to about it` | Person ids; unresolved names are kept and reported in `gaps` |
 
 - `peoplegraph mind set --file <note.md|->` parses exactly these four headings. Unknown headings are rejected with `note_invalid`, naming the heading.
@@ -287,7 +288,7 @@ A candidate surfaces only if it also passes the viewer's **judgment** (`suppress
 | `intent_v(t)` | Active curiosity notes, then confirmed Lens, then recent `ask` questions |
 | `context_s(t)` | Work evidence and unexpired `open`/`personal` signals the viewer holds |
 | timeliness | Meeting within 48 hours, a signal from the last 7 days, crossing into dormancy, a topic appearing on both sides within 7 days |
-| novelty | Community/discipline distance from the viewer's dense clusters (sub-project 4). Until sub-project 4 ships, novelty is 1 |
+| novelty | How far the subject sits from the viewer's dense clusters: different discipline, community or vocabulary from the people the viewer has talked to most in the last 90 days (sub-project 4). Until sub-project 4 ships, novelty is 1 |
 | reachability | Direct relationship band, a shared-network path, or a willing introducer |
 
 ### Moments
@@ -300,12 +301,21 @@ A candidate surfaces only if it also passes the viewer's **judgment** (`suppress
 | `fresh_signal` | An `open`/`personal` signal from the last 7 days, relevant to an active note | 7 days |
 | `cold_and_relevant` | The relationship crossed into dormancy and is relevant to an active note | 14 days |
 | `want_to_talk` | A `wantToTalkTo` person with no contact in 30 days; includes a two-sided brief and a suggested reason | 14 days |
-| `fringe_match` | A person whose evidence addresses a `fringes[]` question from a different community (needs sub-project 4) | 14 days |
+| `fringe_match` | A person outside the viewer's dense clusters whose evidence speaks to a `fringes[]` question from a different angle, or challenges an assumption in the note (needs sub-project 4) | 14 days |
 | `bridge` | Two contacts with matching evidence and no recorded connection; proposes an `Introduction` (sub-project 6) | 14 days |
+| `widen` | The viewer's recent conversations have clustered: at least 70% of the last 30 days' meetings and threads sit in one cluster. The moment names the pattern and offers one person from outside it (needs sub-project 4) | 14 days |
 
 - **Budget.** At most 3 moments per day by default (configurable 1–10). There is at most one moment per person per 7 days. Dismissing one suppresses that person and kind for 30 days and is recorded as judgment.
 - **Generation.** Moments are generated daily by hosted cron and on demand. They are read with `peoplegraph moments [--today]` and the MCP tool `moments`, and act/snooze/dismiss uses `moments act|snooze|dismiss <id>`.
 - **Peers are never asked in the background.** Peer data enters only through an explicit `brief --peers`.
+
+### Fringes, serendipity and success (from the essay)
+
+- **Fringe means the edges of the viewer's attention, not a niche topic.** A fringe candidate needs both relevance to the viewer's intent and distance from their usual circles. Relevance alone is the recommendation-algorithm trap; distance alone is randomness. "Better unexpected matching" means both.
+- **Disconfirming evidence counts.** A person whose evidence contradicts an assumption stated in a curiosity note ranks as relevant, not as a mismatch.
+- **Surprise is rationed.** At most one `fringe_match` or `widen` moment per day, inside the overall budget, so surprise stays meaningful.
+- **The fringe atlas** (sub-project 4) is a typed `Atlas` object for one topic: the people the viewer knows around it, the communities they belong to, the communities absent from the viewer's network, and candidate fringe people with evidence. It is data for a visual interface, not a ranked list, so the human explores it with their own judgment.
+- **Success is connection, not engagement.** People measures moments acted on, introductions made, `met` outcomes, and follow-up contact within 90 days of a meeting. It never measures time in the app, and no feature optimizes for return visits.
 
 ## Sub-project 6: Three-party introductions (proposed)
 
@@ -319,6 +329,7 @@ Introductions involve three people, but graph edges hold two. `Introduction` bec
 
 - **Statuses:** `proposed → asked_introducer → introducer_accepted → target_opted_in → made → (met | not_met)`; any step can end in `declined` or `expired` (30 days without progress).
 - **Double opt-in.** The target is asked before the introduction is made. People never sends email itself; the introducer's agent drafts the messages.
+- **Introduction budget.** Each introducer can have at most 5 open introductions they did not start themselves. Agents cannot propose introductions in bulk. The aim is better decisions about which connections to pursue, not automated introduction spam.
 - **Vouch.** Optional text written by the introducer, visible only to the two parties of that introduction. It is the single judgment that may cross (privacy partition).
 - **Outcome.** `met` / `not_met` plus an optional note. It feeds `whether` and the existing completed-introduction counts.
 - **Migration.** Existing `introduction_requests` map to `parties [requester, target]`, with `introducer = recipient`. Workspace introduction suggestions become `proposed` introductions.
