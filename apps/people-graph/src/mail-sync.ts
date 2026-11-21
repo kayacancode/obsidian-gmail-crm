@@ -9,6 +9,8 @@ import {PersonMergeStore,projectPersonMerges,projectRelevancePeople} from './per
 import {RelationshipMemoryStore,validSaveRelationshipMemory,validCaptureRelationshipMemory,validMemoryEmail,relationshipDelta,type SaveRelationshipMemory,type CaptureRelationshipMemory,type RecommendationMemory,type RelationshipMemory} from './relationship-memory';
 import {workspacePhoto,type WorkspaceProfile} from './workspace-contract';
 import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonFeedback} from './calendar';
+import {LifeSignalStore} from './life-signals';
+import {OwnerTimelineStore} from './owner-timeline';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -71,6 +73,10 @@ export class MailSync extends DurableObject<MailEnv>{
  private personContextStore?:PersonContextStore;
  private relationshipStore?:RelationshipMemoryStore;
  private memoryStore(){return this.relationshipStore??=new RelationshipMemoryStore(this.ctx.storage);}
+ private lifeSignalStore?:LifeSignalStore;
+ private lifeStore(){return this.lifeSignalStore??=new LifeSignalStore(this.ctx.storage);}
+ private ownerTimeline?:OwnerTimelineStore;
+ private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
  private mergeStore?:PersonMergeStore;
  private personMergeStore(){return this.mergeStore??=new PersonMergeStore(this.ctx.storage);}
  async getPersonMerges(){return {merges:this.personMergeStore().get()};}
@@ -972,6 +978,29 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(entry.person_id!==canonical)this.personContextFor(await this.emailForPerson(canonical)).save({personId:canonical,text:current.text,revision:current.revision});
   return this.memoryForPerson(canonical);
  }
+ async getLifeSettings(){return {enabled:this.lifeStore().enabled()};}
+ async setLifeSignals(enabled:boolean){if(typeof enabled!=='boolean')throw Error('invalid_request');this.lifeStore().setEnabled(enabled);return {enabled};}
+ /** Every person id that resolves to this person, including merged aliases. */
+ private async mergedPersonIds(personId:string):Promise<string[]>{
+  const canonical=await this.canonicalPersonId(personId),merges=this.personMergeStore().get();
+  return [...new Set([canonical,...Object.entries(merges).filter(([,target])=>target===canonical).map(([source])=>source)])];
+ }
+ async listLifeSignals(personId?:string){
+  if(personId!==undefined&&!validContextPerson(personId))throw Error('invalid_request');
+  const store=this.lifeStore();store.purgeExpired();
+  return {enabled:store.enabled(),signals:store.list(personId===undefined?undefined:await this.mergedPersonIds(personId))};
+ }
+ async forgetLifeSignals(input:{id?:unknown;personId?:unknown;all?:unknown}){
+  const store=this.lifeStore(),keys=Object.keys(input??{});
+  if(keys.length!==1)throw Error('invalid_request');
+  if(input.all===true)return {removed:store.forget({all:true})};
+  if(typeof input.id==='string'&&input.id.length<=400)return {removed:store.forget({id:input.id})};
+  if(typeof input.personId==='string'&&validContextPerson(input.personId))return {removed:store.forget({personIds:await this.mergedPersonIds(input.personId)})};
+  throw Error('invalid_request');
+ }
+ async addTimelineEntry(input:{text?:unknown;category?:unknown;date?:unknown}){return this.timelineStore().add(input??{});}
+ async listTimeline(){return {entries:this.timelineStore().list()};}
+ async forgetTimelineEntry(id:string){if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');return {removed:this.timelineStore().forget(id)};}
  async recommendationMemory():Promise<RecommendationMemory>{
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)throw Error('missing_owner');
   const store=this.memoryStore(),wanted=new Set(store.ids()),people:RecommendationMemory['people']={};

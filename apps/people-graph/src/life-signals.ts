@@ -56,3 +56,39 @@ export async function extractLifeSignals(ai:Ai|undefined,text:string,mode:LifeMo
  }
  return result;
 }
+
+export type LifeSource='gmail'|'granola'|'memory';
+export interface LifeSignal {id:string;personId:string;category:LifeCategory;tier:LifeTier;summary:string;quote:string;source:LifeSource;sourceRef:string;observedAt:string;expiresAt:string}
+type LifeRow={id:string;person:string;category:LifeCategory;tier:LifeTier;summary:string;quote:string;source:LifeSource;source_ref:string;observed:number;expires:number};
+const DAY=86_400_000;
+
+/** Owner-private life signals. Rows never leave this owner's storage; expired rows are invisible and purged. */
+export class LifeSignalStore {
+ constructor(private readonly storage:DurableObjectStorage,private readonly now:()=>number=Date.now){
+  storage.sql.exec(`CREATE TABLE IF NOT EXISTS life_signals (id TEXT PRIMARY KEY,person TEXT NOT NULL,category TEXT NOT NULL,tier TEXT NOT NULL,summary TEXT NOT NULL,quote TEXT NOT NULL,source TEXT NOT NULL,source_ref TEXT NOT NULL,observed INTEGER NOT NULL,expires INTEGER NOT NULL);
+   CREATE INDEX IF NOT EXISTS life_signals_person ON life_signals(person,expires);
+   CREATE TABLE IF NOT EXISTS life_processed (source_ref TEXT PRIMARY KEY);
+   CREATE TABLE IF NOT EXISTS life_settings (id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL);`);
+ }
+ enabled():boolean{return this.storage.sql.exec<{enabled:number}>('SELECT enabled FROM life_settings WHERE id=1').toArray()[0]?.enabled===1;}
+ setEnabled(on:boolean):void{this.storage.sql.exec('INSERT OR REPLACE INTO life_settings (id,enabled) VALUES (1,?)',on?1:0);}
+ processed(sourceRef:string):boolean{return this.storage.sql.exec('SELECT source_ref FROM life_processed WHERE source_ref=?',sourceRef).toArray().length>0;}
+ markProcessed(sourceRef:string):void{this.storage.sql.exec('INSERT OR IGNORE INTO life_processed (source_ref) VALUES (?)',sourceRef);}
+ add(personId:string,candidate:LifeCandidate,source:LifeSource,sourceRef:string,observed:number,index:number):void{
+  const expires=observed+LIFE_TTL_DAYS[candidate.category]*DAY;
+  this.storage.sql.exec('INSERT OR REPLACE INTO life_signals (id,person,category,tier,summary,quote,source,source_ref,observed,expires) VALUES (?,?,?,?,?,?,?,?,?,?)',`${source}:${sourceRef}:${index}`,personId,candidate.category,LIFE_TIER[candidate.category],candidate.summary,candidate.quote,source,sourceRef,observed,expires);
+ }
+ list(personIds?:string[]):LifeSignal[]{
+  if(personIds&&!personIds.length)return [];
+  const where=personIds?` AND person IN (${personIds.map(()=>'?').join(',')})`:'';
+  return this.storage.sql.exec<LifeRow>(`SELECT * FROM life_signals WHERE expires>?${where} ORDER BY observed DESC,id`,this.now(),...(personIds??[])).toArray().map(row=>({id:row.id,personId:row.person,category:row.category,tier:row.tier,summary:row.summary,quote:row.quote,source:row.source,sourceRef:row.source_ref,observedAt:new Date(row.observed).toISOString(),expiresAt:new Date(row.expires).toISOString()}));
+ }
+ /** Deletes signals; processed markers stay so a forgotten source is never re-extracted. */
+ forget(target:{id:string}|{personIds:string[]}|{all:true}):number{
+  const [where,args]:[string,unknown[]]='id' in target?['id=?',[target.id]]:'personIds' in target?[`person IN (${target.personIds.map(()=>'?').join(',')||"''"})`,target.personIds]:['1=1',[]];
+  const count=this.storage.sql.exec<{n:number}>(`SELECT COUNT(*) AS n FROM life_signals WHERE ${where}`,...args).toArray()[0]?.n??0;
+  this.storage.sql.exec(`DELETE FROM life_signals WHERE ${where}`,...args);
+  return count;
+ }
+ purgeExpired():void{this.storage.sql.exec('DELETE FROM life_signals WHERE expires<=?',this.now());}
+}
