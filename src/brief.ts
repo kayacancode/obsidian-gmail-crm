@@ -118,10 +118,27 @@ export function findNextSteps(markdown: string, ownerName: string): NextStep[] |
     .map(({ title, detail }) => ({ title, detail }));
 }
 
+const CADENCE: Record<string, true> = { weekly: true, biweekly: true, monthly: true, daily: true, recurring: true };
+/**
+ * A meeting series' name: the normalized title with "&", "and" and "+" treated alike and cadence
+ * words dropped, so "Kaya + JB weekly", "Kaya & JB" and "Kaya and JB" are one series. Whole
+ * words only; empty when nothing but cadence words is left.
+ */
+export function seriesTitle(title: string): string {
+  const words = normalizeEventTitle(title).split(" ").filter(Boolean);
+  const kept: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === "bi" && words[i + 1] === "weekly") { i++; continue; }
+    if (words[i] !== "and" && !CADENCE[words[i]]) kept.push(words[i]);
+  }
+  return kept.join(" ");
+}
+
 /**
  * Next steps for an upcoming meeting: from the most recent earlier Granola note related to it
- * that has a Next Steps section. Related means the same calendar title, else exactly the same
- * attendees. Nothing else counts; no related note means no steps.
+ * that has a Next Steps section. Related means, in this order: the same calendar title, exactly
+ * the same attendees, or the same meeting series (`seriesTitle`). Nothing else counts; no related
+ * note means no steps.
  */
 export async function relatedNextSteps(
   meeting: { title: string; start: string; attendees: string[] },
@@ -132,11 +149,13 @@ export async function relatedNextSteps(
   const at = Date.parse(meeting.start);
   const earlier = notes.filter((n) => Date.parse(n.date) < at).sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
   const title = normalizeEventTitle(meeting.title);
+  const series = seriesTitle(meeting.title);
   const people = [...new Set(meeting.attendees)].sort().join(",");
   const groups = [
     earlier.filter((n) => n.calendarTitle && normalizeEventTitle(n.calendarTitle) === title),
     // Needs someone: notes nobody is linked to must not match a meeting with no listed attendees.
     people ? earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people) : [],
+    series ? earlier.filter((n) => n.calendarTitle && seriesTitle(n.calendarTitle) === series) : [],
   ];
   for (const group of groups)
     for (const note of group) {
