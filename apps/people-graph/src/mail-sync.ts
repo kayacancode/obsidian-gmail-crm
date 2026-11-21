@@ -13,7 +13,7 @@ import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from '
 import {OwnerTimelineStore} from './owner-timeline';
 import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
 import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
-import {whyNow,type StructureInput} from './network-structure';
+import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,type StructureInput,type Candidate} from './network-structure';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -1149,6 +1149,43 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   const signals=store.enabled()?store.list().map(s=>({personId:aliases[s.personId]??s.personId,category:s.category,tier:s.tier,summary:s.summary,observedAt:s.observedAt,source:s.source})):[];
   const result=whyNow(input,{now,lens:lens.enabled?lens.fields:{focus:'',needs:''},signals,stints,jobMoves:(await this.jobMoveCandidates()).candidates,mail,excluded:this.structureExclusions(graph.nodes,now)},limit);
   return {interpretation:null,answers:result.answers,result:{generatedAt:new Date(now).toISOString()},gaps:result.gaps};
+ }
+ /** Clusters and distances for this request; nothing is cached or exported. */
+ private async structureNow(){
+  const input=await this.structureInput();if(!input)return null;
+  const now=Date.now(),graph=(await this.graph())!;
+  return {input,now,ctx:structureContext(input,await clusterNetwork(input,now),now),excluded:this.structureExclusions(graph.nodes,now)};
+ }
+ private async topicCandidates(topic:string,excluded:Set<string>):Promise<Candidate[]>{
+  const search=await this.searchPeople(topic);
+  return search.results.filter(r=>!excluded.has(r.personId)).map(r=>({personId:r.personId,name:r.name,relevance:r.score,evidence:r.reasons.map(e=>({summary:e.summary,observedAt:e.observedAt,source:e.title??'People evidence'}))}));
+ }
+ /** Relevant people outside the owner's usual circles; with a claim, disagreement ranks higher. */
+ async contrast(topic:string,claim?:string){
+  if(typeof topic!=='string'||!topic.trim()||topic.length>200||(claim!==undefined&&(typeof claim!=='string'||!claim.trim()||claim.length>200)))throw Error('invalid_request');
+  const structure=await this.structureNow();
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const candidates=await this.topicCandidates(topic.trim(),structure.excluded);
+  const distant=candidates.filter(c=>c.relevance>=0.3&&distanceOf(c.personId,structure.ctx).value>=0.5);
+  const stances=claim?await stanceLabels(this.env.AI,claim.trim(),distant.slice(0,8)):{};
+  const result=contrast(candidates,structure.ctx,stances);
+  return {interpretation:null,answers:result.answers,result:{topic:topic.trim(),claim:claim?.trim()??null},gaps:result.gaps};
+ }
+ /** A narrowing pattern in the last 30 days, and one person from outside it. */
+ async widen(){
+  const structure=await this.structureNow();
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const lens=this.ownerLens().get();
+  const result=widen(structure.input,structure.ctx,structure.now,{focus:lens.enabled?`${lens.fields.focus} ${lens.fields.needs}`:'',excluded:structure.excluded});
+  return {interpretation:null,answers:result.answers,result:result.result,gaps:result.gaps};
+ }
+ /** People in different circles who should know each other, plus the connectors already linking them. */
+ async bridges(topic?:string){
+  if(topic!==undefined&&(typeof topic!=='string'||!topic.trim()||topic.length>200))throw Error('invalid_request');
+  const structure=await this.structureNow();
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const result=bridges(structure.input,structure.ctx,{topic:topic?.trim(),excluded:structure.excluded});
+  return {interpretation:null,answers:result.answers,result:result.result,gaps:result.gaps};
  }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){

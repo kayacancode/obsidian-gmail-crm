@@ -21,6 +21,18 @@ export async function structureRoute(request:Request,env:MailEnv,owner:string){
    const limit=q.limit===undefined?10:Number(q.limit);
    return json(await stub.whyNow(limit));
   }
+  const text=(value:string|undefined)=>value!==undefined&&value.trim()&&value.length<=200?value:null;
+  if(path==='/api/people/contrast'){
+   const q=only(url,['topic','claim']);const topic=text(q?.topic);
+   if(!q||!topic||(q.claim!==undefined&&!text(q.claim)))return json({error:'invalid_request'},400);
+   return json(await stub.contrast(topic,q.claim));
+  }
+  if(path==='/api/people/widen'){if(url.search)return json({error:'invalid_request'},400);return json(await stub.widen());}
+  if(path==='/api/people/bridges'){
+   const q=only(url,['topic']);
+   if(!q||(q.topic!==undefined&&!text(q.topic)))return json({error:'invalid_request'},400);
+   return json(await stub.bridges(q.topic));
+  }
   return json({error:'not_found'},404);
  }catch(error){
   const code=error instanceof Error?error.message:'';
