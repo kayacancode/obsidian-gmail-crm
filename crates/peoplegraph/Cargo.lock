@@ -247,6 +247,7 @@ name = "peoplegraph"
 version = "0.3.17"
 dependencies = [
  "clap",
+ "ring",
  "serde",
  "serde_json",
  "strsim",
