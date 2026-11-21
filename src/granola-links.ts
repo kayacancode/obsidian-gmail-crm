@@ -3,7 +3,8 @@ import type { Contact } from "./types";
 
 /**
  * Links Granola meeting notes to people pages. Granola Sync writes the facts into each note's
- * frontmatter; this plugin does all the linking and never writes into Granola notes.
+ * frontmatter; this plugin does all the linking. The only thing it writes into a Granola note is
+ * the `people:` frontmatter key (see `withPeopleFrontmatter`).
  *
  * Who attended comes from this plugin's Calendar events (same start and title), because Granola's
  * own attendee list usually names only the owner. Without a calendar match, the note's
@@ -25,13 +26,26 @@ export interface GranolaMeeting {
   path: string;
   title: string;
 }
+export interface Attendee {
+  email: string;
+  /** Display name from the calendar invite, when it gave one. */
+  name?: string;
+}
 export interface GranolaLinks {
   /** Meetings per person, keyed by the person's primary email. */
   meetings: Map<string, GranolaMeeting[]>;
+  /** Every attendee of each note (by path), known or not: the owner, rooms and automated senders left out. */
+  attendees: Map<string, Attendee[]>;
   /** Interaction events, for email-fallback notes only (a joined note is the calendar meeting). */
   events: Interaction[];
   stats: { notes: number; calendar: number; email: number; unlinked: number };
 }
+
+/** Calendar rooms and group calendars appear as attendees but are not people. */
+export const NOT_A_PERSON = /@(group|resource)\.calendar\.google\.com$/;
+/** Mailboxes that send on a system's behalf rather than a person's. */
+export const isAutomatedAddress = (email: string) =>
+  /^(no-?reply|do-?not-?reply|notifications?|calendar-notification|mailer-daemon|bounces?)([+._-][^@]*)?@/i.test(email);
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null);
 
@@ -94,7 +108,7 @@ export function linkGranolaMeetings(
     if (Number.isFinite(at)) byStart.set(at, [...(byStart.get(at) ?? []), event]);
   }
   const owner = new Set([...ownerEmails].map(normalizeEmail));
-  const result: GranolaLinks = { meetings: new Map(), events: [], stats: { notes: notes.length, calendar: 0, email: 0, unlinked: 0 } };
+  const result: GranolaLinks = { meetings: new Map(), attendees: new Map(), events: [], stats: { notes: notes.length, calendar: 0, email: 0, unlinked: 0 } };
   for (const note of notes) {
     const start = note.calendarStart ? Date.parse(note.calendarStart) : NaN;
     const title = note.calendarTitle ? normalizeEventTitle(note.calendarTitle) : "";
@@ -102,11 +116,18 @@ export function linkGranolaMeetings(
       ? (byStart.get(start) ?? []).filter((e) => normalizeEventTitle(e.title) === title)
       : [];
     const method = joined.length ? "calendar" : "email";
-    const candidates = joined.length ? joined.map((e) => normalizeEmail(e.email)) : note.attendeeEmails;
-    // Each attendee email resolves to one person; the owner and unknown addresses are dropped.
+    const candidates: Attendee[] = joined.length
+      ? joined.map((e) => ({ email: normalizeEmail(e.email), ...(e.name?.trim() ? { name: e.name.trim() } : {}) }))
+      : note.attendeeEmails.map((email) => ({ email }));
+    // Attendees are people: not the owner, a room or group calendar, or an automated sender.
+    const attendees = new Map<string, Attendee>();
+    for (const a of candidates)
+      if (!owner.has(a.email) && !NOT_A_PERSON.test(a.email) && !isAutomatedAddress(a.email) && !attendees.get(a.email)?.name)
+        attendees.set(a.email, a);
+    if (attendees.size) result.attendees.set(note.path, [...attendees.values()]);
+    // Each attendee email resolves to one person; unknown addresses are not linked here.
     const people = new Set<string>();
-    for (const email of candidates) {
-      if (owner.has(email)) continue;
+    for (const { email } of attendees.values()) {
       const person = identity.get(email);
       const primary = person ? normalizeEmail(person.contact.email) : null;
       if (primary && !owner.has(primary)) people.add(primary);
@@ -149,4 +170,117 @@ export function granolaSection(content: string, lines: string[]): string {
   if (SECTION.test(content)) return content.replace(SECTION, section);
   if (!section) return content;
   return (content.endsWith("\n") ? content : content + "\n") + section;
+}
+
+const yamlQuoted = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
+/**
+ * The note with its `people:` frontmatter list set to wikilinks to these pages (sorted, placed
+ * right after the `attendees` block, or at the end of the frontmatter), or removed when empty.
+ * Text edit only: every other byte of the file is unchanged, and the same list returns the same
+ * text, so callers can skip the write. Files without frontmatter are left alone.
+ */
+export function withPeopleFrontmatter(content: string, pageNames: string[]): string {
+  if (!content.startsWith("---\n")) return content;
+  const end = content.indexOf("\n---", 3);
+  if (end < 0) return content;
+  const lines = end > 3 ? content.slice(4, end).split("\n") : [];
+  const kept: string[] = [];
+  // Drop the current block: the key line plus its indented (or "- ") list lines.
+  for (let i = 0; i < lines.length; i++) {
+    if (/^people:/.test(lines[i])) {
+      while (i + 1 < lines.length && /^(\s+|-\s)/.test(lines[i + 1])) i++;
+      continue;
+    }
+    kept.push(lines[i]);
+  }
+  const names = [...new Set(pageNames)].sort();
+  if (names.length) {
+    const block = ["people:", ...names.map((name) => `  - ${yamlQuoted(`[[${name}]]`)}`)];
+    let at = kept.findIndex((line) => /^attendees:/.test(line));
+    if (at >= 0) while (at + 1 < kept.length && /^(\s+|-\s)/.test(kept[at + 1])) at++;
+    kept.splice(at >= 0 ? at + 1 : kept.length, 0, ...block);
+  }
+  const next = `---\n${kept.join("\n")}${content.slice(end)}`;
+  return kept.length || end > 3 ? next : content;
+}
+
+/** A new people page for a Gmail contact: the same page the plugin's contact notes create. */
+export function contactNoteContent(contact: Contact): string {
+  const frontmatter = [
+    "---",
+    `email: "${contact.email}"`,
+    `last_contact: ${contact.lastContact.split("T")[0]}`,
+    `first_contact: ${contact.firstContact.split("T")[0]}`,
+    `total_exchanges: ${contact.totalExchanges}`,
+    `sent: ${contact.sentCount}`,
+    `received: ${contact.receivedCount}`,
+    "---",
+  ].join("\n");
+  const body = [
+    `# ${contact.name}`,
+    "",
+    "## Overview",
+    `- **Email:** ${contact.email}`,
+    `- **Last contact:** ${contact.lastContact.split("T")[0]}`,
+    `- **Total exchanges:** ${contact.totalExchanges} (${contact.sentCount} sent, ${contact.receivedCount} received)`,
+    "",
+    "## Recent Subjects",
+    ...contact.subjects.map((s) => `- ${s}`),
+    "",
+    "## Notes",
+    "",
+  ].join("\n");
+  return `${frontmatter}\n\n${body}`;
+}
+
+export interface PagePlan {
+  /** The person's primary email (a Gmail contact's, else the attendee's). */
+  primary: string;
+  path: string;
+  content: string;
+}
+
+/**
+ * People pages to create for meeting attendees nobody has a page for. A person is matched by
+ * email and alias first (`identity`), so an alias never gets a second page; a page whose file
+ * name is already taken is never overwritten. Named from the Gmail contact, else the invite's
+ * display name, else the email. With `waitForNames` (no calendar display names stored yet),
+ * people with no name at all are left for a later run rather than given an email-named page,
+ * because pages are never renamed.
+ */
+export function pagesToCreate(
+  attendeesByNote: Map<string, Attendee[]>,
+  identity: Map<string, Person>,
+  primariesWithPages: Set<string>,
+  existingPaths: Set<string>,
+  folder: string,
+  options: { waitForNames?: boolean } = {},
+): PagePlan[] {
+  const people = new Map<string, { email: string; name?: string; contact?: Contact }>();
+  for (const attendees of attendeesByNote.values())
+    for (const a of attendees) {
+      const contact = identity.get(a.email)?.contact;
+      const primary = contact ? normalizeEmail(contact.email) : a.email;
+      if (primariesWithPages.has(primary)) continue;
+      const known = people.get(primary);
+      people.set(primary, { email: primary, ...(contact ? { contact } : {}), name: known?.name ?? a.name });
+    }
+  const taken = new Set([...existingPaths].map((p) => p.toLowerCase()));
+  const dir = folder.replace(/\/+$/, "");
+  const plans: PagePlan[] = [];
+  for (const [primary, person] of [...people].sort(([a], [b]) => a.localeCompare(b))) {
+    const contactName = person.contact?.name?.trim();
+    const known = contactName && !contactName.includes("@") ? contactName : person.name?.trim();
+    if (!known && options.waitForNames) continue;
+    const name = known || primary;
+    const path = `${dir ? `${dir}/` : ""}p- ${name.replace(/[\\/:*?"<>|]/g, "_")}.md`;
+    if (taken.has(path.toLowerCase())) continue;
+    taken.add(path.toLowerCase());
+    const content = person.contact
+      ? contactNoteContent({ ...person.contact, name })
+      : `---\nemail: "${primary}"\n---\n\n# ${name}\n\n## Overview\n- **Email:** ${primary}\n\n## Notes\n`;
+    plans.push({ primary, path, content });
+  }
+  return plans.sort((a, b) => a.path.localeCompare(b.path));
 }

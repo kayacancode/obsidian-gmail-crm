@@ -12,7 +12,7 @@ import { GmailApi, SHARED_CLIENT_ID, SHARED_CLIENT_SECRET } from "./gmail-api";
 import { IntelligenceStore } from "./intelligence-store";
 import { PeopleIntelligenceView, PEOPLE_INTELLIGENCE_VIEW } from "./intelligence-view";
 import { identityMap, type SourcedNote } from "./intelligence-model";
-import { granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails, type GranolaLinks, type GranolaNote } from "./granola-links";
+import { contactNoteContent, granolaNote, granolaSection, linkGranolaMeetings as computeGranolaLinks, ownerEmails, pagesToCreate, withPeopleFrontmatter, type GranolaLinks, type GranolaNote } from "./granola-links";
 import { BRIEF_DAYS, relatedNextSteps, renderBrief, upcomingMeetings, type BriefPerson, type GranolaCandidate, type MeetingSteps } from "./brief";
 import type { Person } from "./intelligence-model";
 import { GmailCrmSettingTab } from "./settings-tab";
@@ -707,33 +707,7 @@ export default class GmailCrmPlugin extends Plugin {
 			// Check if a page already exists for this person
 			const existingFile = existingPages.get(contact.name.toLowerCase());
 
-			const frontmatter = [
-				"---",
-				`email: "${contact.email}"`,
-				`last_contact: ${contact.lastContact.split("T")[0]}`,
-				`first_contact: ${contact.firstContact.split("T")[0]}`,
-				`total_exchanges: ${contact.totalExchanges}`,
-				`sent: ${contact.sentCount}`,
-				`received: ${contact.receivedCount}`,
-				"---",
-			].join("\n");
-
-			const body = [
-				`# ${contact.name}`,
-				"",
-				"## Overview",
-				`- **Email:** ${contact.email}`,
-				`- **Last contact:** ${contact.lastContact.split("T")[0]}`,
-				`- **Total exchanges:** ${contact.totalExchanges} (${contact.sentCount} sent, ${contact.receivedCount} received)`,
-				"",
-				"## Recent Subjects",
-				...contact.subjects.map((s) => `- ${s}`),
-				"",
-				"## Notes",
-				"",
-			].join("\n");
-
-			const content = `${frontmatter}\n\n${body}`;
+			const content = contactNoteContent(contact);
 
 			if (existingFile) {
 				// Page exists — don't overwrite, just skip
@@ -1415,9 +1389,11 @@ export default class GmailCrmPlugin extends Plugin {
 	}
 
 	/**
-	 * Links Granola meeting notes to people pages: attendees from the matching Calendar meeting
-	 * (same start and title), else the note's attendee_emails. Rewrites only the plugin-managed
-	 * `## Granola meetings` section of people pages; never writes Granola notes or creates pages.
+	 * Links Granola meeting notes and people: attendees from the matching Calendar meeting (same
+	 * start and title), else the note's attendee_emails. Creates people pages for attendees who
+	 * have none (when contact notes are on), rewrites the plugin-managed `## Granola meetings`
+	 * section of people pages, and sets each Granola note's `people:` frontmatter list. That key is
+	 * the only thing written into Granola notes, and a note is written only when it changes.
 	 */
 	async linkGranolaMeetings(announce: boolean) {
 		if (!this.contactIndex) {
@@ -1425,8 +1401,32 @@ export default class GmailCrmPlugin extends Plugin {
 			return;
 		}
 		try {
-			const { notes, links } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
-			const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
+			const { notes, links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
+			const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+			const pagesByEmail = (pages: Record<string, PersonPage>) => {
+				const map = new Map<string, PersonPage>();
+				for (const page of Object.values(pages)) {
+					const email = this.getEmailForPage(page);
+					if (email && !map.has(email)) map.set(email, page);
+				}
+				return map;
+			};
+			let pages = await engine.loadPeoplePages();
+			let pageByEmail = pagesByEmail(pages);
+			let created = 0;
+			if (this.settings.createContactNotes) {
+				const folder = normalizePath(this.settings.contactNotesFolder);
+				const existing = new Set(this.app.vault.getFiles().map((f) => f.path));
+				// Until a calendar sync has stored invite display names, don't name pages after emails.
+				const waitForNames = !(this.intelligenceReady && this.intelligence.state.events.some((e) => e.kind === "meeting" && e.source !== "granola" && e.name));
+				const plans = pagesToCreate(links.attendees, identity, new Set(pageByEmail.keys()), existing, folder, { waitForNames });
+				if (plans.length && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+				for (const plan of plans) {
+					try { await this.app.vault.create(normalizePath(plan.path), plan.content); created++; }
+					catch { /* created meanwhile (case-insensitive name or a race): never overwrite */ }
+				}
+				if (created) { pages = await engine.loadPeoplePages(); pageByEmail = pagesByEmail(pages); }
+			}
 			let written = 0;
 			for (const page of Object.values(pages)) {
 				const email = this.getEmailForPage(page);
@@ -1439,10 +1439,26 @@ export default class GmailCrmPlugin extends Plugin {
 				await this.app.vault.modify(file, next);
 				written++;
 			}
+			let notesWritten = 0;
+			for (const note of notes) {
+				const names = new Set<string>();
+				for (const a of links.attendees.get(note.path) ?? []) {
+					const primary = identity.get(a.email)?.contact.email.toLowerCase() ?? a.email;
+					const page = owner.has(primary) ? undefined : pageByEmail.get(primary);
+					if (page) names.add(page.path.split("/").pop()!.replace(/\.md$/, ""));
+				}
+				const file = this.app.vault.getAbstractFileByPath(note.path);
+				if (!(file instanceof TFile)) continue;
+				const current = await this.app.vault.read(file);
+				const next = withPeopleFrontmatter(current, [...names]);
+				if (next === current) continue;
+				await this.app.vault.modify(file, next);
+				notesWritten++;
+			}
 			if (this.intelligenceReady) await this.intelligence.replaceGranola(links.events);
 			const { calendar, email, unlinked } = links.stats;
-			console.debug(`[People Data Sync] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${written} people pages updated`);
-			if (announce) new Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${written} people pages updated`);
+			console.debug(`[People Data Sync] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${created} people pages created, ${written} people pages and ${notesWritten} Granola notes updated`);
+			if (announce) new Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${created} people pages created; ${written} people pages and ${notesWritten} notes updated`);
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
 			console.warn(`[People Data Sync] Granola linking skipped: ${msg}`);
