@@ -46,3 +46,12 @@ test('peer routes: a read-only machine credential may use both routes',async()=>
   assert.equal(response.status,200,path);
  }
 });
+
+test('peer routes: knows uses activity only and the owner\'s own contact date',async()=>{
+ const f=await fixture();
+ // A boost lifts combined into "strong", and a shared network reports a later contact than the owner's own.
+ const node={id:f.personId,name:'Ada',company:'example.test',combined:65,baseCombined:55,lastContact:'2026-11-10T00:00:00.000Z',directLastContact:'2026-08-03T00:00:00.000Z'};
+ Object.assign(f.service,{graph:async()=>({nodes:[node],edges:[],personAliases:{}})});
+ const knows=await f.service.peerAnswer(f.personId,'knows');
+ assert.deepEqual(knows,{known:true,band:'some',lastContactMonth:'2026-08'});
+});

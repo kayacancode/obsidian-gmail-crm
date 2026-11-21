@@ -265,3 +265,74 @@ fn serve_needs_tailscale() {
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"]["kind"], "tailscale_unavailable");
 }
+
+/// An answering home that allows `asker@example.test`, serving as `caller`.
+fn answering(name: &str, caller: &str) -> (PathBuf, Server, String) {
+    let home = home(name);
+    run(cli(&home).args(["peer", "init", "--group", "betaworks"]));
+    run(cli(&home).args(["peer", "allow", "asker@example.test"]));
+    let (server, address) = serve(&home, &hosted(), caller);
+    (home, server, address)
+}
+
+/// One raw request; returns the status line's code, or `None` if nothing came back in time.
+fn raw(address: &str, request: &[u8], wait: Duration) -> Option<u16> {
+    let mut stream = std::net::TcpStream::connect(address.trim_start_matches("http://")).unwrap();
+    stream.set_read_timeout(Some(wait)).unwrap();
+    stream.write_all(request).unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response.split_whitespace().nth(1)?.parse().ok()
+}
+
+fn knows(person: char) -> Vec<u8> {
+    let body = json!({"type":"knows","person":person.to_string().repeat(64)}).to_string();
+    format!(
+        "POST /peer/v1/query HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+#[test]
+fn an_answer_is_withheld_when_it_cannot_be_audited() {
+    let (home, _server, address) = answering("audit", "asker@example.test");
+    assert_eq!(
+        raw(&address, &knows('a'), Duration::from_secs(5)),
+        Some(200)
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let log = home.join("config/peoplegraph/peer-audit.jsonl");
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            raw(&address, &knows('b'), Duration::from_secs(5)),
+            Some(503)
+        );
+    }
+}
+
+#[test]
+fn non_members_are_refused_before_they_send_anything() {
+    let (_home, _server, address) = answering("nonmember", "eve@example.test");
+    assert_eq!(raw(&address, b"", Duration::from_secs(2)), Some(403));
+}
+
+#[test]
+fn a_slow_member_does_not_hold_up_other_requests() {
+    let (_home, _server, address) = answering("slow", "asker@example.test");
+    let mut slow = std::net::TcpStream::connect(address.trim_start_matches("http://")).unwrap();
+    slow.write_all(b"POST /peer/v1/query HTTP/1.1\r\n").unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        raw(&address, &knows('c'), Duration::from_secs(4)),
+        Some(200)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(slow);
+}

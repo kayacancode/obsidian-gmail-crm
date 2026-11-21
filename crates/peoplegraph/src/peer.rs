@@ -7,13 +7,14 @@ use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MINUTE: u64 = 60;
@@ -124,7 +125,8 @@ fn dir() -> Result<PathBuf, config::Error> {
 }
 
 pub(crate) fn load_config() -> Result<Option<PeerConfig>, config::Error> {
-    let Some(bytes) = config::read_private(&dir()?.join("peers.json"))? else {
+    let Some(bytes) = config::read_private(&dir()?.join("peers.json"), config::MAX_CONFIG_BYTES)?
+    else {
         return Ok(None);
     };
     let config: PeerConfig = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
@@ -140,7 +142,7 @@ pub(crate) fn save_config(config: &PeerConfig) -> Result<(), config::Error> {
         return Err(INVALID);
     }
     let bytes = serde_json::to_vec_pretty(config).map_err(|_| INVALID)?;
-    config::write_private(&dir()?.join("peers.json"), &bytes)
+    config::write_private(&dir()?.join("peers.json"), &bytes, config::MAX_CONFIG_BYTES)
 }
 
 /// Hex of `n` random bytes from the system CSPRNG.
@@ -202,21 +204,63 @@ struct Recent {
 pub(crate) struct PeerState {
     pub tickets: Vec<Ticket>,
     recent: Vec<Recent>,
+    /// The opt-out refs each peer last published; replaced only by a successful fetch.
+    #[serde(default)]
+    pub peer_opt_outs: BTreeMap<String, Vec<String>>,
 }
 
-pub(crate) fn load_state() -> Result<PeerState, config::Error> {
+/// Peer state is not a credential file: it grows with requests, so it gets its own cap.
+const STATE_LIMIT: u64 = 4 * 1_024 * 1_024;
+
+fn read_state_in(dir: &Path) -> Result<PeerState, config::Error> {
     Ok(
-        match config::read_private(&dir()?.join("peer-state.json"))? {
+        match config::read_private(&dir.join("peer-state.json"), STATE_LIMIT)? {
             Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| INVALID)?,
             None => PeerState::default(),
         },
     )
 }
 
-pub(crate) fn save_state(state: &mut PeerState, now: u64) -> Result<(), config::Error> {
+/// Peer state for display; changes go through [`with_state`].
+pub(crate) fn read_state() -> Result<PeerState, config::Error> {
+    read_state_in(&dir()?)
+}
+
+/// Load, change and save peer state as one step, so the server and `peer approve` never lose
+/// each other's updates. Nothing is saved, and the error is returned, when `change` fails.
+pub(crate) fn with_state<T>(
+    now: u64,
+    change: impl FnOnce(&mut PeerState) -> Result<T, config::Error>,
+) -> Result<T, config::Error> {
+    with_state_in(&dir()?, now, change)
+}
+
+fn with_state_in<T>(
+    dir: &Path,
+    now: u64,
+    change: impl FnOnce(&mut PeerState) -> Result<T, config::Error>,
+) -> Result<T, config::Error> {
+    // Held until this function returns: the server and `peer approve`/`deny` take turns.
+    fs::create_dir_all(dir).map_err(|_| INVALID)?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options
+        .open(dir.join("peer-state.lock"))
+        .map_err(|_| ("peer_state_locked", "Cannot open the peer state lock."))?;
+    lock.lock()
+        .map_err(|_| ("peer_state_locked", "Cannot lock the peer state."))?;
+    let mut state = read_state_in(dir)?;
     state.prune(now);
-    let bytes = serde_json::to_vec(state).map_err(|_| INVALID)?;
-    config::write_private(&dir()?.join("peer-state.json"), &bytes)
+    let value = change(&mut state)?;
+    state.prune(now);
+    let bytes = serde_json::to_vec(&state).map_err(|_| INVALID)?;
+    config::write_private(&dir.join("peer-state.json"), &bytes, STATE_LIMIT)?;
+    Ok(value)
 }
 
 impl PeerState {
@@ -288,8 +332,15 @@ pub(crate) trait Source {
 pub(crate) struct Context<'a> {
     pub config: &'a PeerConfig,
     pub source: &'a dyn Source,
-    /// Person references any group member asked not to be answered about.
-    pub opted_out: &'a HashSet<String>,
+}
+
+/// Whether the subject asked this owner, or any peer published, not to be answered about.
+fn opted_out(config: &PeerConfig, state: &PeerState, person: &str) -> bool {
+    config.do_not_answer_about.iter().any(|r| r == person)
+        || state
+            .peer_opt_outs
+            .values()
+            .any(|refs| refs.iter().any(|r| r == person))
 }
 
 pub(crate) struct Reply {
@@ -458,6 +509,13 @@ fn respond(
         if ticket.created + TICKET_TTL <= now {
             return reply(410, error("ticket_expired"), "ticket_expired");
         }
+        if ticket
+            .person
+            .as_deref()
+            .is_some_and(|person| opted_out(ctx.config, state, person))
+        {
+            return reply(403, error("subject_opted_out"), "subject_opted_out");
+        }
         return match ticket.status {
             TicketStatus::Pending => reply(
                 202,
@@ -485,7 +543,10 @@ fn respond(
     let Ok(query) = serde_json::from_slice::<Query>(body) else {
         return reply(400, error("invalid_request"), "invalid_request");
     };
-    audit["type"] = json!(query.kind);
+    // Only the three question types are logged; anything else is caller-chosen text.
+    if matches!(query.kind.as_str(), "knows" | "catch_up" | "reason_to_meet") {
+        audit["type"] = json!(query.kind);
+    }
     let subject = query.person.clone();
     if let Some(person) = &subject {
         audit["person"] = json!(person);
@@ -512,9 +573,7 @@ fn respond(
             if query.topic.is_some() {
                 return reply(400, error("invalid_request"), "invalid_request");
             }
-            if ctx.opted_out.contains(person)
-                || ctx.config.do_not_answer_about.iter().any(|r| r == person)
-            {
+            if opted_out(ctx.config, state, person) {
                 return reply(403, error("subject_opted_out"), "subject_opted_out");
             }
             let person_id = match resolve(ctx, person) {
@@ -538,24 +597,35 @@ fn respond(
                     Err(_) => unavailable(),
                 };
             }
-            let Some(id) = person_id else {
-                return reply(200, json!({"signals":[]}), "answered");
+            // When anything may wait for approval, every catch-up waits, so a ticket never
+            // reveals that this owner knows the person or holds something personal.
+            let wait = ctx.config.policy.open == Gate::Approve
+                || ctx.config.policy.personal == Gate::Approve;
+            let shown = match &person_id {
+                None => vec![],
+                Some(id) => match ctx.source.answer(id, "catch_up") {
+                    Ok(answer) => partition(&answer["signals"], &ctx.config.policy, false).0,
+                    Err(_) => return unavailable(),
+                },
             };
-            let answer = match ctx.source.answer(&id, "catch_up") {
-                Ok(answer) => answer,
-                Err(_) => return unavailable(),
-            };
-            let (shown, held) = partition(&answer["signals"], &ctx.config.policy, false);
             audit["categories"] = json!(
                 shown
                     .iter()
                     .map(|s| s["category"].clone())
                     .collect::<Vec<_>>()
             );
-            if !held {
+            if !wait {
                 return reply(200, json!({"signals":shown}), "answered");
             }
-            match new_ticket(state, caller, "catch_up", Some(person), Some(id), None, now) {
+            match new_ticket(
+                state,
+                caller,
+                "catch_up",
+                Some(person),
+                person_id,
+                None,
+                now,
+            ) {
                 Ok(ticket) => reply(202, json!({"ticket":ticket,"signals":shown}), "ticket"),
                 Err(_) => unavailable(),
             }
@@ -601,6 +671,19 @@ pub(crate) fn approve(
     reason: Option<&str>,
     now: u64,
 ) -> Result<Value, config::Error> {
+    // A subject who opted out after the question was asked is not answered.
+    if let Some(person) = state
+        .tickets
+        .iter()
+        .find(|t| t.id == id)
+        .and_then(|t| t.person.clone())
+        && opted_out(config, state, &person)
+    {
+        return Err((
+            "subject_opted_out",
+            "That person asked not to be answered about.",
+        ));
+    }
     let ticket = state
         .tickets
         .iter_mut()
@@ -616,7 +699,12 @@ pub(crate) fn approve(
             ))?;
         json!({"topic":ticket.topic,"reason":reason})
     } else {
-        let person_id = ticket.person_id.as_deref().ok_or(INVALID)?;
+        // Unknown people get the same empty answer a quiet one would.
+        let Some(person_id) = ticket.person_id.as_deref() else {
+            ticket.status = TicketStatus::Approved;
+            ticket.answer = Some(json!({"signals":[]}));
+            return Ok(json!({"ticket":id,"status":"approved","answer":{"signals":[]}}));
+        };
         let answer = source.answer(person_id, "catch_up").map_err(|_| {
             (
                 "peer_source_unavailable",
@@ -810,7 +898,7 @@ fn execute(args: &PeerArgs, now: u64) -> Result<Value, config::Error> {
         PeerCommand::Ask { question } => ask(&configured()?, question),
         PeerCommand::Pending => {
             configured()?;
-            let state = load_state()?;
+            let state = read_state()?;
             Ok(json!({"tickets":state.pending(now).iter().map(|t| json!({
                 "id": t.id, "caller": t.caller, "type": t.kind, "personId": t.person_id,
                 "topic": t.topic, "expiresAt": t.created + TICKET_TTL,
@@ -818,35 +906,29 @@ fn execute(args: &PeerArgs, now: u64) -> Result<Value, config::Error> {
         }
         PeerCommand::Approve { ticket, reason } => {
             let config = configured()?;
-            let mut state = load_state()?;
-            let kind = state
+            let kind = read_state()?
                 .tickets
                 .iter()
                 .find(|t| &t.id == ticket)
                 .map(|t| t.kind.clone())
                 .unwrap_or_default();
-            let answer = if kind == "catch_up" {
-                let source = Hosted::new(people_client::configure(args.url.as_deref())?);
-                approve(&config, &source, &mut state, ticket, reason.as_deref(), now)?
+            // Only catch-up answers need People; resolve the credential before taking the lock.
+            let hosted = if kind == "catch_up" {
+                Some(Hosted::new(people_client::configure(args.url.as_deref())?))
             } else {
-                approve(
-                    &config,
-                    &Offline,
-                    &mut state,
-                    ticket,
-                    reason.as_deref(),
-                    now,
-                )?
+                None
             };
-            save_state(&mut state, now)?;
-            Ok(answer)
+            let source: &dyn Source = match &hosted {
+                Some(hosted) => hosted,
+                None => &Offline,
+            };
+            with_state(now, |state| {
+                approve(&config, source, state, ticket, reason.as_deref(), now)
+            })
         }
         PeerCommand::Deny { ticket } => {
             configured()?;
-            let mut state = load_state()?;
-            let answer = deny(&mut state, ticket, now)?;
-            save_state(&mut state, now)?;
-            Ok(answer)
+            with_state(now, |state| deny(state, ticket, now))
         }
         PeerCommand::Log { since } => {
             configured()?;
@@ -955,14 +1037,14 @@ fn date_to_unix(date: &str) -> Option<u64> {
 /// The owner's hosted People data, read with the owner's own credential.
 struct Hosted {
     client: people_client::Client,
-    directory: RefCell<Option<(Instant, Directory)>>,
+    directory: Mutex<Option<(Instant, Directory)>>,
 }
 
 impl Hosted {
     fn new(client: people_client::Client) -> Self {
         Self {
             client,
-            directory: RefCell::new(None),
+            directory: Mutex::new(None),
         }
     }
 
@@ -979,7 +1061,8 @@ impl Hosted {
 
 impl Source for Hosted {
     fn directory(&self) -> Result<Directory, String> {
-        if let Some((at, people)) = self.directory.borrow().as_ref()
+        if let Ok(cache) = self.directory.lock()
+            && let Some((at, people)) = cache.as_ref()
             && at.elapsed() < Duration::from_secs(600)
         {
             return Ok(people.clone());
@@ -999,7 +1082,9 @@ impl Source for Hosted {
                 Some((id, emails))
             })
             .collect();
-        *self.directory.borrow_mut() = Some((Instant::now(), people.clone()));
+        if let Ok(mut cache) = self.directory.lock() {
+            *cache = Some((Instant::now(), people.clone()));
+        }
         Ok(people)
     }
 
@@ -1099,66 +1184,103 @@ fn serve(args: &PeerArgs, port: u16, test_bind: Option<&str>) -> Result<Value, c
         json!({"ok":true,"command":"peer","data":{"listening":local.to_string(),"group":config.group}})
     );
     let _ = stdout.flush();
-    let mut opted = fetch_opt_outs(&config);
-    let mut fetched = Instant::now();
+    // Opt-outs refresh in the background so a slow peer never stalls answering.
+    std::thread::spawn(|| {
+        loop {
+            if let Ok(config) = configured() {
+                refresh_opt_outs(&config);
+            }
+            std::thread::sleep(Duration::from_secs(600));
+        }
+    });
+    let source = Arc::new(source);
+    let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        if fetched.elapsed() > Duration::from_secs(600) {
-            if let Ok(config) = configured() {
-                opted = fetch_opt_outs(&config);
-            }
-            fetched = Instant::now();
+        if active.load(Ordering::SeqCst) >= MAX_WORKERS {
+            write_reply(&mut stream, 503, &error("peer_busy"));
+            continue;
         }
-        let caller = match &test_caller {
-            Some(login) => Some(login.clone()),
-            None => stream.peer_addr().ok().and_then(whois),
-        };
-        serve_one(&mut stream, caller.as_deref(), &source, &opted);
+        let worker = Worker::new(Arc::clone(&active));
+        let (source, test_caller) = (Arc::clone(&source), test_caller.clone());
+        std::thread::spawn(move || {
+            let _worker = worker;
+            let caller = match test_caller {
+                Some(login) => Some(login),
+                None => stream.peer_addr().ok().and_then(whois),
+            };
+            serve_one(&mut stream, caller.as_deref(), &source);
+        });
     }
     Ok(json!({"stopped":true}))
 }
 
-fn serve_one(
-    stream: &mut TcpStream,
-    caller: Option<&str>,
-    source: &Hosted,
-    opted: &HashSet<String>,
-) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+const MAX_WORKERS: usize = 16;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Counts one running connection for as long as it lives.
+struct Worker(Arc<AtomicUsize>);
+
+impl Worker {
+    fn new(active: Arc<AtomicUsize>) -> Self {
+        active.fetch_add(1, Ordering::SeqCst);
+        Self(active)
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn serve_one(stream: &mut TcpStream, caller: Option<&str>, source: &Hosted) {
     let now = unix_now();
-    let Some((method, path, body)) = read_request(stream) else {
-        return write_reply(stream, 400, &error("invalid_request"));
+    // Re-read each time so allow-list and policy changes apply without a restart.
+    let Ok(config) = configured() else {
+        return write_reply(stream, 503, &error("peer_unavailable"));
     };
-    let Some(caller) = caller else {
+    // Membership is checked before anything is read: non-members cannot hold a connection open.
+    let Some(caller) = caller.filter(|caller| config.allow.iter().any(|login| login == caller))
+    else {
         let _ = append_audit(
-            &json!({"at":now,"caller":Value::Null,"type":Value::Null,"person":Value::Null,"outcome":"peer_not_allowed","categories":[]}),
+            &json!({"at":now,"caller":caller,"type":Value::Null,"person":Value::Null,"outcome":"peer_not_allowed","categories":[]}),
         );
         return write_reply(stream, 403, &error("peer_not_allowed"));
     };
-    // Re-read each time so allow-list and policy changes apply without a restart.
-    let (Ok(config), Ok(mut state)) = (configured(), load_state()) else {
-        return write_reply(stream, 503, &error("peer_unavailable"));
+    let Some((method, path, body)) = read_request(stream, Instant::now() + REQUEST_DEADLINE) else {
+        return write_reply(stream, 400, &error("invalid_request"));
     };
     let ctx = Context {
         config: &config,
         source,
-        opted_out: opted,
     };
-    let reply = handle(&ctx, &mut state, caller, &method, &path, &body, now);
-    let _ = save_state(&mut state, now);
-    let _ = append_audit(&reply.audit);
-    write_reply(stream, reply.status, &reply.body);
+    // Logged before it is sent: if the audit or the state cannot be written, nothing is answered.
+    match with_state(now, |state| {
+        let reply = handle(&ctx, state, caller, &method, &path, &body, now);
+        append_audit(&reply.audit)?;
+        Ok(reply)
+    }) {
+        Ok(reply) => write_reply(stream, reply.status, &reply.body),
+        Err(_) => write_reply(stream, 503, &error("peer_unavailable")),
+    }
 }
 
-/// One HTTP/1.1 request with at most 16 KB of headers and a 4 KB body.
-fn read_request(stream: &mut TcpStream) -> Option<(String, String, Vec<u8>)> {
+/// One HTTP/1.1 request with at most 16 KB of headers and a 4 KB body, all before `deadline`.
+fn read_request(stream: &mut TcpStream, deadline: Instant) -> Option<(String, String, Vec<u8>)> {
     let mut data = Vec::new();
     let mut chunk = [0_u8; 4_096];
-    let head = loop {
-        let size = stream.read(&mut chunk).ok()?;
-        if size == 0 {
+    // Each read may only use what is left of the whole request's time.
+    let read = |stream: &mut TcpStream, chunk: &mut [u8]| -> Option<usize> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
             return None;
         }
+        stream.set_read_timeout(Some(left)).ok()?;
+        stream.read(chunk).ok().filter(|size| *size > 0)
+    };
+    let head = loop {
+        let size = read(stream, &mut chunk)?;
         data.extend_from_slice(&chunk[..size]);
         if let Some(offset) = data.windows(4).position(|b| b == b"\r\n\r\n") {
             break offset;
@@ -1181,10 +1303,7 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String, Vec<u8>)> {
     }
     let mut body = data[head + 4..].to_vec();
     while body.len() < length {
-        let size = stream.read(&mut chunk).ok()?;
-        if size == 0 {
-            return None;
-        }
+        let size = read(stream, &mut chunk)?;
         body.extend_from_slice(&chunk[..size]);
     }
     body.truncate(length);
@@ -1239,29 +1358,49 @@ fn peer_http(method: &str, url: &str, body: Option<&Value>, timeout: Duration) -
     Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
 }
 
-/// Every group member's published opt-outs; unreachable peers contribute nothing.
-fn fetch_opt_outs(config: &PeerConfig) -> HashSet<String> {
-    config
+/// One peer's published opt-outs; `None` when it could not be fetched.
+fn fetch_opt_outs(peer: &PeerRef) -> Option<Vec<String>> {
+    let (status, body) = peer_http(
+        "GET",
+        &format!("{}/peer/v1/opt-outs", peer.url),
+        None,
+        Duration::from_secs(5),
+    )
+    .ok()?;
+    (status == 200).then(|| {
+        body["refs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.as_str().filter(|r| is_ref(r)).map(str::to_owned))
+            .collect()
+    })
+}
+
+/// Record fetched opt-outs per configured peer. A peer that could not be reached keeps its
+/// last known list, so a brief outage never stops honouring someone's opt-out.
+fn merge_opt_outs(state: &mut PeerState, fetched: Vec<(String, Option<Vec<String>>)>) {
+    let previous = std::mem::take(&mut state.peer_opt_outs);
+    state.peer_opt_outs = fetched
+        .into_iter()
+        .filter_map(|(login, refs)| {
+            let refs = refs.or_else(|| previous.get(&login).cloned())?;
+            Some((login, refs))
+        })
+        .collect();
+}
+
+/// Fetch every peer's opt-outs and store them in peer state.
+fn refresh_opt_outs(config: &PeerConfig) {
+    let fetched: Vec<_> = config
         .peers
         .iter()
-        .filter_map(|peer| {
-            peer_http(
-                "GET",
-                &format!("{}/peer/v1/opt-outs", peer.url),
-                None,
-                Duration::from_secs(5),
-            )
-            .ok()
-        })
-        .flat_map(|(_, body)| {
-            body["refs"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|r| r.as_str().filter(|r| is_ref(r)).map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .collect()
+        .map(|peer| (peer.login.clone(), fetch_opt_outs(peer)))
+        .collect();
+    let _ = with_state(unix_now(), |state| {
+        merge_opt_outs(state, fetched);
+        Ok(())
+    });
 }
 
 /// Ask every configured peer in parallel; answers are attributed, unreachable peers become gaps.
@@ -1528,7 +1667,7 @@ mod tests {
 
     fn config() -> PeerConfig {
         let mut config = PeerConfig::new("betaworks", PEPPER.into());
-        config.allow = vec!["sam@example.test".into()];
+        config.allow = vec!["sam@example.test".into(), "lee@example.test".into()];
         config
     }
 
@@ -1540,12 +1679,7 @@ mod tests {
         body: Value,
         now: u64,
     ) -> Reply {
-        let opted = HashSet::new();
-        let ctx = Context {
-            config,
-            source,
-            opted_out: &opted,
-        };
+        let ctx = Context { config, source };
         handle(
             &ctx,
             state,
@@ -1630,20 +1764,18 @@ mod tests {
         assert!(!reply.body.to_string().contains("married"));
         assert!(!reply.body.to_string().contains("surgery"));
         let ticket = reply.body["ticket"].as_str().unwrap().to_owned();
-        let opted = HashSet::new();
         let ctx = Context {
             config: &config,
             source: &source,
-            opted_out: &opted,
         };
         let path = format!("/peer/v1/tickets/{ticket}");
         let pending = handle(&ctx, &mut state, "sam@example.test", "GET", &path, b"", NOW);
         assert_eq!(pending.status, 202);
         assert!(!pending.body.to_string().contains("married"));
-        // Another caller cannot read Sam's ticket.
+        // Another allowed caller cannot read Sam's ticket.
         assert_eq!(
-            handle(&ctx, &mut state, "eve@example.test", "GET", &path, b"", NOW).status,
-            403
+            handle(&ctx, &mut state, "lee@example.test", "GET", &path, b"", NOW).status,
+            404
         );
         approve(&config, &source, &mut state, &ticket, None, NOW + 10).unwrap();
         let answered = handle(
@@ -1720,11 +1852,34 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_known_but_quiet_people_look_the_same() {
-        let source = Fake { signals: signals() };
+    fn every_catch_up_waits_for_approval_so_unknown_quiet_and_personal_look_the_same() {
+        let source = Fake {
+            signals: json!([{"category":"milestone","tier":"personal","summary":"Got married","observedMonth":"2026-09","expiresAt":"2027-03-01T00:00:00.000Z"}]),
+        };
         let (config, mut state) = (config(), PeerState::default());
+        let replies: Vec<Reply> = ["zed@example.test", "bo@example.test", "ada@example.test"]
+            .iter()
+            .map(|email| {
+                query(
+                    &config,
+                    &mut state,
+                    &source,
+                    "sam@example.test",
+                    json!({"type":"catch_up","person":person_ref(PEPPER,email)}),
+                    NOW,
+                )
+            })
+            .collect();
+        for reply in &replies {
+            assert_eq!(reply.status, 202, "{}", reply.body);
+            assert_eq!(reply.body["signals"], json!([]));
+            assert!(reply.body["ticket"].is_string());
+        }
+        // With nothing held for approval, catch-up answers at once for everyone alike.
+        let mut never = config.clone();
+        never.policy.personal = Gate::Never;
         let unknown = query(
-            &config,
+            &never,
             &mut state,
             &source,
             "sam@example.test",
@@ -1732,16 +1887,144 @@ mod tests {
             NOW,
         );
         let quiet = query(
+            &never,
+            &mut state,
+            &source,
+            "sam@example.test",
+            json!({"type":"catch_up","person":ada()}),
+            NOW,
+        );
+        assert_eq!(unknown.body.to_string(), r#"{"signals":[]}"#);
+        assert_eq!(quiet.body.to_string(), unknown.body.to_string());
+    }
+
+    #[test]
+    fn a_subject_who_opts_out_after_the_question_is_not_answered() {
+        let source = Fake { signals: signals() };
+        let mut config = config();
+        let mut state = PeerState::default();
+        let reply = query(
             &config,
             &mut state,
             &source,
             "sam@example.test",
-            json!({"type":"catch_up","person":person_ref(PEPPER,"bo@example.test")}),
+            json!({"type":"catch_up","person":ada()}),
             NOW,
         );
-        assert_eq!((unknown.status, quiet.status), (200, 200));
-        assert_eq!(unknown.body.to_string(), quiet.body.to_string());
-        assert_eq!(unknown.body.to_string(), r#"{"signals":[]}"#);
+        let ticket = reply.body["ticket"].as_str().unwrap().to_owned();
+        state
+            .peer_opt_outs
+            .insert("maya@example.test".into(), vec![ada()]);
+        assert_eq!(
+            approve(&config, &source, &mut state, &ticket, None, NOW)
+                .unwrap_err()
+                .0,
+            "subject_opted_out"
+        );
+        state.peer_opt_outs.clear();
+        approve(&config, &source, &mut state, &ticket, None, NOW).unwrap();
+        config.do_not_answer_about = vec![ada()];
+        let ctx = Context {
+            config: &config,
+            source: &source,
+        };
+        let path = format!("/peer/v1/tickets/{ticket}");
+        let read = handle(&ctx, &mut state, "sam@example.test", "GET", &path, b"", NOW);
+        assert_eq!(read.status, 403);
+        assert!(!read.body.to_string().contains("married"));
+    }
+
+    #[test]
+    fn an_unreachable_peer_keeps_its_last_opt_outs() {
+        let mut state = PeerState::default();
+        merge_opt_outs(
+            &mut state,
+            vec![
+                ("maya@example.test".into(), Some(vec![ada()])),
+                ("bo@example.test".into(), Some(vec![])),
+            ],
+        );
+        merge_opt_outs(
+            &mut state,
+            vec![
+                ("maya@example.test".into(), None),
+                ("bo@example.test".into(), Some(vec![ada()])),
+            ],
+        );
+        assert_eq!(state.peer_opt_outs["maya@example.test"], vec![ada()]);
+        assert_eq!(state.peer_opt_outs["bo@example.test"], vec![ada()]);
+        // A peer that is no longer configured is forgotten.
+        merge_opt_outs(&mut state, vec![("bo@example.test".into(), Some(vec![]))]);
+        assert!(!state.peer_opt_outs.contains_key("maya@example.test"));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "peoplegraph-peer-unit-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn peer_state_may_outgrow_the_credential_file_cap() {
+        let dir = scratch("large");
+        with_state_in(&dir, NOW, |state| {
+            for i in 0..2_000 {
+                state.recent.push(Recent {
+                    caller: "sam@example.test".into(),
+                    subject: Some(person_ref(PEPPER, &format!("p{i}@example.test"))),
+                    at: NOW,
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+        let reloaded = read_state_in(&dir).unwrap();
+        assert_eq!(reloaded.recent.len(), 2_000);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_state_changes_are_not_lost() {
+        let dir = scratch("concurrent");
+        with_state_in(&dir, NOW, |_| Ok(())).unwrap();
+        std::thread::scope(|scope| {
+            for caller in ["sam@example.test", "lee@example.test"] {
+                let dir = &dir;
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        with_state_in(dir, NOW, |state| {
+                            state.recent.push(Recent {
+                                caller: caller.into(),
+                                subject: None,
+                                at: NOW,
+                            });
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(read_state_in(&dir).unwrap().recent.len(), 100);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_records_only_known_question_types() {
+        let source = Fake { signals: json!([]) };
+        let reply = query(
+            &config(),
+            &mut PeerState::default(),
+            &source,
+            "sam@example.test",
+            json!({"type":"x".repeat(2_000),"person":ada()}),
+            NOW,
+        );
+        assert_eq!(reply.status, 400);
+        assert_eq!(reply.audit["type"], Value::Null);
     }
 
     #[test]
@@ -1759,17 +2042,18 @@ mod tests {
         );
         assert_eq!(reply.status, 403);
         assert_eq!(reply.body, json!({"error":"subject_opted_out"}));
-        let mut published = HashSet::new();
-        published.insert(ada());
+        let mut state = PeerState::default();
+        state
+            .peer_opt_outs
+            .insert("maya@example.test".into(), vec![ada()]);
         let ctx = Context {
             config: &self::config(),
             source: &source,
-            opted_out: &published,
         };
         let body = json!({"type":"catch_up","person":ada()}).to_string();
         let from_peer = handle(
             &ctx,
-            &mut PeerState::default(),
+            &mut state,
             "sam@example.test",
             "POST",
             "/peer/v1/query",
