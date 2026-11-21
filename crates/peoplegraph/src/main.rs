@@ -6,6 +6,7 @@ mod life;
 mod peer;
 mod people_client;
 mod sources;
+mod structure;
 mod web_client;
 mod web_profile;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -83,6 +84,16 @@ enum Commands {
     Ask(ask::AskArgs),
     /// Ask trusted tailnet peers about a person, or answer their questions under your policy.
     Peer(peer::PeerArgs),
+    /// Who to contact now and why, from meetings, replies owed, fresh signals, moves and cooling ties.
+    WhyNow(structure::WhyNowArgs),
+    /// Relevant people outside your usual circles on a topic; --claim ranks disagreement higher.
+    Contrast(structure::ContrastArgs),
+    /// Notice when the last 30 days narrowed to one circle, and meet one person from outside it.
+    Widen(structure::WidenArgs),
+    /// Contacts in different circles who should know each other, and who already connects them.
+    Bridges(structure::BridgesArgs),
+    /// The landscape of your network around one topic, as a typed Atlas object.
+    Atlas(structure::AtlasArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -664,6 +675,11 @@ fn run_with_profile(
             | Commands::JobMoves(_)
             | Commands::Teammates(_)
             | Commands::Peer(_)
+            | Commands::WhyNow(_)
+            | Commands::Contrast(_)
+            | Commands::Widen(_)
+            | Commands::Bridges(_)
+            | Commands::Atlas(_)
             | Commands::Lens(_)
             | Commands::Sources(_)
             | Commands::Matches(_)
@@ -696,6 +712,11 @@ fn run_with_profile(
             | Commands::JobMoves(_)
             | Commands::Teammates(_) => life::run(&cli.command, start),
             Commands::Peer(args) => peer::run(args, start),
+            Commands::WhyNow(_)
+            | Commands::Contrast(_)
+            | Commands::Widen(_)
+            | Commands::Bridges(_)
+            | Commands::Atlas(_) => structure::run(&cli.command, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -842,6 +863,11 @@ fn run_with_profile(
         | Commands::Teammates(_)
         | Commands::Ask(_)
         | Commands::Peer(_)
+        | Commands::WhyNow(_)
+        | Commands::Contrast(_)
+        | Commands::Widen(_)
+        | Commands::Bridges(_)
+        | Commands::Atlas(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -1005,6 +1031,11 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::Teammates(_)
         | Commands::Ask(_)
         | Commands::Peer(_)
+        | Commands::WhyNow(_)
+        | Commands::Contrast(_)
+        | Commands::Widen(_)
+        | Commands::Bridges(_)
+        | Commands::Atlas(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -5327,6 +5358,11 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Teammates(_) => "teammates",
         Commands::Ask(_) => "ask",
         Commands::Peer(_) => "peer",
+        Commands::WhyNow(_) => "why-now",
+        Commands::Contrast(_) => "contrast",
+        Commands::Widen(_) => "widen",
+        Commands::Bridges(_) => "bridges",
+        Commands::Atlas(_) => "atlas",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5440,7 +5476,37 @@ fn describe_payload() -> Value {
                 "name": "ask",
                 "usage": "peoplegraph ask \"<question>\" [--local|--cache <path>]",
                 "status": "implemented",
-                "notes": "Hosted: classifies into lookup, company, catch_up, reconnect, who_can_help, connection, network_ask or clarify and returns {interpretation, answers, result, gaps}. Check interpretation before answering; on clarify ask the owner which alternative they meant. Local rules answer company, reconnect, catch_up (activity only) and lookup; anything else is unsupported_locally."
+                "notes": "Hosted: classifies into lookup, company, catch_up, reconnect, who_can_help, connection, network_ask, why_now, contrast, widen, bridges, atlas or clarify and returns {interpretation, answers, result, gaps}. Check interpretation before answering; on clarify ask the owner which alternative they meant. Local rules answer company, reconnect, catch_up (activity only) and lookup; anything else is unsupported_locally."
+            },
+            {
+                "name": "why-now",
+                "usage": "peoplegraph why-now [--limit 10]",
+                "status": "implemented_hosted",
+                "notes": "Who to contact now and why: meeting soon, reply owed, fresh open/personal signal, job move, strong relationship going quiet, recent work on your Lens focus. Each reason is dated and sourced. Suppressed, snoozed and not-before people never appear."
+            },
+            {
+                "name": "contrast",
+                "usage": "peoplegraph contrast \"<topic>\" [--claim \"<assumption>\"]",
+                "status": "implemented_hosted",
+                "notes": "Relevant people outside your usual circles (distance 0.5 or 1 with a reason). With --claim, people whose evidence challenges or differs from it rank higher. Fewer than 3 distant people is a gap, followed by the nearest relevant people."
+            },
+            {
+                "name": "widen",
+                "usage": "peoplegraph widen",
+                "status": "implemented_hosted",
+                "notes": "If 70% or more of your last 30 days (12+ interactions) were in one circle, names the pattern and offers one person from outside it. Otherwise an honest gap."
+            },
+            {
+                "name": "bridges",
+                "usage": "peoplegraph bridges [--topic \"<text>\"]",
+                "status": "implemented_hosted",
+                "notes": "Pairs of your contacts in different circles, never connected, with shared evidence; plus connectors who already link your circles. Proposals only: introductions need everyone's agreement."
+            },
+            {
+                "name": "atlas",
+                "usage": "peoplegraph atlas \"<topic>\"",
+                "status": "implemented_hosted",
+                "notes": "Typed Atlas object (schema /schemas/v1/atlas.json): known people, circles, fringe people with reach, and inferred absent communities (never people). Data to explore, not a ranking."
             },
             {
                 "name": "peer",

@@ -182,3 +182,39 @@ fn who_knows_include_former_is_hosted_only() {
     let (_, body) = run(&["who-knows", "--company", "acme", "--include-former"]);
     assert_eq!(body["include_former"], true);
 }
+
+#[test]
+fn structure_commands_use_the_structure_routes() {
+    assert_eq!(
+        sent(&["why-now", "--limit", "5"]),
+        json!({"method":"GET","path":"/api/people/why-now?limit=5"})
+    );
+    assert_eq!(
+        sent(&[
+            "contrast",
+            "nurse scheduling",
+            "--claim",
+            "nurses won't adopt apps"
+        ]),
+        json!({"method":"GET","path":"/api/people/contrast?topic=nurse%20scheduling&claim=nurses%20won%27t%20adopt%20apps"})
+    );
+    assert_eq!(
+        sent(&["widen"]),
+        json!({"method":"GET","path":"/api/people/widen"})
+    );
+    assert_eq!(
+        sent(&["bridges", "--topic", "robotics"]),
+        json!({"method":"GET","path":"/api/people/bridges?topic=robotics"})
+    );
+    assert_eq!(
+        sent(&["atlas", "climate fintech"]),
+        json!({"method":"GET","path":"/api/people/atlas?topic=climate%20fintech"})
+    );
+}
+
+#[test]
+fn structure_commands_need_hosted_people() {
+    let output = cli().args(["--local", "widen"]).output().unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "incompatible_backend");
+}

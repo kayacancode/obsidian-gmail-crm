@@ -102,3 +102,16 @@ test('ask: catching up on a first name finds the one matching person',async()=>{
  const {ask}=await network();
  assert.equal((await ask('catch_up',{person:'Maya'})).answers[0]?.name,'Maya Rivera');
 });
+
+test('ask: structure questions run the owner-only structure reads',async()=>{
+ const {ask}=await network();
+ for(const [intent,params] of [['why_now',{}],['contrast',{topic:'acme.test'}],['contrast',{topic:'acme.test',claim:'nobody pays'}],['widen',{}],['bridges',{}],['bridges',{topic:'acme'}]] as [AskIntent,AskParams][]){
+  const got=await ask(intent,params);
+  assert.equal(got.interpretation.intent,intent);
+  assert.ok(Array.isArray(got.answers)&&Array.isArray(got.gaps),intent);
+ }
+ const atlas=await ask('atlas',{topic:'acme.test'});
+ const result=atlas.result as {version:number;known:{personId:string;name:string}[]};
+ assert.equal(result.version,1);
+ assert.deepEqual(atlas.answers.map(a=>a.personId),result.known.map(k=>k.personId));
+});

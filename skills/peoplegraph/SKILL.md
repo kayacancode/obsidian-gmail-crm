@@ -29,6 +29,20 @@ Use `--local` for an Obsidian cache (`--cache`, then `PEOPLEGRAPH_CACHE`, then v
 
 For an open question about the owner's network, run `peoplegraph ask "<question>"` (MCP: `ask`). It returns `interpretation` (intent, params, confidence) beside `answers`, `result` and `gaps`. Before answering, check that the interpretation matches what the owner meant; if it does not, say so and use the specific command instead. On `intent: clarify`, ask the owner which of `alternatives` they meant; never guess. `network_ask` means the question is about what peers know: use `peer ask` from the CLI. `ask` is read-only and has no write intents; requests to change, delete, send or share are always `clarify`. `--local` answers only who-knows, reconnect, catch-up (activity only) and lookup questions.
 
+## Network structure: why now, contrast, widen, bridges, atlas
+
+These answers need the shape of the owner's network (hosted only; `ask` routes to them too):
+
+| Owner asks | Command |
+| --- | --- |
+| "Who should I reach out to this week, and why?" | `peoplegraph why-now` |
+| "Who outside my usual circle knows about X?" / "Who'd disagree that Y?" | `peoplegraph contrast "X" [--claim "Y"]` |
+| "Am I only talking to the same people?" | `peoplegraph widen` |
+| "Who in my network should meet each other?" | `peoplegraph bridges [--topic "X"]` |
+| "Show me the landscape around X" | `peoplegraph atlas "X"` (MCP: `get_atlas`) |
+
+Every reason carries `source` and `observedAt`: cite them. `distance` (0, 0.5 or 1, with a `reason`) says how far someone sits from the owner's usual circles; a fringe suggestion is valuable because it is relevant **and** distant, so say both. With `--claim`, people whose evidence `challenges` the claim rank higher: present disagreement as useful, not as a mismatch. `widen` offers at most one person; do not pad it. `bridges` pairs are proposals: never contact anyone or draft an introduction unless the owner asks. Atlas `absent` entries are model suggestions marked `inferred`; describe them as possibilities. Clusters and distances are private to the owner; never repeat them to others.
+
 ## Private People questions
 
 These require `people:read`. They use the website's saved context, ranking, explanations, and visible-network rules.
