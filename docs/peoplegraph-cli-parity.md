@@ -168,6 +168,24 @@ Local vault discovery skips vaults under hidden directories such as `~/.codex`. 
 
 `intros list|show|propose|advance|outcome` (`GET/POST /api/people/introductions`, `POST /api/people/introductions/{advance,outcome}`; MCP `list_introductions`, `propose_introduction`, `advance_introduction`, `record_introduction_outcome`) keep three-party introductions in the owner's store: `proposed → asked_introducer → introducer_accepted → target_opted_in → made → met | not_met`, or `declined`; 30 days without progress expires. When the owner introduces, `proposed → introducer_accepted` is allowed and a private vouch may be recorded. Limits: one proposal per call, five per day, five open asks per introducer. Shared-workspace `introduction_requests` appear read-only (`requested → asked_introducer`, `checking_interest → introducer_accepted`, `agreed → target_opted_in`, `completed → made`, otherwise `declined`). Made introductions draw as dotted three-way connectors in the graph (`graph.introductions`, owner and vouch excluded) and count in the brief's `whether.introductions`.
 
+## Guest ask
+
+**Owner side.** `guest pending|show|answer|decline|on|off` uses:
+- routes: `GET /api/people/guest-asks`, `POST /api/people/guest-asks/{answer,decline,settings}`;
+- MCP: `list_guest_asks` (read), `answer_guest_ask` and `decline_guest_ask` (write).
+
+Guest ask is off by default. A question is pending until the owner answers or declines it, and expires after 7 days. The draft comes from `search` over work evidence only, with model descriptions checked against every contact name, company and work domain. Edited answers are checked the same way (`answer_not_anonymous`).
+
+**Public side.** `/ask/<booking-slug>` reuses the booking Google sign-in (`requestId: guest-ask` returns to the ask page). Routes under `/api/public/ask/<slug>`:
+- `GET ''`
+- `POST /sign-in`
+- `GET|POST /questions` (1–500 characters, 3 per guest per day: `guest_rate_limited`; `guest_ask_disabled` while off)
+- `POST /questions/<id>/introductions {ref}`: creates an owner-introduced introduction with `startedBy: guest`, at most five open
+- `POST /agent-token`: 7 days, keyed hash, newest five live per guest
+- `/mcp`: Bearer token, tools `ask_network` and `my_questions`
+
+Guests see only approved answers. A person's name shows once their introduction reaches `target_opted_in`.
+
 ## Catch-up briefs and life signals
 
 `peoplegraph brief <email|exact-name|person-id>` returns the owner's private catch-up brief: `when`, `why` (first-hand evidence with source and date), `whether`, `gaps` and `sinceLastContact {theirs, yours}`. Sensitive life signals are `use: tone_only`. `signals on|off|list|forget` manages owner-private life signals (off by default; each category expires); `me add|list|forget` manages the owner's own timeline; `stints`, `job-moves` and `teammates` expose company history derived from email domains plus owner corrections; `who-knows --include-former` (hosted only) adds former employees. Routes: `/api/people/{signals,signals/settings,brief,timeline,stints,teammates,job-moves}`; MCP read tools: `get_catch_up_brief`, `list_life_signals`.

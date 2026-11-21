@@ -53,6 +53,10 @@ A curiosity note is the owner's current thinking: `## What's new in my head`, `#
 
 An introduction involves three people: an introducer and two parties. When the owner wants one (for example from a `bridge` moment), propose exactly one with `peoplegraph intros propose --parties <a>,<b> [--introducer <id>] --reason "<why>"` (MCP `propose_introduction`). Then record each step the owner reports with `intros advance <id> <step>`: `asked_introducer` → `introducer_accepted` → `target_opted_in` (the person agreed: double opt-in) → `made`, and finally `intros outcome <id> met|not_met`. Never skip the opt-in, never send anything yourself, and never propose in bulk (five a day, five open asks per introducer). Draft the messages for the owner to send. A vouch (`--vouch`, only when the owner introduces) stays private to the owner; share it only with the two parties, in the owner's own message. `intros list` also shows shared-workspace requests, read-only.
 
+## Guest ask
+
+Outsiders can ask the owner's network a question at `/ask/<owner-handle>` (or through their own agent with the public MCP tool `ask_network`). The feature is off until the owner runs `peoplegraph guest on`. `peoplegraph guest pending` (MCP `list_guest_asks`) shows each question with an owner-only draft: the people found from work evidence and an anonymous description of each. Never answer a guest without the owner's approval: `guest answer <id>` approves the draft as it is, and `--file answer.json` (`{text, people:[{ref, description}]}`) sends an edit. Answers describe people and never name them; names, companies, domains, addresses and links fail with `answer_not_anonymous`. Drafts never use life signals, curiosity notes or peer answers; don't add them yourself. A guest learns a name only through an introduction they request, which the owner then moves through `introducer_accepted` and `target_opted_in` (the person agreed) like any other. `guest decline <id>` closes a question. Never contact a guest yourself.
+
 ## Private People questions
 
 These require `people:read`. They use the website's saved context, ranking, explanations, and visible-network rules.
