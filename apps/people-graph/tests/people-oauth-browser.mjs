@@ -34,7 +34,7 @@ try{
  await page.getByRole('button',{name:'Connect People',exact:true}).click();await page.waitForURL(redirect+'?**');
  const returned=new URL(page.url());assert.equal(returned.searchParams.get('state'),'test-state');const code=returned.searchParams.get('code');assert.ok(code);
  const exchange=await f.exchange({grant_type:'authorization_code',client_id:client.client_id,code,redirect_uri:redirect,code_verifier:verifier,resource});assert.equal(exchange.status,200);const tokens=await exchange.json();
- const list=await f.mcp(tokens.access_token);assert.equal(list.status,200);assert.equal((await f.result(list)).result.tools.length,13);
+ const list=await f.mcp(tokens.access_token);assert.equal(list.status,200);assert.equal((await f.result(list)).result.tools.length,14);
  await page.goto(authorization);await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.waitForURL(redirect+'?**');assert.equal(new URL(page.url()).searchParams.get('error'),'access_denied');
  assert.deepEqual(errors,[]);console.log('PASS real Worker browser consent: owner/scopes, secure cookie binding, mobile layout, approval redirect, code exchange, read-only MCP tools, denial');
 }finally{await browser?.close();for(const fn of cleanup.reverse())await fn();await rm(dir,{recursive:true,force:true});}

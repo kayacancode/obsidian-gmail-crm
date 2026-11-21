@@ -19,3 +19,4 @@ import './moments-routes.test.ts';
 import './introductions.test.ts';
 import './introductions-routes.test.ts';
 import './guest-ask.test.ts';
+import './guest-owner.test.ts';

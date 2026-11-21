@@ -16,6 +16,7 @@ import {lifeRoute} from './life-routes';
 import {structureRoute} from './structure-routes';
 import {momentsRoute} from './moments-routes';
 import {ownerIntroductionRoute} from './owner-introduction-routes';
+import {guestOwnerRoute,GUEST_OWNER_PATHS} from './guest-owner-routes';
 import {askRoute} from './ask';
 import {peopleMemoryOwnerRoute,peopleMemoryAgentRoute} from './people-memory-agent';
 import {isPeopleOAuthRequest,peopleOAuthRoute} from './people-oauth';
@@ -139,6 +140,10 @@ export default {
             if(['/api/people/introductions','/api/people/introductions/advance','/api/people/introductions/outcome'].includes(pathname)){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
                 return await ownerIntroductionRoute(request,env,user.email);
+            }
+            if(GUEST_OWNER_PATHS.includes(pathname)){
+                const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
+                return await guestOwnerRoute(request,env,user.email);
             }
             if(pathname==='/api/people/ask'){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);

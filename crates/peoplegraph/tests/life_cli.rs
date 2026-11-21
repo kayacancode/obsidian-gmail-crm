@@ -321,3 +321,43 @@ fn intros_commands_use_the_introduction_routes() {
         json!({"method":"GET","path":"/api/people/introductions"})
     );
 }
+
+#[test]
+fn guest_commands_use_the_guest_ask_routes() {
+    assert_eq!(
+        sent(&["guest", "pending"]),
+        json!({"method":"GET","path":"/api/people/guest-asks"})
+    );
+    assert_eq!(
+        sent(&["guest", "answer", "ga_1"]),
+        json!({"method":"POST","path":"/api/people/guest-asks/answer","body":{"id":"ga_1"}})
+    );
+    let draft = std::env::temp_dir().join(format!("guest-draft-{}.json", std::process::id()));
+    std::fs::write(
+        &draft,
+        r#"{"text":"One person fits.","people":[{"ref":"p1","description":"A design lead"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        sent(&["guest", "answer", "ga_1", "--file", draft.to_str().unwrap()]),
+        json!({"method":"POST","path":"/api/people/guest-asks/answer","body":{"id":"ga_1","answer":{"text":"One person fits.","people":[{"ref":"p1","description":"A design lead"}]}}})
+    );
+    std::fs::remove_file(&draft).unwrap();
+    assert_eq!(
+        sent(&["guest", "decline", "ga_1"]),
+        json!({"method":"POST","path":"/api/people/guest-asks/decline","body":{"id":"ga_1"}})
+    );
+    assert_eq!(
+        sent(&["guest", "on"]),
+        json!({"method":"POST","path":"/api/people/guest-asks/settings","body":{"enabled":true}})
+    );
+    assert_eq!(
+        sent(&["guest", "off"]),
+        json!({"method":"POST","path":"/api/people/guest-asks/settings","body":{"enabled":false}})
+    );
+    let (_, shown) = run(&["guest", "show", "ga_1"]);
+    assert_eq!(
+        shown,
+        json!({"method":"GET","path":"/api/people/guest-asks"})
+    );
+}

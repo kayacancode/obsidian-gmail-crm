@@ -3,6 +3,7 @@
 mod agent;
 mod ask;
 mod config;
+mod guest;
 mod hosted;
 mod intros;
 mod life;
@@ -104,6 +105,8 @@ enum Commands {
     Moments(moments::MomentsArgs),
     /// Three-party introductions: propose one, record each step, then whether they met.
     Intros(intros::IntrosArgs),
+    /// Guest ask: review outsiders' questions to the owner's network (hosted only).
+    Guest(guest::GuestArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -693,6 +696,7 @@ fn run_with_profile(
             | Commands::Mind(_)
             | Commands::Moments(_)
             | Commands::Intros(_)
+            | Commands::Guest(_)
             | Commands::Lens(_)
             | Commands::Sources(_)
             | Commands::Matches(_)
@@ -732,6 +736,7 @@ fn run_with_profile(
             | Commands::Atlas(_) => structure::run(&cli.command, start),
             Commands::Mind(_) | Commands::Moments(_) => moments::run(&cli.command, start),
             Commands::Intros(_) => intros::run(&cli.command, start),
+            Commands::Guest(_) => guest::run(&cli.command, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -886,6 +891,7 @@ fn run_with_profile(
         | Commands::Mind(_)
         | Commands::Moments(_)
         | Commands::Intros(_)
+        | Commands::Guest(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -1057,6 +1063,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::Mind(_)
         | Commands::Moments(_)
         | Commands::Intros(_)
+        | Commands::Guest(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -5387,6 +5394,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Mind(_) => "mind",
         Commands::Moments(_) => "moments",
         Commands::Intros(_) => "intros",
+        Commands::Guest(_) => "guest",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5549,6 +5557,12 @@ fn describe_payload() -> Value {
                 "usage": "peoplegraph intros list | show <id> | propose --parties <a>,<b> [--introducer owner|<id>] --reason <text> | advance <id> asked_introducer|introducer_accepted|target_opted_in|made|declined [--vouch <text>] | outcome <id> met|not_met [--note <text>]",
                 "status": "implemented_hosted",
                 "notes": "Three-party introductions with a double opt-in: proposed, asked_introducer, introducer_accepted, target_opted_in, made, then met or not_met. One proposal per call, five a day, five open asks per introducer; 30 days without progress expires. People never sends anything: draft the messages for the owner. Vouches stay with the owner."
+            },
+            {
+                "name": "guest",
+                "usage": "peoplegraph guest pending | show <id> | answer <id> [--file <answer.json|->] | decline <id> | on | off",
+                "status": "implemented_hosted",
+                "notes": "Outsiders ask the owner's network on the owner's /ask/<handle> page or through ask_network. Off until the owner turns it on; 3 questions per guest per day; pending asks expire after 7 days. The draft uses work evidence only (never life signals, curiosity notes or peers). Nothing reaches a guest until the owner answers; answers describe people and never name them (answer_not_anonymous). A name reaches a guest only through an introduction the person opted into."
             },
             {
                 "name": "peer",

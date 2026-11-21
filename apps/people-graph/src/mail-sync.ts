@@ -17,6 +17,7 @@ import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges
 import {CuriosityNoteStore,noteKeywords,type CuriosityNote} from './curiosity';
 import {MomentStore,generateMoments,isMomentAction,type MomentInput,type MomentNote} from './moments';
 import {IntroductionStore,proposeIntroduction,advance,recordOutcome,isIntroductionStatus} from './introductions';
+import {GuestAskStore,MAX_QUESTION,anonymous,checkAnswer,checkDailyLimit,decideAsk,describePeople,fallbackDescription,forbiddenTokens,guestView,type GuestAsk,type GuestPerson} from './guest-ask';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -89,6 +90,8 @@ export class MailSync extends DurableObject<MailEnv>{
  private momentStore(){return this.momentStoreValue??=new MomentStore(this.ctx.storage);}
  private introStoreValue?:IntroductionStore;
  private introStore(){return this.introStoreValue??=new IntroductionStore(this.ctx.storage);}
+ private guestStoreValue?:GuestAskStore;
+ private guestStore(){return this.guestStoreValue??=new GuestAskStore(this.ctx.storage);}
  private ownerTimeline?:OwnerTimelineStore;
  private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
  private companyStintStore?:CompanyStintStore;
@@ -1318,6 +1321,59 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!intro)throw Error('not_found');
   if(result!=='met'&&result!=='not_met')throw Error('invalid_request');
   return {introduction:this.introStore().save(recordOutcome(intro,{result,note},now))};
+ }
+ /** Guest ask stays off until the owner turns it on. */
+ async setGuestAsk(enabled:boolean){if(typeof enabled!=='boolean')throw Error('invalid_request');await this.ctx.storage.put('guestAskEnabled',enabled);return {enabled};}
+ async guestAskEnabled(){return (await this.ctx.storage.get<boolean>('guestAskEnabled'))===true;}
+ /** A verified guest's question: stored pending with an owner-only draft. Nothing reaches the guest until the owner answers. */
+ async submitGuestAsk(guest:{key:string;email:string},question:string){
+  if(!await this.guestAskEnabled())throw Error('guest_ask_disabled');
+  if(typeof guest?.key!=='string'||!guest.key||typeof guest.email!=='string'||!guest.email)throw Error('invalid_request');
+  const text=typeof question==='string'?question.trim():'';
+  if(!text||text.length>MAX_QUESTION)throw Error('invalid_request');
+  checkDailyLimit(this.guestStore().list(Date.now()),guest.key,Date.now());
+  const draft=await this.draftGuestAnswer(text);
+  // Re-checked after the awaits above: concurrent submissions must not pass the limit together.
+  const now=Date.now();checkDailyLimit(this.guestStore().list(now),guest.key,now);
+  const at=new Date(now).toISOString();
+  const ask:GuestAsk={id:'ga_'+crypto.randomUUID(),guest:guest.key,guestEmail:guest.email,question:text,status:'pending',draft,answer:null,introductions:{},createdAt:at,updatedAt:at};
+  this.guestStore().save(ask);
+  return {ask:guestView(ask,{})};
+ }
+ /** Every token that could identify someone in the owner's network. */
+ private async guestForbidden(){
+  const graph=await this.graph();
+  return forbiddenTokens((graph?.nodes??[]).map(n=>({name:n.name,company:n.company??''})),this.graphContacts().map(c=>c.email.split('@')[1]??''));
+ }
+ /** Draft from work evidence only: search over the graph (never life signals, notes or peers), described anonymously. */
+ private async draftGuestAnswer(question:string):Promise<GuestAsk['draft']>{
+  const graph=await this.graph();
+  const found=graph?(await this.searchPeople(question.slice(0,MAX_QUERY_LENGTH))).results.slice(0,5):[];
+  const forbidden=await this.guestForbidden(),own=new Map<string,string[]>(),themes=new Map<string,string[]>();
+  // Only the owner's own evidence may shape the words; shared evidence counts toward relevance only.
+  for(const s of graph?.themeSignals??[])if(s.personId&&!s.evidenceRef.startsWith(SHARE_ACCOUNT))own.set(s.personId,[...(own.get(s.personId)??[]),s.summary]);
+  for(const theme of graph?.relevance?.themes??[])for(const id of theme.nodeIds)themes.set(id,[...(themes.get(id)??[]),theme.name]);
+  const described=await describePeople(this.env.AI,this.env.THEME_MODEL,question,found.map(r=>({company:r.company,evidence:(own.get(r.personId)??[]).slice(0,5),themes:themes.get(r.personId)??[]})));
+  const people:GuestPerson[]=found.map((r,i)=>({ref:`p${i+1}`,personId:r.personId,description:anonymous(described.get(i)??'',forbidden)??fallbackDescription(themes.get(r.personId)??[],forbidden)}));
+  const text=people.length?`${people.length===1?'One person':`${people.length} people`} in my network may be able to help.`:'I could not find anyone in my network for this yet.';
+  return {text,people};
+ }
+ /** Owner view: every ask with its draft and the names behind it. */
+ async listGuestAsks(){
+  const names=new Map(((await this.graph())?.nodes??[]).map(n=>[n.id,n.name]));
+  return {enabled:await this.guestAskEnabled(),asks:this.guestStore().list(Date.now()).map(a=>({...a,draft:{...a.draft,people:a.draft.people.map(p=>({...p,name:names.get(p.personId)??null}))}}))};
+ }
+ /** Approve the draft as it is, or an anonymous edit of it. */
+ async answerGuestAsk(id:string,answer?:unknown){
+  const now=Date.now(),ask=typeof id==='string'?this.guestStore().get(id,now):null;
+  if(!ask)throw Error('not_found');
+  const final=answer===undefined||answer===null?{text:ask.draft.text,people:ask.draft.people.map(p=>({ref:p.ref,description:p.description}))}:checkAnswer(answer,new Set(ask.draft.people.map(p=>p.ref)),await this.guestForbidden());
+  return {ask:this.guestStore().save(decideAsk(ask,'answered',final,now))};
+ }
+ async declineGuestAsk(id:string){
+  const now=Date.now(),ask=typeof id==='string'?this.guestStore().get(id,now):null;
+  if(!ask)throw Error('not_found');
+  return {ask:this.guestStore().save(decideAsk(ask,'declined',null,now))};
  }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
