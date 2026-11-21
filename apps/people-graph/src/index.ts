@@ -4,6 +4,7 @@ import {schedulingMachineRoute} from './scheduling-routes';
 import {schedulingEmail} from './scheduling-email';
 import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
 export {SchedulingEmailCoordinator} from './scheduling-email-coordinator';
+import {desktopAuth} from './desktop-auth';
 import {repairLegacyGmailContext} from './gmail-context-graph';
 import {bookingOwnerRoute,bookingPublicRoute,bookingOAuthCallback} from './booking-routes';
 import type {BookingEnv} from './booking-types';
@@ -72,6 +73,7 @@ export default {
 		const { pathname } = url;
 
 		try {
+			if (pathname.startsWith('/api/desktop-auth/')) return desktopAuth(request,env,r=>requireGoogleUser(r,env));
             if(isPeopleOAuthRequest(request))return await peopleOAuthRoute(request,env,ctx);
             if(pathname.startsWith('/api/cli/')){
                 const browser=['/api/cli/device/approve','/api/cli/device/preview','/api/cli/devices','/api/cli/devices/revoke'].includes(pathname);
@@ -105,7 +107,10 @@ export default {
 			}
 			if (pathname === "/api/session" && request.method === "DELETE") {
 				if (request.headers.get("origin") !== url.origin) return json({error:"invalid_origin"},403);
-				return Response.json({ok:true},{headers:{"cache-control":"no-store","set-cookie":sessionCookie("")}});
+				const headers = new Headers({"cache-control":"no-store"});
+				headers.append("set-cookie",sessionCookie(""));
+				headers.append("set-cookie","__Host-people-desktop=; Path=/; HttpOnly; Secure; SameSite=None; Partitioned; Max-Age=0");
+				return Response.json({ok:true},{headers});
 			}
 			if (pathname === "/api/accounts/callback") return await mailCallback(request, env);
 			if (pathname.startsWith("/api/accounts")) {
