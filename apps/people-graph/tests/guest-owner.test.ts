@@ -89,3 +89,35 @@ test('guest owner: routes and machine scopes',async()=>{
  assert.equal((await f.request('/api/people/guest-asks/settings',{enabled:false})).status,200);
  await assert.rejects(()=>f.service.submitGuestAsk(GUEST,'More?'),/guest_ask_disabled/);
 });
+
+test('guest owner: people the owner set aside, or knows only through a share, are never drafted',async()=>{
+ const {f,maya}=await owner();
+ await f.service.setPersonFeedback(maya,'suppress');
+ const hidden=(await f.service.submitGuestAsk(GUEST,'Who knows acme?')).ask;
+ assert.deepEqual((await f.service.listGuestAsks()).asks.find(a=>a.id===hidden.id)!.draft.people,[]);
+ const g=await owner(),real=g.f.service.graph.bind(g.f.service);
+ // The same person, reachable only through another owner's share.
+ Object.assign(g.f.service,{graph:async()=>{const graph=await real();return graph&&{...graph,nodes:graph.nodes.map(n=>({...n,directRelationship:false,manual:false}))};}});
+ const shared=(await g.f.service.submitGuestAsk(GUEST,'Who knows acme?')).ask;
+ assert.deepEqual((await g.f.service.listGuestAsks()).asks.find(a=>a.id===shared.id)!.draft.people,[]);
+});
+
+test('guest owner: parallel questions spend at most the daily limit on drafting',async()=>{
+ const {f}=await owner();
+ // Drafting waits until three model calls are in flight, so every request has passed its first check.
+ let calls=0;const gate=Promise.withResolvers<void>();
+ f.env.AI={run:async()=>{if(++calls>=3)gate.resolve();await gate.promise;return {response:{people:[]}};}};f.env.THEME_MODEL=THEME_MODEL;
+ const all=Promise.allSettled([1,2,3,4,5].map(i=>f.service.submitGuestAsk(GUEST,`Who knows acme? (${i})`)));
+ const results=await all;
+ assert.equal(results.filter(r=>r.status==='fulfilled').length,3);
+ assert.ok(calls<=3,`${calls} model calls`);
+});
+
+test('guest owner: a daily cap across all guests, and old questions are pruned',async()=>{
+ const {f}=await owner();
+ for(let g=0;g<10;g++)for(let i=0;i<3;i++)await f.service.submitGuestAsk({key:`g${g}`,email:`g${g}@startup.test`},`Question ${i} from ${g}`);
+ await assert.rejects(()=>f.service.submitGuestAsk({key:'g99',email:'g99@startup.test'},'One more?'),/guest_rate_limited/);
+ f.ctx.storage.sql.exec('UPDATE guest_asks SET created=0');
+ await f.service.submitGuestAsk({key:'g99',email:'g99@startup.test'},'After the old ones aged out');
+ assert.equal((await f.service.listGuestAsks()).asks.length,1);
+});

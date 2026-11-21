@@ -36,6 +36,8 @@ export async function guestOwnerRoute(request:Request,env:PeopleEnv&MailEnv,owne
   return json({error:'method_not_allowed'},405);
  }catch(error){
   const code=error instanceof Error?error.message:'';
+  // Owner-only: say which word identifies someone, so the owner can rewrite it.
+  if(code.startsWith('answer_not_anonymous:'))return json({error:'answer_not_anonymous',term:code.slice('answer_not_anonymous:'.length)},400);
   if(ERROR_STATUS[code])return json({error:code},ERROR_STATUS[code]);
   console.error('guest_owner_route_unavailable');return json({error:'people_unavailable'},503);
  }

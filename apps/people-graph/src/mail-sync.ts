@@ -38,6 +38,7 @@ import {composeDraft,checkDraft} from './draft-note';
 import {jevConfigured,JevError} from './jev';
 import {keywordRank,keywordScores,jevScores,topResults,MAX_QUERY_LENGTH,type SearchEvidence,type SearchResult} from './network-search';
 import {SHARE_CAPS,carriesQuote,levelOfSlice,normalizeShareLevel,normalizeShareScope,normalizeSlice,shareableSourceType,sharedDisplayName,type SharedSlice,type ShareLevel,type ShareScope} from './network-share';
+const GUEST_ASKS_PER_DAY_TOTAL=30,GUEST_ASK_RETENTION=90*86_400_000;
 export interface RetrievalScope {account:string;personId:string;themeId?:string;windowDays?:30|90}
 export interface RetrievalPreview extends RetrievalScope {windowDays:30|90;maxMessages:50;maxBytes:1000000;expiresAt:number;before:number;after:number;fingerprint:string}
 export interface MailEnv {MAIL:Env['MAIL'];DB?:Env['DB'];AI?:Env['AI'];THEME_MODEL?:Env['THEME_MODEL'];GOOGLE_CLIENT_ID:string;GOOGLE_CLIENT_SECRET?:string;MAIL_TOKEN_KEY?:string;TOKEN_SECRET:string;APP_ORIGIN?:string;TYPESAFE_API_KEY?:string;JEV_MODEL?:string;HONCHO_API_KEY?:string}
@@ -1331,28 +1332,42 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(typeof guest?.key!=='string'||!guest.key||typeof guest.email!=='string'||!guest.email)throw Error('invalid_request');
   const text=typeof question==='string'?question.trim():'';
   if(!text||text.length>MAX_QUESTION)throw Error('invalid_request');
-  checkDailyLimit(this.guestStore().list(Date.now()),guest.key,Date.now());
+  const store=this.guestStore(),reserved=Date.now();
+  // Reserve before the first await: parallel requests count against the limits before any
+  // search or model call is paid for. Old questions are pruned here, so storage stays bounded.
+  store.prune(reserved-GUEST_ASK_RETENTION);
+  checkDailyLimit(store.listFor(guest.key,reserved),guest.key,reserved);
+  if(store.countSince(reserved-86_400_000)>=GUEST_ASKS_PER_DAY_TOTAL)throw Error('guest_rate_limited');
+  const at=new Date(reserved).toISOString();
+  const ask:GuestAsk={id:'ga_'+crypto.randomUUID(),guest:guest.key,guestEmail:guest.email,question:text,status:'pending',draft:{text:'',people:[]},answer:null,introductions:{},createdAt:at,updatedAt:at};
+  store.save(ask);
   const draft=await this.draftGuestAnswer(text);
-  // Re-checked after the awaits above: concurrent submissions must not pass the limit together.
-  const now=Date.now();checkDailyLimit(this.guestStore().list(now),guest.key,now);
-  const at=new Date(now).toISOString();
-  const ask:GuestAsk={id:'ga_'+crypto.randomUUID(),guest:guest.key,guestEmail:guest.email,question:text,status:'pending',draft,answer:null,introductions:{},createdAt:at,updatedAt:at};
-  this.guestStore().save(ask);
+  const current=store.get(ask.id,Date.now());
+  if(current)store.save({...current,draft});
   return {ask:guestView(ask,{})};
  }
  /** Every token that could identify someone in the owner's network. */
  private async guestForbidden(){
   const graph=await this.graph();
-  return forbiddenTokens((graph?.nodes??[]).map(n=>({name:n.name,company:n.company??''})),this.graphContacts().map(c=>c.email.split('@')[1]??''));
+  return forbiddenTokens((graph?.nodes??[]).map(n=>({name:n.name,company:n.company??''})),this.graphContacts().map(c=>c.email));
  }
  /** Draft from work evidence only: search over the graph (never life signals, notes or peers), described anonymously. */
  private async draftGuestAnswer(question:string):Promise<GuestAsk['draft']>{
-  const graph=await this.graph();
-  const found=graph?(await this.searchPeople(question.slice(0,MAX_QUERY_LENGTH))).results.slice(0,5):[];
+  const graph=await this.graph(),now=Date.now();
+  // Only people the owner knows first-hand and has not set aside: never someone reachable only
+  // through another owner's share, and never someone suppressed, snoozed or deferred.
+  const offered=new Set((graph?.nodes??[]).filter(n=>(n.directRelationship||n.manual)&&!(n.notBefore&&Date.parse(n.notBefore)>now)).map(n=>n.id));
+  for(const [id,feedback] of Object.entries(graph?.personFeedback??{}))if(feedback.action==='suppress'||(feedback.action==='snooze'&&feedback.until>now))offered.delete(id);
+  const found=graph?(await this.searchPeople(question.slice(0,MAX_QUERY_LENGTH))).results.filter(r=>offered.has(r.personId)).slice(0,5):[];
   const forbidden=await this.guestForbidden(),own=new Map<string,string[]>(),themes=new Map<string,string[]>();
-  // Only the owner's own evidence may shape the words; shared evidence counts toward relevance only.
-  for(const s of graph?.themeSignals??[])if(s.personId&&!s.evidenceRef.startsWith(SHARE_ACCOUNT))own.set(s.personId,[...(own.get(s.personId)??[]),s.summary]);
-  for(const theme of graph?.relevance?.themes??[])for(const id of theme.nodeIds)themes.set(id,[...(themes.get(id)??[]),theme.name]);
+  // Only the owner's own evidence may shape the words, themes included; shared evidence counts toward relevance only.
+  const themeNames=new Map((graph?.relevance?.themes??[]).map(t=>[t.themeId,t.name]));
+  for(const s of graph?.themeSignals??[]){
+   if(!s.personId||s.evidenceRef.startsWith(SHARE_ACCOUNT))continue;
+   own.set(s.personId,[...(own.get(s.personId)??[]),s.summary]);
+   const name=themeNames.get(s.themeId);
+   if(name&&!(themes.get(s.personId)??[]).includes(name))themes.set(s.personId,[...(themes.get(s.personId)??[]),name]);
+  }
   const described=await describePeople(this.env.AI,this.env.THEME_MODEL,question,found.map(r=>({company:r.company,evidence:(own.get(r.personId)??[]).slice(0,5),themes:themes.get(r.personId)??[]})));
   const people:GuestPerson[]=found.map((r,i)=>({ref:`p${i+1}`,personId:r.personId,description:anonymous(described.get(i)??'',forbidden)??fallbackDescription(themes.get(r.personId)??[],forbidden)}));
   const text=people.length?`${people.length===1?'One person':`${people.length} people`} in my network may be able to help.`:'I could not find anyone in my network for this yet.';
@@ -1385,7 +1400,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
  /** One guest's own questions, as the guest may see them. */
  async guestAsksFor(guestKey:string){
   const now=Date.now(),intros=await this.guestIntroductions(now);
-  return {questions:this.guestStore().list(now).filter(a=>a.guest===guestKey).map(a=>guestView(a,intros))};
+  return {questions:this.guestStore().listFor(guestKey,now).map(a=>guestView(a,intros))};
  }
  /** The guest asks to meet one person from an answer; the owner then introduces as usual (double opt-in). */
  async requestGuestIntroduction(guestKey:string,askId:string,ref:string){

@@ -1,9 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {anonymous,forbiddenTokens,guestView,expireAsk,checkDailyLimit,decideAsk,type GuestAsk} from '../src/guest-ask';
+import {anonymous,identifies,checkAnswer,forbiddenTokens,guestView,expireAsk,checkDailyLimit,decideAsk,type GuestAsk} from '../src/guest-ask';
 
 const NOW=Date.parse('2026-11-21T12:00:00.000Z'),DAY=86_400_000;
-const forbidden=forbiddenTokens([{name:'Maya Rivera',company:'acme.test'},{name:'Bo',company:'gmail.com'}],['acme.test']);
+const forbidden=forbiddenTokens([{name:'Maya Rivera',company:'acme.test'},{name:'Bo',company:'gmail.com'}],['maya@acme.test','bo@gmail.com']);
 const ask=(over:Partial<GuestAsk>={}):GuestAsk=>({id:'ga_1',guest:'g1',guestEmail:'founder@startup.test',question:'Who knows nurse scheduling?',status:'pending',
  draft:{text:'Two people in my network work on this.',people:[{ref:'p1',personId:'p-maya',description:'A design lead at a health startup working on nurse scheduling'}]},answer:null,introductions:{},createdAt:new Date(NOW).toISOString(),updatedAt:new Date(NOW).toISOString(),...over});
 
@@ -14,6 +14,25 @@ test('guest ask: descriptions never name people, companies, domains or addresses
  // Whole words only: "Bo" must not knock out "board".
  assert.equal(anonymous('Sits on a nonprofit board',forbidden),'Sits on a nonprofit board');
  assert.equal(anonymous('x'.repeat(201),forbidden),null);
+});
+
+test('guest ask: employers, universities, short company names, accents and mailbox names are identifiers',()=>{
+ const network=forbiddenTokens([{name:'José García',company:'HP'},{name:'Priya Shah',company:'Meta Platforms, Inc.'},{name:'Lee Park',company:'cs.stanford.edu'}],['jgarcia@hp.com','pshah@meta.com','lpark@cs.stanford.edu']);
+ for(const leak of ['A product manager at Meta','A PhD student at Stanford','Jose Garcia, hardware at HP','Reach out to jgarcia','Works with García on chips','Shah leads payments'])
+  assert.equal(anonymous(leak,network),null,leak);
+ // "hp" only as the company's own spelling: an unrelated lowercase word is fine.
+ assert.equal(anonymous('A hardware engineer who ships printers',network),'A hardware engineer who ships printers');
+});
+
+test('guest ask: common words in names and companies stay usable; the full name or company still does not',()=>{
+ const network=forbiddenTokens([{name:'An Nguyen',company:''},{name:'Wei He',company:''},{name:'Will Grant',company:'Health Labs'}],['an@example.org','wei@example.org','will@healthlabs.io']);
+ for(const ok of ['A design lead at an AI startup','He runs growth for a marketplace','Will know about this','Someone in my network who works on health'])
+  assert.equal(anonymous(ok,network),ok,ok);
+ for(const leak of ['Talk to Will Grant','Nguyen leads design','Works at Health Labs','Wei He knows this'])
+  assert.equal(anonymous(leak,network),null,leak);
+ // The owner learns which words to change (owner-only; never shown to a guest).
+ assert.equal(identifies('Talk to Will Grant',network),'will grant');
+ assert.throws(()=>checkAnswer({text:'Ask Nguyen.',people:[]},new Set(),network),/answer_not_anonymous:nguyen/);
 });
 
 test('guest ask: guests see the approved answer only, and a name only after the person opted in',()=>{

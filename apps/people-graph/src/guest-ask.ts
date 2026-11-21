@@ -31,33 +31,66 @@ export const ASKS_PER_DAY=3;
 /** Introduction steps after which the described person has agreed to be known. */
 const REVEALED:Record<string,boolean>={target_opted_in:true,made:true,met:true,not_met:true};
 
-export interface Forbidden {words:Set<string>;domains:Set<string>}
-const words=(text:string)=>text.toLowerCase().match(/[\p{L}\p{N}]+/gu)??[];
+/**
+ * What may not appear in a guest-facing text. `phrases` are normalized word sequences matched as
+ * whole words (full names, company names, distinctive name parts, domain labels, mailbox names);
+ * `exact` are short company names matched only in their own spelling ("HP", not "hp"); `domains`
+ * are matched anywhere.
+ */
+export interface Forbidden {phrases:Set<string>;exact:Set<string>;domains:Set<string>}
+const fold=(text:string)=>text.normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase();
+const words=(text:string)=>fold(text).match(/[\p{L}\p{N}]+/gu)??[];
+/** Everyday words that also occur in names and company names: alone they identify no one. */
+const COMMON:Record<string,true>=Object.fromEntries(('the and for with new open one first big good best team will may june april august mark bill rose hope faith grace joy dawn art ray sky river stone hill park king young long white black brown green gray grey rich hunter cook baker page bell lane wood hall day north south west east summer winter august '
+ +'health labs lab group partners capital ventures studio studios systems solutions technologies technology tech software data cloud digital media network networks global international company holdings consulting design research bio care energy finance foundation institute university college school hospital medical app apps platform platforms security robotics works house project projects services products agency fund grant').split(' ').filter(Boolean).map(w=>[w,true]));
+const LEGAL:Record<string,true>={inc:true,llc:true,ltd:true,corp:true,corporation:true,co:true,gmbh:true,plc:true,sa:true,ag:true,bv:true,pbc:true,lp:true,llp:true};
+const GENERIC_LABELS:Record<string,true>={com:true,org:true,net:true,edu:true,gov:true,info:true,mail:true,email:true,www:true};
+const distinctive=(w:string)=>w.length>=3&&!COMMON[w];
 
-/** Every token that could identify someone: contact names, company names and work domains. */
-export function forbiddenTokens(people:{name:string;company:string}[],domains:string[]):Forbidden{
- const forbidden:Forbidden={words:new Set(),domains:new Set()};
+/** Every name, company, work domain and mailbox in the owner's network that could identify someone. */
+export function forbiddenTokens(people:{name:string;company:string}[],emails:string[]):Forbidden{
+ const forbidden:Forbidden={phrases:new Set(),exact:new Set(),domains:new Set()};
  const domain=(value:string)=>{
   const d=value.trim().toLowerCase();
-  if(!d.includes('.')||Object.hasOwn(PERSONAL_DOMAINS,d))return;
+  if(!d.includes('.')||/\s/.test(d)||Object.hasOwn(PERSONAL_DOMAINS,d))return;
   forbidden.domains.add(d);
-  const label=d.split('.')[0];if(label.length>=2)forbidden.words.add(label);
+  for(const label of d.split('.').slice(0,-1))if(distinctive(label)&&!GENERIC_LABELS[label])forbidden.phrases.add(label);
  };
  for(const p of people){
-  for(const w of words(p.name))if(w.length>=2)forbidden.words.add(w);
-  if(p.company.includes('.'))domain(p.company);else for(const w of words(p.company))if(w.length>=3)forbidden.words.add(w);
+  const name=words(p.name);
+  if(name.length)forbidden.phrases.add(name.join(' '));
+  for(const w of name)if(distinctive(w))forbidden.phrases.add(w);
+  if(/^[^\s]+\.[^\s]+$/.test(p.company.trim())){domain(p.company);continue;}
+  const company=words(p.company).filter(w=>!LEGAL[w]);
+  if(company.length)forbidden.phrases.add(company.join(' '));
+  for(const w of company)if(distinctive(w))forbidden.phrases.add(w);
+  for(const raw of p.company.match(/[\p{L}\p{N}]+/gu)??[])if(raw.length<3&&raw===raw.toUpperCase()&&!LEGAL[raw.toLowerCase()])forbidden.exact.add(raw);
  }
- for(const d of domains)domain(d);
+ for(const email of emails){
+  const [local='',host='']=email.toLowerCase().split('@');
+  domain(host);
+  // Mailbox names identify people at any domain, personal ones included.
+  for(const part of [local,...local.split(/[._+-]/)])if(distinctive(fold(part)))forbidden.phrases.add(fold(part));
+ }
  return forbidden;
+}
+
+/** The first name, company, domain, mailbox, address or link in the text, or null if it identifies no one. */
+export function identifies(text:string,forbidden:Forbidden):string|null{
+ if(text.includes('@'))return '@';
+ if(/https?:\/\/|www\./i.test(text))return 'link';
+ const folded=fold(text);
+ for(const d of forbidden.domains)if(folded.includes(d))return d;
+ const joined=` ${words(text).join(' ')} `;
+ for(const phrase of forbidden.phrases)if(joined.includes(` ${phrase} `))return phrase;
+ for(const raw of text.match(/[\p{L}\p{N}]+/gu)??[])if(forbidden.exact.has(raw))return raw;
+ return null;
 }
 
 /** The text if it identifies no one (no names, companies, domains, addresses or links), else null. */
 export function anonymous(text:string,forbidden:Forbidden,max=200):string|null{
  const value=typeof text==='string'?text.trim().replace(/\s+/g,' '):'';
- if(!value||value.length>max||value.includes('@')||/https?:\/\/|www\./i.test(value))return null;
- const lower=value.toLowerCase();
- if([...forbidden.domains].some(d=>lower.includes(d)))return null;
- return words(value).some(w=>forbidden.words.has(w))?null:value;
+ return !value||value.length>max||identifies(value,forbidden)?null:value;
 }
 
 const AnswerInput=z.strictObject({text:z.string(),people:z.array(z.strictObject({ref:z.string(),description:z.string()})).max(5)});
@@ -68,10 +101,14 @@ export function checkAnswer(input:unknown,refs:Set<string>,forbidden:Forbidden):
  for(const p of parsed.data.people){
   if(!refs.has(p.ref)||seen.has(p.ref))throw Error('invalid_request');
   seen.add(p.ref);
-  const description=anonymous(p.description,forbidden);if(!description)throw Error('answer_not_anonymous');
+  const description=p.description.trim();
+  if(!description||description.length>200)throw Error('invalid_request');
+  const named=identifies(description,forbidden);if(named)throw Error('answer_not_anonymous:'+named);
   people.push({ref:p.ref,description});
  }
- const text=anonymous(parsed.data.text,forbidden,1_000);if(!text)throw Error('answer_not_anonymous');
+ const text=parsed.data.text.trim();
+ if(!text||text.length>1_000)throw Error('invalid_request');
+ const named=identifies(text,forbidden);if(named)throw Error('answer_not_anonymous:'+named);
  return {text,people};
 }
 
@@ -128,14 +165,23 @@ export function decideAsk(ask:GuestAsk,to:'answered'|'declined',answer:GuestAnsw
 export class GuestAskStore {
  constructor(private storage:DurableObjectStorage){
   storage.sql.exec('CREATE TABLE IF NOT EXISTS guest_asks (id TEXT PRIMARY KEY,guest TEXT NOT NULL,data TEXT NOT NULL,created INTEGER NOT NULL)');
+  storage.sql.exec('CREATE INDEX IF NOT EXISTS guest_asks_guest ON guest_asks (guest,created)');
+  storage.sql.exec('CREATE INDEX IF NOT EXISTS guest_asks_created ON guest_asks (created)');
  }
  save(ask:GuestAsk){this.storage.sql.exec('INSERT OR REPLACE INTO guest_asks VALUES (?,?,?,?)',ask.id,ask.guest,JSON.stringify(ask),Date.parse(ask.createdAt));return ask;}
- list(now:number):GuestAsk[]{
-  return this.storage.sql.exec<{data:string}>('SELECT data FROM guest_asks ORDER BY created DESC,id').toArray().map(row=>{
+ private read(rows:{data:string}[],now:number):GuestAsk[]{
+  return rows.map(row=>{
    const stored=JSON.parse(row.data) as GuestAsk,current=expireAsk(stored,now);
    if(current.status!==stored.status)this.save(current);
    return current;
   });
  }
- get(id:string,now:number){return this.list(now).find(a=>a.id===id)??null;}
+ list(now:number):GuestAsk[]{return this.read(this.storage.sql.exec<{data:string}>('SELECT data FROM guest_asks ORDER BY created DESC,id').toArray(),now);}
+ /** One guest's questions only, newest first. */
+ listFor(guest:string,now:number):GuestAsk[]{return this.read(this.storage.sql.exec<{data:string}>('SELECT data FROM guest_asks WHERE guest=? ORDER BY created DESC,id',guest).toArray(),now);}
+ get(id:string,now:number){return this.read(this.storage.sql.exec<{data:string}>('SELECT data FROM guest_asks WHERE id=?',id).toArray(),now)[0]??null;}
+ /** Questions asked since a time, across all guests. */
+ countSince(since:number){return this.storage.sql.exec<{n:number}>('SELECT count(*) AS n FROM guest_asks WHERE created>?',since).toArray()[0]?.n??0;}
+ /** Forget questions created before a time, whatever their outcome. */
+ prune(before:number){this.storage.sql.exec('DELETE FROM guest_asks WHERE created<?',before);}
 }
