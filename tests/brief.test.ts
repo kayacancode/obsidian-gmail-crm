@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { upcomingMeetings, findNextSteps, relatedNextSteps, renderBrief, type BriefPerson, type GranolaCandidate } from "../src/brief";
+import { upcomingMeetings, findNextSteps, relatedNextSteps, renderBrief, seriesTitle, type BriefPerson, type GranolaCandidate } from "../src/brief";
 
 const NOW = new Date("2026-11-21T15:00:00Z");
 const event = (over: Record<string, unknown>) => ({
@@ -105,6 +105,31 @@ test("brief: no related note means no steps, never steps from another meeting", 
   // A meeting with no individual attendees never matches by attendees (unlinked notes have none either).
   const unlinked = [candidate({ path: "bigger.md", attendees: [] })];
   assert.equal(await relatedNextSteps({ ...upcoming, attendees: [] }, unlinked, read(texts), "Kaya Jones"), null);
+});
+
+test("brief: series titles treat &, and, + alike and drop cadence words, nothing else", () => {
+  for (const title of ["Kaya + JB weekly", "Kaya + JB", "Kaya & JB", "Kaya and JB", "Kaya + JB (bi-weekly)", "Biweekly Kaya & JB", "Kaya + JB monthly", "Kaya + JB daily", "Recurring: Kaya and JB"])
+    assert.equal(seriesTitle(title), seriesTitle("Kaya + JB"), title);
+  assert.notEqual(seriesTitle("Kaya + JB weekly"), seriesTitle("Kaya + Jordan"));
+  assert.notEqual(seriesTitle("Kaya + JB weekly"), seriesTitle("Kaya + JB weekly planning"), "no substring or prefix matching");
+  assert.equal(seriesTitle("Weekly"), "", "a title of only cadence words has no series");
+});
+
+test("brief: a recurring meeting gets steps from its latest same-series note, after exact title and same people", async () => {
+  const jb = { title: "Kaya + JB weekly", start: "2026-11-23T13:00:00-05:00", attendees: [] };
+  const texts = { "plus.md": "# Next Steps\n- **Older JB step**", "amp.md": "# Next Steps\n- **Latest JB step**", "jordan.md": "# Next Steps\n- **Jordan step**" };
+  const notes = [
+    candidate({ path: "plus.md", date: "2026-11-02T13:00:00-05:00", calendarTitle: "Kaya + JB" }),
+    candidate({ path: "amp.md", date: "2026-11-09T13:00:00-05:00", calendarTitle: "Kaya & JB" }),
+    candidate({ path: "jordan.md", date: "2026-11-16T13:00:00-05:00", calendarTitle: "Kaya + Jordan" }),
+  ];
+  const found = await relatedNextSteps(jb, notes, read(texts), "Kaya Jones");
+  assert.deepEqual(found && [found.note.path, found.steps.map((s) => s.title)], ["amp.md", ["Latest JB step"]]);
+  // An exact title still wins over a newer same-series note.
+  const exact = [...notes, candidate({ path: "exact.md", date: "2026-10-01T13:00:00-05:00", calendarTitle: "Kaya + JB weekly" })];
+  const won = await relatedNextSteps(jb, exact, read({ ...texts, "exact.md": "# Next Steps\n- **Exact step**" }), "Kaya Jones");
+  assert.equal(won?.note.path, "exact.md");
+  assert.equal(await relatedNextSteps({ ...jb, title: "Kaya + Ada weekly" }, notes, read(texts), "Kaya Jones"), null);
 });
 
 test("brief: one open next steps block per meeting, then attendee lines without per-person steps", () => {
