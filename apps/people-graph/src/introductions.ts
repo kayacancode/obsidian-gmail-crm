@@ -8,8 +8,8 @@ export type IntroductionStatus='proposed'|'asked_introducer'|'introducer_accepte
 export interface IntroductionEvidence {personId:string;source:string;date:string;summary:string}
 export interface Introduction {
  id:string;source:'owner'|'workspace';readOnly?:boolean;
- /** `'owner'` or the introducer's person (or workspace member) id. */
- introducer:string;parties:[string,string];reason:string;evidence:IntroductionEvidence[];
+ /** `'owner'` or the introducer's person (or workspace member) id; `parties` always holds exactly two. */
+ introducer:string;parties:string[];reason:string;evidence:IntroductionEvidence[];
  status:IntroductionStatus;
  /** Written by the owner as introducer; seen only by the owner, never exported or shared. */
  vouch:string|null;
@@ -17,6 +17,7 @@ export interface Introduction {
  startedBy:'owner'|'introducer';alternativePersonId?:string|null;createdAt:string;updatedAt:string;
 }
 export interface ProposalInput {introducer:string;parties:[string,string];reason:string;evidence:IntroductionEvidence[]}
+export const isIntroductionStatus=(value:unknown):value is IntroductionStatus=>typeof value==='string'&&Object.hasOwn(NEXT,value);
 
 const DAY=86_400_000;
 const NEXT:Record<IntroductionStatus,IntroductionStatus[]>={

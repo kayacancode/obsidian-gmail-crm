@@ -14,6 +14,8 @@ export interface BriefInput {
  stints:CompanyStint[];
  timeline:TimelineEntry[];
  now:number;
+ /** Introductions involving this person that were made, and how many of those met. */
+ introductions?:{made:number;met:number};
 }
 export type BriefUse='rank'|'tone_only';
 export interface BriefWhy {kind:'life'|'work'|'note';category?:LifeCategory;summary:string;source:string;observedAt:string;attribution:'first_hand';use:BriefUse}
@@ -21,7 +23,7 @@ export interface BriefAnswer {
  personId:string;name:string;
  when:{lastContact:string|null;daysSince:number|null;label:'active'|'warm'|'cooling'|'stale'|'dormant'|null};
  why:BriefWhy[];
- whether:{feedback:string|null;relationship:BriefInput['relationship'];notes:number};
+ whether:{feedback:string|null;relationship:BriefInput['relationship'];notes:number;introductions:{made:number;met:number}};
  use:'rank';
 }
 export interface CatchUpBrief {
@@ -56,7 +58,7 @@ export function assembleBrief(input:BriefInput):CatchUpBrief{
  if(!known)gaps.push('No contact date recorded');
  return {
   interpretation:null,
-  answers:[{personId:input.person.id,name:input.person.name,when:{lastContact:input.person.lastContact,daysSince,label:daysSince===null?null:label(daysSince)},why,whether:{feedback:input.feedback?.action??null,relationship:input.relationship,notes:input.memory.length},use:'rank'}],
+  answers:[{personId:input.person.id,name:input.person.name,when:{lastContact:input.person.lastContact,daysSince,label:daysSince===null?null:label(daysSince)},why,whether:{feedback:input.feedback?.action??null,relationship:input.relationship,notes:input.memory.length,introductions:input.introductions??{made:0,met:0}},use:'rank'}],
   gaps,
   sinceLastContact:{theirs,yours},
  };

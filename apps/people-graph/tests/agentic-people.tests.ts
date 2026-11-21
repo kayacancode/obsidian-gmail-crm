@@ -17,3 +17,4 @@ import './mind-routes.test.ts';
 import './moments.test.ts';
 import './moments-routes.test.ts';
 import './introductions.test.ts';
+import './introductions-routes.test.ts';

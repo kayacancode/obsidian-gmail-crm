@@ -16,6 +16,7 @@ import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
 import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,assembleAtlas,absentCommunities,type StructureInput,type Candidate,type Atlas,type BridgePair,type WidenResult} from './network-structure';
 import {CuriosityNoteStore,noteKeywords,type CuriosityNote} from './curiosity';
 import {MomentStore,generateMoments,isMomentAction,type MomentInput,type MomentNote} from './moments';
+import {IntroductionStore,proposeIntroduction,advance,recordOutcome,isIntroductionStatus} from './introductions';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -86,6 +87,8 @@ export class MailSync extends DurableObject<MailEnv>{
  private curiosityStore(){return this.curiosityNoteStore??=new CuriosityNoteStore(this.ctx.storage);}
  private momentStoreValue?:MomentStore;
  private momentStore(){return this.momentStoreValue??=new MomentStore(this.ctx.storage);}
+ private introStoreValue?:IntroductionStore;
+ private introStore(){return this.introStoreValue??=new IntroductionStore(this.ctx.storage);}
  private ownerTimeline?:OwnerTimelineStore;
  private timelineStore(){return this.ownerTimeline??=new OwnerTimelineStore(this.ctx.storage);}
  private companyStintStore?:CompanyStintStore;
@@ -1088,7 +1091,13 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    memory:memory.entries.slice(0,3).map(e=>({text:e.text,createdAt:e.createdAt})),
    feedback:feedback?JSON.parse(feedback.data) as {action:string}:null,relationship:memory.relationship,
    stints:(await this.companyStints(person.id)).stints,timeline:this.timelineStore().list(),now:Date.now(),
+   introductions:this.introductionCounts(ids),
   })};
+ }
+ /** Introductions involving these person ids that were made, and how many of those met. */
+ private introductionCounts(ids:Set<string>){
+  const made=this.introStore().list(Date.now()).filter(i=>['made','met','not_met'].includes(i.status)&&[i.introducer,...i.parties].some(p=>ids.has(p)));
+  return {made:made.length,met:made.filter(i=>i.status==='met').length};
  }
  /** Owner-only: this owner's own contacts and their addresses, for the local peer server to match HMAC references. */
  async peerDirectory(){
@@ -1276,6 +1285,30 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   return {moment:this.momentStore().update(id,action,Date.now())};
  }
  async setMomentBudget(budget:number){return this.momentStore().setBudget(budget);}
+ /** The owner's own three-party introductions; shared-workspace requests are added by the route. */
+ async listIntroductions(){return {introductions:this.introStore().list(Date.now())};}
+ /** Propose exactly one introduction among the owner and people in the owner's graph. */
+ async proposeIntroduction(input:{introducer?:unknown;parties?:unknown;reason?:unknown;evidence?:unknown}){
+  const now=Date.now(),known=new Set(((await this.graph())?.nodes??[]).map(n=>n.id));
+  const isPerson=(id:unknown):id is string=>typeof id==='string'&&(id==='owner'||known.has(id));
+  const {introducer,parties,reason,evidence}=input??{};
+  if(!isPerson(introducer)||!Array.isArray(parties)||parties.length!==2||!isPerson(parties[0])||!isPerson(parties[1])||typeof reason!=='string')throw Error('invalid_request');
+  const items=Array.isArray(evidence)?evidence.flatMap(e=>e&&typeof e==='object'&&typeof e.summary==='string'&&isPerson(e.personId)?[{personId:e.personId,source:String(e.source??'note'),date:String(e.date??''),summary:e.summary}]:[]):[];
+  const intro=proposeIntroduction({introducer,parties:[parties[0],parties[1]],reason,evidence:items},this.introStore().list(now),now);
+  return {introduction:this.introStore().save(intro)};
+ }
+ async advanceIntroduction(id:string,to:string,vouch?:string){
+  const now=Date.now(),intro=this.introStore().get(id,now);
+  if(!intro)throw Error('not_found');
+  if(!isIntroductionStatus(to))throw Error('invalid_request');
+  return {introduction:this.introStore().save(advance(intro,{to,...(vouch===undefined?{}:{vouch})},now))};
+ }
+ async recordIntroductionOutcome(id:string,result:string,note:string|null){
+  const now=Date.now(),intro=this.introStore().get(id,now);
+  if(!intro)throw Error('not_found');
+  if(result!=='met'&&result!=='not_met')throw Error('invalid_request');
+  return {introduction:this.introStore().save(recordOutcome(intro,{result,note},now))};
+ }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};

@@ -7,6 +7,7 @@ import {lifeRoute} from './life-routes';
 import {askRoute} from './ask';
 import {structureRoute} from './structure-routes';
 import {momentsRoute} from './moments-routes';
+import {ownerIntroductionRoute} from './owner-introduction-routes';
 import {personMergeRoute} from './person-merge-routes';
 import {mailRoute,draftRoute,connectionOriginRoute,helperRoute,searchRoute,personFeedbackRoute} from './mail-routes';
 import {granolaRoute} from './granola-routes';
@@ -20,7 +21,7 @@ import type {SchedulingEmailEnv} from './scheduling-email-coordinator';
 import {peopleFailureDiagnostic} from './people-diagnostics';
 
 type Method='GET'|'POST'|'PUT'|'PATCH'|'DELETE';
-type Handler='lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph'|'life'|'ask'|'structure'|'moments';
+type Handler='lens'|'context'|'memory'|'merges'|'accounts'|'draft'|'connection'|'helpers'|'search'|'feedback'|'granola'|'relevance'|'shares'|'workspaces'|'booking'|'integrations'|'devices'|'graph'|'life'|'ask'|'structure'|'moments'|'introductions';
 interface Capability {method:Method;path:string;requiredScopes:PeopleMemoryScope[];handler:Handler;pattern:RegExp;query:string[];browserPath?:string}
 const read:PeopleMemoryScope[]=['people:read'],edit:PeopleMemoryScope[]=['people:read','people:write'],sources:PeopleMemoryScope[]=['sources:manage'],sourceData:PeopleMemoryScope[]=['people:read','sources:manage'],sharing:PeopleMemoryScope[]=['sharing:manage'],sharedData:PeopleMemoryScope[]=['people:read','sharing:manage'],booking:PeopleMemoryScope[]=['booking:manage'],integrations:PeopleMemoryScope[]=['integrations:manage'];
 function capability(method:Method,path:string,requiredScopes:PeopleMemoryScope[],handler:Handler,query:string[]=[],browserPath?:string):Capability{
@@ -44,6 +45,7 @@ const capabilities:Capability[]=[
  capability('GET','/api/people/widen',read,'structure'),capability('GET','/api/people/bridges',read,'structure',['topic']),capability('GET','/api/people/atlas',read,'structure',['topic']),
  capability('GET','/api/people/mind',read,'moments',['includeArchived']),capability('POST','/api/people/mind',edit,'moments'),capability('POST','/api/people/mind/archive',edit,'moments'),
  capability('GET','/api/people/moments',read,'moments',['today']),capability('POST','/api/people/moments/update',edit,'moments'),capability('POST','/api/people/moments/settings',edit,'moments'),
+ capability('GET','/api/people/introductions',read,'introductions'),capability('POST','/api/people/introductions',edit,'introductions'),capability('POST','/api/people/introductions/advance',edit,'introductions'),capability('POST','/api/people/introductions/outcome',edit,'introductions'),
  capability('POST','/api/people/ask',read,'ask'),
  capability('GET','/api/people/memory',read,'memory',['personId']),capability('POST','/api/people/memory',edit,'memory'),capability('POST','/api/people/memory/structure',read,'memory'),capability('DELETE','/api/people/memory/entry',edit,'memory'),
  capability('GET','/api/people/person-merges',read,'merges'),capability('POST','/api/people/person-merges',edit,'merges'),capability('DELETE','/api/people/person-merges',edit,'merges'),
@@ -113,6 +115,7 @@ export async function peopleMachineRequest(request:Request,env:SchedulingEmailEn
    case 'ask':return await askRoute(adapted,env,owner);
    case 'structure':return await structureRoute(adapted,env,owner);
    case 'moments':return await momentsRoute(adapted,env,owner);
+   case 'introductions':return await ownerIntroductionRoute(adapted,env,owner);
    case 'merges':return await personMergeRoute(adapted,env,owner);
    case 'accounts':return await mailRoute(adapted,env,owner);
    case 'draft':return await draftRoute(adapted,env,owner);
