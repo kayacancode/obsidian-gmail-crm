@@ -1,5 +1,5 @@
 //! Owner-private life signals, catch-up briefs, owner timeline and company stints (hosted only).
-use crate::{Commands, Response, fail, hosted, people_client, url_encode};
+use crate::{Commands, Response, fail, hosted, peer, people_client, url_encode};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::time::Instant;
@@ -41,6 +41,9 @@ pub(crate) struct BriefArgs {
     url: Option<String>,
     /// Recorded email, exact name, or person ID.
     person: String,
+    /// Also ask your peer group what they may share (needs an email address and `peer join`).
+    #[arg(long)]
+    peers: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -182,14 +185,19 @@ pub(crate) fn run(command: &Commands, start: Instant) -> Response {
             } else {
                 "query"
             };
-            request(
+            let response = request(
                 "brief",
                 args.url.as_deref(),
                 "GET",
                 format!("/api/people/brief?{key}={}", url_encode(value)),
                 None,
                 start,
-            )
+            );
+            if args.peers {
+                peer::brief_with_peers(response, value)
+            } else {
+                response
+            }
         }
         Commands::Me(args) => {
             let url = args.url.as_deref();

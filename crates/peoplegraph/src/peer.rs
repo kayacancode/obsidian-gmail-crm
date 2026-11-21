@@ -1348,6 +1348,149 @@ fn ask(config: &PeerConfig, question: &PeerQuestion) -> Result<Value, config::Er
     Ok(json!({"question":body["type"],"results":results,"gaps":gaps}))
 }
 
+/// Gaps from one fan-out: unreachable peers, answers waiting for approval, and refusals.
+fn fan_out_gaps(result: &Value) -> Vec<String> {
+    let mut gaps: Vec<String> = result["gaps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|gap| format!("Peer {} unreachable", gap["peer"].as_str().unwrap_or("?")))
+        .collect();
+    for reply in result["results"].as_array().into_iter().flatten() {
+        let peer = reply["peer"].as_str().unwrap_or("?");
+        match (reply["status"].as_u64(), reply["answer"]["ticket"].as_str()) {
+            (Some(200), _) => {}
+            (Some(202), Some(ticket)) => gaps.push(format!(
+                "Peer {peer} shares more after their approval: peoplegraph peer ask status --peer {peer} {ticket}"
+            )),
+            _ => gaps.push(format!(
+                "Peer {peer} did not answer: {}",
+                reply["answer"]["error"].as_str().unwrap_or("error")
+            )),
+        }
+    }
+    gaps
+}
+
+fn push_gaps(data: &mut Value, gaps: Vec<String>) {
+    if !data["gaps"].is_array() {
+        data["gaps"] = json!([]);
+    }
+    if let Some(list) = data["gaps"].as_array_mut() {
+        list.extend(gaps.into_iter().map(Value::String));
+    }
+}
+
+/// `brief --peers`: peers' catch-up answers join the hosted brief as attributed `why` entries.
+pub(crate) fn brief_with_peers(mut response: Response, person: &str) -> Response {
+    let Some(data) = response.data.as_mut().filter(|_| response.ok) else {
+        return response;
+    };
+    let mut gaps = vec![];
+    if !person.contains('@') {
+        gaps.push("Peers are asked by email address; run brief <email> --peers.".to_owned());
+    } else {
+        match configured().and_then(|config| {
+            ask(
+                &config,
+                &PeerQuestion::CatchUp {
+                    email: person.to_owned(),
+                },
+            )
+        }) {
+            Ok(result) => {
+                let entries: Vec<Value> = result["results"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|r| matches!(r["status"].as_u64(), Some(200 | 202)))
+                    .flat_map(|r| {
+                        let attribution = format!("peer:{}", r["peer"].as_str().unwrap_or("?"));
+                        r["answer"]["signals"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(move |s| {
+                                json!({
+                                    "kind": "life", "category": s["category"], "summary": s["summary"],
+                                    "source": "peer", "observedAt": s["observedMonth"],
+                                    "attribution": attribution, "use": "rank",
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                if !data["why"].is_array() {
+                    data["why"] = json!([]);
+                }
+                if let Some(why) = data["why"].as_array_mut() {
+                    why.extend(entries);
+                }
+                gaps.extend(fan_out_gaps(&result));
+            }
+            Err((_, message)) => gaps.push(message.to_owned()),
+        }
+    }
+    push_gaps(data, gaps);
+    response
+}
+
+/// Hosted `ask` classified a peer question: the CLI asks the group (knows + catch-up) for the person.
+pub(crate) fn ask_with_peers(mut response: Response) -> Response {
+    let Some(data) = response
+        .data
+        .as_mut()
+        .filter(|data| response.ok && data["interpretation"]["intent"] == "network_ask")
+    else {
+        return response;
+    };
+    let person = data["interpretation"]["params"]["person"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    data["gaps"] = json!([]);
+    let mut gaps = vec![];
+    if !person.contains('@') {
+        gaps.push("Peers are asked by email address; ask again with their email.".to_owned());
+    } else {
+        match configured() {
+            Ok(config) => {
+                let mut results = json!({});
+                for (key, question) in [
+                    (
+                        "knows",
+                        PeerQuestion::Knows {
+                            email: person.clone(),
+                        },
+                    ),
+                    (
+                        "catchUp",
+                        PeerQuestion::CatchUp {
+                            email: person.clone(),
+                        },
+                    ),
+                ] {
+                    match ask(&config, &question) {
+                        Ok(result) => {
+                            for gap in fan_out_gaps(&result) {
+                                if !gaps.contains(&gap) {
+                                    gaps.push(gap);
+                                }
+                            }
+                            results[key] = result;
+                        }
+                        Err((_, message)) => gaps.push(message.to_owned()),
+                    }
+                }
+                data["peerResults"] = results;
+            }
+            Err((_, message)) => gaps.push(message.to_owned()),
+        }
+    }
+    push_gaps(data, gaps);
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

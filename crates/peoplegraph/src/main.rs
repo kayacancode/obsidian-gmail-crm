@@ -5420,7 +5420,7 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "brief",
-                "usage": "peoplegraph brief <email|exact-name|person-id>",
+                "usage": "peoplegraph brief <email|exact-name|person-id> [--peers]",
                 "status": "implemented_hosted",
                 "notes": "Private catch-up brief: when (last contact), why (first-hand life, work and note evidence with source and date), whether (your feedback and relationship note), gaps, and sinceLastContact {theirs, yours}. Sensitive items carry use:tone_only: use them for tone, never repeat them. A shared name returns ambiguous_person with candidates."
             },

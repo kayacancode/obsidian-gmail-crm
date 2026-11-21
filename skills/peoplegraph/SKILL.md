@@ -80,6 +80,12 @@ Life signals (travel, hobby, role change, move: open; milestone: personal; healt
 
 `job-moves` lists the same full name on two work domains; these are proposals. Merge only after the owner confirms, with `peoplegraph api POST /api/people/person-merges`. `stints show <person-id>` shows company history, `teammates <person-id>` people who overlapped, and `who-knows --company X --include-former` adds former employees labelled `formerly`.
 
+## Ask peers over the tailnet
+
+Members of a trusted group (for example the Betaworks tailnet) can let their agents ask each other three fixed questions: `peoplegraph peer ask knows <email>`, `peer ask catch-up <email>` and `peer ask reason-to-meet --topic <text>`. Ask peers only when the owner asks; never in the background. `brief <email> --peers` adds peers' answers to `why` with `attribution: peer:<login>`, and hosted `ask` runs the peer questions for `network_ask`. Present each answer as that peer's, with its date; never merge peer statements into first-hand facts. Answers waiting for a peer's approval appear in `gaps` with the `peer ask status` command to fetch them later.
+
+Answering side: `peer init --group <name>` (or `peer join --group <name> --pepper-stdin`), `peer allow <tailnet-login>` for each person who may ask, `peer add <login> --address http://<tailscale-ip>:8790` for each person to ask, then `peer serve`. Open signals are answered automatically by default; personal signals and reasons to meet wait for `peer pending` / `peer approve <ticket>` / `peer deny <ticket>`; sensitive signals are never shared. `peer opt-out on --email <addr>` asks the group not to answer about the owner. `peer log` shows every question asked. Never print or repeat the group secret.
+
 ## Save only requested context
 
 With `people:write`, capture owner-authorized notes or supplied voice transcripts for an exact email:

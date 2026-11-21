@@ -1,7 +1,7 @@
 //! `peoplegraph ask`: hosted natural-language questions, or a small local rule set over the cache.
 use crate::{
     Cli, ContactCardArgs, ReconnectArgs, Response, contact_card, fail, find_person, hosted,
-    load_feedback, people_client, reconnect, who_knows, with_index,
+    load_feedback, peer, people_client, reconnect, who_knows, with_index,
 };
 use clap::Args;
 use serde_json::{Value, json};
@@ -129,14 +129,15 @@ pub(crate) fn run(cli: &Cli, args: &AskArgs, start: Instant) -> Response {
     }
     if !(cli.local || cli.cache.is_some()) {
         return match people_client::configure(args.url.as_deref()) {
-            Ok(client) => hosted::machine(
+            // Peer questions are classified by hosted People but asked from here, on the owner's request.
+            Ok(client) => peer::ask_with_peers(hosted::machine(
                 &client,
                 "ask",
                 "POST",
                 "/api/people/ask",
                 Some(json!({"question":question})),
                 start,
-            ),
+            )),
             Err((kind, message)) => fail("ask", kind, message.into(), start),
         };
     }
