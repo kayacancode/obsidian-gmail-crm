@@ -1,6 +1,6 @@
 # One People account, in your browser and terminal
 
-PeopleGraph 0.3.17 browser login creates one scoped People integration credential. The CLI saves it automatically and uses it for graph queries, your Lens, and private relationship context.
+PeopleGraph 0.3.18 browser login creates one scoped People integration credential. The CLI saves it automatically and uses it for graph queries, your Lens, and private relationship context.
 
 ```sh
 peoplegraph login

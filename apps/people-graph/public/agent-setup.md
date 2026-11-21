@@ -26,17 +26,17 @@ Disconnect in ChatGPT when no longer needed. To invalidate People access, revoke
 
 The steps below require an agent that can run terminal commands and retain a private credential. If you only have browsing or MCP, use the ChatGPT path above where available; do not claim a CLI install occurred. The owner must complete any required browser approval.
 
-This CLI guide targets PeopleGraph 0.3.17. Do not downgrade a newer CLI. Pass `--url "<people-origin>"` to each account command so another saved origin cannot be selected accidentally; for Lens and source commands, put it before the subcommand.
+This CLI guide targets PeopleGraph 0.3.18. Do not downgrade a newer CLI. Pass `--url "<people-origin>"` to each account command so another saved origin cannot be selected accidentally; for Lens and source commands, put it before the subcommand.
 
-If this site's documentation is inaccessible to your reader, use the [published GitHub CLI onboarding guide](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md). Keep using the selected People server for account commands. An unreadable documentation link does not establish an account or API outage.
+If this site's documentation is inaccessible to your reader, use the [published GitHub CLI onboarding guide](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/people-agent-onboarding.md). Keep using the selected People server for account commands. An unreadable documentation link does not establish an account or API outage.
 
 ## 1. Install or update the CLI and skill
 
-If installed, inspect `peoplegraph version` and `peoplegraph status --url "<people-origin>"` first. If missing or older than 0.3.17, download the published installer:
+If installed, inspect `peoplegraph version` and `peoplegraph status --url "<people-origin>"` first. If missing or older than 0.3.18, download the published installer:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.17/install-peoplegraph.sh \
+  https://github.com/kayacancode/obsidian-gmail-crm/releases/download/peoplegraph-v0.3.18/install-peoplegraph.sh \
   -o install-peoplegraph.sh
 bash install-peoplegraph.sh --skill agents
 ~/.local/bin/peoplegraph version
@@ -85,6 +85,6 @@ Finish with a short report: installed CLI version, connected owner and origin, a
 
 ## Reference
 
-- [Full onboarding and troubleshooting](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md)
-- [Agent skill](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/skills/peoplegraph/SKILL.md)
-- [API and private-context contract](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-memory-integration.md)
+- [Full onboarding and troubleshooting](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/people-agent-onboarding.md)
+- [Agent skill](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/skills/peoplegraph/SKILL.md)
+- [API and private-context contract](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/people-memory-integration.md)

@@ -1,6 +1,6 @@
 # PeopleGraph CLI and web parity
 
-PeopleGraph 0.3.17 gives an agent the same owner operations as the People website. Lens, source setup, and relationship memory have dedicated commands. Other owner operations use `peoplegraph api`, which calls a bounded registry of the existing web handlers. The server verifies the owner and permissions before dispatching; the request cannot choose a different owner.
+PeopleGraph 0.3.18 gives an agent the same owner operations as the People website. Lens, source setup, and relationship memory have dedicated commands. Other owner operations use `peoplegraph api`, which calls a bounded registry of the existing web handlers. The server verifies the owner and permissions before dispatching; the request cannot choose a different owner.
 
 ## One-time setup
 

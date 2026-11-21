@@ -9,10 +9,10 @@ Start with the agent setup guide below. It is public documentation, not access t
 - [For your agent](/agent-setup.md): Connect People in ChatGPT with OAuth, or install the CLI and skill for a terminal agent. Verify the correct account and use the saved People Lens.
 - [Hosted People MCP](/api/people-mcp): Authenticated tool endpoint. Connect through OAuth; a public documentation fetch is not a tool invocation. No API key needs to be pasted into chat.
 - [ChatGPT package and connection guide](https://github.com/kayacancode/obsidian-gmail-crm/blob/codex/cli-web-parity/docs/chatgpt-people.md): Browser connection steps and maintainer instructions for the full plugin package. A repository package is not automatically installed or directory-published.
-- [Full onboarding and GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-agent-onboarding.md): Source setup, content consent, credentials, matching, and troubleshooting. Use if your reader cannot access this site's guide. The public People server is https://people-graph.kayarjones901.workers.dev; use an alternate server only when supplied by the owner or copied handoff. GitHub is documentation, not the account server.
-- [PeopleGraph agent skill](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/skills/peoplegraph/SKILL.md): Command selection, identity resolution, evidence, and authorized edits.
+- [Full onboarding and GitHub fallback](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/people-agent-onboarding.md): Source setup, content consent, credentials, matching, and troubleshooting. Use if your reader cannot access this site's guide. The public People server is https://people-graph.kayarjones901.workers.dev; use an alternate server only when supplied by the owner or copied handoff. GitHub is documentation, not the account server.
+- [PeopleGraph agent skill](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/skills/peoplegraph/SKILL.md): Command selection, identity resolution, evidence, and authorized edits.
 
 ## Optional
 
-- [API and context contract](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/people-memory-integration.md): Scoped APIs and private relationship memory.
-- [CLI and web capabilities](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.17/docs/peoplegraph-cli-parity.md): Available operations and their permissions.
+- [API and context contract](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/people-memory-integration.md): Scoped APIs and private relationship memory.
+- [CLI and web capabilities](https://raw.githubusercontent.com/kayacancode/obsidian-gmail-crm/peoplegraph-v0.3.18/docs/peoplegraph-cli-parity.md): Available operations and their permissions.
