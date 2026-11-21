@@ -1109,66 +1109,71 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   // Sensitive signals and quotes never leave through this route.
   return {signals:store.list(await this.mergedPersonIds(node.id)).filter(s=>s.tier!=='sensitive').map(s=>({category:s.category,tier:s.tier,summary:s.summary,observedMonth:s.observedAt.slice(0,7),expiresAt:s.expiresAt}))};
  }
- /** The owner's own graph in the shape structure answers need; `null` before the first sync. */
- private async structureInput():Promise<StructureInput|null>{
+ /**
+  * The owner's own graph in the shape structure answers need, read once per request; `null`
+  * before the first sync. Dates are the owner's own (never a shared network's), other owners'
+  * shared evidence is marked, and exclusions come from the canonical, merge-aware feedback.
+  */
+ private async structureInput(now:number){
   const graph=await this.graph();if(!graph)return null;
-  return {
-   nodes:graph.nodes.map(n=>({id:n.id,name:n.name,company:n.company,strength:n.strength,combined:n.combined,baseCombined:n.baseCombined,lastContact:n.lastContact,directRelationship:n.directRelationship,via:n.via})),
+  const input:StructureInput={
+   nodes:graph.nodes.map(n=>({id:n.id,name:n.name,company:n.company,strength:n.strength,combined:n.combined,baseCombined:n.baseCombined,lastContact:n.directRelationship?n.directLastContact:n.lastContact,directRelationship:n.directRelationship,via:n.via})),
    edges:graph.edges.map(e=>({source:e.source,target:e.target,weight:e.weight,types:e.types})),
    activity:graph.activity.map(e=>({kind:e.kind,at:e.at,personIds:e.personIds,acceptedPersonIds:acceptedIds(e),title:e.title})),
-   themeSignals:graph.themeSignals.map(s=>({personId:s.personId,themeId:s.themeId,summary:s.summary,observedAt:s.observedAt,sourceType:s.sourceType})),
+   themeSignals:graph.themeSignals.map(s=>({personId:s.personId,themeId:s.themeId,summary:s.summary,observedAt:s.observedAt,sourceType:s.sourceType,...(s.evidenceRef.startsWith(SHARE_ACCOUNT)?{shared:true}:{})})),
    themes:graph.themes.map(t=>({id:t.id,name:t.canonicalName})),
   };
- }
- /** People the owner has judged out for now: suppressed, snoozed, or not before a date. */
- private structureExclusions(nodes:GraphPersonNode[],now:number){
+  // Judgment only removes people: suppressed, snoozed, or not yet.
   const excluded=new Set<string>();
-  for(const row of this.ctx.storage.sql.exec<{person_id:string;data:string}>('SELECT person_id,data FROM person_feedback').toArray()){
-   const feedback=JSON.parse(row.data) as PersonFeedback;
-   if(feedback.action==='suppress'||(feedback.action==='snooze'&&feedback.until>now))excluded.add(row.person_id);
-  }
-  for(const n of nodes)if(n.notBefore&&Date.parse(n.notBefore)>now)excluded.add(n.id);
-  return excluded;
+  for(const [id,feedback] of Object.entries(graph.personFeedback))if(feedback.action==='suppress'||(feedback.action==='snooze'&&feedback.until>now))excluded.add(id);
+  for(const n of graph.nodes)if(n.notBefore&&Date.parse(n.notBefore)>now)excluded.add(n.id);
+  return {input,excluded,aliases:graph.personAliases??{}};
  }
  /** Who to contact now and why: meetings soon, replies owed, fresh signals, moves, cooling, focus. */
  async whyNow(limit=10){
   if(!Number.isInteger(limit)||limit<1||limit>25)throw Error('invalid_request');
-  const input=await this.structureInput(),now=Date.now();
-  if(!input)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
-  const owner=(await this.ctx.storage.get<string>('owner'))!,graph=(await this.graph())!,aliases=graph.personAliases??{};
+  const now=Date.now(),structure=await this.structureInput(now);
+  if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
+  const {input,excluded,aliases}=structure,ids=await this.mergeIdentities(),merges=this.personMergeStore().get();
+  // Reply state for the owner's own contacts only, keyed like the graph.
+  const rows=new Map(this.ctx.storage.sql.exec<{email:string;lastIn:number|null;lastOut:number|null}>('SELECT email,MAX(CASE WHEN received>0 THEN date END) AS lastIn,MAX(CASE WHEN sent>0 THEN date END) AS lastOut FROM contributions GROUP BY email').toArray().map(r=>[r.email,r]));
   const mail:Record<string,{lastIn:number|null;lastOut:number|null}>={};
-  for(const row of this.ctx.storage.sql.exec<{email:string;lastIn:number|null;lastOut:number|null}>('SELECT email,MAX(CASE WHEN received>0 THEN date END) AS lastIn,MAX(CASE WHEN sent>0 THEN date END) AS lastOut FROM contributions GROUP BY email').toArray()){
-   const raw=await opaque(owner,row.email,this.env.TOKEN_SECRET),id=aliases[raw]??raw,cur=mail[id];
+  for(const [raw,email] of ids){
+   const row=rows.get(email);if(!row)continue;
+   const id=aliases[raw]??raw,cur=mail[id];
    mail[id]=cur?{lastIn:Math.max(cur.lastIn??0,row.lastIn??0)||null,lastOut:Math.max(cur.lastOut??0,row.lastOut??0)||null}:{lastIn:row.lastIn,lastOut:row.lastOut};
   }
   // Owner corrections plus history derived for people already merged across addresses.
   const stints=[...this.stintStore().all()];
-  for(const target of new Set(Object.values(this.personMergeStore().get()))){
-   const emails=await this.emailsForMergedPerson(target);if(!emails.length)continue;
+  for(const target of new Set(Object.values(merges))){
+   if(!ids.has(target))continue;
+   const emails=[...ids].filter(([id])=>id===target||merges[id]===target).map(([,email])=>email);
    const spans=this.ctx.storage.sql.exec<{email:string;first:number;last:number}>(`SELECT email,MIN(date) AS first,MAX(date) AS last FROM contributions WHERE email IN (${emails.map(()=>'?').join(',')}) GROUP BY email`,...emails).toArray();
    stints.push(...deriveStints(target,spans,now));
   }
   const lens=this.ownerLens().get(),store=this.lifeStore();store.purgeExpired();
   const signals=store.enabled()?store.list().map(s=>({personId:aliases[s.personId]??s.personId,category:s.category,tier:s.tier,summary:s.summary,observedAt:s.observedAt,source:s.source})):[];
-  const result=whyNow(input,{now,lens:lens.enabled?lens.fields:{focus:'',needs:''},signals,stints,jobMoves:(await this.jobMoveCandidates()).candidates,mail,excluded:this.structureExclusions(graph.nodes,now)},limit);
+  const result=whyNow(input,{now,lens:lens.enabled?lens.fields:{focus:'',needs:''},signals,stints,jobMoves:(await this.jobMoveCandidates()).candidates,mail,excluded},limit);
   return {interpretation:null,answers:result.answers,result:{generatedAt:new Date(now).toISOString()},gaps:result.gaps};
  }
  /** Clusters and distances for this request; nothing is cached or exported. */
  private async structureNow(){
-  const input=await this.structureInput();if(!input)return null;
-  const now=Date.now(),graph=(await this.graph())!;
-  return {input,now,ctx:structureContext(input,await clusterNetwork(input,now),now),excluded:this.structureExclusions(graph.nodes,now)};
+  const now=Date.now(),structure=await this.structureInput(now);if(!structure)return null;
+  return {input:structure.input,now,ctx:structureContext(structure.input,await clusterNetwork(structure.input,now),now),excluded:structure.excluded};
  }
- private async topicCandidates(topic:string,excluded:Set<string>):Promise<Candidate[]>{
+ /** Search candidates for a topic; evidence another owner shared is marked so it is never presented as first-hand. */
+ private async topicCandidates(topic:string,excluded:Set<string>,input:StructureInput):Promise<Candidate[]>{
+  const own=new Set(input.themeSignals.filter(s=>!s.shared).map(s=>s.summary));
+  const shared=new Set(input.themeSignals.filter(s=>s.shared&&!own.has(s.summary)).map(s=>s.summary));
   const search=await this.searchPeople(topic);
-  return search.results.filter(r=>!excluded.has(r.personId)).map(r=>({personId:r.personId,name:r.name,relevance:r.score,evidence:r.reasons.map(e=>({summary:e.summary,observedAt:e.observedAt,source:e.title??'People evidence'}))}));
+  return search.results.filter(r=>!excluded.has(r.personId)).map(r=>({personId:r.personId,name:r.name,relevance:r.score,evidence:r.reasons.map(e=>({summary:e.summary,observedAt:e.observedAt,source:e.title??'People evidence',...(shared.has(e.summary)?{shared:true}:{})}))}));
  }
  /** Relevant people outside the owner's usual circles; with a claim, disagreement ranks higher. */
  async contrast(topic:string,claim?:string){
   if(typeof topic!=='string'||!topic.trim()||topic.length>200||(claim!==undefined&&(typeof claim!=='string'||!claim.trim()||claim.length>200)))throw Error('invalid_request');
   const structure=await this.structureNow();
   if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
-  const candidates=await this.topicCandidates(topic.trim(),structure.excluded);
+  const candidates=await this.topicCandidates(topic.trim(),structure.excluded,structure.input);
   const distant=candidates.filter(c=>c.relevance>=0.3&&distanceOf(c.personId,structure.ctx).value>=0.5);
   const stances=claim?await stanceLabels(this.env.AI,claim.trim(),distant.slice(0,8)):{};
   const result=contrast(candidates,structure.ctx,stances);
@@ -1195,7 +1200,7 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(typeof topic!=='string'||!topic.trim()||topic.length>200)throw Error('invalid_request');
   const text=topic.trim(),structure=await this.structureNow();
   if(!structure)return {version:1,topic:text,generatedAt:new Date().toISOString(),communities:[],known:[],fringe:[],absent:[],gaps:['No People data yet']};
-  const candidates=await this.topicCandidates(text,structure.excluded);
+  const candidates=await this.topicCandidates(text,structure.excluded,structure.input);
   const present=structure.ctx.clusters.clusters.filter(c=>structure.ctx.usual.has(c.id)||c.members.some(m=>candidates.some(x=>x.personId===m))).map(c=>c.label);
   return assembleAtlas(text,structure.input,structure.ctx,candidates,await absentCommunities(this.env.AI,text,present),structure.now);
  }

@@ -76,3 +76,12 @@ test('structure: distance is 0 near your core, 0.5 at its edge, 1 outside or sha
  assert.equal(tiedCtx.clusters.byNode.l,null);
  assert.equal(distanceOf('l',tiedCtx).value,0.5);
 });
+
+test('structure: one shared thread between two groups does not merge them, whatever the ids',async()=>{
+ for(const [left,right] of [[['a1','a2','a3','a4','a5'],['b1','b2','b3','b4','b5']],[['a1','a2','a3'],['b1','b2','b3']],[['z1','z2','z3','z4','z5'],['b1','b2','b3','b4','b5']]]){
+  const input:StructureInput={nodes:[...left,...right].map(id=>node(id,id[0]+'.test')),edges:[...clique(left,1),...clique(right,1),{source:left[0],target:right[0],weight:1,types:['shared_email']}],activity:[],themeSignals:[],themes:[]};
+  const clusters=await clusterNetwork(input,NOW);
+  assert.equal(clusters.clusters.length,2,`${left[0]}..${right[0]}: ${JSON.stringify(clusters.clusters.map(c=>c.members))}`);
+  assert.notEqual(clusters.byNode[left[1]],clusters.byNode[right[1]]);
+ }
+});

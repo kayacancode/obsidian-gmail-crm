@@ -74,3 +74,18 @@ test('structure routes: the atlas is a typed object matching its published schem
  const machine=await peopleMachineRequest(new Request('https://people.test/api/people-agent/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'GET',path:'/api/people/atlas?topic=acme'})}),f.env as Parameters<typeof peopleMachineRequest>[1],principal(['people:read']));
  assert.equal(machine.status,200);
 });
+
+test('structure routes: why-now reads the graph once, honours merged judgments and the owner\'s own contact dates',async()=>{
+ const f=await fixture();
+ const at=(days:number)=>new Date(Date.now()-days*DAY).toISOString();
+ const person=(id:string,name:string)=>({id,name,company:'acme.test',strength:70,combined:70,lastContact:at(2),directLastContact:at(100),directRelationship:true});
+ let reads=0;
+ // A shared network saw Maya two days ago; the owner last spoke with her 100 days ago. Bo was
+ // suppressed before being merged, so only the canonical graph feedback knows it.
+ const graph={nodes:[person('p-maya','Maya Rivera'),person('p-bo','Bo')],edges:[],activity:[],themeSignals:[],themes:[],personAliases:{},
+  personFeedback:{'p-bo':{action:'suppress',at:Date.now(),until:0,delta:-10}}};
+ Object.assign(f.service,{graph:async()=>{reads++;return graph;}});
+ const result=await f.service.whyNow(10);
+ assert.equal(reads,1);
+ assert.deepEqual(result.answers.map(a=>[a.personId,a.why.map(w=>w.trigger)]),[['p-maya',['going_cold']]]);
+});

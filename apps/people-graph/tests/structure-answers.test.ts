@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {clusterNetwork,structureContext,contrast,widen,bridges,connectors,stanceLabels,assembleAtlas,absentCommunities,type Candidate,type StructureEvent} from '../src/network-structure';
+import {clusterNetwork,structureContext,contrast,widen,bridges,connectors,stanceLabels,assembleAtlas,absentCommunities,whyNow,type Candidate,type StructureEvent} from '../src/network-structure';
 import {fixture,NOW,at,node} from './network-structure.test';
 
 const candidate=(personId:string,relevance:number):Candidate=>({personId,name:personId.toUpperCase(),relevance,evidence:[{summary:`${personId} on robotics hiring`,observedAt:at(5),source:'gmail'}]});
@@ -87,6 +87,31 @@ test('connectors: people whose ties reach two or more circles',async()=>{
  assert.deepEqual(connectors(input,clusters).map(c=>c.personId),['c']);
  input.nodes.push(node('z','zeta.test'));
  assert.deepEqual(connectors(input,clusters).map(c=>c.personId),['c']);
+});
+
+test('connectors: judgments remove people from connectors too',async()=>{
+ const input=fixture(),ctx=await context(input);
+ assert.deepEqual(bridges(input,ctx,{excluded:new Set(['c'])}).result.connectors,[]);
+});
+
+test('structure: other owners\' shared evidence never triggers, bridges or appears as first-hand',async()=>{
+ const input=fixture();
+ input.themeSignals=[
+  {personId:'a2',themeId:'t-x',summary:'climate risk models',observedAt:at(20),shared:true},{personId:'b2',themeId:'t-x',summary:'climate risk models',observedAt:at(20)},
+  {personId:'c',themeId:'t-r',summary:'robotics hiring push',observedAt:at(3),shared:true}];
+ const ctx=await context(input);
+ assert.deepEqual(bridges(input,ctx,{excluded:new Set()}).answers,[]);
+ const now=whyNow(input,{now:NOW,lens:{focus:'robotics hiring',needs:''},signals:[],stints:[],jobMoves:[],mail:{},excluded:new Set()});
+ assert.ok(!now.answers.some(a=>a.personId==='c'));
+ const mixed:Candidate={personId:'b2',name:'B2',relevance:0.8,evidence:[{summary:'from a shared network',observedAt:at(5),source:'gmail',shared:true},{summary:'own words',observedAt:at(5),source:'gmail'}]};
+ assert.deepEqual(contrast([mixed],ctx).answers[0].why.map(w=>w.summary),['own words']);
+});
+
+test('atlas: a short contact name never removes a community label that merely contains it',async()=>{
+ const input=fixture();
+ input.nodes.push(node('art','art.test',{name:'Art'}),node('ian','ian.test',{name:'Ian'}),node('it','it.test',{name:'it'}));
+ const atlas=assembleAtlas('climate',input,await context(input),[],['Startups','Clinicians','Utilities','Art collectors','Friends of Ian'],NOW);
+ assert.deepEqual(atlas.absent.map(a=>a.label),['Startups','Clinicians','Utilities']);
 });
 
 test('atlas: known, fringe and communities around a topic, with inferred absences that never name anyone',async()=>{

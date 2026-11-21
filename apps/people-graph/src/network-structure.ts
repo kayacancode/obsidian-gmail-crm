@@ -6,7 +6,8 @@ import {THEME_MODEL} from './theme-extractor';
 export interface StructureNode {id:string;name:string;company:string;strength:number;combined:number;baseCombined?:number;lastContact:string|null;directRelationship:boolean;via?:string[]}
 export interface StructureEdge {source:string|undefined;target:string|undefined;weight:number;types:string[]}
 export interface StructureEvent {kind:string;at:string;personIds:string[];acceptedPersonIds?:string[];title?:string}
-export interface StructureSignal {personId?:string;themeId:string;summary:string;observedAt:string;sourceType?:string}
+/** `shared` marks evidence another owner shared: it informs search but never counts as first-hand. */
+export interface StructureSignal {personId?:string;themeId:string;summary:string;observedAt:string;sourceType?:string;shared?:boolean}
 export interface StructureInput {nodes:StructureNode[];edges:StructureEdge[];activity:StructureEvent[];themeSignals:StructureSignal[];themes:{id:string;name:string}[]}
 export interface ClusterLabel {companies:string[];themes:string[]}
 export interface Cluster {id:string;members:string[];label:ClusterLabel}
@@ -32,13 +33,20 @@ async function clusterId(members:string[]){
  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,12);
 }
 
-/** Weighted label propagation: sorted visiting order, ties to the smallest label, at most 20 passes. */
+/** Weighted label propagation over common-neighbour weights: sorted visiting, ties to the smallest label, at most 20 passes. */
 export async function clusterNetwork(input:StructureInput,now=Date.now()):Promise<Clusters>{
  const ids=input.nodes.filter(n=>n.directRelationship).map(n=>n.id).sort();
  const neighbours=new Map<string,Map<string,number>>(ids.map(id=>[id,new Map()]));
  for(const {a,b,weight} of ownEdges(input)){
   neighbours.get(a)!.set(b,(neighbours.get(a)!.get(b)??0)+weight);
   neighbours.get(b)!.set(a,(neighbours.get(b)!.get(a)??0)+weight);
+ }
+ // Ties inside a group are worth more than a lone thread between groups: weight each edge by the
+ // neighbours its ends share, so one shared thread never merges two groups whatever the ids.
+ const raw=new Map([...neighbours].map(([id,n])=>[id,new Map(n)]));
+ for(const [a,around] of raw)for(const [b,w] of around){
+  let common=0;for(const x of around.keys())if(x!==b&&raw.get(b)!.has(x))common++;
+  neighbours.get(a)!.set(b,w*(1+common));
  }
  const label=new Map(ids.map(id=>[id,id]));
  for(let pass=0;pass<20;pass++){
@@ -60,7 +68,7 @@ export async function clusterNetwork(input:StructureInput,now=Date.now()):Promis
  for(const members of groups.values()){
   if(members.length<3)continue;
   const id=await clusterId(members),inCluster=new Set(members);
-  const themes=input.themeSignals.filter(s=>s.personId&&inCluster.has(s.personId)&&Date.parse(s.observedAt)>=now-180*DAY).map(s=>themeName.get(s.themeId)??'');
+  const themes=input.themeSignals.filter(s=>!s.shared&&s.personId&&inCluster.has(s.personId)&&Date.parse(s.observedAt)>=now-180*DAY).map(s=>themeName.get(s.themeId)??'');
   clusters.push({id,members,label:{companies:top(members.map(m=>nodes.get(m)?.company??''),2),themes:top(themes,2)}});
   for(const m of members)byNode[m]=id;
  }
@@ -178,7 +186,7 @@ export function whyNow(input:StructureInput,ctx:WhyNowContext,limit=10):{answers
  }
  const focus=keywords(`${ctx.lens.focus} ${ctx.lens.needs}`);
  if(focus.size)for(const s of input.themeSignals){
-  if(!s.personId||!people.has(s.personId)||Date.parse(s.observedAt)<now-30*DAY||why.get(s.personId)?.some(w=>w.trigger==='topic_overlap'))continue;
+  if(!s.personId||s.shared||!people.has(s.personId)||Date.parse(s.observedAt)<now-30*DAY||why.get(s.personId)?.some(w=>w.trigger==='topic_overlap'))continue;
   if([...keywords(s.summary)].some(word=>focus.has(word)))add(s.personId,'topic_overlap',`Recently on something you are focused on: ${s.summary.slice(0,160)}`,s.sourceType??'gmail',s.observedAt);
  }
  const answers=[...why].map(([id,entries])=>{
@@ -192,11 +200,11 @@ export function whyNow(input:StructureInput,ctx:WhyNowContext,limit=10):{answers
 export type Stance='supports'|'differs'|'challenges';
 const STANCE_FACTOR:Record<Stance,number>={challenges:1.25,differs:1.1,supports:1};
 const isStance=(value:unknown):value is Stance=>typeof value==='string'&&Object.hasOwn(STANCE_FACTOR,value);
-export interface Candidate {personId:string;name:string;relevance:number;evidence:{summary:string;observedAt:string;source:string}[]}
+export interface Candidate {personId:string;name:string;relevance:number;evidence:{summary:string;observedAt:string;source:string;shared?:boolean}[]}
 export interface EvidenceEntry {kind:'evidence';summary:string;source:string;observedAt:string;attribution:'first_hand'}
 export interface ContrastAnswer {personId:string;name:string;relevance:number;distance:Distance;stance:Stance|null;score:number;why:EvidenceEntry[]}
 
-const evidenceOf=(c:Candidate):EvidenceEntry[]=>c.evidence.slice(0,3).map(e=>({kind:'evidence',summary:e.summary.slice(0,200),source:e.source,observedAt:e.observedAt,attribution:'first_hand'}));
+const evidenceOf=(c:Candidate):EvidenceEntry[]=>c.evidence.filter(e=>!e.shared).slice(0,3).map(e=>({kind:'evidence',summary:e.summary.slice(0,200),source:e.source,observedAt:e.observedAt,attribution:'first_hand'}));
 
 /** Relevant and distant: people outside the owner's usual circles who speak to the topic. */
 export function contrast(candidates:Candidate[],ctx:StructureContext,stances:Record<string,Stance>={},limit=5):{answers:ContrastAnswer[];gaps:string[]}{
@@ -265,7 +273,7 @@ export function bridges(input:StructureInput,ctx:StructureContext,options:{topic
  const connected=new Set(input.edges.flatMap(e=>e.source&&e.target?[[e.source,e.target].sort().join('\0')]:[]));
  const evidence=new Map<string,{themes:Set<string>;words:Set<string>;signals:StructureSignal[]}>();
  for(const s of input.themeSignals){
-  if(!s.personId||Date.parse(s.observedAt)<now-180*DAY)continue;
+  if(!s.personId||s.shared||Date.parse(s.observedAt)<now-180*DAY)continue;
   const e=evidence.get(s.personId)??{themes:new Set<string>(),words:new Set<string>(),signals:[]};
   e.themes.add(s.themeId);for(const w of content(s.summary))e.words.add(w);e.signals.push(s);evidence.set(s.personId,e);
  }
@@ -287,21 +295,21 @@ export function bridges(input:StructureInput,ctx:StructureContext,options:{topic
   pairs.push({people:[{personId:a.id,name:a.name},{personId:b.id,name:b.name}],sharedEvidence:{themes:themes.map(t=>themeName.get(t)??t),keywords:words.slice(0,5)},distanceBetween:ca&&cb?1:0.5,why,score:themes.length*2+words.length});
  }
  const answers=pairs.sort((x,y)=>y.score-x.score||x.people[0].personId.localeCompare(y.people[0].personId)||x.people[1].personId.localeCompare(y.people[1].personId)).slice(0,5).map(({score:_score,...pair})=>pair);
- return {answers,result:{connectors:connectors(input,ctx.clusters)},gaps:['These are proposals; introductions are made only with everyone\'s agreement']};
+ return {answers,result:{connectors:connectors(input,ctx.clusters,options.excluded)},gaps:['These are proposals; introductions are made only with everyone\'s agreement']};
 }
 
 /**
  * Contacts who already link the owner's worlds: at least a quarter of their shared threads and
  * meetings go to each of two or more circles. One stray tie does not make a connector.
  */
-export function connectors(input:StructureInput,clusters:Clusters):{personId:string;name:string;circles:number}[]{
+export function connectors(input:StructureInput,clusters:Clusters,excluded:Set<string>=new Set()):{personId:string;name:string;circles:number}[]{
  const weights=new Map<string,Map<string,number>>();
  for(const {a,b,weight} of ownEdges(input))for(const [x,y] of [[a,b],[b,a]]){
   const c=clusters.byNode[y];if(!c)continue;
   const byCluster=weights.get(x)??new Map<string,number>();byCluster.set(c,(byCluster.get(c)??0)+weight);weights.set(x,byCluster);
  }
  const names=new Map(input.nodes.map(n=>[n.id,n.name]));
- return [...weights].map(([personId,byCluster])=>{
+ return [...weights].filter(([personId])=>!excluded.has(personId)).map(([personId,byCluster])=>{
   const total=[...byCluster.values()].reduce((s,w)=>s+w,0);
   return {personId,name:names.get(personId)??'',circles:[...byCluster.values()].filter(w=>w>=total/4).length};
  }).filter(c=>c.circles>=2).sort((x,y)=>y.circles-x.circles||x.name.localeCompare(y.name)).slice(0,3);
@@ -328,11 +336,14 @@ export function assembleAtlas(topic:string,input:StructureInput,ctx:StructureCon
  const topicPeople=new Map<string,number>();
  for(const c of relevant){const cluster=ctx.clusters.byNode[c.personId];if(cluster)topicPeople.set(cluster,(topicPeople.get(cluster)??0)+1);}
  const communities=ctx.clusters.clusters.filter(c=>topicPeople.has(c.id)||ctx.usual.has(c.id)).map(c=>({clusterId:c.id,label:c.label,size:c.members.length,usual:ctx.usual.has(c.id),topicPeople:topicPeople.get(c.id)??0}));
- const names=input.nodes.map(n=>n.name.toLowerCase()).filter(name=>name.length>=2);
+ // A label is dropped only when a contact's whole name appears in it as consecutive words.
+ const words=(text:string)=>text.toLowerCase().match(/[\p{L}\p{N}]+/gu)??[];
+ const names=input.nodes.map(n=>words(n.name)).filter(name=>name.length);
+ const mentionsName=(label:string[])=>names.some(name=>label.some((_,i)=>name.every((w,j)=>label[i+j]===w)));
  const seen=new Set<string>(),labels:{label:string;inferred:true}[]=[];
  for(const raw of absent){
   const label=raw.trim().replace(/\s+/g,' ');
-  if(!label||label.length>60||seen.has(label.toLowerCase())||names.some(name=>label.toLowerCase().includes(name)))continue;
+  if(!label||label.length>60||seen.has(label.toLowerCase())||mentionsName(words(label)))continue;
   seen.add(label.toLowerCase());labels.push({label,inferred:true});
   if(labels.length===5)break;
  }
