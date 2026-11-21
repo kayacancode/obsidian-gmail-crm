@@ -31,15 +31,18 @@ test("brief: upcoming meetings are the owner's, not declined, with someone else 
   assert.equal(meetings[0].start, "2026-11-23T14:00:00-05:00");
 });
 
-test("brief: calendar group and resource addresses are not attendees", () => {
+test("brief: calendar group and resource addresses are not attendees, but a meeting invited only through one is kept", () => {
   const owner = new Set(["kaya@betaworks.test"]);
   const rooms = [
     { email: "kaya@betaworks.test", self: true, responseStatus: "accepted" },
     { email: "betaworks.test_abc123@group.calendar.google.com", responseStatus: "accepted" },
     { email: "c_188xyz@resource.calendar.google.com", responseStatus: "accepted" },
   ];
-  assert.deepEqual(upcomingMeetings([event({ attendees: [...rooms, { email: "jb@betaworks.test", responseStatus: "accepted" }] })], owner)[0].attendees, ["jb@betaworks.test"]);
-  assert.deepEqual(upcomingMeetings([event({ id: "room-only", attendees: rooms })], owner), [], "a room is not someone else attending");
+  const withPerson = upcomingMeetings([event({ attendees: [...rooms, { email: "jb@betaworks.test", responseStatus: "accepted" }] })], owner)[0];
+  assert.deepEqual([withPerson.attendees, withPerson.sharedInvite], [["jb@betaworks.test"], false]);
+  const shared = upcomingMeetings([event({ id: "kaya-jb", summary: "Kaya + JB weekly", attendees: rooms })], owner);
+  assert.deepEqual(shared.map((m) => [m.id, m.attendees, m.sharedInvite]), [["kaya-jb", [], true]], "the shared calendar is why nobody is listed");
+  assert.deepEqual(upcomingMeetings([event({ id: "solo", attendees: [rooms[0]] })], owner), [], "a meeting with only the owner is still skipped");
 });
 
 test("brief: next steps keep the bold title and detail; the section ends at a same-or-higher heading", () => {
@@ -99,6 +102,9 @@ test("brief: no related note means no steps, never steps from another meeting", 
     candidate({ path: "bigger.md", attendees: ["jordan@stasht.test", "ada@acme.test"] }),
   ];
   assert.equal(await relatedNextSteps(upcoming, notes, read(texts), "Kaya Jones"), null);
+  // A meeting with no individual attendees never matches by attendees (unlinked notes have none either).
+  const unlinked = [candidate({ path: "bigger.md", attendees: [] })];
+  assert.equal(await relatedNextSteps({ ...upcoming, attendees: [] }, unlinked, read(texts), "Kaya Jones"), null);
 });
 
 test("brief: one open next steps block per meeting, then attendee lines without per-person steps", () => {
@@ -120,4 +126,6 @@ test("brief: one open next steps block per meeting, then attendee lines without 
   assert.match(renderBrief([{ meeting, steps: { ...steps, steps: [] } }], people, NOW), /^No open next steps\.$/m);
   assert.match(renderBrief([{ meeting: { id: "z", title: "Standup", start: "2026-11-24T09:00:00Z", attendees: [] }, steps: null }, { meeting: { id: "d", title: "Offsite", start: "2026-11-25", attendees: [] }, steps: null }], people, NOW), /^## 2026-11-24 09:00 \(UTC\) · Standup$[\s\S]*^## 2026-11-25 \(all day\) · Offsite$/m);
   assert.match(renderBrief([], people, NOW), /No meetings with other people in the next 7 days\./);
+  const shared = renderBrief([{ meeting: { id: "jb", title: "Kaya + JB weekly", start: "2026-11-23T13:00:00-05:00", attendees: [], sharedInvite: true }, steps: null }], people, NOW);
+  assert.match(shared, /^## 2026-11-23 13:00 \(UTC-05:00\) · Kaya \+ JB weekly\n\nAttendees: from a shared calendar invite$/m);
 });

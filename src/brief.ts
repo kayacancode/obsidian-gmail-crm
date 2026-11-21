@@ -19,6 +19,8 @@ export interface UpcomingMeeting {
   start: string;
   /** Other attendees' emails, lowercased, from the invite. */
   attendees: string[];
+  /** Invited through a shared (group or resource) calendar, which is why nobody may be listed. */
+  sharedInvite: boolean;
 }
 export interface NextStep {
   title: string;
@@ -65,12 +67,15 @@ export function upcomingMeetings(events: CalendarInvite[], ownerEmails: Set<stri
     const attendees = event.attendees ?? [];
     const self = attendees.find((a) => a.self || (a.email && ownerEmails.has(a.email.toLowerCase())));
     if (self?.responseStatus === "declined") continue;
-    const others = [...new Set(attendees.flatMap((a) => {
+    const emails = attendees.flatMap((a) => {
       const email = a.email?.trim().toLowerCase();
-      return email && !a.self && !ownerEmails.has(email) && !NOT_A_PERSON.test(email) ? [email] : [];
-    }))];
-    if (!others.length) continue;
-    meetings.push({ id: event.id, title: event.summary?.trim() || "Untitled meeting", start, attendees: others });
+      return email && !a.self && !ownerEmails.has(email) ? [email] : [];
+    });
+    const others = [...new Set(emails.filter((email) => !NOT_A_PERSON.test(email)))];
+    // Keep a meeting whose only other invitee is a shared calendar: the people are behind it.
+    const sharedInvite = !others.length && emails.some((email) => NOT_A_PERSON.test(email));
+    if (!others.length && !sharedInvite) continue;
+    meetings.push({ id: event.id, title: event.summary?.trim() || "Untitled meeting", start, attendees: others, sharedInvite });
   }
   return meetings.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
@@ -130,7 +135,8 @@ export async function relatedNextSteps(
   const people = [...new Set(meeting.attendees)].sort().join(",");
   const groups = [
     earlier.filter((n) => n.calendarTitle && normalizeEventTitle(n.calendarTitle) === title),
-    earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people),
+    // Needs someone: notes nobody is linked to must not match a meeting with no listed attendees.
+    people ? earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people) : [],
   ];
   for (const group of groups)
     for (const note of group) {
@@ -164,8 +170,10 @@ export function renderBrief(entries: { meeting: UpcomingMeeting; steps: MeetingS
       out.push(`Open next steps, from ${link(steps.path, steps.title)} on ${steps.date}:`, "");
       if (steps.steps.length) for (const step of steps.steps) out.push(`- [ ] ${step.title}${step.detail ? `: ${step.detail.slice(0, 200)}` : ""}`);
       else out.push("No open next steps.");
-      out.push("", "Attendees:", "");
+      out.push("");
+      if (meeting.attendees.length || !meeting.sharedInvite) out.push("Attendees:", "");
     }
+    if (!meeting.attendees.length && meeting.sharedInvite) out.push("Attendees: from a shared calendar invite");
     for (const email of meeting.attendees) {
       const person = people.get(email);
       if (!person?.page) {
