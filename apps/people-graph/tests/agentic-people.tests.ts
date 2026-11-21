@@ -7,3 +7,4 @@ import './catch-up-brief.test.ts';
 import './life-routes.test.ts';
 import './ask.test.ts';
 import './ask-routes.test.ts';
+import './peer-routes.test.ts';

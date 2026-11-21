@@ -121,7 +121,7 @@ export default {
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
                 return await relationshipMemoryRoute(request,env,user.email);
             }
-            if(['/api/people/signals','/api/people/signals/settings','/api/people/brief','/api/people/timeline','/api/people/stints','/api/people/teammates','/api/people/job-moves'].includes(pathname)){
+            if(['/api/people/signals','/api/people/signals/settings','/api/people/brief','/api/people/timeline','/api/people/stints','/api/people/teammates','/api/people/job-moves','/api/people/peer-directory','/api/people/peer-answer'].includes(pathname)){
                 const user=await requireGoogleUser(request,env);if('error' in user)return json({error:user.error},401);
                 return await lifeRoute(request,env,user.email);
             }

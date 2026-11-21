@@ -1081,6 +1081,26 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
    stints:(await this.companyStints(person.id)).stints,timeline:this.timelineStore().list(),now:Date.now(),
   })};
  }
+ /** Owner-only: this owner's own contacts and their addresses, for the local peer server to match HMAC references. */
+ async peerDirectory(){
+  const ids=await this.mergeIdentities(),merges=this.personMergeStore().get(),people=new Map<string,string[]>();
+  for(const [id,email] of ids){const canonical=merges[id]??id;people.set(canonical,[...(people.get(canonical)??[]),email]);}
+  return {people:[...people].map(([personId,emails])=>({personId,emails:emails.sort()}))};
+ }
+ /** Owner-only coarse answers for peer questions: a relationship band, a month, and open/personal signals without quotes. */
+ async peerAnswer(personId:string,type:'knows'|'catch_up'){
+  if(!validContextPerson(personId)||!['knows','catch_up'].includes(type))throw Error('invalid_request');
+  const graph=await this.graph(),aliases=graph?.personAliases??{},node=(graph?.nodes??[]).find(n=>n.id===(aliases[personId]??personId));
+  if(type==='knows'){
+   if(!node)return {known:false};
+   const band=node.combined>=60?'strong':node.combined>=30?'some':'light';
+   return {known:true,band,lastContactMonth:node.lastContact?node.lastContact.slice(0,7):null};
+  }
+  const store=this.lifeStore();store.purgeExpired();
+  if(!node||!store.enabled())return {signals:[]};
+  // Sensitive signals and quotes never leave through this route.
+  return {signals:store.list(await this.mergedPersonIds(node.id)).filter(s=>s.tier!=='sensitive').map(s=>({category:s.category,tier:s.tier,summary:s.summary,observedMonth:s.observedAt.slice(0,7),expiresAt:s.expiresAt}))};
+ }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};

@@ -31,6 +31,12 @@ export async function lifeRoute(request:Request,env:MailEnv,owner:string){
    if(path==='/api/people/stints'){const q=only(url,['personId']);if(!q?.personId||!validContextPerson(q.personId))return json({error:'invalid_request'},400);return json(await stub.companyStints(q.personId));}
    if(path==='/api/people/teammates'){const q=only(url,['personId']);if(!q?.personId||!validContextPerson(q.personId))return json({error:'invalid_request'},400);return json(await stub.teammates(q.personId));}
    if(path==='/api/people/job-moves'){if(url.search)return json({error:'invalid_request'},400);return json(await stub.jobMoveCandidates());}
+   if(path==='/api/people/peer-directory'){if(url.search)return json({error:'invalid_request'},400);return json(await stub.peerDirectory());}
+   if(path==='/api/people/peer-answer'){
+    const q=only(url,['personId','type']);
+    if(!q?.personId||!validContextPerson(q.personId)||(q.type!=='knows'&&q.type!=='catch_up'))return json({error:'invalid_request'},400);
+    return json(await stub.peerAnswer(q.personId,q.type));
+   }
    return json({error:'method_not_allowed'},405);
   }
   if(!['POST','DELETE'].includes(method))return json({error:'method_not_allowed'},405);

@@ -37,6 +37,7 @@ const capabilities:Capability[]=[
  capability('GET','/api/people/timeline',read,'life'),capability('POST','/api/people/timeline',edit,'life'),capability('DELETE','/api/people/timeline',edit,'life'),
  capability('GET','/api/people/stints',read,'life',['personId']),capability('POST','/api/people/stints',edit,'life'),capability('DELETE','/api/people/stints',edit,'life'),
  capability('GET','/api/people/teammates',read,'life',['personId']),capability('GET','/api/people/job-moves',read,'life'),
+ capability('GET','/api/people/peer-directory',read,'life'),capability('GET','/api/people/peer-answer',read,'life',['personId','type']),
  capability('POST','/api/people/ask',read,'ask'),
  capability('GET','/api/people/memory',read,'memory',['personId']),capability('POST','/api/people/memory',edit,'memory'),capability('POST','/api/people/memory/structure',read,'memory'),capability('DELETE','/api/people/memory/entry',edit,'memory'),
  capability('GET','/api/people/person-merges',read,'merges'),capability('POST','/api/people/person-merges',edit,'merges'),capability('DELETE','/api/people/person-merges',edit,'merges'),
