@@ -161,6 +161,7 @@ struct FindPersonArgs {
 
 #[derive(Args, Debug, Clone)]
 struct EmailArg {
+    /// Email address or name.
     email: String,
 }
 
@@ -1479,23 +1480,9 @@ fn score_person(
     email: &str,
     start: Instant,
 ) -> Response {
-    let email_norm = email.trim().to_ascii_lowercase();
-    let Some(row) = find_by_email_or_alias(index, &email_norm) else {
-        let mut response = fail(
-            "score",
-            "not_found",
-            format!("no contact found for {email}"),
-            start,
-        );
-        // A genuine miss still comes from a known cache. Consumers need its
-        // provenance to distinguish a new contact from an unavailable source.
-        response.stats = Some(json!({
-            "matched": 0,
-            "last_sync": &index.last_sync,
-            "user_email": &index.user_email,
-            "ms": elapsed_ms(start)
-        }));
-        return response;
+    let row = match resolve_person(index, email) {
+        PersonResolution::Found(row) => row,
+        other => return person_failure("score", other, index, start),
     };
 
     let score = infer_score(&row.contact);
@@ -1980,7 +1967,10 @@ fn reconnect_nudge(contact: &Contact, _days: Option<i64>) -> String {
 }
 
 fn get_neighbors(index: &ContactIndex, email: &str, start: Instant) -> Response {
-    let email_norm = resolve_email(index, email);
+    let email_norm = match edge_endpoint(index, email) {
+        Ok(email) => email,
+        Err(resolution) => return person_failure("get-neighbors", resolution, index, start),
+    };
     let mut neighbors: Vec<Value> = index
         .edges
         .iter()
@@ -2035,8 +2025,14 @@ fn get_neighbors(index: &ContactIndex, email: &str, start: Instant) -> Response 
 }
 
 fn get_edges(index: &ContactIndex, from: &str, to: &str, start: Instant) -> Response {
-    let from_email = resolve_email(index, from);
-    let to_email = resolve_email(index, to);
+    let from_email = match edge_endpoint(index, from) {
+        Ok(email) => email,
+        Err(resolution) => return person_failure("get-edges", resolution, index, start),
+    };
+    let to_email = match edge_endpoint(index, to) {
+        Ok(email) => email,
+        Err(resolution) => return person_failure("get-edges", resolution, index, start),
+    };
     let mut edges: Vec<&ContactEdge> = index
         .edges
         .iter()
@@ -2082,13 +2078,9 @@ fn contact_card(
         Ok(loaded) => loaded,
         Err(response) => return *response,
     };
-    let Some(primary) = find_contact_for_query(&index, &args.query) else {
-        return fail(
-            command,
-            "not_found",
-            format!("no contact found for {}", args.query),
-            start,
-        );
+    let primary = match resolve_person(&index, &args.query) {
+        PersonResolution::Found(row) => row,
+        other => return person_failure(command, other, &index, start),
     };
 
     let sources_path = external_sources_path(&cache_path);
@@ -3505,29 +3497,115 @@ fn resolve_email_in_contacts(contacts: &HashMap<String, Contact>, query: &str) -
         .unwrap_or(email)
 }
 
-fn find_contact_for_query(index: &ContactIndex, query: &str) -> Option<ContactRow> {
-    let query_email = query.trim().to_ascii_lowercase();
-    if let Some(row) = find_by_email_or_alias(index, &query_email) {
-        return Some(row);
-    }
+enum PersonResolution {
+    Found(ContactRow),
+    Ambiguous(Vec<ContactRow>),
+    NotFound(Vec<String>),
+}
 
+fn identity_key(row: &ContactRow) -> String {
+    row.contact
+        .canonical_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("id:{id}"))
+        .unwrap_or_else(|| format!("name:{}", sorted_token_key(&row.contact.name)))
+}
+
+/// Resolve an email or a name to one identity group. Names never resolve to the owner.
+fn resolve_person(index: &ContactIndex, query: &str) -> PersonResolution {
+    let query = query.trim();
+    let query_lower = query.to_ascii_lowercase();
+    if query.contains('@') {
+        return match find_by_email_or_alias(index, &query_lower) {
+            Some(row) => PersonResolution::Found(row),
+            None => PersonResolution::NotFound(vec![]),
+        };
+    }
+    let owner = owner_identity(index);
     let query_norm = normalize(query);
     let query_token_key = sorted_token_key(query);
-    rows(index)
+    let mut groups: Vec<(String, f64, ContactRow)> = Vec::new();
+    for row in rows(index)
         .into_iter()
-        .filter_map(|row| {
-            match_confidence(&row, &query_norm, &query_email, &query_token_key, false)
+        .filter(|row| !is_owner_row(&owner, row))
+    {
+        let Some((confidence, _)) =
+            match_confidence(&row, &query_norm, &query_lower, &query_token_key, false)
                 .filter(|(confidence, _)| *confidence >= 0.72)
-                .map(|(confidence, _)| (confidence, row))
-        })
-        .max_by(|(left_confidence, left), (right_confidence, right)| {
-            left_confidence.total_cmp(right_confidence).then_with(|| {
-                infer_score(&left.contact)
-                    .combined
-                    .cmp(&infer_score(&right.contact).combined)
-            })
-        })
-        .map(|(_, row)| row)
+        else {
+            continue;
+        };
+        let key = identity_key(&row);
+        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, best, primary)) => {
+                *best = best.max(confidence);
+                if infer_score(&row.contact).combined > infer_score(&primary.contact).combined {
+                    *primary = row;
+                }
+            }
+            None => groups.push((key, confidence, row)),
+        }
+    }
+    groups.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then_with(|| a.2.contact.name.cmp(&b.2.contact.name))
+    });
+    match groups.len() {
+        0 => PersonResolution::NotFound(name_hints(index, &query_norm, &owner, false)),
+        1 => PersonResolution::Found(groups.remove(0).2),
+        _ if groups[0].1 >= 0.99 && groups[1].1 < 0.99 => {
+            PersonResolution::Found(groups.remove(0).2)
+        }
+        _ => {
+            PersonResolution::Ambiguous(groups.into_iter().take(5).map(|(_, _, row)| row).collect())
+        }
+    }
+}
+
+/// The failure response for an unresolved person; `Found` is never passed here.
+fn person_failure(
+    command: &'static str,
+    resolution: PersonResolution,
+    index: &ContactIndex,
+    start: Instant,
+) -> Response {
+    let (kind, message, data) = match resolution {
+        PersonResolution::Ambiguous(rows) => (
+            "ambiguous_person",
+            "Several people match; ask which one and retry with their email.".to_string(),
+            json!({"candidates": rows.iter().map(contact_brief).collect::<Vec<_>>()}),
+        ),
+        PersonResolution::NotFound(hints) => (
+            "not_found",
+            "No contact matches that name or email.".to_string(),
+            json!({"hints": hints}),
+        ),
+        PersonResolution::Found(_) => unreachable!("person_failure takes failures only"),
+    };
+    let mut response = fail(command, kind, message, start);
+    response.data = Some(data);
+    // A genuine miss still comes from a known cache. Consumers need its
+    // provenance to distinguish a new contact from an unavailable source.
+    response.stats = Some(json!({
+        "matched": 0,
+        "last_sync": &index.last_sync,
+        "user_email": &index.user_email,
+        "ms": elapsed_ms(start)
+    }));
+    response
+}
+
+/// Edge endpoints keep email passthrough (edges may name non-contacts); names must resolve.
+fn edge_endpoint(index: &ContactIndex, query: &str) -> Result<String, PersonResolution> {
+    if query.contains('@') {
+        return Ok(resolve_email(index, query));
+    }
+    match resolve_person(index, query) {
+        PersonResolution::Found(row) => Ok(row.email),
+        other => Err(other),
+    }
 }
 
 fn matching_external_contacts<'a>(
@@ -4475,7 +4553,9 @@ fn contains_token_run(haystack: &str, needle: &str) -> bool {
     let need: Vec<&str> = needle.split_whitespace().collect();
     !need.is_empty()
         && need.len() <= hay.len()
-        && hay.windows(need.len()).any(|window| window == need.as_slice())
+        && hay
+            .windows(need.len())
+            .any(|window| window == need.as_slice())
 }
 
 /// An email query must contain `@` and at least three other characters.
@@ -5164,13 +5244,15 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "score",
-                "usage": "peoplegraph score <email>",
-                "status": "implemented"
+                "usage": "peoplegraph score <email-or-name>",
+                "status": "implemented",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "who-knows",
                 "usage": "peoplegraph who-knows --company <name>",
-                "status": "implemented"
+                "status": "implemented",
+                "notes": "Empty results include data.hints: up to three near company or domain names."
             },
             {
                 "name": "reconnect",
@@ -5186,18 +5268,21 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "get-neighbors",
-                "usage": "peoplegraph get-neighbors <email>",
-                "status": "implemented"
+                "usage": "peoplegraph get-neighbors <email-or-name>",
+                "status": "implemented",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "get-edges",
-                "usage": "peoplegraph get-edges --from <email> --to <email>",
-                "status": "implemented"
+                "usage": "peoplegraph get-edges --from <email-or-name> --to <email-or-name>",
+                "status": "implemented",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "contact-card",
                 "usage": "peoplegraph contact-card <email-or-name>",
-                "status": "implemented_read_only_source_aware"
+                "status": "implemented_read_only_source_aware",
+                "notes": "Names resolve to one identity group; several return ambiguous_person with candidates; none returns not_found with hints."
             },
             {
                 "name": "suggest-duplicates",
@@ -5590,6 +5675,105 @@ mod tests {
         assert_eq!(data["hints"], json!(["Maya Rivera"]));
     }
 
+    fn resolution_index() -> ContactIndex {
+        let mut index = matching_index();
+        index.contacts.insert(
+            "maya@acme.com".to_string(),
+            Contact {
+                name: "Maya Rivera".to_string(),
+                email: "maya@acme.com".to_string(),
+                canonical_id: Some("maya-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        index.contacts.insert(
+            "maya.r@gmail.com".to_string(),
+            Contact {
+                name: "Maya Rivera".to_string(),
+                email: "maya.r@gmail.com".to_string(),
+                canonical_id: Some("maya-1".to_string()),
+                ..empty_contact()
+            },
+        );
+        index.contacts.insert(
+            "maya@zeta.io".to_string(),
+            Contact {
+                name: "Maya Chen".to_string(),
+                email: "maya@zeta.io".to_string(),
+                ..empty_contact()
+            },
+        );
+        index
+    }
+
+    #[test]
+    fn shared_canonical_id_resolves_as_one_person() {
+        match resolve_person(&resolution_index(), "Maya Rivera") {
+            PersonResolution::Found(row) => assert_eq!(row.contact.name, "Maya Rivera"),
+            _ => panic!("expected one person"),
+        }
+    }
+
+    #[test]
+    fn first_name_shared_by_two_people_is_ambiguous() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Maya",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "ambiguous_person");
+        assert_eq!(
+            response.data.unwrap()["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn name_resolution_never_returns_the_owner() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Kaya Jones",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+    }
+
+    #[test]
+    fn score_accepts_a_name() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Jon Chin",
+            Instant::now(),
+        );
+        assert!(response.ok);
+        assert_eq!(response.data.unwrap()["email"], "jon@chin.dev");
+    }
+
+    #[test]
+    fn unknown_name_returns_hints() {
+        let response = score_person(
+            &resolution_index(),
+            &empty_feedback(),
+            "Rivra",
+            Instant::now(),
+        );
+        assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
+        assert_eq!(response.data.unwrap()["hints"], json!(["Maya Rivera"]));
+    }
+
+    #[test]
+    fn neighbors_keep_unknown_email_passthrough() {
+        let response = get_neighbors(&resolution_index(), "stranger@else.com", Instant::now());
+        assert!(response.ok);
+        assert_eq!(response.data.unwrap()["email"], "stranger@else.com");
+    }
+
     #[test]
     fn exact_email_lookup_beats_alias_lookup() {
         let mut contacts = HashMap::new();
@@ -5645,7 +5829,7 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(response.command, "score");
         assert_eq!(response.error.as_ref().unwrap().kind, "not_found");
-        assert!(response.data.is_none());
+        assert_eq!(response.data.as_ref().unwrap()["hints"], json!([]));
         let stats = response.stats.unwrap();
         assert_eq!(stats["matched"], 0);
         assert_eq!(stats["user_email"], "owner@example.com");
