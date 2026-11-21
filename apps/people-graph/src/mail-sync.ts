@@ -13,7 +13,7 @@ import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from '
 import {OwnerTimelineStore} from './owner-timeline';
 import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
 import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
-import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,type StructureInput,type Candidate} from './network-structure';
+import {whyNow,clusterNetwork,structureContext,distanceOf,contrast,widen,bridges,stanceLabels,assembleAtlas,absentCommunities,type StructureInput,type Candidate,type Atlas} from './network-structure';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -1186,6 +1186,15 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   if(!structure)return {interpretation:null,answers:[],result:null,gaps:['No People data yet']};
   const result=bridges(structure.input,structure.ctx,{topic:topic?.trim(),excluded:structure.excluded});
   return {interpretation:null,answers:result.answers,result:result.result,gaps:result.gaps};
+ }
+ /** The landscape around one topic as a typed `Atlas` object, for an interface to draw. */
+ async atlas(topic:string):Promise<Atlas>{
+  if(typeof topic!=='string'||!topic.trim()||topic.length>200)throw Error('invalid_request');
+  const text=topic.trim(),structure=await this.structureNow();
+  if(!structure)return {version:1,topic:text,generatedAt:new Date().toISOString(),communities:[],known:[],fringe:[],absent:[],gaps:['No People data yet']};
+  const candidates=await this.topicCandidates(text,structure.excluded);
+  const present=structure.ctx.clusters.clusters.filter(c=>structure.ctx.usual.has(c.id)||c.members.some(m=>candidates.some(x=>x.personId===m))).map(c=>c.label);
+  return assembleAtlas(text,structure.input,structure.ctx,candidates,await absentCommunities(this.env.AI,text,present),structure.now);
  }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){

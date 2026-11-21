@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {fixture} from './person-context.test';
 import {peopleMachineRequest} from '../src/people-machine';
 import type {PeopleMemoryPrincipal} from '../src/people-memory-auth';
@@ -57,4 +58,19 @@ test('structure routes: contrast, widen and bridges answer with the shared envel
   const machine=await peopleMachineRequest(new Request('https://people.test/api/people-agent/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'GET',path})}),f.env as Parameters<typeof peopleMachineRequest>[1],principal(['people:read']));
   assert.equal(machine.status,200,path);
  }
+});
+
+test('structure routes: the atlas is a typed object matching its published schema',async()=>{
+ const {f}=await waiting();
+ f.env.DB={prepare:()=>({bind(){return this;},all:async()=>({results:[]}),first:async()=>null,run:async()=>({})})};
+ const response=await f.request('/api/people/atlas?topic=acme');
+ assert.equal(response.status,200);
+ const atlas=await response.json() as Record<string,unknown>;
+ const schema=JSON.parse(readFileSync('public/schemas/v1/atlas.json','utf8')) as {required:string[];properties:Record<string,unknown>};
+ assert.deepEqual(Object.keys(atlas).sort(),[...schema.required].sort());
+ assert.deepEqual(Object.keys(schema.properties).sort(),[...schema.required].sort());
+ assert.equal(atlas.version,1);
+ assert.equal((await f.request('/api/people/atlas')).status,400);
+ const machine=await peopleMachineRequest(new Request('https://people.test/api/people-agent/request',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method:'GET',path:'/api/people/atlas?topic=acme'})}),f.env as Parameters<typeof peopleMachineRequest>[1],principal(['people:read']));
+ assert.equal(machine.status,200);
 });

@@ -103,7 +103,7 @@ test('People intelligence MCP tools match REST results, are read-only, and canno
  for(const [name,path,input] of [['get_people_lens','lens',undefined],['recommend_people','matches',{}],['find_people','search',{query:'Ada'}],['explain_connection','connection',{from:'ada',to:'bo'}],['suggest_connections','helpers',{personId:'ada'}]] as [string,string,any][]){const rest=await f.request('/api/people-agent/'+path,key.token,input);assert.equal(rest.status,200);const call=await f.mcp(key.token,name,input??{});assert.deepEqual(call.result.structuredContent,await rest.json());assert.deepEqual(JSON.parse(call.result.content[0].text),call.result.structuredContent);}
  const rejected=await f.mcp(key.token,'recommend_people',{fields});assert.ok(rejected.error||rejected.result?.isError);
  const list=await f.request('/api/people-mcp',key.token,{jsonrpc:'2.0',id:2,method:'tools/list',params:{}},{host:'people.test',accept:'application/json, text/event-stream','mcp-protocol-version':'2025-11-25'});const raw=await list.text(),result=JSON.parse(raw.includes('data: ')?raw.split('\n').find(line=>line.startsWith('data: '))!.slice(6):raw);
- assert.equal(result.result.tools.length,9);for(const tool of result.result.tools){assert.equal(tool.annotations.readOnlyHint,true);assert.equal(tool.annotations.openWorldHint,false);assert.equal(tool.inputSchema.additionalProperties,false);}
+ assert.equal(result.result.tools.length,10);for(const tool of result.result.tools){assert.equal(tool.annotations.readOnlyHint,true);assert.equal(tool.annotations.openWorldHint,false);assert.equal(tool.inputSchema.additionalProperties,false);}
 });
 
 test('People intelligence real stores isolate saved lenses and canonical private helper memory by credential owner',async t=>{

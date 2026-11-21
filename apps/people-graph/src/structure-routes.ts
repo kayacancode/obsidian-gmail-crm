@@ -33,6 +33,11 @@ export async function structureRoute(request:Request,env:MailEnv,owner:string){
    if(!q||(q.topic!==undefined&&!text(q.topic)))return json({error:'invalid_request'},400);
    return json(await stub.bridges(q.topic));
   }
+  if(path==='/api/people/atlas'){
+   const q=only(url,['topic']);const topic=text(q?.topic);
+   if(!q||!topic)return json({error:'invalid_request'},400);
+   return json(await stub.atlas(topic));
+  }
   return json({error:'not_found'},404);
  }catch(error){
   const code=error instanceof Error?error.message:'';

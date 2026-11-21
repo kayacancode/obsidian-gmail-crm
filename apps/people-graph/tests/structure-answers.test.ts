@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {clusterNetwork,structureContext,contrast,widen,bridges,connectors,stanceLabels,type Candidate,type StructureEvent} from '../src/network-structure';
+import {clusterNetwork,structureContext,contrast,widen,bridges,connectors,stanceLabels,assembleAtlas,absentCommunities,type Candidate,type StructureEvent} from '../src/network-structure';
 import {fixture,NOW,at,node} from './network-structure.test';
 
 const candidate=(personId:string,relevance:number):Candidate=>({personId,name:personId.toUpperCase(),relevance,evidence:[{summary:`${personId} on robotics hiring`,observedAt:at(5),source:'gmail'}]});
@@ -87,4 +87,32 @@ test('connectors: people whose ties reach two or more circles',async()=>{
  assert.deepEqual(connectors(input,clusters).map(c=>c.personId),['c']);
  input.nodes.push(node('z','zeta.test'));
  assert.deepEqual(connectors(input,clusters).map(c=>c.personId),['c']);
+});
+
+test('atlas: known, fringe and communities around a topic, with inferred absences that never name anyone',async()=>{
+ const input=fixture(),ctx=await context(input);
+ const known=[candidate('a2',0.9),candidate('b2',0.8),candidate('l',0.7),candidate('s',0.6),candidate('b3',0.2)];
+ const atlas=assembleAtlas('robotics hiring',input,ctx,known,['Grid operators','  Grid operators ','B2 fans','x'.repeat(61),'Utilities','Regulators','Insurers','Investors'],NOW);
+ assert.deepEqual(Object.keys(atlas).sort(),['absent','communities','fringe','gaps','generatedAt','known','topic','version']);
+ assert.equal(atlas.version,1);
+ assert.deepEqual(atlas.known.map(k=>k.personId),['a2','b2','l','s']);
+ assert.deepEqual(atlas.fringe.map(f=>f.personId),['b2','l','s']);
+ assert.deepEqual(atlas.fringe.find(f=>f.personId==='s')!.reach,{kind:'via',via:['maya@example.test']});
+ assert.deepEqual(atlas.fringe.find(f=>f.personId==='b2')!.reach,{kind:'direct'});
+ const acme=atlas.communities.find(c=>c.clusterId===ctx.clusters.byNode.a2)!;
+ assert.equal(acme.usual,true);
+ assert.equal(acme.topicPeople,1);
+ // Absences: trimmed, deduplicated, at most 60 characters, never a known name, at most five.
+ assert.deepEqual(atlas.absent,[{label:'Grid operators',inferred:true},{label:'Utilities',inferred:true},{label:'Regulators',inferred:true},{label:'Insurers',inferred:true},{label:'Investors',inferred:true}]);
+ const empty=assembleAtlas('quantum knitting',input,ctx,[],[],NOW);
+ assert.match(empty.gaps.join(),/No one in your network has evidence about quantum knitting/);
+});
+
+test('atlas: absent communities come from one validated model call that sees only labels',async()=>{
+ let seen='';
+ const ai={run:async(_model:string,input:{messages:{content:string}[]})=>{seen=input.messages.map(m=>m.content).join('\n');return {response:{absent:['Grid operators',7,'Utilities']}};}} as unknown as Ai;
+ assert.deepEqual(await absentCommunities(ai,'climate fintech',[{companies:['acme.test'],themes:['Payments']}]),['Grid operators','Utilities']);
+ assert.match(seen,/acme\.test/);
+ assert.deepEqual(await absentCommunities(undefined,'climate fintech',[]),[]);
+ assert.deepEqual(await absentCommunities({run:async()=>{throw Error('down');}} as unknown as Ai,'x',[]),[]);
 });
