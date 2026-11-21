@@ -2024,13 +2024,15 @@ function upcomingMeetings(events, ownerEmails2) {
     const attendees = (_d = event.attendees) != null ? _d : [];
     const self = attendees.find((a) => a.self || a.email && ownerEmails2.has(a.email.toLowerCase()));
     if ((self == null ? void 0 : self.responseStatus) === "declined") continue;
-    const others = [...new Set(attendees.flatMap((a) => {
+    const emails = attendees.flatMap((a) => {
       var _a2;
       const email = (_a2 = a.email) == null ? void 0 : _a2.trim().toLowerCase();
-      return email && !a.self && !ownerEmails2.has(email) && !NOT_A_PERSON.test(email) ? [email] : [];
-    }))];
-    if (!others.length) continue;
-    meetings.push({ id: event.id, title: ((_e = event.summary) == null ? void 0 : _e.trim()) || "Untitled meeting", start, attendees: others });
+      return email && !a.self && !ownerEmails2.has(email) ? [email] : [];
+    });
+    const others = [...new Set(emails.filter((email) => !NOT_A_PERSON.test(email)))];
+    const sharedInvite = !others.length && emails.some((email) => NOT_A_PERSON.test(email));
+    if (!others.length && !sharedInvite) continue;
+    meetings.push({ id: event.id, title: ((_e = event.summary) == null ? void 0 : _e.trim()) || "Untitled meeting", start, attendees: others, sharedInvite });
   }
   return meetings.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
@@ -2069,7 +2071,8 @@ async function relatedNextSteps(meeting, notes, read, ownerName) {
   const people = [...new Set(meeting.attendees)].sort().join(",");
   const groups = [
     earlier.filter((n) => n.calendarTitle && normalizeEventTitle(n.calendarTitle) === title),
-    earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people)
+    // Needs someone: notes nobody is linked to must not match a meeting with no listed attendees.
+    people ? earlier.filter((n) => [...new Set(n.attendees)].sort().join(",") === people) : []
   ];
   for (const group of groups)
     for (const note of group) {
@@ -2100,8 +2103,10 @@ function renderBrief(entries, people, now) {
       out.push(`Open next steps, from ${link(steps.path, steps.title)} on ${steps.date}:`, "");
       if (steps.steps.length) for (const step of steps.steps) out.push(`- [ ] ${step.title}${step.detail ? `: ${step.detail.slice(0, 200)}` : ""}`);
       else out.push("No open next steps.");
-      out.push("", "Attendees:", "");
+      out.push("");
+      if (meeting.attendees.length || !meeting.sharedInvite) out.push("Attendees:", "");
     }
+    if (!meeting.attendees.length && meeting.sharedInvite) out.push("Attendees: from a shared calendar invite");
     for (const email of meeting.attendees) {
       const person = people.get(email);
       if (!(person == null ? void 0 : person.page)) {
