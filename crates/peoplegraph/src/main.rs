@@ -4,6 +4,7 @@ mod agent;
 mod ask;
 mod config;
 mod hosted;
+mod intros;
 mod life;
 mod moments;
 mod peer;
@@ -101,6 +102,8 @@ enum Commands {
     Mind(moments::MindArgs),
     /// Today's moments: a few evidenced reasons to reach out; act, snooze or dismiss them.
     Moments(moments::MomentsArgs),
+    /// Three-party introductions: propose one, record each step, then whether they met.
+    Intros(intros::IntrosArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -689,6 +692,7 @@ fn run_with_profile(
             | Commands::Atlas(_)
             | Commands::Mind(_)
             | Commands::Moments(_)
+            | Commands::Intros(_)
             | Commands::Lens(_)
             | Commands::Sources(_)
             | Commands::Matches(_)
@@ -727,6 +731,7 @@ fn run_with_profile(
             | Commands::Bridges(_)
             | Commands::Atlas(_) => structure::run(&cli.command, start),
             Commands::Mind(_) | Commands::Moments(_) => moments::run(&cli.command, start),
+            Commands::Intros(_) => intros::run(&cli.command, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -880,6 +885,7 @@ fn run_with_profile(
         | Commands::Atlas(_)
         | Commands::Mind(_)
         | Commands::Moments(_)
+        | Commands::Intros(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -1050,6 +1056,7 @@ fn remote_path(command: &Commands) -> Option<String> {
         | Commands::Atlas(_)
         | Commands::Mind(_)
         | Commands::Moments(_)
+        | Commands::Intros(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -5379,6 +5386,7 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Atlas(_) => "atlas",
         Commands::Mind(_) => "mind",
         Commands::Moments(_) => "moments",
+        Commands::Intros(_) => "intros",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5535,6 +5543,12 @@ fn describe_payload() -> Value {
                 "usage": "peoplegraph moments [--today] | act|snooze|dismiss <id> | budget <1-10>",
                 "status": "implemented_hosted",
                 "notes": "A few evidenced reasons a day to reach out (pre_meeting, want_to_talk, fresh_signal, fringe_match, bridge, cold_and_relevant, widen), generated once a day within the budget (default 3). Without a note only meetings surface. Never asks peers. stats counts moments acted on."
+            },
+            {
+                "name": "intros",
+                "usage": "peoplegraph intros list | show <id> | propose --parties <a>,<b> [--introducer owner|<id>] --reason <text> | advance <id> asked_introducer|introducer_accepted|target_opted_in|made|declined [--vouch <text>] | outcome <id> met|not_met [--note <text>]",
+                "status": "implemented_hosted",
+                "notes": "Three-party introductions with a double opt-in: proposed, asked_introducer, introducer_accepted, target_opted_in, made, then met or not_met. One proposal per call, five a day, five open asks per introducer; 30 days without progress expires. People never sends anything: draft the messages for the owner. Vouches stay with the owner."
             },
             {
                 "name": "peer",

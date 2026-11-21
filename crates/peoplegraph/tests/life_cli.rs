@@ -269,3 +269,55 @@ fn moments_commands_use_the_moment_routes() {
         json!({"method":"POST","path":"/api/people/moments/settings","body":{"budget":2}})
     );
 }
+
+#[test]
+fn intros_commands_use_the_introduction_routes() {
+    assert_eq!(
+        sent(&["intros", "list"]),
+        json!({"method":"GET","path":"/api/people/introductions"})
+    );
+    assert_eq!(
+        sent(&[
+            "intros",
+            "propose",
+            "--parties",
+            "person_a,person_b",
+            "--reason",
+            "Both on nurse scheduling"
+        ]),
+        json!({"method":"POST","path":"/api/people/introductions","body":{"introducer":"owner","parties":["person_a","person_b"],"reason":"Both on nurse scheduling"}})
+    );
+    assert_eq!(
+        sent(&[
+            "intros",
+            "propose",
+            "--introducer",
+            "person_j",
+            "--parties",
+            "owner,person_b",
+            "--reason",
+            "John knows Bo"
+        ]),
+        json!({"method":"POST","path":"/api/people/introductions","body":{"introducer":"person_j","parties":["owner","person_b"],"reason":"John knows Bo"}})
+    );
+    assert_eq!(
+        sent(&[
+            "intros",
+            "advance",
+            "intro_1",
+            "introducer_accepted",
+            "--vouch",
+            "Ada ships"
+        ]),
+        json!({"method":"POST","path":"/api/people/introductions/advance","body":{"id":"intro_1","to":"introducer_accepted","vouch":"Ada ships"}})
+    );
+    assert_eq!(
+        sent(&["intros", "outcome", "intro_1", "met", "--note", "Coffee"]),
+        json!({"method":"POST","path":"/api/people/introductions/outcome","body":{"id":"intro_1","result":"met","note":"Coffee"}})
+    );
+    let (_, shown) = run(&["intros", "show", "intro_1"]);
+    assert_eq!(
+        shown,
+        json!({"method":"GET","path":"/api/people/introductions"})
+    );
+}

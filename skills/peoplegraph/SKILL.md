@@ -49,6 +49,10 @@ A curiosity note is the owner's current thinking: `## What's new in my head`, `#
 
 `peoplegraph moments --today` (MCP `list_moments`) returns today's moments: a few evidenced reasons to reach out, generated once a day within a small budget (default 3; `moments budget <1-10>`). Present them as they are, with their `why`; never invent extra ones, never pad a quiet day, and never contact anyone yourself. Record the owner's decision with `moments act|snooze|dismiss <id>` (MCP `update_moment`). Success is `stats.acted`, connections made, not time spent. Without an active note only meetings appear. Moments never ask peers.
 
+## Introductions
+
+An introduction involves three people: an introducer and two parties. When the owner wants one (for example from a `bridge` moment), propose exactly one with `peoplegraph intros propose --parties <a>,<b> [--introducer <id>] --reason "<why>"` (MCP `propose_introduction`). Then record each step the owner reports with `intros advance <id> <step>`: `asked_introducer` → `introducer_accepted` → `target_opted_in` (the person agreed: double opt-in) → `made`, and finally `intros outcome <id> met|not_met`. Never skip the opt-in, never send anything yourself, and never propose in bulk (five a day, five open asks per introducer). Draft the messages for the owner to send. A vouch (`--vouch`, only when the owner introduces) stays private to the owner; share it only with the two parties, in the owner's own message. `intros list` also shows shared-workspace requests, read-only.
+
 ## Private People questions
 
 These require `people:read`. They use the website's saved context, ranking, explanations, and visible-network rules.
