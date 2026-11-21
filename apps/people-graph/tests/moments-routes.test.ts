@@ -62,3 +62,35 @@ test('moments: machines read with people:read and act only with people:write',as
  assert.equal((await machine(f.env,['people:read'],'POST','/api/people/moments/update',{id,action:'act'})).status,403);
  assert.equal((await machine(f.env,['people:read','people:write'],'POST','/api/people/moments/update',{id,action:'act'})).status,200);
 });
+
+test('moments: a long fringe question cannot blank the day',async()=>{
+ const {f}=await owner();
+ const long='Would '+'nurses really trust an agent to schedule their shifts '.repeat(5)+'?';
+ assert.ok(long.length>200);
+ assert.equal((await f.request('/api/people/mind',{text:`Long\n\n## The fringes\n- ${long}\n`})).status,200);
+ const response=await f.request('/api/people/moments?today=1');
+ assert.equal(response.status,200,await response.clone().text());
+ assert.ok(((await response.json()) as Listed).moments.length>0);
+});
+
+test('moments: a snoozed moment comes back under today once its three days pass',async()=>{
+ const {f}=await owner();
+ const [first]=(await (await f.request('/api/people/moments?today=1')).json() as Listed).moments;
+ assert.equal((await f.request('/api/people/moments/update',{id:first.id,action:'snooze'})).status,200);
+ const realNow=Date.now;
+ Date.now=()=>realNow()+4*DAY;
+ // The session cookie would expire too; ask the owner's store directly.
+ try{
+  const later=await f.service.moments({today:true});
+  assert.ok(later.moments.some(m=>m.id===first.id),JSON.stringify(later.moments.map(m=>m.id)));
+ }finally{Date.now=realNow;}
+});
+
+test('moments: reading before the first sync does not use up the day',async()=>{
+ const {f}=await owner();
+ const graph=f.service.graph.bind(f.service);
+ Object.assign(f.service,{graph:async()=>null});
+ assert.deepEqual((await (await f.request('/api/people/moments?today=1')).json() as Listed).moments,[]);
+ Object.assign(f.service,{graph});
+ assert.ok(((await (await f.request('/api/people/moments?today=1')).json()) as Listed).moments.length>0);
+});

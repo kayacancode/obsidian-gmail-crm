@@ -11,8 +11,8 @@ const pair=(a:string,b:string,keywords:string[]):BridgePair=>({people:[{personId
 
 function input(extra:Partial<MomentInput>={}):MomentInput{
  return {now:NOW,day:TODAY,budget:3,
-  notes:[{id:'note_1',title:'Agentic networks',keywords:new Set(['nurses','scheduling','privacy','agents']),people:[{name:'Wen',personId:'w'}],fringes:['Would nurses trust an agent to schedule them?']}],
-  whyNow:[],evidence:{},lastContact:{w:at(45)},names:{w:'Wen'},fringe:[],bridges:[],widen:null,existing:[],suppressed:[],...extra};
+  notes:[{id:'note_1',title:'Agentic networks',keywords:new Set(['nurses','scheduling','privacy','agents']),people:[{name:'Wen',personId:'w',wantToTalk:true}],fringes:['Would nurses trust an agent to schedule them?']}],
+  whyNow:[],evidence:{},lastContact:{w:at(45)},names:{w:'Wen'},fringe:[],bridges:[],widen:null,existing:[],suppressed:[],excluded:new Set(),...extra};
 }
 const kinds=(moments:Moment[])=>moments.map(m=>`${m.kind}:${m.personIds.join('+')}`);
 
@@ -62,4 +62,12 @@ test('moments: today\'s budget and surprise ration count moments already made to
  const widen:WidenResult={answers:[{personId:'z',name:'Z',distance:{value:1,cluster:null,reason:'x'},why:[]}],result:{pattern:{cluster:{companies:[],themes:[]},share:0.8,interactions:20,days:30}},gaps:[]};
  assert.deepEqual(kinds(generateMoments(input({existing:[made('fringe_match','q')],widen,lastContact:{w:at(1)}}))),[]);
  assert.deepEqual(kinds(generateMoments(input({existing:[made('bridge','p1'),made('bridge','p2'),made('bridge','p3')]}))),[]);
+});
+
+test('moments: only people under "Who I want to talk to" become want_to_talk, and judged-out people never appear',()=>{
+ const notes=[{id:'note_1',title:'Agentic networks',keywords:new Set(['nurses']),fringes:[],
+  people:[{name:'Wen',personId:'w',wantToTalk:true},{name:'Idea source',personId:'s',wantToTalk:false},{name:'Set aside',personId:'x',wantToTalk:true}]}];
+ const got=kinds(generateMoments(input({notes,lastContact:{w:at(45),s:at(90),x:at(90)},excluded:new Set(['x','m']),
+  whyNow:[why('m','meeting_soon','Meeting',new Date(NOW+3600_000).toISOString())]})));
+ assert.deepEqual(got,['want_to_talk:w']);
 });

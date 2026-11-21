@@ -9,13 +9,15 @@ export type MomentKind='pre_meeting'|'want_to_talk'|'fresh_signal'|'fringe_match
 export type MomentStatus='new'|'acted'|'snoozed'|'dismissed';
 export interface MomentWhy {kind:string;summary:string;source:string;observedAt:string;attribution:'first_hand'}
 export interface Moment {id:string;kind:MomentKind;personIds:string[];trigger:string;answer:{why:MomentWhy[];gaps:string[]};createdAt:string;expiresAt:string;status:MomentStatus;day:string;snoozedUntil?:string}
-export interface MomentNote {id:string;title:string;keywords:Set<string>;people:{name:string;personId:string|null}[];fringes:string[]}
+export interface MomentNote {id:string;title:string;keywords:Set<string>;people:{name:string;personId:string|null;wantToTalk:boolean}[];fringes:string[]}
 export interface MomentInput {
  now:number;day:string;budget:number;notes:MomentNote[];whyNow:WhyNowAnswer[];
  /** Recent evidence summaries per person, for relevance to the notes. */
  evidence:Record<string,string[]>;lastContact:Record<string,string|null>;names:Record<string,string>;
  fringe:{fringe:string;answers:ContrastAnswer[]}[];bridges:BridgePair[];widen:WidenResult|null;
  existing:Moment[];suppressed:{personId:string;kind:MomentKind;until:number}[];
+ /** Suppressed, snoozed or not-yet people: the owner's judgment removes them from every moment. */
+ excluded:Set<string>;
 }
 
 const DAY=86_400_000;
@@ -38,7 +40,8 @@ export function generateMoments(input:MomentInput):Moment[]{
   else if(w.trigger==='going_cold'&&relevant(answer.personId,w.summary))candidates.push({kind:'cold_and_relevant',personIds:[answer.personId],why:evidence,at});
  }
  for(const note of notes)for(const person of note.people){
-  if(!person.personId)continue;
+  // Only people the owner listed to talk to; names in "What's new" are where an idea came from.
+  if(!person.personId||!person.wantToTalk)continue;
   const last=input.lastContact[person.personId],days=last?Math.floor((now-Date.parse(last))/DAY):null;
   if(days!==null&&days<30)continue;
   candidates.push({kind:'want_to_talk',personIds:[person.personId],at:last?Date.parse(last):0,
@@ -63,7 +66,7 @@ export function generateMoments(input:MomentInput):Moment[]{
  const chosen:Moment[]=[],used=new Set<string>();
  for(const c of candidates.sort((a,b)=>PRIORITY[a.kind]-PRIORITY[b.kind]||a.at-b.at||a.personIds.join().localeCompare(b.personIds.join()))){
   if(!room)break;
-  if(c.personIds.some(id=>recent.has(id)||used.has(id))||suppressed(c.kind,c.personIds))continue;
+  if(c.personIds.some(id=>input.excluded.has(id)||recent.has(id)||used.has(id))||suppressed(c.kind,c.personIds))continue;
   if(SURPRISE[c.kind]){if(surprise)continue;surprise=true;}
   c.personIds.forEach(id=>used.add(id));room--;
   chosen.push({id:`${input.day}:${c.kind}:${c.personIds.join('+')}`,kind:c.kind,personIds:c.personIds,trigger:c.why[0].summary,answer:{why:c.why,gaps:[]},
@@ -99,9 +102,13 @@ export class MomentStore {
  recent(now:number):Moment[]{
   return this.storage.sql.exec<MomentRow>('SELECT * FROM moments WHERE created>? ORDER BY created,id',now-30*DAY).toArray().map(row=>this.read(row));
  }
- /** What to show: today's (or every unexpired) moment, never dismissed, snoozed ones once due. */
+ /**
+  * What to show: today's (or every unexpired) moment, never dismissed. A snoozed moment returns
+  * once its three days pass, whatever day it was made, until it expires.
+  */
  list(now:number,day:string|null):Moment[]{
-  return this.recent(now).filter(m=>(day?m.day===day:Date.parse(m.expiresAt)>now)&&m.status!=='dismissed'&&!(m.status==='snoozed'&&m.snoozedUntil&&Date.parse(m.snoozedUntil)>now))
+  const live=(m:Moment)=>Date.parse(m.expiresAt)>now,due=(m:Moment)=>m.status==='snoozed'&&!!m.snoozedUntil&&Date.parse(m.snoozedUntil)<=now;
+  return this.recent(now).filter(m=>(day?m.day===day||(due(m)&&live(m)):live(m))&&m.status!=='dismissed'&&!(m.status==='snoozed'&&!due(m)))
    .sort((a,b)=>PRIORITY[a.kind]-PRIORITY[b.kind]||a.id.localeCompare(b.id));
  }
  update(id:string,action:MomentAction,now:number):Moment{

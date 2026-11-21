@@ -1264,21 +1264,31 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   return {moments:store.list(now,input.today?day:null),stats:store.stats(now),budget:store.budget()};
  }
  private async generateMoments(now:number,day:string){
+  // Before the first sync there is nothing to say; leave the day open for a later read.
+  if(!(await this.graph()))return;
   const store=this.momentStore(),notes:MomentNote[]=[];
-  for(const note of this.curiosityStore().list())notes.push({id:note.id,title:note.title,keywords:noteKeywords(note),people:(await this.resolveNotePeople(note)).people,fringes:note.fringes});
+  for(const note of this.curiosityStore().list()){
+   const people=(await this.resolveNotePeople(note)).people.map(p=>({...p,wantToTalk:note.wantToTalkTo.includes(p.name)}));
+   notes.push({id:note.id,title:note.title,keywords:noteKeywords(note),people,fringes:note.fringes});
+  }
   const whyNowAnswers=(await this.whyNow(25)).answers,structure=notes.length?await this.structureNow():null;
   const evidence:Record<string,string[]>={},lastContact:Record<string,string|null>={},names:Record<string,string>={};
   const fringe:MomentInput['fringe']=[];let found:BridgePair[]=[],pattern:WidenResult|null=null;
+  // Each source stands alone: one failing search or structure answer never blanks the day.
+  const attempt=async<T>(source:string,run:()=>Promise<T>|T):Promise<T|null>=>{try{return await run();}catch{console.error('moments_source_failed',source);return null;}};
   if(structure){
    for(const s of structure.input.themeSignals)if(s.personId&&!s.shared&&Date.parse(s.observedAt)>=now-30*86_400_000)(evidence[s.personId]??=[]).push(s.summary);
    for(const n of structure.input.nodes){lastContact[n.id]=n.lastContact;names[n.id]=n.name;}
-   // At most three fringe questions a day, each one search.
-   for(const question of notes.flatMap(n=>n.fringes).slice(0,3))fringe.push({fringe:question,answers:contrast(await this.topicCandidates(question,structure.excluded,structure.input),structure.ctx).answers});
-   found=bridges(structure.input,structure.ctx,{excluded:structure.excluded}).answers;
+   // At most three fringe questions a day, each one search of at most 200 characters.
+   for(const question of notes.flatMap(n=>n.fringes).slice(0,3)){
+    const answers=await attempt('fringe',async()=>contrast(await this.topicCandidates(question.slice(0,200),structure.excluded,structure.input),structure.ctx).answers);
+    if(answers)fringe.push({fringe:question,answers});
+   }
+   found=await attempt('bridges',()=>bridges(structure.input,structure.ctx,{excluded:structure.excluded}).answers)??[];
    const lens=this.ownerLens().get();
-   pattern=widen(structure.input,structure.ctx,now,{focus:lens.enabled?`${lens.fields.focus} ${lens.fields.needs}`:'',excluded:structure.excluded});
+   pattern=await attempt('widen',()=>widen(structure.input,structure.ctx,now,{focus:lens.enabled?`${lens.fields.focus} ${lens.fields.needs}`:'',excluded:structure.excluded}));
   }
-  store.save(day,generateMoments({now,day,budget:store.budget(),notes,whyNow:whyNowAnswers,evidence,lastContact,names,fringe,bridges:found,widen:pattern,existing:store.recent(now),suppressed:store.suppressions(now)}));
+  store.save(day,generateMoments({now,day,budget:store.budget(),notes,whyNow:whyNowAnswers,evidence,lastContact,names,fringe,bridges:found,widen:pattern,existing:store.recent(now),suppressed:store.suppressions(now),excluded:structure?.excluded??new Set()}));
  }
  async updateMoment(id:string,action:string){
   if(typeof id!=='string'||!id||id.length>300||!isMomentAction(action))throw Error('invalid_request');
