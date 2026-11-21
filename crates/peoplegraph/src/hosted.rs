@@ -292,7 +292,7 @@ pub(crate) fn status(args: &StatusArgs, start: Instant) -> Response {
             ok(
                 "status",
                 data,
-                json!({"ms":elapsed_ms(start),"backend":"people_web"}),
+                json!({"ms":elapsed_ms(start),"backend":"hosted","source":credential.origin}),
             )
         }
         Err(e) => e.response("status", start),

@@ -40,7 +40,7 @@ try{
  const restored=await command(['lens','set','--focus','','--needs','','--offers','']).done;assert.equal(restored.code,0,restored.out);
  const generic=await command(['api','GET','/api/lens']).done;assert.equal(generic.code,0,generic.out);assert.deepEqual(JSON.parse(generic.out).data.fields,{focus:'',needs:'',offers:''});
  const blocked=await command(['api','GET','/api/booking']).done;assert.equal(JSON.parse(blocked.out).error.kind,'insufficient_scope');
- const found=await command(['find-person','Ada']).done;assert.equal(found.code,0,found.out);const data=JSON.parse(found.out);assert.equal(data.data.people[0].id,'ada-test');assert.equal(data.stats.backend,'people-web');
+ const found=await command(['find-person','Ada']).done;assert.equal(found.code,0,found.out);const data=JSON.parse(found.out);assert.equal(data.data.people[0].id,'ada-test');assert.equal(data.stats.backend,'hosted');
  const web=await api('/api/graph');assert.deepEqual(data.data.people[0],web.data.graph.nodes.find(n=>n.id==='ada-test'));
  const neighbors=await command(['get-neighbors','ada-test']).done;assert.equal(JSON.parse(neighbors.out).data.people[0].id,'bo-test');
  const mutation=await command(['feedback','--email','ada@test','--action','boost']).done;assert.equal(JSON.parse(mutation.out).error.kind,'unsupported_operation');

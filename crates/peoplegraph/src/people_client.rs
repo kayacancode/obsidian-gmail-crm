@@ -131,7 +131,7 @@ impl Client {
             Ok(data) => ok(
                 command,
                 data,
-                json!({"ms":elapsed_ms(start),"backend":"people_web"}),
+                json!({"ms":elapsed_ms(start),"backend":"hosted","source":self.target}),
             ),
             Err(error) => error.response(command, start),
         }
@@ -512,6 +512,38 @@ mod tests {
                 assert!(body.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn successful_requests_report_hosted_backend_and_origin() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 1024];
+            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let size = stream.read(&mut chunk).unwrap();
+                if size == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..size]);
+            }
+            let body = r#"{"ok":true}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let client = Client {
+            target: target.clone(),
+            token: "fixture_secret".into(),
+        };
+        let response = client.request_http("lens", "GET", "/api/lens", None, Instant::now());
+        server.join().unwrap();
+        let stats = response.stats.unwrap();
+        assert_eq!(stats["backend"], "hosted");
+        assert_eq!(stats["source"], target);
     }
 
     #[test]

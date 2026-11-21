@@ -690,7 +690,12 @@ fn run_with_profile(
         }
     }
     if !cli.local && (cli.remote || effective_host(cli).is_some()) {
-        return remote_run(cli, command, start);
+        return set_provenance(
+            remote_run(cli, command, start),
+            "legacy_remote",
+            effective_host(cli),
+            None,
+        );
     }
 
     if !cli.local && !matches!(cli.command, Commands::Describe | Commands::Version) {
@@ -701,7 +706,7 @@ fn run_with_profile(
             Err(e) => return fail(command, "profile_error", e, start),
         }
     }
-    match &cli.command {
+    let response = match &cli.command {
         Commands::Login { .. } | Commands::Logout => unreachable!("login handled earlier"),
         Commands::Describe => ok(
             command,
@@ -767,7 +772,8 @@ fn run_with_profile(
         Commands::Api(_) | Commands::Configure(_) | Commands::Status(_) => {
             unreachable!("hosted command handled before dispatch")
         }
-    }
+    };
+    set_provenance(response, "local", local_source(cli), None)
 }
 
 fn remote_run(cli: &Cli, command: &'static str, start: Instant) -> Response {
@@ -5442,6 +5448,42 @@ fn ok(command: impl Into<String>, data: Value, stats: Value) -> Response {
     }
 }
 
+/// Stamp which backend answered, from which source, for which owner.
+/// `owner` falls back to the cache's `user_email` stat.
+pub(crate) fn set_provenance(
+    mut response: Response,
+    backend: &str,
+    source: Option<String>,
+    owner: Option<String>,
+) -> Response {
+    let stats = response.stats.get_or_insert_with(|| json!({}));
+    if let Some(map) = stats.as_object_mut() {
+        map.insert("backend".into(), json!(backend));
+        if let Some(source) = source {
+            map.insert("source".into(), json!(source));
+        }
+        let owner = owner.or_else(|| {
+            map.get("user_email")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        if let Some(owner) = owner {
+            map.insert("owner".into(), json!(owner));
+        }
+    }
+    response
+}
+
+fn local_source(cli: &Cli) -> Option<String> {
+    let path = resolve_cache_path(cli.cache.as_deref()).ok()?;
+    Some(
+        fs::canonicalize(&path)
+            .unwrap_or(path)
+            .display()
+            .to_string(),
+    )
+}
+
 fn fail(
     command: impl Into<String>,
     kind: impl Into<String>,
@@ -5876,6 +5918,37 @@ mod tests {
         assert_eq!(stats["user_email"], "owner@example.com");
         assert_eq!(stats["last_sync"], "2026-10-21T10:00:00Z");
         assert!(stats["ms"].is_number());
+    }
+
+    #[test]
+    fn provenance_fills_owner_from_user_email_and_keeps_existing_stats() {
+        let response = ok(
+            "find-person",
+            json!({}),
+            json!({"matched": 0, "user_email": "owner@example.com"}),
+        );
+        let response = set_provenance(
+            response,
+            "local",
+            Some("/v/contact-index.json".into()),
+            None,
+        );
+        let stats = response.stats.unwrap();
+        assert_eq!(stats["backend"], "local");
+        assert_eq!(stats["source"], "/v/contact-index.json");
+        assert_eq!(stats["owner"], "owner@example.com");
+        assert_eq!(stats["matched"], 0);
+    }
+
+    #[test]
+    fn provenance_on_failures_without_stats() {
+        let mut response = fail("score", "cache_not_found", "x".into(), Instant::now());
+        response.stats = None;
+        let stats = set_provenance(response, "legacy_remote", Some("http://h".into()), None)
+            .stats
+            .unwrap();
+        assert_eq!(stats["backend"], "legacy_remote");
+        assert!(stats.get("owner").is_none());
     }
 
     #[test]

@@ -453,7 +453,16 @@ fn execute(args: &SourcesArgs) -> Result<Value, ClientError> {
 
 pub(crate) fn run(args: &SourcesArgs, start: Instant) -> Response {
     match execute(args) {
-        Ok(data) => ok("sources", data, json!({"ms":elapsed_ms(start),"backend":"people_web"})),
+        Ok(data) => {
+            let source = config::resolve(args.web.url.as_deref())
+                .ok()
+                .map(|credential| credential.origin);
+            ok(
+                "sources",
+                data,
+                json!({"ms":elapsed_ms(start),"backend":"hosted","source":source}),
+            )
+        }
         Err(error) if error.kind == "insufficient_scope" => fail("sources", "insufficient_scope", "Source management requires explicit permission. Run peoplegraph login --write --scope sources:manage for this People origin, then retry.".into(), start),
         Err(error) => error.response("sources", start),
     }

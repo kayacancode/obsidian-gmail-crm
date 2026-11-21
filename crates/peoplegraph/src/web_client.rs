@@ -364,7 +364,8 @@ fn query_credential(
                 if let Some(owner) = owner {
                     stats["owner"] = json!(owner);
                 }
-                stats["backend"] = json!("people-web");
+                stats["backend"] = json!("hosted");
+                stats["source"] = json!(origin);
                 result
             }
             _ => fail(
