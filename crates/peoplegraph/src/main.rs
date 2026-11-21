@@ -1,6 +1,7 @@
 mod agent;
 mod config;
 mod hosted;
+mod life;
 mod people_client;
 mod sources;
 mod web_client;
@@ -64,6 +65,18 @@ enum OutputFormat {
 enum Commands {
     /// Read, append context or explicitly edit private relationship memory in the hosted People account.
     Memory(memory::MemoryArgs),
+    /// Private life signals: list, turn on/off, or forget.
+    Signals(life::SignalsArgs),
+    /// Catch-up brief for one person: when, why, whether, and what changed on both sides.
+    Brief(life::BriefArgs),
+    /// Your own timeline entries, used in two-sided briefs.
+    Me(life::MeArgs),
+    /// A person's company history, derived from email and your corrections.
+    Stints(life::StintsArgs),
+    /// Proposed job moves: the same person on a new work domain, not yet merged.
+    JobMoves(life::JobMovesArgs),
+    /// People whose time at a company overlapped with this person's.
+    Teammates(life::TeammatesArgs),
     /// Read or update your saved Lens with the same owner controls as the website.
     Lens(hosted::LensArgs),
     /// Connect, inspect and sync Gmail or Granola with sources:manage permission.
@@ -172,6 +185,10 @@ struct WhoKnowsArgs {
 
     #[arg(long, default_value_t = 25)]
     limit: usize,
+
+    /// Also list people who used to work there (hosted People only).
+    #[arg(long)]
+    include_former: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -617,6 +634,12 @@ fn run_with_profile(
     if matches!(
         cli.command,
         Commands::Memory(_)
+            | Commands::Signals(_)
+            | Commands::Brief(_)
+            | Commands::Me(_)
+            | Commands::Stints(_)
+            | Commands::JobMoves(_)
+            | Commands::Teammates(_)
             | Commands::Lens(_)
             | Commands::Sources(_)
             | Commands::Matches(_)
@@ -642,6 +665,12 @@ fn run_with_profile(
             Commands::Api(args) => hosted::api(args, start),
             Commands::Configure(args) => hosted::configure(args, start),
             Commands::Status(args) => hosted::status(args, start),
+            Commands::Signals(_)
+            | Commands::Brief(_)
+            | Commands::Me(_)
+            | Commands::Stints(_)
+            | Commands::JobMoves(_)
+            | Commands::Teammates(_) => life::run(&cli.command, start),
             _ => agent::run(&cli.command, start),
         };
     }
@@ -689,7 +718,21 @@ fn run_with_profile(
             Err((kind, message)) => return fail(command, kind, message.into(), start),
         }
     }
+    // Company history lives only in the hosted People network.
+    let include_former = matches!(&cli.command, Commands::WhoKnows(args) if args.include_former);
+    let hosted_only = || {
+        fail(
+            command,
+            "unsupported_locally",
+            "--include-former needs the hosted People network; run without --local or --remote."
+                .to_string(),
+            start,
+        )
+    };
     if !cli.local && (cli.remote || effective_host(cli).is_some()) {
+        if include_former {
+            return hosted_only();
+        }
         return set_provenance(
             remote_run(cli, command, start),
             "legacy_remote",
@@ -705,6 +748,9 @@ fn run_with_profile(
             Ok(None) => {}
             Err(e) => return fail(command, "profile_error", e, start),
         }
+    }
+    if include_former {
+        return hosted_only();
     }
     let response = match &cli.command {
         Commands::Login { .. } | Commands::Logout => unreachable!("login handled earlier"),
@@ -763,6 +809,12 @@ fn run_with_profile(
         Commands::ProposeMerge(args) => propose_merge(cli, command, args, start),
         Commands::Serve(_) => unreachable!("serve handled before command dispatch"),
         Commands::Memory(_)
+        | Commands::Signals(_)
+        | Commands::Brief(_)
+        | Commands::Me(_)
+        | Commands::Stints(_)
+        | Commands::JobMoves(_)
+        | Commands::Teammates(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -918,6 +970,12 @@ fn remote_path(command: &Commands) -> Option<String> {
         Commands::Describe => Some("/describe".to_string()),
         Commands::Version => Some("/version".to_string()),
         Commands::Memory(_)
+        | Commands::Signals(_)
+        | Commands::Brief(_)
+        | Commands::Me(_)
+        | Commands::Stints(_)
+        | Commands::JobMoves(_)
+        | Commands::Teammates(_)
         | Commands::Lens(_)
         | Commands::Sources(_)
         | Commands::Matches(_)
@@ -1050,6 +1108,7 @@ fn run_remote_request(cli: &Cli, cache_path: &Path, path: &str, start: Instant) 
         "/who-knows" => Commands::WhoKnows(WhoKnowsArgs {
             company: query_param(&params, "company"),
             limit: query_usize(&params, "limit", 25),
+            include_former: false,
         }),
         "/reconnect" => Commands::Reconnect(ReconnectArgs {
             limit: query_usize(&params, "limit", 5),
@@ -5231,6 +5290,12 @@ fn obsidian_config_path() -> Option<PathBuf> {
 fn command_name(command: &Commands) -> &'static str {
     match command {
         Commands::Memory(_) => "memory",
+        Commands::Signals(_) => "signals",
+        Commands::Brief(_) => "brief",
+        Commands::Me(_) => "me",
+        Commands::Stints(_) => "stints",
+        Commands::JobMoves(_) => "job-moves",
+        Commands::Teammates(_) => "teammates",
         Commands::Lens(_) => "lens",
         Commands::Sources(_) => "sources",
         Commands::Api(_) => "api",
@@ -5318,9 +5383,43 @@ fn describe_payload() -> Value {
             },
             {
                 "name": "who-knows",
-                "usage": "peoplegraph who-knows --company <name>",
+                "usage": "peoplegraph who-knows --company <name> [--include-former]",
                 "status": "implemented",
-                "notes": "Empty results include data.hints: up to three near company or domain names."
+                "notes": "Empty results include data.hints: up to three near company or domain names. --include-former (hosted only) appends people whose stint there ended, labelled formerly:{from,to}."
+            },
+            {
+                "name": "brief",
+                "usage": "peoplegraph brief <email|exact-name|person-id>",
+                "status": "implemented_hosted",
+                "notes": "Private catch-up brief: when (last contact), why (first-hand life, work and note evidence with source and date), whether (your feedback and relationship note), gaps, and sinceLastContact {theirs, yours}. Sensitive items carry use:tone_only: use them for tone, never repeat them. A shared name returns ambiguous_person with candidates."
+            },
+            {
+                "name": "signals",
+                "usage": "peoplegraph signals list [--person <person-id>] | on | off | forget (<id> | --person <person-id> | --all)",
+                "status": "implemented_hosted",
+                "notes": "Owner-private life signals (travel, hobby, role_change, moved: open; milestone: personal; health, family, loss, money, legal: sensitive). Off until 'signals on'. Each signal expires by category."
+            },
+            {
+                "name": "me",
+                "usage": "peoplegraph me add <text> [--category <category>] [--date YYYY-MM-DD] | list | forget <id>",
+                "status": "implemented_hosted",
+                "notes": "Your own timeline for two-sided briefs. Add entries only on the owner's explicit request; never shared."
+            },
+            {
+                "name": "stints",
+                "usage": "peoplegraph stints show <person-id> | set <person-id> --company <name> --from YYYY-MM [--to YYYY-MM] | forget <id>",
+                "status": "implemented_hosted"
+            },
+            {
+                "name": "job-moves",
+                "usage": "peoplegraph job-moves",
+                "status": "implemented_hosted",
+                "notes": "Proposals only: the same full name on two work domains, not yet merged. Confirm with: peoplegraph api POST /api/people/person-merges."
+            },
+            {
+                "name": "teammates",
+                "usage": "peoplegraph teammates <person-id>",
+                "status": "implemented_hosted"
             },
             {
                 "name": "reconnect",
@@ -6406,6 +6505,7 @@ mod tests {
         let command = Commands::WhoKnows(WhoKnowsArgs {
             company: "Disney Parks & Resorts".to_string(),
             limit: 5,
+            include_former: false,
         });
 
         assert_eq!(

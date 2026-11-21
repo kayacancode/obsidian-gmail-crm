@@ -138,7 +138,7 @@ fn client(
 ) -> Result<people_client::Client, Response> {
     people_client::configure(url).map_err(|(kind, message)| fail(name, kind, message.into(), start))
 }
-fn machine(
+pub(crate) fn machine(
     client: &people_client::Client,
     name: &'static str,
     method: &str,

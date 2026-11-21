@@ -321,6 +321,9 @@ fn query_credential(
         Commands::WhoKnows(a) => {
             body["company"] = json!(a.company);
             body["limit"] = json!(a.limit);
+            if a.include_former {
+                body["include_former"] = json!(true);
+            }
         }
         Commands::GetEdges(a) => {
             body["from"] = json!(a.from);
