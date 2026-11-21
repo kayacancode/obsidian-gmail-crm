@@ -1634,7 +1634,7 @@ fn score_person(
     start: Instant,
 ) -> Response {
     let row = match resolve_person(index, email) {
-        PersonResolution::Found(row) => row,
+        PersonResolution::Found(row) => *row,
         other => return person_failure("score", other, index, start),
     };
 
@@ -2232,7 +2232,7 @@ fn contact_card(
         Err(response) => return *response,
     };
     let primary = match resolve_person(&index, &args.query) {
-        PersonResolution::Found(row) => row,
+        PersonResolution::Found(row) => *row,
         other => return person_failure(command, other, &index, start),
     };
 
@@ -3651,7 +3651,7 @@ fn resolve_email_in_contacts(contacts: &HashMap<String, Contact>, query: &str) -
 }
 
 enum PersonResolution {
-    Found(ContactRow),
+    Found(Box<ContactRow>),
     Ambiguous(Vec<ContactRow>),
     NotFound(Vec<String>),
 }
@@ -3672,7 +3672,7 @@ fn resolve_person(index: &ContactIndex, query: &str) -> PersonResolution {
     let query_lower = query.to_ascii_lowercase();
     if query.contains('@') {
         return match find_by_email_or_alias(index, &query_lower) {
-            Some(row) => PersonResolution::Found(row),
+            Some(row) => PersonResolution::Found(Box::new(row)),
             None => PersonResolution::NotFound(vec![]),
         };
     }
@@ -3728,9 +3728,9 @@ fn resolve_person(index: &ContactIndex, query: &str) -> PersonResolution {
             }
             PersonResolution::NotFound(hints)
         }
-        1 => PersonResolution::Found(groups.remove(0).2),
+        1 => PersonResolution::Found(Box::new(groups.remove(0).2)),
         _ if groups[0].1 >= 0.99 && groups[1].1 < 0.99 => {
-            PersonResolution::Found(groups.remove(0).2)
+            PersonResolution::Found(Box::new(groups.remove(0).2))
         }
         _ => {
             PersonResolution::Ambiguous(groups.into_iter().take(5).map(|(_, _, row)| row).collect())
@@ -5203,10 +5203,11 @@ fn company_hints(index: &ContactIndex, company_norm: &str) -> Vec<String> {
             candidates.push(company);
         }
         let domain = row.contact.domain.trim().to_ascii_lowercase();
-        if !domain.is_empty() && !is_generic_email_domain(&domain) {
-            if let Some(label) = domain.split('.').next() {
-                candidates.push(label.to_string());
-            }
+        if !domain.is_empty()
+            && !is_generic_email_domain(&domain)
+            && let Some(label) = domain.split('.').next()
+        {
+            candidates.push(label.to_string());
         }
     }
     nearest_values(candidates, |display| {
