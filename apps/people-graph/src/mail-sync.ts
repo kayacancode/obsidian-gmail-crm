@@ -12,6 +12,7 @@ import {calendarActivity,normalizeCalendarEvent,type CalendarRecord,type PersonF
 import {LifeSignalStore,extractLifeSignals,type LifeMode,type LifeSource} from './life-signals';
 import {OwnerTimelineStore} from './owner-timeline';
 import {CompanyStintStore,PERSONAL_DOMAINS,deriveStints,mergeStints,overlaps,stintMatches} from './company-stints';
+import {assembleBrief,type CatchUpBrief} from './catch-up-brief';
 import {DurableObject} from 'cloudflare:workers';
 import {parseMessage,emailScore,seal,unseal,opaque, type Metadata} from './mail-model';
 import {RelevanceStore, type RelevanceFeedbackInput} from './relevance-store';
@@ -1050,6 +1051,30 @@ this.ctx.storage.sql.exec('INSERT OR IGNORE INTO messages VALUES (?,?,?)',a.emai
   return this.stintStore().set({...input,personId:await this.canonicalPersonId(input.personId)});
  }
  async forgetCompanyStint(id:string){if(typeof id!=='string'||!id||id.length>100)throw Error('invalid_request');return {removed:this.stintStore().forget(id)};}
+ /** The owner's private catch-up brief for one person, resolved by id, recorded email or exact name. */
+ async catchUpBrief(input:{personId?:unknown;email?:unknown;query?:unknown}):Promise<{ok:true;brief:CatchUpBrief}|{ok:false;error:'not_found'|'ambiguous_person';candidates:{id:string;name:string;company:string}[]}>{
+  const keys=Object.keys(input??{}).filter(k=>input[k as keyof typeof input]!==undefined);
+  const value=keys.length===1?input[keys[0] as keyof typeof input]:undefined;
+  if(typeof value!=='string'||!value.trim()||value.length>200)throw Error('invalid_request');
+  const graph=await this.graph(),nodes=graph?.nodes??[],aliases=graph?.personAliases??{};
+  let matches:GraphPersonNode[]=[];
+  if(keys[0]==='personId')matches=nodes.filter(n=>n.id===(aliases[value]??value));
+  else if(keys[0]==='email'){const id=await this.resolveOwnEmail(value.toLowerCase());matches=id?nodes.filter(n=>n.id===(aliases[id]??id)):[];}
+  else matches=nodes.filter(n=>n.name.toLowerCase()===value.trim().toLowerCase());
+  if(matches.length!==1)return {ok:false,error:matches.length?'ambiguous_person':'not_found',candidates:matches.slice(0,5).map(n=>({id:n.id,name:n.name,company:n.company}))};
+  const person=matches[0],store=this.lifeStore();store.purgeExpired();
+  const ids=new Set(await this.mergedPersonIds(person.id));
+  const memory=await this.memoryForPerson(person.id);
+  const feedback=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM person_feedback WHERE person_id=?',person.id).toArray()[0];
+  const work=(await this.helperContext()).filter(s=>s.personId&&ids.has(s.personId)).slice(0,3).map(s=>({summary:String(s.summary??'').slice(0,240),observedAt:s.observedAt,source:'gmail'}));
+  return {ok:true,brief:assembleBrief({
+   person:{id:person.id,name:person.name,company:person.company,lastContact:person.lastContact,combined:Number.isFinite(person.combined)?person.combined:null},
+   signalsEnabled:store.enabled(),signals:store.list([...ids]),work,
+   memory:memory.entries.slice(0,3).map(e=>({text:e.text,createdAt:e.createdAt})),
+   feedback:feedback?JSON.parse(feedback.data) as {action:string}:null,relationship:memory.relationship,
+   stints:(await this.companyStints(person.id)).stints,timeline:this.timelineStore().list(),now:Date.now(),
+  })};
+ }
  /** People who share a full name across work domains and are not yet merged: proposals only, never merged here. */
  async jobMoveCandidates(){
   const owner=await this.ctx.storage.get<string>('owner');if(!owner)return {candidates:[]};
