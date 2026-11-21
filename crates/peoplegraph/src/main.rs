@@ -946,7 +946,7 @@ fn serve_http(cli: &Cli, args: &ServeArgs, start: Instant) -> Response {
     };
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
         Ok(path) => path,
-        Err(message) => return fail("serve", "cache_not_found", message, start),
+        Err((kind, message)) => return fail("serve", kind, message, start),
     };
     let listener = match TcpListener::bind(&args.bind) {
         Ok(listener) => listener,
@@ -1293,7 +1293,7 @@ fn load_index(
 ) -> Result<(PathBuf, ContactIndex), Box<Response>> {
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
         Ok(path) => path,
-        Err(message) => return Err(Box::new(fail(command, "cache_not_found", message, start))),
+        Err((kind, message)) => return Err(Box::new(fail(command, kind, message, start))),
     };
 
     let content = match fs::read_to_string(&cache_path) {
@@ -1772,7 +1772,7 @@ fn apply_feedback_delta(combined: u8, entry: Option<&FeedbackEntry>) -> u8 {
 
 // Resolve and read the feedback overlay for read-only score surfaces.
 fn load_feedback(cli: &Cli) -> Result<FeedbackStore, String> {
-    let cache_path = resolve_cache_path(cli.cache.as_deref())?;
+    let cache_path = resolve_cache_path(cli.cache.as_deref()).map_err(|(_, message)| message)?;
     read_feedback(&feedback_path(&cache_path))
 }
 
@@ -1816,7 +1816,7 @@ fn feedback(cli: &Cli, command: &'static str, args: &FeedbackArgs, start: Instan
 
     let cache_path = match resolve_cache_path(cli.cache.as_deref()) {
         Ok(path) => path,
-        Err(message) => return fail(command, "cache_not_found", message, start),
+        Err((kind, message)) => return fail(command, kind, message, start),
     };
 
     // clear: undo a swipe — drop the overlay entry (and the blocklist entry if
@@ -5067,12 +5067,14 @@ fn round_confidence(confidence: f64) -> f64 {
     (confidence * 100.0).round() / 100.0
 }
 
-fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
+fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, (&'static str, String)> {
     if let Some(path) = explicit {
-        return path
-            .exists()
-            .then(|| path.to_path_buf())
-            .ok_or_else(|| format!("cache path does not exist: {}", path.display()));
+        return path.exists().then(|| path.to_path_buf()).ok_or_else(|| {
+            (
+                "cache_not_found",
+                format!("cache path does not exist: {}", path.display()),
+            )
+        });
     }
 
     if let Ok(path) = env::var("PEOPLEGRAPH_CACHE") {
@@ -5082,8 +5084,12 @@ fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
         }
     }
 
-    let mut dir =
-        env::current_dir().map_err(|err| format!("cannot read current directory: {err}"))?;
+    let mut dir = env::current_dir().map_err(|err| {
+        (
+            "cache_not_found",
+            format!("cannot read current directory: {err}"),
+        )
+    })?;
     loop {
         let candidate = dir.join(".obsidian/plugins/gmail-crm/contact-index.json");
         if candidate.exists() {
@@ -5098,34 +5104,69 @@ fn resolve_cache_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
         }
     }
 
-    if let Some(path) = resolve_obsidian_cache_path() {
-        return Ok(path);
-    }
-
-    Err("no contact-index.json found; pass --cache <path> or set PEOPLEGRAPH_CACHE".to_string())
-}
-
-fn resolve_obsidian_cache_path() -> Option<PathBuf> {
-    let config_path = obsidian_config_path()?;
-    let content = fs::read_to_string(config_path).ok()?;
-    let config: Value = serde_json::from_str(&content).ok()?;
-    let vaults = config.get("vaults")?.as_object()?;
-    let mut candidates = Vec::new();
-
-    for vault in vaults.values() {
-        if let Some(vault_path) = vault.get("path").and_then(Value::as_str) {
-            let cache_path =
-                Path::new(vault_path).join(".obsidian/plugins/gmail-crm/contact-index.json");
-            if cache_path.exists() {
-                let is_open = vault.get("open").and_then(Value::as_bool).unwrap_or(false);
-                let ts = vault.get("ts").and_then(Value::as_i64).unwrap_or(0);
-                candidates.push((is_open, ts, cache_path));
-            }
+    match resolve_obsidian_cache_path() {
+        Ok(Some(path)) => return Ok(path),
+        Ok(None) => {}
+        Err(paths) => {
+            return Err((
+                "ambiguous_cache",
+                format!(
+                    "found contact caches in {} Obsidian vaults: {}. Pass --cache <path> or set PEOPLEGRAPH_CACHE.",
+                    paths.len(),
+                    paths.join(", ")
+                ),
+            ));
         }
     }
 
-    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    candidates.into_iter().map(|(_, _, path)| path).next()
+    Err((
+        "cache_not_found",
+        "no contact-index.json found; pass --cache <path> or set PEOPLEGRAPH_CACHE".to_string(),
+    ))
+}
+
+fn has_hidden_segment(path: &Path) -> bool {
+    path.components().any(|component| {
+        matches!(component, std::path::Component::Normal(segment) if segment.to_string_lossy().starts_with('.'))
+    })
+}
+
+/// One cache from Obsidian's vault list, skipping vaults under hidden directories;
+/// `Err` lists the caches when more than one real vault has one.
+fn discover_vault_cache(config: &Value) -> Result<Option<PathBuf>, Vec<String>> {
+    let Some(vaults) = config.get("vaults").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let mut found: Vec<PathBuf> = vaults
+        .values()
+        .filter_map(|vault| vault.get("path").and_then(Value::as_str).map(PathBuf::from))
+        .filter(|path| !has_hidden_segment(path))
+        .map(|path| path.join(".obsidian/plugins/gmail-crm/contact-index.json"))
+        .filter(|cache| cache.exists())
+        .collect();
+    found.sort();
+    found.dedup();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(found
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect()),
+    }
+}
+
+fn resolve_obsidian_cache_path() -> Result<Option<PathBuf>, Vec<String>> {
+    let Some(config_path) = obsidian_config_path() else {
+        return Ok(None);
+    };
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return Ok(None);
+    };
+    let Ok(config) = serde_json::from_str::<Value>(&content) else {
+        return Ok(None);
+    };
+    discover_vault_cache(&config)
 }
 
 fn obsidian_config_path() -> Option<PathBuf> {
