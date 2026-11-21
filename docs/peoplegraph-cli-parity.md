@@ -144,6 +144,14 @@ Client deadlines are operation-specific: matches/helpers and their registered ra
 
 Google account and Calendar consent still require Google's browser flow. Their connect operations return `requiresBrowser` and a `browserHandoff` URL. Public booking visitor identity flows, browser-session creation and Obsidian graph publishing retain their existing separate authentication. They are not owner editing operations or a way for an integration key to impersonate another person.
 
+## Query provenance and local behavior
+
+Every response carries `stats.backend` (`hosted`, `local` or `legacy_remote`), `stats.source` (origin or absolute cache path) and `stats.owner`. Check them before answering; if the source is not the owner's real data, say so.
+
+`find-person` labels matches `exact`, `reordered`, `partial` or `fuzzy`, never treats a name as an email fragment (email substrings need an `@` and at least three other characters), and hides the owner's own addresses unless `--include-self` (local only). `score`, `contact-card`, `get-neighbors` and `get-edges` accept a name: `ambiguous_person` returns `data.candidates`; ask which one. `not_found` and empty `find-person`/`who-knows` results return `data.hints`; offer them as "did you mean", never as answers.
+
+Local vault discovery skips vaults under hidden directories such as `~/.codex`. If more than one real vault has a contact cache, the CLI fails with `ambiguous_cache` and lists them; pass `--cache <path>` or set `PEOPLEGRAPH_CACHE`.
+
 ## Version and rollout
 
 `peoplegraph --version`, `peoplegraph version` and `peoplegraph describe` now report the installed binary's version even if `PEOPLEGRAPH_HOST` points at an older daemon. Release CI checks both the tag/package versions and native release executable output.

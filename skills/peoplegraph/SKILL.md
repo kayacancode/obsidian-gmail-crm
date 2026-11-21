@@ -1,11 +1,13 @@
 ---
 name: peoplegraph
-description: Use when the owner asks about people they know, relationship context, saved focus or needs, relevant connections, reconnect candidates, private People notes, or contact cleanup through PeopleGraph.
+description: Use when the owner asks about people they know, who they know at a company, when they last talked to someone, how strong a relationship is, who to reconnect with, who could make an intro, relationship context, saved focus or needs, private People notes, or contact cleanup through PeopleGraph.
 ---
 
 # PeopleGraph
 
 Use `peoplegraph version` and `peoplegraph describe` to inspect the installed CLI. This skill targets 0.3.17. Commands return JSON; check `ok` before using `data`. On failure explain `error.kind` and `error.message`. Never invent a score, date, connection, or recommendation when a query fails.
+
+Works from any harness that can run a CLI or call MCP: Claude, Codex, ChatGPT (MCP), OpenClaw/Botwick, Hermes.
 
 `web_request_timeout` is a client deadline. Report `stats.httpStatus` only when present: it is the status actually received, including before a body timeout. No status means no basis for calling the error HTTP 503. Actual 503s retain safe codes such as `people_memory_failed` or `people_request_failed`; do not guess the underlying cause. Matches/helpers have 180-second budgets for ranking; ordinary reads and refresh enqueue have 30 seconds. A 30-second refresh timeout is not expected progress: enqueue should return HTTP 202 promptly. Inspect mutation status before retrying a timeout.
 
@@ -82,7 +84,19 @@ For an explicit profile edit: look up current memory and construct an object con
 
 ## Graph and local commands
 
-Use `find-person "Maya"`, `contact-card <identity>`, `who-knows --company Acme`, `get-neighbors <person-id>`, `get-edges --from <identity> --to <identity>`, and `reconnect --limit 5` for graph questions. Follow `describe` for backend-specific flags. Local `score <email>` estimates relationship strength from cached activity. Web scores and reconnect ordering have their own meaning; preserve source and freshness caveats.
+| Owner asks | Run |
+| --- | --- |
+| “Who do I know at Acme?” / “Can anyone intro me to Acme?” | `peoplegraph who-knows --company Acme` (the warmest are first) |
+| “Tell me about Maya” / “When did I last talk to Maya?” | `peoplegraph find-person "Maya"`, then `contact-card <email-or-name>` |
+| “How strong is my relationship with Maya?” | `peoplegraph score <email-or-name>` |
+| “Who should I reconnect with?” | `peoplegraph reconnect --limit 5` |
+| “What connects Maya and Sam?” (local edge data) | `peoplegraph get-edges --from <email-or-name> --to <email-or-name>` |
+
+Follow `describe` for backend-specific flags. Local `score` estimates relationship strength from cached activity. Web scores and reconnect ordering have their own meaning; preserve source and freshness caveats.
+
+Every response carries `stats.backend` (`hosted`, `local` or `legacy_remote`), `stats.source` (origin or absolute cache path) and `stats.owner`. Check them before answering; if the source is not the owner's real data, say so.
+
+`find-person` labels matches `exact`, `reordered`, `partial` or `fuzzy`, never treats a name as an email fragment, and hides the owner's own addresses unless `--include-self`. `score`, `contact-card`, `get-neighbors` and `get-edges` accept a name: `ambiguous_person` returns `data.candidates`; ask which one. `not_found` and empty `find-person`/`who-knows` results return `data.hints`; offer them as "did you mean", never as answers. `ambiguous_cache` lists the vault caches found; ask the owner which to use and pass `--cache`.
 
 Local `feedback`, merge, and import commands mutate cache or sidecars. Follow the owner's existing single-writer setup. Confirm destructive actions unless explicitly requested, and back up before bulk changes. Never delete `reconnect-feedback.json` to repair `feedback_unreadable`; repair the JSON. Respect suppressed/deleted contacts.
 
