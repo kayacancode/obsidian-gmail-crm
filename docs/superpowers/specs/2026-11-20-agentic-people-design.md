@@ -49,7 +49,7 @@ The note's own shape (what's new in my head, why it interests me, the fringes, w
 
 | # | Sub-project | Depends on |
 |---|---|---|
-| 0 | Foundation: correct backend/cache, name matching, hints, one skill, banded shared scores | none |
+| 0 | Foundation: correct backend/cache, name matching, hints, one skill | none |
 | 1 | Life signals, job moves and the two-sided catch-up brief | 0 |
 | 2 | `ask`: natural-language entry point (CLI and MCP) | 0, 1 |
 | 3 | Peer layer over the tailnet | 1, 2 |
@@ -100,7 +100,7 @@ Every fact involves three parties: the **subject** it is about, the **holder** w
 Rules that apply in every zone:
 
 - **Judgments never cross.** Swipes and relationship notes stay in zone A. The single exception is an explicit per-person vouch (sub-project 6), which the holder chooses.
-- **Closeness crosses only as a band.** Other members see `strong | some | light`, never numeric scores or exact counts (foundation item 8).
+- **Shared scores stay activity-only.** Shared networks keep their existing numeric score, which `exportWorkspaceSlice` (`mail-sync.ts`) computes from raw email counts and recency (`emailScore`, `scoreVersion: 'email-v1'`). That excludes the holder's swipe (`feedbackDelta`) and relationship-note (`relationshipDelta`) adjustments, so judgments already never cross. This behavior is kept and pinned by a partition test. Only the new peer layer, which has no existing users, answers closeness as a band (`knows`).
 - **The question is information.** Peers who know the subject learn that the asker asked. The holder's audit log shows this, and it is documented to askers. HMAC references hide it from peers who don't know the subject.
 - **Answers are never combined and stored.** Answers from several holders are merged only in the asker's response and are not persisted. Each asker may ask about the same subject at most 3 times per day per holder.
 - **The subject can opt out.** A tailnet member may add themselves to their own `peers.json` `doNotAnswerAbout` list. It is published to group peers (as the HMAC of each of their addresses), and every peer refuses `catch_up` and `knows` questions about them. Non-members cannot opt out, which is one more reason only `open`-tier signals cross.
@@ -119,8 +119,7 @@ Every object an agent sees has a versioned JSON Schema, published at `<origin>/s
 4. **Safe discovery.** Vault auto-discovery skips vault paths with any hidden path segment (a segment starting with `.`, e.g. `~/.codex/...`), other than the `.obsidian` plugin directory itself. If more than one remaining vault has a cache, it fails with `ambiguous_cache`, listing the paths. `--cache` and `PEOPLEGRAPH_CACHE` are unaffected.
 5. **Provenance in stats** as defined in the envelope section, for every command and backend.
 6. **One skill.** Merge `skills/gmail-crm` into `skills/peoplegraph`. Remove the stale "copy `bin/peoplegraph`, never run the installer" guidance and list the supported harnesses. The installer keeps shipping the one skill.
-7. **Banded shared scores.** In shared networks, introduction routes and answer cards, another member's relationship to a person is shown as `band: strong | some | light`. Numeric scores no longer cross between members (`network-answer.ts` currently passes them). The owner's own scores are unchanged.
-8. **Rollout on this machine** (operational, not code): install the new release over 0.3.11, then run `peoplegraph login`.
+7. **Rollout on this machine** (operational, not code): install the new release over 0.3.11, then run `peoplegraph login`.
 
 ## Sub-project 1: Life signals, job moves and the catch-up brief
 
@@ -343,7 +342,7 @@ Founders ask "where can I search your network?" Guest ask lets an outsider ask w
 - **Entry.** The guest asks at `<origin>/ask/<owner-handle>`, or through their own agent via the public MCP tool `ask_network`. Guest identity reuses booking's Google visitor verification. Questions are at most 500 characters, each guest may ask 3 per day, and the owner can turn guest ask off.
 - **Draft.** The owner's agent drafts an answer from the owner's graph and zone C evidence, **work evidence only**. Life signals, curiosity notes and peer answers are never used.
 - **Approval.** Every answer requires owner approval (`GuestAsk` status `pending → answered | declined`, expiring after 7 days). An approved answer describes people without naming them, e.g. "a design lead at a health startup working on nurse scheduling".
-- **Names only through introductions.** A name is revealed only when the guest requests an introduction, the owner accepts as introducer, and the described person opts in (sub-project 6).
+- **Names only through introductions.** A name is revealed only when the guest requests an introduction, the owner accepts as introducer, and the described person opts in (sub-project 6). There is no "findable by guests" pre-opt-in; every name needs a per-request opt-in. *(Decided 2026-11-20.)*
 - `peoplegraph guest pending|answer <id> [--file <draft.json>]|decline <id>`.
 
 ## Error kinds (new)
@@ -356,7 +355,7 @@ Founders ask "where can I search your network?" Guest ask lets an outsider ask w
 - **Worker** (`npm test`, typecheck): life extraction with a mocked model, covering tier derivation, first-person anchoring, Granola attribution, expiry, the off-by-default setting and forget. Also isolation tests proving signals never reach workspace graphs, and `ask` classification with a mocked model, covering `clarify` and param validation.
 - **`ask` evaluation set.** About 40 natural-language questions with expected intents and params, checked in as a fixture. A deterministic test uses recorded classifications. `scripts/eval-ask.mjs` runs the live model on demand and reports accuracy; it does not run in CI.
 - **Peer tests.** Two in-process `peer serve` instances with an injected `whois` resolver and fixture data, covering the allow-list, HMAC resolution, unknown-person indistinguishability, tier policy, subject opt-out, the per-subject question limit, tickets, expiry, the rate limit and audit entries. A manual check against two real tailnet nodes runs before release.
-- **Partition tests.** For each zone, a fixture fact of that zone is asserted absent from every response type it must not reach: shared graph, peer, guest, MCP. Includes banded scores replacing numeric scores in shared networks.
+- **Partition tests.** For each zone, a fixture fact of that zone is asserted absent from every response type it must not reach: shared graph, peer, guest, MCP. Includes a test that shared-network scores stay equal to the activity-only `emailScore` when the holder has swipe and relationship-note adjustments.
 - **Curiosity notes and moments.** Parsing of the four-heading format, using a synthetic fixture with the same shape as Kaya's working note and no real names; name resolution; budget, dedupe and suppression; no peer calls during generation.
 - **Introductions.** The state machine, including illegal transitions, migration of existing requests, and vouch visibility limited to the two parties.
 - **Guest ask.** Rate limits, owner approval, no life signals in drafts, and no names before opt-in.
