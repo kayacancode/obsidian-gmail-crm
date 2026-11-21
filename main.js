@@ -1910,6 +1910,8 @@ var PeopleIntelligenceView = class extends import_obsidian2.ItemView {
 };
 
 // src/granola-links.ts
+var NOT_A_PERSON = /@(group|resource)\.calendar\.google\.com$/;
+var isAutomatedAddress = (email) => /^(no-?reply|do-?not-?reply|notifications?|calendar-notification|mailer-daemon|bounces?)([+._-][^@]*)?@/i.test(email);
 var text = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
 var normalizeEventTitle = (value) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 var normalizeName = (value) => value.trim().toLowerCase().replace(/\s+/g, " ");
@@ -1950,7 +1952,7 @@ function granolaNote(path, frontmatter) {
   };
 }
 function linkGranolaMeetings(notes, calendarEvents, identity, ownerEmails2) {
-  var _a, _b, _c, _d, _e, _f;
+  var _a, _b, _c, _d, _e, _f, _g;
   const byStart = /* @__PURE__ */ new Map();
   for (const event of calendarEvents) {
     if (event.kind !== "meeting" || event.source === "granola") continue;
@@ -1958,16 +1960,23 @@ function linkGranolaMeetings(notes, calendarEvents, identity, ownerEmails2) {
     if (Number.isFinite(at)) byStart.set(at, [...(_a = byStart.get(at)) != null ? _a : [], event]);
   }
   const owner = new Set([...ownerEmails2].map(normalizeEmail));
-  const result = { meetings: /* @__PURE__ */ new Map(), events: [], stats: { notes: notes.length, calendar: 0, email: 0, unlinked: 0 } };
+  const result = { meetings: /* @__PURE__ */ new Map(), attendees: /* @__PURE__ */ new Map(), events: [], stats: { notes: notes.length, calendar: 0, email: 0, unlinked: 0 } };
   for (const note of notes) {
     const start = note.calendarStart ? Date.parse(note.calendarStart) : NaN;
     const title = note.calendarTitle ? normalizeEventTitle(note.calendarTitle) : "";
     const joined = Number.isFinite(start) && title ? ((_b = byStart.get(start)) != null ? _b : []).filter((e) => normalizeEventTitle(e.title) === title) : [];
     const method = joined.length ? "calendar" : "email";
-    const candidates = joined.length ? joined.map((e) => normalizeEmail(e.email)) : note.attendeeEmails;
+    const candidates = joined.length ? joined.map((e) => {
+      var _a2;
+      return { email: normalizeEmail(e.email), ...((_a2 = e.name) == null ? void 0 : _a2.trim()) ? { name: e.name.trim() } : {} };
+    }) : note.attendeeEmails.map((email) => ({ email }));
+    const attendees = /* @__PURE__ */ new Map();
+    for (const a of candidates)
+      if (!owner.has(a.email) && !NOT_A_PERSON.test(a.email) && !isAutomatedAddress(a.email) && !((_c = attendees.get(a.email)) == null ? void 0 : _c.name))
+        attendees.set(a.email, a);
+    if (attendees.size) result.attendees.set(note.path, [...attendees.values()]);
     const people = /* @__PURE__ */ new Set();
-    for (const email of candidates) {
-      if (owner.has(email)) continue;
+    for (const { email } of attendees.values()) {
       const person = identity.get(email);
       const primary = person ? normalizeEmail(person.contact.email) : null;
       if (primary && !owner.has(primary)) people.add(primary);
@@ -1977,12 +1986,12 @@ function linkGranolaMeetings(notes, calendarEvents, identity, ownerEmails2) {
       continue;
     }
     result.stats[method]++;
-    const date = ((_d = (_c = note.calendarStart) != null ? _c : note.created) != null ? _d : "").slice(0, 10);
+    const date = ((_e = (_d = note.calendarStart) != null ? _d : note.created) != null ? _e : "").slice(0, 10);
     const target = note.path.replace(/\.md$/, "");
     const line = `- ${date} \xB7 [[${target}|${note.title.replace(/[|\]]/g, " ")}]]`;
     for (const primary of people) {
-      result.meetings.set(primary, [...(_e = result.meetings.get(primary)) != null ? _e : [], { date, line, path: note.path, title: note.title }]);
-      const at = (_f = note.calendarStart) != null ? _f : note.created;
+      result.meetings.set(primary, [...(_f = result.meetings.get(primary)) != null ? _f : [], { date, line, path: note.path, title: note.title }]);
+      const at = (_g = note.calendarStart) != null ? _g : note.created;
       if (method === "email" && at)
         result.events.push({
           id: `granola:${note.granolaId}`,
@@ -2009,12 +2018,102 @@ ${sorted.join("\n")}
   if (!section) return content;
   return (content.endsWith("\n") ? content : content + "\n") + section;
 }
+var yamlQuoted = (value) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+function withPeopleFrontmatter(content, pageNames) {
+  if (!content.startsWith("---\n")) return content;
+  const end = content.indexOf("\n---", 3);
+  if (end < 0) return content;
+  const lines = end > 3 ? content.slice(4, end).split("\n") : [];
+  const kept = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^people:/.test(lines[i])) {
+      while (i + 1 < lines.length && /^(\s+|-\s)/.test(lines[i + 1])) i++;
+      continue;
+    }
+    kept.push(lines[i]);
+  }
+  const names = [...new Set(pageNames)].sort();
+  if (names.length) {
+    const block = ["people:", ...names.map((name) => `  - ${yamlQuoted(`[[${name}]]`)}`)];
+    let at = kept.findIndex((line) => /^attendees:/.test(line));
+    if (at >= 0) while (at + 1 < kept.length && /^(\s+|-\s)/.test(kept[at + 1])) at++;
+    kept.splice(at >= 0 ? at + 1 : kept.length, 0, ...block);
+  }
+  const next = `---
+${kept.join("\n")}${content.slice(end)}`;
+  return kept.length || end > 3 ? next : content;
+}
+function contactNoteContent(contact) {
+  const frontmatter = [
+    "---",
+    `email: "${contact.email}"`,
+    `last_contact: ${contact.lastContact.split("T")[0]}`,
+    `first_contact: ${contact.firstContact.split("T")[0]}`,
+    `total_exchanges: ${contact.totalExchanges}`,
+    `sent: ${contact.sentCount}`,
+    `received: ${contact.receivedCount}`,
+    "---"
+  ].join("\n");
+  const body = [
+    `# ${contact.name}`,
+    "",
+    "## Overview",
+    `- **Email:** ${contact.email}`,
+    `- **Last contact:** ${contact.lastContact.split("T")[0]}`,
+    `- **Total exchanges:** ${contact.totalExchanges} (${contact.sentCount} sent, ${contact.receivedCount} received)`,
+    "",
+    "## Recent Subjects",
+    ...contact.subjects.map((s) => `- ${s}`),
+    "",
+    "## Notes",
+    ""
+  ].join("\n");
+  return `${frontmatter}
+
+${body}`;
+}
+function pagesToCreate(attendeesByNote, identity, primariesWithPages, existingPaths, folder, options = {}) {
+  var _a, _b, _c, _d, _e;
+  const people = /* @__PURE__ */ new Map();
+  for (const attendees of attendeesByNote.values())
+    for (const a of attendees) {
+      const contact = (_a = identity.get(a.email)) == null ? void 0 : _a.contact;
+      const primary = contact ? normalizeEmail(contact.email) : a.email;
+      if (primariesWithPages.has(primary)) continue;
+      const known = people.get(primary);
+      people.set(primary, { email: primary, ...contact ? { contact } : {}, name: (_b = known == null ? void 0 : known.name) != null ? _b : a.name });
+    }
+  const taken = new Set([...existingPaths].map((p) => p.toLowerCase()));
+  const dir = folder.replace(/\/+$/, "");
+  const plans = [];
+  for (const [primary, person] of [...people].sort(([a], [b]) => a.localeCompare(b))) {
+    const contactName = (_d = (_c = person.contact) == null ? void 0 : _c.name) == null ? void 0 : _d.trim();
+    const known = contactName && !contactName.includes("@") ? contactName : (_e = person.name) == null ? void 0 : _e.trim();
+    if (!known && options.waitForNames) continue;
+    const name = known || primary;
+    const path = `${dir ? `${dir}/` : ""}p- ${name.replace(/[\\/:*?"<>|]/g, "_")}.md`;
+    if (taken.has(path.toLowerCase())) continue;
+    taken.add(path.toLowerCase());
+    const content = person.contact ? contactNoteContent({ ...person.contact, name }) : `---
+email: "${primary}"
+---
+
+# ${name}
+
+## Overview
+- **Email:** ${primary}
+
+## Notes
+`;
+    plans.push({ primary, path, content });
+  }
+  return plans.sort((a, b) => a.path.localeCompare(b.path));
+}
 
 // src/brief.ts
 var DAY2 = 864e5;
 var BRIEF_DAYS = 7;
 var MAX_STEPS = 3;
-var NOT_A_PERSON = /@(group|resource)\.calendar\.google\.com$/;
 function upcomingMeetings(events, ownerEmails2) {
   var _a, _b, _c, _d, _e;
   const meetings = [];
@@ -3806,7 +3905,7 @@ async function fetchUpcomingInvites(settings, days) {
   return invites;
 }
 async function fetchCalendarStats(settings, ownerEmail) {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
   const headers = await getHeaders(settings);
   const now = /* @__PURE__ */ new Date();
   const yearAgo = new Date(now.getTime() - 365 * 864e5);
@@ -3870,7 +3969,7 @@ async function fetchCalendarStats(settings, ownerEmail) {
           statsMap.set(email, stat);
         }
         if (event.id && ownerAccepted && attendee.responseStatus === "accepted") {
-          stat.events.push({ id: event.id, email, date: eventDate.toISOString(), kind: "meeting", title: (_m = event.summary) != null ? _m : "Calendar meeting", sourceId: event.id });
+          stat.events.push({ id: event.id, email, date: eventDate.toISOString(), kind: "meeting", title: (_m = event.summary) != null ? _m : "Calendar meeting", sourceId: event.id, ...((_n = attendee.displayName) == null ? void 0 : _n.trim()) ? { name: attendee.displayName.trim() } : {} });
         }
         stat.meetings++;
         if (ownerAccepted && attendee.responseStatus === "accepted") {
@@ -5522,33 +5621,7 @@ var GmailCrmPlugin = class extends import_obsidian14.Plugin {
       const safeName = contact.name.replace(/[\\/:*?"<>|]/g, "_");
       const notePath = (0, import_obsidian14.normalizePath)(`${folder}/p- ${safeName}.md`);
       const existingFile = existingPages.get(contact.name.toLowerCase());
-      const frontmatter = [
-        "---",
-        `email: "${contact.email}"`,
-        `last_contact: ${contact.lastContact.split("T")[0]}`,
-        `first_contact: ${contact.firstContact.split("T")[0]}`,
-        `total_exchanges: ${contact.totalExchanges}`,
-        `sent: ${contact.sentCount}`,
-        `received: ${contact.receivedCount}`,
-        "---"
-      ].join("\n");
-      const body = [
-        `# ${contact.name}`,
-        "",
-        "## Overview",
-        `- **Email:** ${contact.email}`,
-        `- **Last contact:** ${contact.lastContact.split("T")[0]}`,
-        `- **Total exchanges:** ${contact.totalExchanges} (${contact.sentCount} sent, ${contact.receivedCount} received)`,
-        "",
-        "## Recent Subjects",
-        ...contact.subjects.map((s) => `- ${s}`),
-        "",
-        "## Notes",
-        ""
-      ].join("\n");
-      const content = `${frontmatter}
-
-${body}`;
+      const content = contactNoteContent(contact);
       if (existingFile) {
         continue;
       }
@@ -6118,19 +6191,50 @@ ${relSection}
     });
   }
   /**
-   * Links Granola meeting notes to people pages: attendees from the matching Calendar meeting
-   * (same start and title), else the note's attendee_emails. Rewrites only the plugin-managed
-   * `## Granola meetings` section of people pages; never writes Granola notes or creates pages.
+   * Links Granola meeting notes and people: attendees from the matching Calendar meeting (same
+   * start and title), else the note's attendee_emails. Creates people pages for attendees who
+   * have none (when contact notes are on), rewrites the plugin-managed `## Granola meetings`
+   * section of people pages, and sets each Granola note's `people:` frontmatter list. That key is
+   * the only thing written into Granola notes, and a note is written only when it changes.
    */
   async linkGranolaMeetings(announce) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e;
     if (!this.contactIndex) {
       if (announce) new import_obsidian14.Notice("No contact index found. Run a contact sync first.");
       return;
     }
     try {
-      const { notes, links } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
-      const pages = await new RelationshipEngine(this.app.vault, this.settings.peopleFolder).loadPeoplePages();
+      const { notes, links, identity, owner } = this.granolaContext(this.contactIndex.contacts, this.contactIndex.userEmail);
+      const engine = new RelationshipEngine(this.app.vault, this.settings.peopleFolder);
+      const pagesByEmail = (pages2) => {
+        const map = /* @__PURE__ */ new Map();
+        for (const page of Object.values(pages2)) {
+          const email2 = this.getEmailForPage(page);
+          if (email2 && !map.has(email2)) map.set(email2, page);
+        }
+        return map;
+      };
+      let pages = await engine.loadPeoplePages();
+      let pageByEmail = pagesByEmail(pages);
+      let created = 0;
+      if (this.settings.createContactNotes) {
+        const folder = (0, import_obsidian14.normalizePath)(this.settings.contactNotesFolder);
+        const existing = new Set(this.app.vault.getFiles().map((f) => f.path));
+        const waitForNames = !(this.intelligenceReady && this.intelligence.state.events.some((e) => e.kind === "meeting" && e.source !== "granola" && e.name));
+        const plans = pagesToCreate(links.attendees, identity, new Set(pageByEmail.keys()), existing, folder, { waitForNames });
+        if (plans.length && !this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+        for (const plan of plans) {
+          try {
+            await this.app.vault.create((0, import_obsidian14.normalizePath)(plan.path), plan.content);
+            created++;
+          } catch (e) {
+          }
+        }
+        if (created) {
+          pages = await engine.loadPeoplePages();
+          pageByEmail = pagesByEmail(pages);
+        }
+      }
       let written = 0;
       for (const page of Object.values(pages)) {
         const email2 = this.getEmailForPage(page);
@@ -6143,10 +6247,26 @@ ${relSection}
         await this.app.vault.modify(file, next);
         written++;
       }
+      let notesWritten = 0;
+      for (const note of notes) {
+        const names = /* @__PURE__ */ new Set();
+        for (const a of (_c = links.attendees.get(note.path)) != null ? _c : []) {
+          const primary = (_e = (_d = identity.get(a.email)) == null ? void 0 : _d.contact.email.toLowerCase()) != null ? _e : a.email;
+          const page = owner.has(primary) ? void 0 : pageByEmail.get(primary);
+          if (page) names.add(page.path.split("/").pop().replace(/\.md$/, ""));
+        }
+        const file = this.app.vault.getAbstractFileByPath(note.path);
+        if (!(file instanceof import_obsidian14.TFile)) continue;
+        const current = await this.app.vault.read(file);
+        const next = withPeopleFrontmatter(current, [...names]);
+        if (next === current) continue;
+        await this.app.vault.modify(file, next);
+        notesWritten++;
+      }
       if (this.intelligenceReady) await this.intelligence.replaceGranola(links.events);
       const { calendar, email, unlinked } = links.stats;
-      console.debug(`[People Data Sync] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${written} people pages updated`);
-      if (announce) new import_obsidian14.Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${written} people pages updated`);
+      console.debug(`[People Data Sync] Granola: ${notes.length} notes, ${calendar} via calendar, ${email} via attendee emails, ${unlinked} unlinked; ${created} people pages created, ${written} people pages and ${notesWritten} Granola notes updated`);
+      if (announce) new import_obsidian14.Notice(`Granola meetings: ${calendar + email} of ${notes.length} notes linked; ${created} people pages created; ${written} people pages and ${notesWritten} notes updated`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[People Data Sync] Granola linking skipped: ${msg}`);
