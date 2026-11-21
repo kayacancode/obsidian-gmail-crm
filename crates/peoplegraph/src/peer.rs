@@ -448,34 +448,33 @@ fn respond(
     if method == "GET"
         && let Some(id) = path.strip_prefix("/peer/v1/tickets/")
     {
-            let Some(ticket) = state
-                .tickets
-                .iter()
-                .find(|t| t.id == id && t.caller == caller)
-            else {
-                return reply(404, error("not_found"), "not_found");
-            };
-            if ticket.created + TICKET_TTL <= now {
-                return reply(410, error("ticket_expired"), "ticket_expired");
-            }
-            return match ticket.status {
-                TicketStatus::Pending => reply(
-                    202,
-                    json!({"ticket":ticket.id,"status":"pending"}),
-                    "ticket_pending",
-                ),
-                TicketStatus::Denied => reply(
-                    200,
-                    json!({"ticket":ticket.id,"status":"denied"}),
-                    "ticket_denied",
-                ),
-                TicketStatus::Approved => reply(
-                    200,
-                    json!({"ticket":ticket.id,"status":"approved","answer":ticket.answer}),
-                    "ticket_answered",
-                ),
-            };
+        let Some(ticket) = state
+            .tickets
+            .iter()
+            .find(|t| t.id == id && t.caller == caller)
+        else {
+            return reply(404, error("not_found"), "not_found");
+        };
+        if ticket.created + TICKET_TTL <= now {
+            return reply(410, error("ticket_expired"), "ticket_expired");
         }
+        return match ticket.status {
+            TicketStatus::Pending => reply(
+                202,
+                json!({"ticket":ticket.id,"status":"pending"}),
+                "ticket_pending",
+            ),
+            TicketStatus::Denied => reply(
+                200,
+                json!({"ticket":ticket.id,"status":"denied"}),
+                "ticket_denied",
+            ),
+            TicketStatus::Approved => reply(
+                200,
+                json!({"ticket":ticket.id,"status":"approved","answer":ticket.answer}),
+                "ticket_answered",
+            ),
+        };
     }
     if method != "POST" || path != "/peer/v1/query" {
         return reply(404, error("not_found"), "not_found");
