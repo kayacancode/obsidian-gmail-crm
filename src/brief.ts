@@ -1,4 +1,4 @@
-import { normalizeEventTitle } from "./granola-links";
+import { normalizeEventTitle, NOT_A_PERSON } from "./granola-links";
 
 /**
  * Pre-meeting brief: for each meeting in the next few days, the open next steps from the last
@@ -55,8 +55,6 @@ export interface MeetingSteps {
 const DAY = 86_400_000;
 export const BRIEF_DAYS = 7;
 const MAX_STEPS = 3;
-/** Calendar rooms and group calendars appear as attendees but are not people. */
-const NOT_A_PERSON = /@(group|resource)\.calendar\.google\.com$/;
 
 /** Meetings the owner hasn't declined that someone else attends, soonest first. */
 export function upcomingMeetings(events: CalendarInvite[], ownerEmails: Set<string>): UpcomingMeeting[] {

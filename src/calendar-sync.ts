@@ -9,6 +9,7 @@ interface CalendarAttendee {
 	responseStatus: "accepted" | "declined" | "tentative" | "needsAction";
 	organizer?: boolean;
 	self?: boolean;
+	displayName?: string;
 }
 
 interface CalendarEvent {
@@ -179,7 +180,7 @@ async function fetchCalendarStats(
 				}
 
 				if (event.id && ownerAccepted && attendee.responseStatus === "accepted") {
-					stat.events.push({ id: event.id, email, date: eventDate.toISOString(), kind: "meeting", title: event.summary ?? "Calendar meeting", sourceId: event.id });
+					stat.events.push({ id: event.id, email, date: eventDate.toISOString(), kind: "meeting", title: event.summary ?? "Calendar meeting", sourceId: event.id, ...(attendee.displayName?.trim() ? { name: attendee.displayName.trim() } : {}) });
 				}
 				stat.meetings++;
 

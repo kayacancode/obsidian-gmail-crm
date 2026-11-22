@@ -10,6 +10,8 @@ export interface Interaction {
   sourceId: string;
   /** Where a meeting came from; missing means the calendar, so older stored events stay valid. */
   source?: "calendar" | "granola";
+  /** The attendee's display name from the calendar invite, when it gave one. */
+  name?: string;
 }
 export interface Goal {
   id: string;
