@@ -1,7 +1,7 @@
 {
 	"id": "gmail-crm",
 	"name": "People Data Sync",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"minAppVersion": "1.15.0",
 	"description": "Bring Gmail activity, meeting history, and people notes together to understand your relationships, find reasons to reconnect, and explore personal and shared networks.",
 	"author": "Kaya Jones",
