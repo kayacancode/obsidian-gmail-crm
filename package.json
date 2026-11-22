@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-gmail-crm",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "Bring Gmail activity, meeting history, and people notes together to understand your relationships, find reasons to reconnect, and explore personal and shared networks.",
 	"main": "main.js",
 	"scripts": {
